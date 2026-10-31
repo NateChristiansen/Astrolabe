@@ -2,11 +2,11 @@
 
 ## Who the owner is
 
-See [owner.md](owner.md). [PLACEHOLDER: owner context lives only in this private repo.]
+See [knowledge/owner.md](knowledge/owner.md). [PLACEHOLDER: owner context lives only in this private repo.]
 
 ## Voice
 
-See [voice.md](voice.md). [PLACEHOLDER: communication preferences.]
+See [knowledge/voice.md](knowledge/voice.md). [PLACEHOLDER: communication preferences.]
 
 ## Ask rule
 
@@ -15,8 +15,14 @@ a recommendation and its reason, and what waits. Ask the next only after an answ
 
 ## Notes layout
 
-- `notes/efforts/`: [PLACEHOLDER: bounded efforts.]
-- `notes/journal/`: [PLACEHOLDER: dated observations.]
-- `notes/initiatives/`: [PLACEHOLDER: ongoing directions.]
+- `efforts/`: [PLACEHOLDER: bounded efforts.]
+- `journal/`: [PLACEHOLDER: dated observations.]
+- `initiatives/`: [PLACEHOLDER: ongoing directions.]
+- `drafts/`: [PLACEHOLDER: drafts for the owner to post.]
+- `outcomes/`: [PLACEHOLDER: one write-once record per accepted change.]
+- `lessons/`: [PLACEHOLDER: captured friction and triage results.]
+- `templates/`: [PLACEHOLDER: templates used by the notes tools.]
+- `knowledge/`: [PLACEHOLDER: owner, voice, repos, machines.]
+- `agents/`: [PLACEHOLDER: run orders and reports.]
 
 Notes are plain Markdown. [PLACEHOLDER: local naming conventions.]
