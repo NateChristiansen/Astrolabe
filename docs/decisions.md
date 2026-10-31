@@ -9,9 +9,8 @@
 - Use Tauri 2, React, TypeScript, and Vite as requested; no UI kit, router, state library, or Tauri plugin is needed for a blank window.
 - Use json-schema-to-typescript only at build time to keep checked-in TypeScript aligned with the JSON Schema contract.
 - Keep the native Tauri crate outside the core workspace, with its own lockfile, so CLI/contract checks do not require native GUI libraries.
-- Use Node's standard library for the scanner and seed tests: Node is already required by the app, works on native Windows, and avoids a shell/runtime dependency.
-- Scan Git objects rather than working-tree files; push scanning covers introduced history so deleting a secret in a later commit does not hide it.
-- Use heuristic entropy checks for general assignments and sensitive JSON/YAML keys; recognize Cargo checksum fields without exempting lockfiles, and never report matching secret values.
+- Use Node's standard library for the seed test: Node is already required by the app, works on native Windows, and avoids a shell/runtime dependency.
+- No in-repo content or secret scanner: no string-matching scrubbers for privacy; private data stays off the machines that build this repo, and secrets rely on the forge's built-in secret scanning and push protection.
 - Keep explicit notes in a separate private agent repo; disable client automatic memory generation/use in the seed, and leave MCP placeholders unwired.
 
 The seed uses client configuration locations to disable automatic memory and

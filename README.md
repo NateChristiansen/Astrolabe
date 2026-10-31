@@ -29,9 +29,7 @@ pnpm --dir app typecheck
 pnpm --dir app build
 cargo check --manifest-path app/src-tauri/Cargo.toml --locked
 cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
-node --test scripts/scan.test.cjs scripts/seed.test.cjs
-node scripts/scan --staged
-node scripts/scan --all
+node --test scripts/seed.test.cjs
 ```
 
 Re-exporting schemas and regenerating types must leave no diff. The desktop
@@ -48,37 +46,15 @@ workspace version aligned when releasing. Generated TypeScript is checked in at
 ## Private agent repo
 
 Copy `seed/` (including dotfiles) to a separate private repository and fill its
-placeholders there. Keep owner context, voice, journals, and private markers out
-of this public code repository. Seed MCP commands are deliberately placeholders;
+placeholders there. Keep owner context, voice, and journals out of this public
+code repository. Seed MCP commands are deliberately placeholders;
 the seeded agent client server is disabled. `init` does not copy files yet.
 
 Development uses a dev clone through the client's `--plugin-dir` or equivalent
 override. Client-specific wiring and verification belong to phase 1a; phase 0
 does not install a plugin or modify client configuration.
 
-## Content scan
+## Secrets
 
-Enable the local pre-push hook once per clone:
-
-```text
-git config core.hooksPath .githooks
-```
-
-The executable Node hook runs without bash, including through Git for Windows.
-Node 26 must be on PATH. `node scripts/scan` scans staged Git blobs by default;
-`--push` reads Git's pre-push ref updates from stdin and scans introduced history
-(including intermediate commits), and `--all` scans all locally reachable history
-for CI. New refs scan all their reachable history. Deleting a ref scans nothing.
-Git read errors fail closed. No remote is needed to run the scan or tests.
-
-Put one literal, case-insensitive owner-private marker per line in the untracked
-local file `~/.config/astrolabe/private-markers` (on Windows, `~` means your user
-home). Marker lines are trimmed; blank lines are ignored. Never put the file
-in this repo. `--markers FILE` overrides its location for testing. If absent,
-the scanner warns and checks only generic patterns. CI has no private markers.
-
-Checks cover private-key headers, common token prefixes, and high-entropy
-assignments. Output reports rule names and object ids, never matching text.
-This is a heuristic for plain UTF-8 content, not a guarantee against leaks:
-encoded/compressed content, unknown token formats, and omitted markers can evade
-it; false positives are possible. Hooks can be bypassed. Review content yourself.
+No secrets belong in this repository. Leak protection relies on the forge's
+built-in secret scanning and push protection, not on a scanner of our own.

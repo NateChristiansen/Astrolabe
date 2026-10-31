@@ -1,9 +1,0 @@
-#!/usr/bin/env node
-'use strict';
-try {
-  // Git supplies remote name/URL in argv; only stdin ref updates are needed.
-  process.exitCode = require('../scripts/scan').run(['--push']);
-} catch (error) {
-  console.error(`scan failed: ${error.message}`);
-  process.exitCode = 2;
-}
