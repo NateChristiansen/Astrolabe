@@ -1,0 +1,37 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26.x
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.9
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo run --locked -p protocol --bin export-schemas
+      - run: git diff --exit-code -- protocol/schemas
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: pnpm --dir app generate:protocol
+      - run: git diff --exit-code -- app/src/protocol
+      - run: pnpm --dir app typecheck
+      - run: pnpm --dir app build
+      - run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
+      - run: cargo check --manifest-path app/src-tauri/Cargo.toml --locked
+      - run: node --test scripts/scan.test.cjs scripts/seed.test.cjs
+      - run: node scripts/scan --all
