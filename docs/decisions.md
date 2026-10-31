@@ -11,6 +11,9 @@
 - Keep the native Tauri crate outside the core workspace, with its own lockfile, so CLI/contract checks do not require native GUI libraries.
 - Use Node's standard library for the seed test: Node is already required by the app, works on native Windows, and avoids a shell/runtime dependency.
 - No in-repo content or secret scanner: no string-matching scrubbers for privacy; private data stays off the machines that build this repo, and secrets rely on the forge's built-in secret scanning and push protection.
+- Use rusqlite with bundled SQLite for the per-machine store: one embedded file, no system library to differ between Mac and Windows; the existing no-CLI-dependency decision stands, and arguments remain a standard-library match.
+- Use serde_json in the core because agent updates arrive as JSON-RPC and only some fields matter; ACP types stay untyped until a driver consumes them.
+- Use no app-dirs, signal or process crates: the OS data dir is two environment variables, every state change commits so `serve` needs no shutdown handler, the standard library's file lock excludes a second core, and liveness comes from `ps` or `tasklist`.
 - Keep explicit notes in a separate private agent repo; disable client automatic memory generation/use in the seed, and leave MCP placeholders unwired.
 
 The seed uses client configuration locations to disable automatic memory and

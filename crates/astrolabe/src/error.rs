@@ -1,0 +1,51 @@
+use crate::model::{OutcomeId, SessionId};
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    Sqlite(rusqlite::Error),
+    Io(std::io::Error),
+    UnsupportedSchema(i64),
+    UnknownSession(SessionId),
+    UnknownRequest(String),
+    SessionNotOpen(SessionId),
+    TurnInProgress(SessionId),
+    OutcomeNotSubmitted(OutcomeId),
+    AlreadyServing(std::path::PathBuf),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sqlite(error) => write!(f, "database error: {error}"),
+            Self::Io(error) => write!(f, "io error: {error}"),
+            Self::UnsupportedSchema(version) => {
+                write!(f, "database schema version {version} is not supported")
+            }
+            Self::UnknownSession(id) => write!(f, "unknown session {id}"),
+            Self::UnknownRequest(id) => write!(f, "unknown request {id}"),
+            Self::SessionNotOpen(id) => write!(f, "session {id} is not open"),
+            Self::TurnInProgress(id) => write!(f, "session {id} already has an active run"),
+            Self::OutcomeNotSubmitted(id) => write!(f, "outcome {id} is no longer submitted"),
+            Self::AlreadyServing(path) => {
+                write!(f, "another core is serving {}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}

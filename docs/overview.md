@@ -33,8 +33,9 @@ concerns. Pairing, transport, trust, and reconnection behavior remain future des
 work; phase 0 supplies no network listener or pairing implementation.
 
 Phase 0 establishes the workspace, versioned handoff contract, desktop shell,
-agent-repo seed, and basic public-content checks. The CLI has only version output
-and stub commands. It does not yet orchestrate agents, persist sessions, route
-questions, or synchronize notes. Later phases can build those behaviors against
+agent-repo seed, and basic public-content checks. `astrolabe serve` runs the core
+as its own process: it keeps live session state in one local database, watches for
+stalled sessions, and reconciles on restart. It has no agent transport yet, so it
+does not launch agents, route questions, or synchronize notes. Later phases can build those behaviors against
 named consumers and evaluation questions instead of expanding the contract
 speculatively.
