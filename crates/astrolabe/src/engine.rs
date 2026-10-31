@@ -1,6 +1,6 @@
 //! Session, run, worker, request and outcome transitions, plus restart reconcile.
 use crate::error::{Error, Result};
-use crate::events::{AgentMessage, CoreEvent, ToolEvent, TurnEnd, map_message};
+use crate::events::{AgentMessage, CoreEvent, ToolEvent, TurnEnd, map_message, rpc_id};
 use crate::host::{Clock, ProcessProbe};
 use crate::model::*;
 use crate::store::Store;
@@ -51,6 +51,19 @@ impl Engine {
         })
     }
 
+    /// Records the id of the prompt the driver is about to send. Only an error
+    /// answering this id may end the turn, so call this before sending.
+    pub fn prompt_sent(&self, session_id: SessionId, prompt_id: &Value) -> Result<()> {
+        self.store.transaction(|| {
+            let run = self.store.latest_run(session_id)?;
+            if !run.state.is_active() {
+                return Err(Error::NoActiveRun(session_id));
+            }
+            let id = rpc_id(&serde_json::json!({ "id": prompt_id }));
+            self.store.set_prompt_rpc_id(run.id, &id)
+        })
+    }
+
     /// A worker is a child session under its parent: it has no state of its own,
     /// and its activity and requests count toward the parent.
     pub fn register_worker(
@@ -69,6 +82,8 @@ impl Engine {
     }
 
     /// Applies one raw ACP-shaped message from the agent process of this session.
+    /// An agent error that answers no active prompt returns `Error::AgentRpc` and
+    /// changes nothing; the caller reports it and keeps reading.
     pub fn ingest(&self, session_id: SessionId, message: &Value) -> Result<Vec<Alert>> {
         match map_message(message) {
             Some(message) => self.apply(session_id, &message),
@@ -88,14 +103,35 @@ impl Engine {
             if let CoreEvent::RequestOpened { rpc_id, title } = &message.event {
                 return self.open_request(session_id, worker, rpc_id, title, now);
             }
+            if let CoreEvent::ResponseError { rpc_id, message } = &message.event {
+                let run = self.store.latest_run(session_id)?;
+                if worker.is_none()
+                    && session.lifecycle == Lifecycle::Open
+                    && run.state.is_active()
+                    && run.prompt_rpc_id.as_ref() == Some(rpc_id)
+                {
+                    self.end_turn(session_id, TurnEnd::Failed, now)?;
+                    return Ok(Vec::new());
+                }
+                return Err(Error::AgentRpc {
+                    session_id,
+                    rpc_id: rpc_id.clone(),
+                    message: message.clone(),
+                });
+            }
             if session.lifecycle != Lifecycle::Open {
                 return Ok(Vec::new());
             }
             match &message.event {
                 CoreEvent::Content => self.touch(session_id, now)?,
                 CoreEvent::Tool(event) => self.apply_tool(session_id, worker, event, now)?,
-                CoreEvent::TurnEnded(end) => self.end_turn(session_id, *end, now)?,
-                CoreEvent::Keepalive | CoreEvent::RequestOpened { .. } => {}
+                CoreEvent::TurnEnded(end) => match worker {
+                    Some(worker) => self.end_worker_turn(session_id, worker, now)?,
+                    None => self.end_turn(session_id, *end, now)?,
+                },
+                CoreEvent::Keepalive
+                | CoreEvent::RequestOpened { .. }
+                | CoreEvent::ResponseError { .. } => {}
             }
             Ok(Vec::new())
         })
@@ -121,7 +157,7 @@ impl Engine {
                     title: event.title.clone().unwrap_or(event.tool_call_id.clone()),
                     status: event.status.unwrap_or(ToolStatus::Pending),
                     started_ms: now,
-                    fingerprint: event.fingerprint.clone(),
+                    snooze_until_ms: 0,
                 },
             )?;
             return self.touch(session_id, now);
@@ -130,25 +166,23 @@ impl Engine {
         if tool.status == ToolStatus::Finished {
             return Ok(());
         }
-        let mut progressed = false;
-        if let Some(status) = event.status.filter(|status| *status != tool.status)
-            && status != ToolStatus::Pending
-        {
+        if let Some(title) = &event.title {
+            tool.title.clone_from(title);
+        }
+        // Repeats and output say nothing about whether the tool is stuck: a tool's
+        // timer moves only when it begins running, and its card goes when it ends.
+        let changed = event
+            .status
+            .filter(|status| *status != tool.status && *status != ToolStatus::Pending);
+        if let Some(status) = changed {
             if tool.status == ToolStatus::Pending {
                 tool.started_ms = now;
             }
             tool.status = status;
-            progressed = true;
-        }
-        if event.fingerprint.is_some() && event.fingerprint != tool.fingerprint {
-            tool.fingerprint.clone_from(&event.fingerprint);
-            progressed = true;
-        }
-        if let Some(title) = &event.title {
-            tool.title.clone_from(title);
+            self.store.retire_tool_card(session_id, &tool, now)?;
         }
         self.store.upsert_tool(session_id, &tool)?;
-        if progressed {
+        if changed.is_some() {
             self.touch(session_id, now)?;
         }
         Ok(())
@@ -196,14 +230,22 @@ impl Engine {
         self.store.finish_tools(session_id)?;
         self.store.set_stop_requested(session_id, None)?;
         self.store.record_activity(session_id, now)?;
-        self.store.retire_card(session_id, now)
+        self.store.retire_all_cards(session_id, now)
     }
 
-    /// Real activity restarts the stall timer and retires the card. Requests are
-    /// untouched: only `resolve_request` closes one.
+    /// A worker has no lifecycle: its turn ending settles its own tools and counts
+    /// as activity, and the parent's run carries on.
+    fn end_worker_turn(&self, session_id: SessionId, worker: &str, now: i64) -> Result<()> {
+        self.store.finish_worker_tools(session_id, worker)?;
+        self.store.retire_worker_cards(session_id, worker, now)?;
+        self.touch(session_id, now)
+    }
+
+    /// Real activity restarts the quiet timer and retires the quiet card. Tool
+    /// cards follow their tools, and only `resolve_request` closes a request.
     pub(crate) fn touch(&self, session_id: SessionId, now: i64) -> Result<()> {
         self.store.record_activity(session_id, now)?;
-        self.store.retire_card(session_id, now)?;
+        self.store.retire_quiet_card(session_id, now)?;
         let run = self.store.latest_run(session_id)?;
         if run.state == RunState::Queued {
             self.store.set_run_state(run.id, RunState::Running)?;
@@ -229,6 +271,7 @@ impl Engine {
                 if run.state == RunState::Waiting {
                     self.store.set_run_state(run.id, RunState::Running)?;
                     self.store.restart_tool_clocks(session_id, now)?;
+                    self.store.retire_tool_cards(session_id, now)?;
                     self.touch(session_id, now)?;
                 }
             }
@@ -274,7 +317,7 @@ impl Engine {
             self.store.set_run_state(run.id, run_state)?;
         }
         self.store.finish_tools(session.id)?;
-        self.store.retire_card(session.id, now)?;
+        self.store.retire_all_cards(session.id, now)?;
         self.store.set_lifecycle(session.id, lifecycle)
     }
 
@@ -343,7 +386,7 @@ impl Engine {
             run,
             running_tools: self.store.running_tools(session_id)?,
             open_requests,
-            card: self.store.active_card(session_id)?,
+            cards: self.store.session_cards(session_id)?,
             session,
         })
     }

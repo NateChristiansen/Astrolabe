@@ -2,7 +2,7 @@
 //! so a process that dies at any moment leaves a state reconcile can trust.
 use crate::error::{Error, Result};
 use crate::model::*;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i64 = 1;
@@ -18,7 +18,8 @@ CREATE TABLE sessions (
 CREATE TABLE runs (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    prompt_rpc_id TEXT
 );
 CREATE INDEX runs_by_session ON runs(session_id);
 CREATE TABLE workers (
@@ -33,7 +34,7 @@ CREATE TABLE tools (
     title TEXT NOT NULL,
     status TEXT NOT NULL,
     started_ms INTEGER NOT NULL,
-    fingerprint TEXT,
+    snooze_until_ms INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (session_id, worker_id, tool_call_id)
 );
 CREATE TABLE requests (
@@ -50,12 +51,15 @@ CREATE TABLE cards (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
     worker_id TEXT,
+    tool_call_id TEXT,
     tool TEXT,
     since_ms INTEGER NOT NULL,
     raised_ms INTEGER NOT NULL,
     retired_ms INTEGER
 );
-CREATE UNIQUE INDEX one_active_card ON cards(session_id) WHERE retired_ms IS NULL;
+CREATE UNIQUE INDEX one_active_card
+    ON cards(session_id, IFNULL(worker_id, ''), IFNULL(tool_call_id, ''))
+    WHERE retired_ms IS NULL;
 CREATE TABLE outcomes (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -66,7 +70,7 @@ CREATE TABLE outcomes (
 ";
 
 const REQUEST_COLUMNS: &str = "id, session_id, worker_id, title, opened_ms, resolution";
-const CARD_COLUMNS: &str = "id, session_id, worker_id, tool, since_ms, raised_ms";
+const CARD_COLUMNS: &str = "id, session_id, worker_id, tool_call_id, tool, since_ms, raised_ms";
 const OUTCOME_COLUMNS: &str = "id, session_id, run_id, summary, state";
 
 /// The per-machine database path under the OS app-data directory.
@@ -183,7 +187,7 @@ impl Store {
 
     pub fn latest_run(&self, session_id: SessionId) -> Result<Run> {
         Ok(self.conn.query_row(
-            "SELECT id, session_id, state FROM runs WHERE session_id = ?1
+            "SELECT id, session_id, state, prompt_rpc_id FROM runs WHERE session_id = ?1
              ORDER BY id DESC LIMIT 1",
             [session_id],
             |row| {
@@ -191,6 +195,7 @@ impl Store {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
                     state: row.get(2)?,
+                    prompt_rpc_id: row.get(3)?,
                 })
             },
         )?)
@@ -200,6 +205,14 @@ impl Store {
         self.conn.execute(
             "UPDATE runs SET state = ?2 WHERE id = ?1",
             params![id, state],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_prompt_rpc_id(&self, id: RunId, rpc_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET prompt_rpc_id = ?2 WHERE id = ?1",
+            params![id, rpc_id],
         )?;
         Ok(())
     }
@@ -233,7 +246,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT tool_call_id, worker_id, title, status, started_ms, fingerprint
+                "SELECT tool_call_id, worker_id, title, status, started_ms, snooze_until_ms
                  FROM tools WHERE session_id = ?1 AND worker_id = ?2 AND tool_call_id = ?3",
                 params![session_id, worker_id.unwrap_or(""), tool_call_id],
                 tool_row,
@@ -244,7 +257,7 @@ impl Store {
     pub fn upsert_tool(&self, session_id: SessionId, tool: &Tool) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO tools
-             (session_id, worker_id, tool_call_id, title, status, started_ms, fingerprint)
+             (session_id, worker_id, tool_call_id, title, status, started_ms, snooze_until_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 session_id,
@@ -253,7 +266,7 @@ impl Store {
                 tool.title,
                 tool.status,
                 tool.started_ms,
-                tool.fingerprint,
+                tool.snooze_until_ms,
             ],
         )?;
         Ok(())
@@ -262,7 +275,7 @@ impl Store {
     /// Oldest first, so the longest-running tool leads a card.
     pub fn running_tools(&self, session_id: SessionId) -> Result<Vec<Tool>> {
         let mut statement = self.conn.prepare(
-            "SELECT tool_call_id, worker_id, title, status, started_ms, fingerprint
+            "SELECT tool_call_id, worker_id, title, status, started_ms, snooze_until_ms
              FROM tools WHERE session_id = ?1 AND status != ?2 ORDER BY started_ms, rowid",
         )?;
         let rows = statement.query_map(params![session_id, ToolStatus::Finished], tool_row)?;
@@ -273,6 +286,14 @@ impl Store {
         self.conn.execute(
             "UPDATE tools SET status = ?2 WHERE session_id = ?1",
             params![session_id, ToolStatus::Finished],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_worker_tools(&self, session_id: SessionId, worker_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tools SET status = ?3 WHERE session_id = ?1 AND worker_id = ?2",
+            params![session_id, worker_id, ToolStatus::Finished],
         )?;
         Ok(())
     }
@@ -333,7 +354,7 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Returns none when the session already has an active card.
+    /// Returns none when this tool, or this quiet session, already has an active card.
     pub fn insert_card(
         &self,
         session_id: SessionId,
@@ -342,11 +363,13 @@ impl Store {
         now: i64,
     ) -> Result<Option<CardId>> {
         let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO cards (session_id, worker_id, tool, since_ms, raised_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO cards
+             (session_id, worker_id, tool_call_id, tool, since_ms, raised_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 session_id,
                 tool.and_then(|tool| tool.worker_id.as_deref()),
+                tool.map(|tool| tool.tool_call_id.as_str()),
                 tool.map(|tool| tool.title.as_str()),
                 since_ms,
                 now,
@@ -355,18 +378,13 @@ impl Store {
         Ok((inserted == 1).then(|| self.conn.last_insert_rowid()))
     }
 
-    pub fn active_card(&self, session_id: SessionId) -> Result<Option<Card>> {
-        Ok(self
-            .conn
-            .query_row(
-                &format!(
-                    "SELECT {CARD_COLUMNS} FROM cards
-                     WHERE session_id = ?1 AND retired_ms IS NULL"
-                ),
-                [session_id],
-                card_row,
-            )
-            .optional()?)
+    pub fn session_cards(&self, session_id: SessionId) -> Result<Vec<Card>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {CARD_COLUMNS} FROM cards
+             WHERE session_id = ?1 AND retired_ms IS NULL ORDER BY id"
+        ))?;
+        let rows = statement.query_map([session_id], card_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn card_if_active(&self, id: CardId) -> Result<Option<Card>> {
@@ -388,12 +406,48 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn retire_card(&self, session_id: SessionId, now: i64) -> Result<()> {
+    fn retire_where(&self, filter: &str, values: &[&dyn ToSql]) -> Result<()> {
         self.conn.execute(
-            "UPDATE cards SET retired_ms = ?2 WHERE session_id = ?1 AND retired_ms IS NULL",
-            params![session_id, now],
+            &format!("UPDATE cards SET retired_ms = ?1 WHERE retired_ms IS NULL AND {filter}"),
+            values,
         )?;
         Ok(())
+    }
+
+    pub fn retire_card(&self, id: CardId, now: i64) -> Result<()> {
+        self.retire_where("id = ?2", &[&now, &id])
+    }
+
+    pub fn retire_all_cards(&self, session_id: SessionId, now: i64) -> Result<()> {
+        self.retire_where("session_id = ?2", &[&now, &session_id])
+    }
+
+    pub fn retire_quiet_card(&self, session_id: SessionId, now: i64) -> Result<()> {
+        self.retire_where(
+            "session_id = ?2 AND tool_call_id IS NULL",
+            &[&now, &session_id],
+        )
+    }
+
+    pub fn retire_tool_cards(&self, session_id: SessionId, now: i64) -> Result<()> {
+        self.retire_where(
+            "session_id = ?2 AND tool_call_id IS NOT NULL",
+            &[&now, &session_id],
+        )
+    }
+
+    pub fn retire_worker_cards(&self, session_id: SessionId, worker: &str, now: i64) -> Result<()> {
+        self.retire_where(
+            "session_id = ?2 AND worker_id = ?3",
+            &[&now, &session_id, &worker],
+        )
+    }
+
+    pub fn retire_tool_card(&self, session_id: SessionId, tool: &Tool, now: i64) -> Result<()> {
+        self.retire_where(
+            "session_id = ?2 AND worker_id IS ?3 AND tool_call_id = ?4",
+            &[&now, &session_id, &tool.worker_id, &tool.tool_call_id],
+        )
     }
 
     pub fn insert_outcome(
@@ -467,7 +521,7 @@ fn tool_row(row: &Row<'_>) -> rusqlite::Result<Tool> {
         title: row.get(2)?,
         status: row.get(3)?,
         started_ms: row.get(4)?,
-        fingerprint: row.get(5)?,
+        snooze_until_ms: row.get(5)?,
     })
 }
 
@@ -487,8 +541,9 @@ fn card_row(row: &Row<'_>) -> rusqlite::Result<Card> {
         id: row.get(0)?,
         session_id: row.get(1)?,
         worker_id: row.get(2)?,
-        tool: row.get(3)?,
-        since_ms: row.get(4)?,
-        raised_ms: row.get(5)?,
+        tool_call_id: row.get(3)?,
+        tool: row.get(4)?,
+        since_ms: row.get(5)?,
+        raised_ms: row.get(6)?,
     })
 }

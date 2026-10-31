@@ -1,7 +1,6 @@
 //! Maps ACP-shaped JSON-RPC messages to normalized core events.
 use crate::model::ToolStatus;
 use serde_json::Value;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnEnd {
@@ -15,8 +14,6 @@ pub struct ToolEvent {
     pub tool_call_id: String,
     pub title: Option<String>,
     pub status: Option<ToolStatus>,
-    /// Digest of the tool's reported content; none when the update carries none.
-    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +28,12 @@ pub enum CoreEvent {
         title: String,
     },
     TurnEnded(TurnEnd),
+    /// A JSON-RPC error. It ends the turn only if it answers the active prompt,
+    /// which only the engine can tell.
+    ResponseError {
+        rpc_id: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +77,6 @@ fn map_update(update: &Value) -> Option<CoreEvent> {
             tool_call_id: text(update, "toolCallId")?.to_owned(),
             title: text(update, "title").map(str::to_owned),
             status: text(update, "status").and_then(tool_status),
-            fingerprint: fingerprint(update),
         }),
         // A replayed user message is not agent progress.
         "user_message_chunk" => return None,
@@ -85,8 +87,11 @@ fn map_update(update: &Value) -> Option<CoreEvent> {
 }
 
 fn map_response(message: &Value) -> Option<CoreEvent> {
-    if message.get("error").is_some() {
-        return Some(CoreEvent::TurnEnded(TurnEnd::Failed));
+    if let Some(error) = message.get("error") {
+        return Some(CoreEvent::ResponseError {
+            rpc_id: rpc_id(message),
+            message: text(error, "message").unwrap_or("unknown error").to_owned(),
+        });
     }
     let reason = text(message.get("result")?, "stopReason")?;
     Some(CoreEvent::TurnEnded(match reason {
@@ -105,21 +110,9 @@ fn tool_status(status: &str) -> Option<ToolStatus> {
     }
 }
 
-/// Keepalives may repeat earlier content, so progress means a changed digest
-/// rather than a present field.
-fn fingerprint(update: &Value) -> Option<String> {
-    let reported = ["content", "rawOutput"].map(|field| update.get(field));
-    let empty = |value: &Option<&Value>| match value {
-        None | Some(Value::Null) => true,
-        Some(Value::Array(items)) => items.is_empty(),
-        Some(_) => false,
-    };
-    if reported.iter().all(empty) {
-        return None;
-    }
-    let mut hasher = DefaultHasher::new();
-    format!("{reported:?}").hash(&mut hasher);
-    Some(format!("{:016x}", hasher.finish()))
+/// The text form that `Engine::prompt_sent` compares against.
+pub(crate) fn rpc_id(message: &Value) -> String {
+    message.get("id").unwrap_or(&Value::Null).to_string()
 }
 
 fn text<'a>(value: &'a Value, field: &str) -> Option<&'a str> {

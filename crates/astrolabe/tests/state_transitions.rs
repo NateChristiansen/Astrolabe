@@ -44,7 +44,6 @@ fn acp_messages_map_to_core_events() {
         panic!("tool update must map to a tool event");
     };
     assert_eq!(keepalive.status, Some(ToolStatus::Running));
-    assert_eq!(keepalive.fingerprint, None);
 
     let Some(CoreEvent::RequestOpened { rpc_id, title }) =
         event(acp::request_permission(AGENT, 7, "git push"))
@@ -66,7 +65,10 @@ fn acp_messages_map_to_core_events() {
     }
     assert_eq!(
         event(json!({ "id": 2, "error": { "code": -32603, "message": "boom" } })),
-        Some(CoreEvent::TurnEnded(TurnEnd::Failed))
+        Some(CoreEvent::ResponseError {
+            rpc_id: "2".to_owned(),
+            message: "boom".to_owned(),
+        })
     );
 }
 

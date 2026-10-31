@@ -97,23 +97,26 @@ fn keepalive_only_tool_is_flagged_with_tool_and_elapsed_time() {
     );
 }
 
-/// Catches: a digest-free check that counts any update carrying content as
-/// progress, so an adapter repeating the same output hides a hung tool.
+/// Catches: a tool's own output clearing its flag, so a tool looping on output
+/// hides a hang. Only the tool finishing retires the card.
 #[test]
-fn repeated_tool_output_does_not_reset_the_watch_but_new_output_does() {
+fn a_tools_own_output_neither_delays_nor_retires_its_card() {
     let mut h = Harness::new();
     let session = h.engine.launch(PID).unwrap();
     h.send(session, acp::tool_start(AGENT, "call-1", "cargo build"));
-    h.send(session, acp::tool_output(AGENT, "call-1", "compiling"));
 
     h.run_for(STALL_AFTER_MS, |h, second| {
         if second % 30 == 0 {
-            h.send(session, acp::tool_output(AGENT, "call-1", "compiling"));
+            let text = format!("line {second}");
+            h.send(session, acp::tool_output(AGENT, "call-1", &text));
         }
     });
     assert_eq!(h.stuck_alerts(), 1);
 
     h.send(session, acp::tool_output(AGENT, "call-1", "linking"));
+    assert_eq!(card(&h).tool.as_deref(), Some("cargo build"));
+
+    h.send(session, acp::tool_done(AGENT, "call-1"));
     assert!(h.engine.active_cards().unwrap().is_empty());
 }
 

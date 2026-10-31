@@ -102,6 +102,8 @@ pub struct Run {
     pub id: RunId,
     pub session_id: SessionId,
     pub state: RunState,
+    /// The JSON-RPC id of this run's prompt, once sent.
+    pub prompt_rpc_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +113,7 @@ pub struct Tool {
     pub title: String,
     pub status: ToolStatus,
     pub started_ms: i64,
-    pub fingerprint: Option<String>,
+    pub snooze_until_ms: i64,
 }
 
 /// An open request stays open until it is resolved by id; nothing else closes it.
@@ -126,13 +128,14 @@ pub struct Request {
     pub resolution: Option<String>,
 }
 
-/// One "may be stuck" card. At most one is active per session.
+/// One "may be stuck" card: one per stuck tool, or one for a quiet session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub id: CardId,
     pub session_id: SessionId,
     pub worker_id: Option<String>,
-    /// The running tool, or none when the session is simply quiet.
+    /// The stuck tool's call id and title, or none when the session is quiet.
+    pub tool_call_id: Option<String>,
     pub tool: Option<String>,
     pub since_ms: i64,
     pub raised_ms: i64,
@@ -183,7 +186,7 @@ pub struct SessionView {
     pub run: Run,
     pub running_tools: Vec<Tool>,
     pub open_requests: Vec<Request>,
-    pub card: Option<Card>,
+    pub cards: Vec<Card>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

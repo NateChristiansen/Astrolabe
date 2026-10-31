@@ -12,6 +12,13 @@ pub enum Error {
     UnknownRequest(String),
     SessionNotOpen(SessionId),
     TurnInProgress(SessionId),
+    NoActiveRun(SessionId),
+    /// An agent error that answers nothing the run is waiting on. No state changed.
+    AgentRpc {
+        session_id: SessionId,
+        rpc_id: String,
+        message: String,
+    },
     OutcomeNotSubmitted(OutcomeId),
     AlreadyServing(std::path::PathBuf),
 }
@@ -28,6 +35,15 @@ impl fmt::Display for Error {
             Self::UnknownRequest(id) => write!(f, "unknown request {id}"),
             Self::SessionNotOpen(id) => write!(f, "session {id} is not open"),
             Self::TurnInProgress(id) => write!(f, "session {id} already has an active run"),
+            Self::NoActiveRun(id) => write!(f, "session {id} has no active run"),
+            Self::AgentRpc {
+                session_id,
+                rpc_id,
+                message,
+            } => write!(
+                f,
+                "session {session_id}: agent error for {rpc_id}: {message}"
+            ),
             Self::OutcomeNotSubmitted(id) => write!(f, "outcome {id} is no longer submitted"),
             Self::AlreadyServing(path) => {
                 write!(f, "another core is serving {}", path.display())
