@@ -1,0 +1,9 @@
+# PLACEHOLDER: copy into the private agent repo; configure the server in phase 1a.
+[memories]
+generate_memories = false
+use_memories = false
+
+[mcp_servers.astrolabe]
+command = "PLACEHOLDER_SERVER"
+enabled = false
+default_tools_approval_mode = "approve"

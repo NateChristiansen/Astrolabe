@@ -1,0 +1,5 @@
+{
+  "hooks": {},
+  "permissions": { "allow": [], "ask": [], "deny": [] },
+  "autoMemoryEnabled": false
+}
