@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskOwnerAnswer",
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "payload_version": {
+      "$ref": "#/$defs/PayloadVersion"
+    },
+    "request_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "required": [
+    "payload_version",
+    "request_id",
+    "answer"
+  ],
+  "$defs": {
+    "PayloadVersion": {
+      "description": "Payload versions evolve independently of the envelope version.",
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    }
+  }
+}

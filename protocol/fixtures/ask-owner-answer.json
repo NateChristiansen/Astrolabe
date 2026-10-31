@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "id": "message-example",
+  "producer": "fixture",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "body": "Synthetic contract example.",
+  "links": {
+    "effort": "effort-example",
+    "run": "run-example",
+    "revision": "revision-example",
+    "future_link": {
+      "retained": true
+    }
+  },
+  "future_envelope": {
+    "retained": [
+      1,
+      2
+    ]
+  },
+  "kind": "ask_owner_answer",
+  "payload": {
+    "request_id": "request-example",
+    "answer": "Wait.",
+    "payload_version": "1",
+    "future_payload": {
+      "retained": true
+    }
+  },
+  "reply_to": "request-example"
+}

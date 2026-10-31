@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "id": "message-example",
+  "producer": "fixture",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "body": "Synthetic contract example.",
+  "links": {
+    "effort": "effort-example",
+    "run": "run-example",
+    "revision": "revision-example",
+    "future_link": {
+      "retained": true
+    }
+  },
+  "future_envelope": {
+    "retained": [
+      1,
+      2
+    ]
+  },
+  "kind": "review_finding",
+  "payload": {
+    "revision": "revision-example",
+    "file": "example.rs",
+    "line": 1,
+    "trigger": "Run the example check.",
+    "expected": "Success.",
+    "actual": "Failure.",
+    "impact": "The example cannot proceed.",
+    "evidence": "executed",
+    "severity": "medium",
+    "confidence": {
+      "value": 0.6,
+      "method": "Synthetic self-report.",
+      "model": "example-model",
+      "future_confidence": true
+    },
+    "payload_version": "1",
+    "future_payload": {
+      "retained": true
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AskOwnerRequest",
+  "type": "object",
+  "properties": {
+    "context": {
+      "type": "string"
+    },
+    "options": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "payload_version": {
+      "$ref": "#/$defs/PayloadVersion"
+    },
+    "question": {
+      "description": "Exactly one self-contained question, never a list of questions.",
+      "type": "string"
+    },
+    "recommendation": {
+      "$ref": "#/$defs/Recommendation"
+    },
+    "what_waits": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "required": [
+    "payload_version",
+    "question",
+    "context",
+    "recommendation",
+    "what_waits"
+  ],
+  "$defs": {
+    "PayloadVersion": {
+      "description": "Payload versions evolve independently of the envelope version.",
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "Recommendation": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "action",
+        "reason"
+      ]
+    }
+  }
+}

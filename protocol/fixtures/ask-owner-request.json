@@ -1,0 +1,40 @@
+{
+  "schema_version": "1",
+  "id": "message-example",
+  "producer": "fixture",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "body": "Synthetic contract example.",
+  "links": {
+    "effort": "effort-example",
+    "run": "run-example",
+    "revision": "revision-example",
+    "future_link": {
+      "retained": true
+    }
+  },
+  "future_envelope": {
+    "retained": [
+      1,
+      2
+    ]
+  },
+  "kind": "ask_owner_request",
+  "payload": {
+    "question": "For this synthetic example, should the check wait?",
+    "context": "The example check requires a choice.",
+    "recommendation": {
+      "action": "Wait.",
+      "reason": "The input is incomplete.",
+      "future_recommendation": true
+    },
+    "what_waits": "The example check.",
+    "options": [
+      "Wait",
+      "Proceed"
+    ],
+    "payload_version": "1",
+    "future_payload": {
+      "retained": true
+    }
+  }
+}

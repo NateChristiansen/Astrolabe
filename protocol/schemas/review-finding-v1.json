@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewFinding",
+  "type": "object",
+  "properties": {
+    "actual": {
+      "type": "string"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Confidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "evidence": {
+      "$ref": "#/$defs/Evidence"
+    },
+    "expected": {
+      "type": "string"
+    },
+    "file": {
+      "type": "string"
+    },
+    "impact": {
+      "type": "string"
+    },
+    "line": {
+      "description": "One-based source line.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "payload_version": {
+      "$ref": "#/$defs/PayloadVersion"
+    },
+    "revision": {
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "trigger": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true,
+  "required": [
+    "payload_version",
+    "revision",
+    "file",
+    "line",
+    "trigger",
+    "expected",
+    "actual",
+    "impact",
+    "evidence",
+    "severity"
+  ],
+  "$defs": {
+    "Confidence": {
+      "description": "Uncalibrated self-report; never use as a probability or approval threshold.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "value",
+        "method",
+        "model"
+      ]
+    },
+    "Evidence": {
+      "type": "string",
+      "enum": [
+        "executed",
+        "inferred"
+      ]
+    },
+    "PayloadVersion": {
+      "description": "Payload versions evolve independently of the envelope version.",
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  }
+}
