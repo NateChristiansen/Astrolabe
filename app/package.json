@@ -1,0 +1,27 @@
+{
+  "name": "astrolabe-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@11.0.9",
+  "engines": { "node": "26.x", "pnpm": "11.x" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "generate:protocol": "node scripts/generate-protocol.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}

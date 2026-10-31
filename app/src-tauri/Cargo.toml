@@ -1,0 +1,12 @@
+[package]
+name = "astrolabe-desktop"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
