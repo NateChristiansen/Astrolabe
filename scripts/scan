@@ -1,0 +1,127 @@
+#!/usr/bin/env node
+'use strict';
+// Deliberately dependency-free. Invoke as `node scripts/scan` on every platform.
+const { spawnSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { homedir } = require('node:os');
+const { join } = require('node:path');
+
+function git(args, cwd, input) {
+  const result = spawnSync('git', args, {
+    cwd, input, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw new Error('git read failed');
+  return result.stdout;
+}
+
+function loadMarkers(file, warn) {
+  try {
+    return readFileSync(file, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new Error('cannot read private markers');
+    warn('warning: private markers missing; scanning generic patterns only');
+    return [];
+  }
+}
+
+function entropy(value) {
+  const counts = new Map();
+  for (const char of value) counts.set(char, (counts.get(char) || 0) + 1);
+  return [...counts.values()].reduce((sum, count) => {
+    const p = count / value.length;
+    return sum - p * Math.log2(p);
+  }, 0);
+}
+
+function detect(content, markers) {
+  const hits = new Set();
+  if (/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/.test(content)) hits.add('private-key');
+  // Recognize common credential token prefixes.
+  if (/(?:\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}|\bxox[baprs]-[A-Za-z0-9-]{20,}|\bAKIA[A-Z0-9]{16}\b)/.test(content)) {
+    hits.add('token-prefix');
+  }
+  // General assignments, plus JSON/YAML-style sensitive keys. Avoid treating
+  // integrity hashes in lockfiles as credentials, without exempting whole files.
+  const assignments = /^\s*(?:(?:export|const|let|var)\s+)?["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*(=|:)\s*["']?([A-Za-z0-9_+\/=.-]{24,})/gm;
+  // Sensitive keys can occur inline, including authorization bearer headers.
+  const inlineAssignments = /["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*(=|:)\s*["']?(?:Bearer\s+)?([A-Za-z0-9_+\/=.-]{24,})/gi;
+  const sensitiveKey = /secret|token|password|credential|api.?key|access.?key|auth/i;
+  const inlineSensitive = [...content.matchAll(inlineAssignments)]
+    .filter((match) => sensitiveKey.test(match[1]));
+  for (const match of [...content.matchAll(assignments), ...inlineSensitive]) {
+    if (match[1] === 'checksum' && /^[a-f0-9]{64}$/.test(match[3])) continue;
+    const sensitive = sensitiveKey.test(match[1]);
+    const threshold = sensitive || /^[a-fA-F0-9]{32,}$/.test(match[3]) ? 3.5 : 4.3;
+    if ((match[2] === '=' || sensitive) && entropy(match[3]) >= threshold) {
+      hits.add('high-entropy-assignment');
+    }
+  }
+  const lowerContent = content.toLowerCase();
+  if (markers.some((marker) => lowerContent.includes(marker.toLowerCase()))) hits.add('private-marker');
+  return [...hits];
+}
+
+function stagedObjects(cwd) {
+  // Scan the actual index, not working-tree files, including renamed/new files.
+  return git(['diff', '--cached', '--raw', '--no-abbrev', '-z', '--diff-filter=ACMRT'], cwd)
+    .split('\0').filter((part) => part.startsWith(':')).map((part) => part.split(' ')[3]);
+}
+
+function historyObjects(revisions, cwd) {
+  if (!revisions.length) return [];
+  // No paths in output: diagnostics never echo potentially private names.
+  return git(['rev-list', '--objects', '--no-object-names', ...revisions], cwd).trim().split(/\s+/).filter(Boolean);
+}
+
+function pushObjects(input, cwd) {
+  const objects = [];
+  for (const line of input.trim().split(/\r?\n/).filter(Boolean)) {
+    const fields = line.split(/\s+/);
+    if (fields.length !== 4) throw new Error('invalid pre-push input');
+    const [, local, , remote] = fields;
+    if (!/^[a-f0-9]{40,64}$/.test(local) || !/^[a-f0-9]{40,64}$/.test(remote)) {
+      throw new Error('invalid pre-push object id');
+    }
+    if (/^0+$/.test(local)) continue; // Deleting a ref introduces no content.
+    // New refs scan their full reachable history; updates scan new history.
+    objects.push(...historyObjects(/^0+$/.test(remote) ? [local] : [local, `^${remote}`], cwd));
+  }
+  return objects;
+}
+
+function run(argv = process.argv.slice(2), options = {}) {
+  const cwd = options.cwd || process.cwd();
+  const warn = options.warn || ((message) => console.error(message));
+  const markerIndex = argv.indexOf('--markers');
+  let markerFile = join(homedir(), '.config', 'astrolabe', 'private-markers');
+  if (markerIndex !== -1) {
+    if (!argv[markerIndex + 1]) throw new Error('--markers requires a file');
+    markerFile = argv[markerIndex + 1];
+    argv = argv.filter((_, index) => index !== markerIndex && index !== markerIndex + 1);
+  }
+  const mode = argv[0] || '--staged';
+  if (argv.length > 1 || !['--staged', '--push', '--all'].includes(mode)) {
+    throw new Error('usage: node scripts/scan [--staged|--push|--all] [--markers FILE]');
+  }
+  const markers = loadMarkers(markerFile, warn);
+  const objects = mode === '--staged' ? stagedObjects(cwd) : mode === '--push'
+    ? pushObjects(options.input ?? readFileSync(0, 'utf8'), cwd)
+    : historyObjects(['--all'], cwd);
+  let rejected = false;
+  for (const oid of new Set(objects)) {
+    const type = git(['cat-file', '-t', oid], cwd).trim();
+    // Commit and tag messages may leak too; trees contain paths.
+    const content = git(['cat-file', type === 'tree' ? '-p' : type, oid], cwd);
+    for (const rule of detect(content, markers)) {
+      warn(`rejected ${oid.slice(0, 12)}: ${rule}`);
+      rejected = true;
+    }
+  }
+  return rejected ? 1 : 0;
+}
+
+module.exports = { detect, loadMarkers, run };
+if (require.main === module) {
+  try { process.exitCode = run(); }
+  catch (error) { console.error(`scan failed: ${error.message}`); process.exitCode = 2; }
+}
