@@ -11,8 +11,16 @@ use std::path::Path;
 
 /// Build a launch without starting a process or modifying user configuration.
 /// Overrides are already-composed session config; layer composition belongs to
-/// the caller. Update checks are always disabled, even if an override enables them.
-pub fn launch(adapters_dir: &Path, overrides: &Value) -> Result<Launch> {
+/// the caller. `client_path` selects the user-installed executable via CODEX_PATH;
+/// step 5's doctor supplies it. None leaves the adapter's inherited/bundled choice.
+/// We request `check_for_update_on_startup = false` in CODEX_CONFIG, but 2.5.0
+/// forwards this as session config, not app-server startup arguments. Whether it
+/// disables startup update checks is unverified.
+pub fn launch(
+    adapters_dir: &Path,
+    client_path: Option<&Path>,
+    overrides: &Value,
+) -> Result<Launch> {
     let overrides = overrides.as_object().ok_or_else(|| {
         Error::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -29,6 +37,9 @@ pub fn launch(adapters_dir: &Path, overrides: &Value) -> Result<Launch> {
     launch
         .env
         .push(("CODEX_CONFIG".into(), config.to_string().into()));
+    if let Some(path) = client_path {
+        launch.env.push(("CODEX_PATH".into(), path.into()));
+    }
     Ok(launch)
 }
 

@@ -110,7 +110,15 @@ fn main() {
 /// releasing the recorded response. No provider executable or network is used.
 fn replay(path: &str, process: u64) {
     let records = std::fs::read_to_string(path).unwrap();
-    let mut input = io::stdin().lines();
+    let (tx, input) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in io::stdin().lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut exit_code = None;
     for line in records.lines() {
         let record: Value = serde_json::from_str(line).unwrap();
         if record["process"] != process {
@@ -119,12 +127,12 @@ fn replay(path: &str, process: u64) {
         if let Some(stderr) = record["stderr"].as_str() {
             eprint!("{stderr}");
         } else if let Some(code) = record["exit_code"].as_i64() {
-            std::process::exit(code as i32);
+            exit_code = Some(code as i32);
         } else if record["direction"] == "from_agent" {
             send(&record["message"]);
         } else {
             let line = input
-                .next()
+                .recv()
                 .expect("client closed before trace ended")
                 .unwrap();
             let mut actual: Value = serde_json::from_str(&line).unwrap();
@@ -132,12 +140,24 @@ fn replay(path: &str, process: u64) {
             if let Some(cwd) = actual.pointer_mut("/params/cwd") {
                 assert_eq!(
                     std::fs::canonicalize(cwd.as_str().unwrap()).unwrap(),
-                    std::env::current_dir().unwrap()
+                    std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap()
                 );
                 *cwd = json!("/fixture/project");
             }
             assert_eq!(actual, record["message"], "outgoing replay mismatch");
         }
+    }
+    // The ACP client keeps stdin open until it sees an exit. Allow a bounded
+    // quiet window to catch queued/trailing writes without deadlocking on EOF.
+    match input.recv_timeout(std::time::Duration::from_millis(250)) {
+        Err(
+            std::sync::mpsc::RecvTimeoutError::Disconnected
+            | std::sync::mpsc::RecvTimeoutError::Timeout,
+        ) => {}
+        other => panic!("extra client write after trace end: {other:?}"),
+    }
+    if let Some(code) = exit_code {
+        std::process::exit(code);
     }
     // Some recordings lack a final proxy exit record. EOF here is a test-harness
     // exit, not evidence of the real adapter's exit code.

@@ -35,7 +35,7 @@ fn config(launch: &astrolabe::acp::Launch) -> Value {
 fn launches_node_directly_with_absolute_pinned_entry_and_cheap_defaults() {
     let dir = TempDir::new();
     let root = adapters(&dir, json!({"codex-acp": "dist/index.js"}));
-    let launch = codex::launch(&root, &json!({})).unwrap();
+    let launch = codex::launch(&root, None, &json!({})).unwrap();
     assert_eq!(launch.command, OsStr::new("node"));
     assert_eq!(
         launch.args,
@@ -54,12 +54,12 @@ fn launches_node_directly_with_absolute_pinned_entry_and_cheap_defaults() {
 }
 
 #[test]
-fn config_is_json_and_cannot_enable_update_checks() {
+fn config_is_json_and_requests_update_checks_disabled() {
     let dir = TempDir::new();
     let root = adapters(&dir, json!("dist/index.js"));
     let input = json!({"model": "test-model", "model_reasoning_effort": "medium",
         "check_for_update_on_startup": true, "test": {"text": "quotes \" and \\ and\nλ"}});
-    let launch = codex::launch(&root, &input).unwrap();
+    let launch = codex::launch(&root, None, &input).unwrap();
     let mut expected = input.clone();
     expected["check_for_update_on_startup"] = json!(false);
     assert_eq!(config(&launch), expected);
@@ -67,12 +67,12 @@ fn config_is_json_and_cannot_enable_update_checks() {
 }
 
 #[test]
-fn retains_existing_login_home_on_all_platforms() {
+fn launch_does_not_override_login_home() {
     let dir = TempDir::new();
     let root = adapters(&dir, json!("dist/index.js"));
-    let launch = codex::launch(&root, &json!({})).unwrap();
+    let launch = codex::launch(&root, None, &json!({})).unwrap();
     // No isolated home, auth copy, login invocation, or platform-specific shim.
-    // In particular Windows gets no extra home component in its socket paths.
+    // This checks launch construction, not Windows socket creation or length.
     assert!(
         launch
             .env
@@ -87,7 +87,7 @@ fn retains_existing_login_home_on_all_platforms() {
 fn missing_adapter_is_reported_without_launching_anything() {
     let dir = TempDir::new();
     assert!(matches!(
-        codex::launch(&dir.0, &json!({})),
+        codex::launch(&dir.0, None, &json!({})),
         Err(astrolabe::Error::AdapterNotFound(_))
     ));
 }
@@ -97,7 +97,7 @@ fn rejects_non_object_config_instead_of_silently_discarding_it() {
     let dir = TempDir::new();
     for config in [json!(null), json!([]), json!("bad"), json!(false)] {
         assert!(
-            matches!(codex::launch(&dir.0, &config), Err(astrolabe::Error::Io(error))
+            matches!(codex::launch(&dir.0, None, &config), Err(astrolabe::Error::Io(error))
             if error.kind() == std::io::ErrorKind::InvalidInput)
         );
     }
@@ -179,10 +179,14 @@ fn recorder_proxy_preserves_stderr_and_nonzero_adapter_exit() {
     assert_eq!(records.last().unwrap()["code"], 5);
 }
 
-fn replay_spec(scenario: &str, process: u64) -> astrolabe::acp::Launch {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+fn fixture_path(scenario: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../protocol/fixtures/acp/codex")
-        .join(format!("{scenario}.jsonl"));
+        .join(format!("{scenario}.jsonl"))
+}
+
+fn replay_spec(scenario: &str, process: u64) -> astrolabe::acp::Launch {
+    let path = fixture_path(scenario);
     astrolabe::acp::Launch {
         command: example("fake_agent").into(),
         args: vec!["--replay".into(), path.into(), process.to_string().into()],
@@ -326,13 +330,18 @@ fn recorded_scenario(scenario: &str) {
         } else {
             "AppServerUnavailableError: The Codex app-server exited with code 0. The agent is shutting down."
         };
-        assert_eq!(
-            exit,
-            ClientEvent::Exited {
-                code: Some(0),
-                stderr: expected_stderr.into()
-            }
-        );
+        let ClientEvent::Exited { code, stderr } = exit else {
+            panic!("expected replay exit, got {exit:?}");
+        };
+        assert_eq!(stderr, expected_stderr);
+        let trace = fs::read_to_string(fixture_path(scenario)).unwrap();
+        let recorded_exit = trace
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|row| row["process"] == process && row.get("exit_code").is_some());
+        if let Some(row) = recorded_exit {
+            assert_eq!(code, Some(row["exit_code"].as_i64().unwrap() as i32));
+        } // Otherwise code is harness behavior, not recorded evidence.
         assert_eq!(
             h.engine.inspect(session).unwrap().session.lifecycle,
             Lifecycle::Closed
@@ -365,4 +374,44 @@ fn recorded_resume_in_new_process_without_history_replay() {
 #[test]
 fn recorded_cancel_during_tool() {
     recorded_scenario("cancel-tool");
+}
+
+#[test]
+fn explicit_client_path_is_passed_without_shell_quoting() {
+    let dir = TempDir::new();
+    let root = adapters(&dir, json!("dist/index.js"));
+    let path = dir.0.join("client with spaces/codex.exe");
+    let launch = codex::launch(&root, Some(&path), &json!({})).unwrap();
+    assert_eq!(
+        launch
+            .env
+            .iter()
+            .find(|(k, _)| k == "CODEX_PATH")
+            .unwrap()
+            .1,
+        path.as_os_str()
+    );
+}
+
+#[test]
+fn replay_rejects_trailing_client_writes_with_or_without_recorded_exit() {
+    for exit_row in ["", "{\"process\":0,\"exit_code\":0}\n"] {
+        let dir = TempDir::new();
+        let trace = dir.0.join("trace.jsonl");
+        fs::write(&trace, exit_row).unwrap();
+        let mut child = Command::new(example("fake_agent"))
+            .args([OsStr::new("--replay"), trace.as_os_str(), OsStr::new("0")])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"{}\n").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("extra client write")
+        );
+    }
 }

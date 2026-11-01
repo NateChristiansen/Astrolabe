@@ -5,6 +5,7 @@
 //! Usage: cargo run --offline --locked -p astrolabe --example record_codex --
 //!        <full-turn|approval-allow|approval-reject|two-turns|resume|cancel-tool|idle-launch>
 //!        <cwd> <output.jsonl> < /dev/null
+//! Set CODEX_PATH to the exact user-installed client executable to record.
 use astrolabe::acp::{AcpClient, ClientEvent};
 use astrolabe::driver::codex;
 use astrolabe::model::Alert;
@@ -67,7 +68,7 @@ fn main() -> Result<()> {
         &mut log,
         json!({"kind": "before", "config": before, "scenario": scenario,
         "unix_ms": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis(),
-        "node": version("node")?, "codex": version("codex")?,
+        "node": version("node")?, "codex": effective_codex_version()?,
         "adapter": "@agentclientprotocol/codex-acp 2.5.0"}),
     )?;
     let result = record(scenario, &cwd, &output, &mut log);
@@ -85,15 +86,31 @@ fn main() -> Result<()> {
     result
 }
 
-fn version(command: &str) -> Result<String> {
-    let output = Command::new(command)
+fn version(command: impl AsRef<std::ffi::OsStr>) -> Result<String> {
+    let output = Command::new(command.as_ref())
         .arg("--version")
         .stdin(Stdio::null())
         .output()?;
     if !output.status.success() {
-        return Err(format!("{command} --version failed").into());
+        return Err(format!("{:?} --version failed", command.as_ref()).into());
     }
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+// Resolve relative to the adapter so provenance matches its bundled dependency.
+fn effective_codex_version() -> Result<Value> {
+    if let Some(path) = std::env::var_os("CODEX_PATH") {
+        return Ok(json!({"source": "CODEX_PATH", "path": path, "version": version(&path)?}));
+    }
+    let package = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../adapters/node_modules/@agentclientprotocol/codex-acp/package.json");
+    let output = Command::new("node").args(["--input-type=commonjs", "-e",
+        "const r=require('node:module').createRequire(process.argv[1]); process.stdout.write(r('@openai/codex/package.json').version)"])
+        .arg(fs::canonicalize(package)?).stdin(Stdio::null()).output()?;
+    if !output.status.success() {
+        return Err("cannot resolve bundled Codex version".into());
+    }
+    Ok(json!({"source": "bundled", "version": String::from_utf8(output.stdout)?}))
 }
 
 fn sha256(bytes: &[u8]) -> Result<String> {
@@ -168,7 +185,11 @@ fn record(scenario: &str, cwd: &Path, output: &Path, log: &mut File) -> Result<(
         return Err("approval fixture already exists; use a fresh clone".into());
     }
     let adapters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters");
-    let mut launch = codex::launch(&adapters, &json!({}))?;
+    let mut launch = codex::launch(
+        &adapters,
+        std::env::var_os("CODEX_PATH").as_deref().map(Path::new),
+        &json!({}),
+    )?;
     // The pinned adapter supports this env preset. Force host-reviewed approvals
     // for the approval probes, rather than the adapter's auto-review default.
     launch
