@@ -4,7 +4,7 @@
 //! custom home remains the caller's responsibility; future isolated homes must
 //! use a short root such as `%LOCALAPPDATA%\astrolabe\c\<id>`.
 use crate::acp::{CODEX_ADAPTER, Launch, adapter_entry};
-use crate::layer::{Delivery, HookEvent};
+use crate::layer::{Delivery, Hook, HookEvent, RepoInstructions};
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
 use std::io;
@@ -17,6 +17,16 @@ pub struct SessionFlagKey {
     pub key: String,
     pub current_hash: String,
     pub command: String,
+}
+
+fn valid_hash(hash: &str) -> bool {
+    hash.strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn valid_key(key: &str, suffix: &str) -> bool {
+    key == format!("/<session-flags>/config.toml{suffix}")
+        || key == format!(r"C:\<session-flags>\config.toml{suffix}")
 }
 
 impl SessionFlagKey {
@@ -35,13 +45,16 @@ impl SessionFlagKey {
                 if !key.contains("<session-flags>") {
                     continue;
                 }
+                if !key.starts_with("/<session-flags>/config.toml:")
+                    && !key.starts_with(r"C:\<session-flags>\config.toml:")
+                {
+                    return Err(invalid_config("malformed session-flags key prefix"));
+                }
                 let command = hook["command"]
                     .as_str()
                     .ok_or_else(|| invalid_config("session hook has no command"))?;
                 let hash = hook["currentHash"].as_str().unwrap_or("");
-                if !hash.strip_prefix("sha256:").is_some_and(|hex| {
-                    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-                }) {
+                if !valid_hash(hash) {
                     return Err(invalid_config("session hook has no SHA-256 currentHash"));
                 }
                 keys.push(Self {
@@ -78,39 +91,47 @@ impl CodexDelivery {
 pub fn deliver(delivery: &Delivery, session_flag_key: &[SessionFlagKey]) -> Result<CodexDelivery> {
     let mut config = Map::new();
     if let Some(instructions) = &delivery.instructions {
+        if instructions.repo == RepoInstructions::Unknown {
+            return Err(invalid_config(
+                "state effective repo instructions as text or none",
+            ));
+        }
         config.insert(
             "developer_instructions".into(),
             json!(instructions.merged()),
         );
     }
+    // Creation-only: these flags disable memory for a new thread, not an existing
+    // thread resumed here. The real new-thread probe read memory_mode = disabled.
+    // Its flat dotted keys are deliberate; hooks below uses a table value.
     if delivery.memory_off {
         config.insert("features.memories".into(), json!(false));
         config.insert("memories.generate_memories".into(), json!(false));
         config.insert("memories.use_memories".into(), json!(false));
     }
     if !delivery.hooks.is_empty() {
-        let mut hooks = Map::new();
+        let mut hooks = hook_declarations(&delivery.hooks);
         let mut state = Map::new();
         for (index, hook) in delivery.hooks.iter().enumerate() {
-            let (event, label) = match hook.event {
-                HookEvent::SessionStart => ("SessionStart", "session_start"),
+            let label = match hook.event {
+                HookEvent::SessionStart => "session_start",
             };
             let suffix = format!(":{label}:{index}:0");
             let matches: Vec<_> = session_flag_key
                 .iter()
-                .filter(|key| key.key.ends_with(&suffix) && key.command == hook.command)
+                .filter(|key| {
+                    valid_key(&key.key, &suffix)
+                        && valid_hash(&key.current_hash)
+                        && key.command == hook.command
+                })
                 .collect();
             let [key] = matches.as_slice() else {
                 return Err(invalid_config(
                     "hooks/list must contain exactly one matching session hook key and hash",
                 ));
             };
-            hooks
-                .entry(event)
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .unwrap()
-                .push(json!({ "hooks": [{ "type": "command", "command": hook.command }] }));
+            // A syntactically valid but stale hash cannot be verified here. Step 4's
+            // SessionStart receipt must catch a hook that did not actually run.
             state.insert(key.key.clone(), json!({ "trusted_hash": key.current_hash }));
         }
         hooks.insert("state".into(), state.into());
@@ -147,6 +168,23 @@ pub fn deliver(delivery: &Delivery, session_flag_key: &[SessionFlagKey]) -> Resu
         config: config.into(),
         mcp_servers,
     })
+}
+
+/// Shared by app-server discovery and delivery: identical session hook declarations.
+pub fn hook_declarations(hooks: &[Hook]) -> Map<String, Value> {
+    let mut config = Map::new();
+    for hook in hooks {
+        let event = match hook.event {
+            HookEvent::SessionStart => "SessionStart",
+        };
+        config
+            .entry(event)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"hooks": [{"type": "command", "command": hook.command}]}));
+    }
+    config
 }
 
 fn invalid_config(message: &str) -> Error {

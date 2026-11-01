@@ -87,12 +87,22 @@ pub enum TargetKind {
     Product,
 }
 
+/// Effective repo developer text: unread is different from explicitly absent.
+/// Codex refuses Unknown before replacing developer_instructions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RepoInstructions {
+    #[default]
+    Unknown,
+    None,
+    Text(String),
+}
+
 /// What a repo's own config holds, as read by the caller. Whether a client honours it
 /// is another matter: Codex drops an untrusted repo's config, which step 4's receipt
 /// catches and step 5's trust lines prevent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoSupplies {
-    pub instructions: Option<String>,
+    pub instructions: RepoInstructions,
     pub hooks: Vec<Hook>,
     /// `tools` is not compared. A client loads a second copy of a different name.
     pub mcp: Vec<McpServer>,
@@ -108,17 +118,19 @@ pub struct Target {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instructions {
-    pub repo: Option<String>,
+    pub repo: RepoInstructions,
     pub layer: String,
 }
 
 impl Instructions {
     /// The repo's text first, then the layer's, which is left out if already there.
     pub fn merged(&self) -> String {
-        match self.repo.as_deref().filter(|repo| !repo.trim().is_empty()) {
-            Some(repo) if repo.contains(self.layer.trim()) => repo.to_owned(),
-            Some(repo) => format!("{}\n\n{}", repo.trim_end(), self.layer),
-            None => self.layer.clone(),
+        match &self.repo {
+            RepoInstructions::Text(repo) if repo.contains(self.layer.trim()) => repo.to_owned(),
+            RepoInstructions::Text(repo) if !repo.trim().is_empty() => {
+                format!("{}\n\n{}", repo.trim_end(), self.layer)
+            }
+            _ => self.layer.clone(),
         }
     }
 }
@@ -133,8 +145,10 @@ pub struct Delivery {
     pub memory_off: bool,
 }
 
-/// An identical hook, or this server under another name, is dropped on any target: either
-/// would otherwise run twice. A same-named server, a deny and memory-off stay on a product
+/// An identical repo hook is dropped only on Agent targets. Product keeps the layer
+/// hook because repo config may not load. A trusted Product with the same hook fires
+/// twice on Codex (untested); Claude dedupes it. A server under another name is dropped
+/// on any target. A same-named server, a deny and memory-off stay on a product
 /// repo: the launch's server wins by name, a repeated deny costs nothing, and a product
 /// repo's config can't be counted on. On an agent repo they are the repo's to supply.
 /// Fails on a malformed deny, on any target, since a client would drop it and carry on.
@@ -146,7 +160,7 @@ pub fn compose(target: &Target, layer: &Layer) -> Result<Delivery> {
     let supplies = &target.supplies;
     let mut hooks = Vec::new();
     for hook in &layer.hooks {
-        if !supplies.hooks.contains(hook) && !hooks.contains(hook) {
+        if !(agent && supplies.hooks.contains(hook)) && !hooks.contains(hook) {
             hooks.push(hook.clone());
         }
     }
@@ -159,10 +173,12 @@ pub fn compose(target: &Target, layer: &Layer) -> Result<Delivery> {
         })
     };
     Ok(Delivery {
-        instructions: wanted(supplies.instructions.is_some()).then(|| Instructions {
-            repo: supplies.instructions.clone(),
-            layer: layer.instructions.clone(),
-        }),
+        instructions: wanted(matches!(supplies.instructions, RepoInstructions::Text(_))).then(
+            || Instructions {
+                repo: supplies.instructions.clone(),
+                layer: layer.instructions.clone(),
+            },
+        ),
         hooks,
         mcp: (layer.mcp.iter())
             .filter(|server| !supplied_server(server))

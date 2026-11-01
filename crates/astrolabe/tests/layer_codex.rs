@@ -1,4 +1,5 @@
 //! Synthetic hooks/list fixtures: platform key shapes from the probes, dummy hashes.
+//! Windows runtime delivery remains unproven until a real Windows run.
 mod common;
 
 use astrolabe::acp::{AcpClient, ClientEvent};
@@ -22,7 +23,7 @@ fn product() -> Delivery {
         &Target {
             kind: TargetKind::Product,
             supplies: RepoSupplies {
-                instructions: Some("Repo word REPO-BEE.".into()),
+                instructions: RepoInstructions::Text("Repo word REPO-BEE.".into()),
                 ..Default::default()
             },
         },
@@ -35,6 +36,14 @@ fn product() -> Delivery {
 fn both_platform_keys_are_preserved_with_inline_trust_and_merged_instructions() {
     for windows in [false, true] {
         let keys = keys(windows);
+        assert_eq!(
+            keys[0].key,
+            if windows {
+                r"C:\<session-flags>\config.toml:session_start:0:0"
+            } else {
+                "/<session-flags>/config.toml:session_start:0:0"
+            }
+        );
         let delivered = codex::deliver(&product(), &keys).unwrap();
         let config = delivered.config;
         assert_eq!(
@@ -74,7 +83,7 @@ fn empty_and_fully_supplied_agent_deliver_nothing() {
     let target = Target {
         kind: TargetKind::Agent,
         supplies: RepoSupplies {
-            instructions: Some("Layer".into()),
+            instructions: RepoInstructions::Text("Layer".into()),
             hooks: layer.hooks.clone(),
             mcp: layer.mcp.clone(),
             memory_off: true,
@@ -89,7 +98,7 @@ fn empty_and_fully_supplied_agent_deliver_nothing() {
 }
 
 #[test]
-fn identical_repo_hook_is_not_delivered_or_trusted_twice() {
+fn product_keeps_one_layer_hook_even_when_repo_declares_it() {
     let mut layer = Layer::standard("Layer", &[]);
     layer.hooks.extend(layer.hooks.clone());
     let target = Target {
@@ -99,9 +108,20 @@ fn identical_repo_hook_is_not_delivered_or_trusted_twice() {
             ..Default::default()
         },
     };
-    let output = codex::deliver(&compose(&target, &layer).unwrap(), &[]).unwrap();
-    assert!(output.config.get("hooks").is_none());
-    assert!(output.config.get("features.hooks").is_none());
+    let mut delivery = compose(&target, &layer).unwrap();
+    delivery.instructions.as_mut().unwrap().repo = RepoInstructions::None;
+    let output = codex::deliver(&delivery, &keys(false)).unwrap();
+    assert_eq!(
+        output.config["hooks"]["SessionStart"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        output.config["hooks"]["state"].as_object().unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -116,6 +136,60 @@ fn missing_ambiguous_or_wrong_declaration_cannot_silently_skip_trust() {
     assert!(SessionFlagKey::from_hooks_list(&json!({"error": {"message":"failed"}})).is_err());
     let invalid = json!({"result":{"data":[{"hooks":[{"key":"/<session-flags>/config.toml:session_start:0:0", "command":"astrolabe hook session-start", "currentHash":""}]}]}});
     assert!(SessionFlagKey::from_hooks_list(&invalid).is_err());
+}
+
+#[test]
+fn malformed_prefix_index_or_hash_is_rejected_even_for_direct_keys() {
+    for key in [
+        "/foreign/config.toml:session_start:0:0",
+        "/foreign/<session-flags>/config.toml:session_start:0:0",
+        "/<session-flags>/config.toml:session_start:1:0",
+    ] {
+        let mut discovered = keys(false);
+        discovered[0].key = key.into();
+        assert!(codex::deliver(&product(), &discovered).is_err(), "{key}");
+    }
+    let malformed = json!({"result":{"data":[{"hooks":[{
+        "key":"/foreign/<session-flags>/config.toml:session_start:0:0",
+        "command":"astrolabe hook session-start", "currentHash":keys(false)[0].current_hash
+    }]}]}});
+    assert!(SessionFlagKey::from_hooks_list(&malformed).is_err());
+    for hash in [
+        "",
+        "sha256:bad",
+        "sha256:zzzz",
+        "md5:11111111111111111111111111111111",
+    ] {
+        let mut discovered = keys(false);
+        discovered[0].current_hash = hash.into();
+        assert!(codex::deliver(&product(), &discovered).is_err(), "{hash}");
+    }
+}
+
+#[test]
+fn stale_but_well_formed_hash_is_forwarded_until_step4_receipt() {
+    let mut discovered = keys(false);
+    discovered[0].current_hash = format!("sha256:{}", "2".repeat(64));
+    let output = codex::deliver(&product(), &discovered).unwrap();
+    // No client runs here. Only step 4's receipt can establish whether the hook fired.
+    assert_eq!(
+        output.config["hooks"]["state"][&discovered[0].key]["trusted_hash"],
+        discovered[0].current_hash
+    );
+}
+
+#[test]
+fn unknown_repo_text_fails_but_explicit_none_and_text_succeed() {
+    let mut delivery = product();
+    delivery.instructions.as_mut().unwrap().repo = RepoInstructions::Unknown;
+    assert!(codex::deliver(&delivery, &keys(false)).is_err());
+    delivery.instructions.as_mut().unwrap().repo = RepoInstructions::None;
+    let output = codex::deliver(&delivery, &keys(false)).unwrap();
+    assert_eq!(
+        output.config["developer_instructions"],
+        "Layer word LAYER-OWL."
+    );
+    assert!(codex::deliver(&product(), &keys(false)).is_ok());
 }
 
 #[test]

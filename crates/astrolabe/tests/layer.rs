@@ -29,7 +29,7 @@ fn agent() -> Target {
     Target {
         kind: TargetKind::Agent,
         supplies: RepoSupplies {
-            instructions: Some("Repo text.".to_owned()),
+            instructions: RepoInstructions::Text("Repo text.".to_owned()),
             hooks: layer.hooks,
             mcp: layer.mcp,
             denies: layer.denies,
@@ -72,12 +72,15 @@ fn product_repo_gets_the_whole_layer() {
 
 #[test]
 fn no_duplicate_hooks() {
-    // The repo has the same hook: a Codex launch would otherwise run it twice.
+    // Product keeps its layer hook even if the repo declares the same hook.
     let supplies = RepoSupplies {
         hooks: layer().hooks,
         ..RepoSupplies::default()
     };
-    assert_eq!(compose(&product(supplies), &layer()).unwrap().hooks, vec![]);
+    assert_eq!(
+        compose(&product(supplies), &layer()).unwrap().hooks,
+        layer().hooks
+    );
 
     // The layer repeats itself.
     let mut twice = layer();
@@ -201,7 +204,9 @@ fn hook_and_server_commands_are_stable_strings() {
 fn merged_instructions_keep_the_repos_and_never_repeat() {
     let merged = |repo: Option<&str>| {
         let supplies = RepoSupplies {
-            instructions: repo.map(str::to_owned),
+            instructions: repo
+                .map(|text| RepoInstructions::Text(text.to_owned()))
+                .unwrap_or(RepoInstructions::None),
             ..RepoSupplies::default()
         };
         let delivery = compose(&product(supplies), &layer()).unwrap();
@@ -217,7 +222,7 @@ fn merged_instructions_keep_the_repos_and_never_repeat() {
 #[test]
 fn claude_gets_only_the_layers_text_in_its_added_directory() {
     let supplies = RepoSupplies {
-        instructions: Some("Repo text.".to_owned()),
+        instructions: RepoInstructions::Text("Repo text.".to_owned()),
         ..RepoSupplies::default()
     };
     let dir = TempDir::new();
