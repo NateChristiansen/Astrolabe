@@ -281,14 +281,20 @@ fn same_folder(printed: &str, cwd: &Path) -> bool {
 pub fn judge(direct: Option<&str>, shell: Option<&str>, cwd: &Path) -> Option<String> {
     let good = |found: Option<&str>| found.is_some_and(|found| same_folder(found, cwd));
     let shown = cwd.display();
-    let text = format!("wanted {shown}, direct wrote: {direct:?}, sh wrote: {shell:?}");
+    let text = format!("wanted {shown}, direct wrote: {direct:?}, shell wrote: {shell:?}");
     (!good(direct) || !good(shell)).then_some(text)
 }
 
-pub fn commands(token: &str) -> [String; 2] {
+/// Codex on Windows writes through PowerShell: its sandbox can't run plain `sh`.
+pub fn commands(token: &str, powershell: bool) -> [String; 2] {
+    let shell = if powershell {
+        format!("Set-Content -NoNewline -Path {token}-sh -Value (Get-Location).Path")
+    } else {
+        format!("sh -c 'pwd > {token}-sh'")
+    };
     [
         format!("node -e \"require('fs').writeFileSync('{token}-direct',process.cwd())\""),
-        format!("sh -c 'pwd > {token}-sh'"),
+        shell,
     ]
 }
 
@@ -298,8 +304,7 @@ pub fn allowed(input: Option<&Value>, commands: &[String]) -> bool {
     command.is_some_and(|command| commands.iter().any(|wanted| wanted == command))
 }
 
-fn run_session(engine: &Engine, ready: &Prepared, token: &str, say: Say) -> Result<()> {
-    let wanted = commands(token);
+fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say) -> Result<()> {
     let [first, second] = &wanted;
     let text = format!(
         "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens.\n1. {first}\n2. {second}"
@@ -347,7 +352,14 @@ fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Fa
     let env = &mut ready.launch.env;
     env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
     let engine = Engine::open(&machine.db(), SystemClock, OsProcessProbe)?;
-    let ran = run_session(&engine, &ready, &token, say);
+    let powershell = cfg!(windows) && matches!(provider, Provider::Codex);
+    if powershell {
+        say(
+            "  known limit: plain `sh` fails silently here unless escalated; git hooks may too"
+                .to_owned(),
+        );
+    }
+    let ran = run_session(&engine, &ready, commands(&token, powershell), say);
     let direct = ready.cwd.join(format!("{token}-direct"));
     let shell = ready.cwd.join(format!("{token}-sh"));
     let found = std::fs::read_to_string(&direct).ok();

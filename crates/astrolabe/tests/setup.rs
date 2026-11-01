@@ -656,7 +656,10 @@ fn the_cli_inspects_without_writing() {
 #[test]
 fn approval_is_an_exact_match_on_the_raw_input() {
     let token = "astrolabe-verify-1";
-    let wanted = doctor::commands(token);
+    let powershell = doctor::commands(token, true);
+    assert!(powershell[1].starts_with("Set-Content ") && !powershell[1].contains("sh -c"));
+    assert!(powershell[1].contains("astrolabe-verify-1-sh"));
+    let wanted = doctor::commands(token, false);
     assert!(doctor::allowed(
         Some(&json!({"command": wanted[0]})),
         &wanted
