@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|hook <event>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|hook <event>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -60,6 +60,7 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
         ("init", [path]) => init::create(registry, Path::new(path))?,
         ("doctor", ["inspect"]) => doctor::inspect(&machine)?,
         ("doctor", ["apply"]) => doctor::apply(&machine, &mut ask)?,
+        ("doctor", ["install"]) => doctor::install(&mut ask)?,
         ("doctor", ["remove"]) => doctor::remove(&machine, &mut ask)?,
         ("doctor", ["verify", repo @ ..]) if repo.len() < 2 => {
             let say = &mut |line: String| println!("{line}");

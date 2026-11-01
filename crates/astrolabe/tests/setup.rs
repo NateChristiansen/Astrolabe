@@ -1112,3 +1112,126 @@ fn the_delivery_log_names_this_folders_latest_transcript() {
     assert_eq!(found, PathBuf::from("/new"));
     assert!(astrolabe::voice::last_delivery(&data, &cwd, 40).is_none());
 }
+
+const LOOP: &str = "/d/app-server-daemon/codex app-server --managed-daemon";
+
+#[test]
+fn inspect_reads_the_daemons_own_path() {
+    let sandbox = Sandbox::new();
+    let (bin, empty) = (sandbox.0.join("has bin"), sandbox.0.join("empty"));
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&empty).unwrap();
+    let exe = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
+    let this = bin.join(&exe);
+    std::fs::write(&this, "copy").unwrap();
+    let dir = |path: &Path| path.display().to_string();
+    let joined = std::env::join_paths([&empty, &bin]).unwrap();
+    let joined = joined.to_string_lossy();
+    let check = |ps: String| doctor::daemon_check(&ps, &this).join("\n");
+
+    let with = check(format!("{LOOP} HOME=/h PATH={joined} X=1"));
+    assert!(
+        with.contains(&dir(&this)) && with.contains("same as this binary: true"),
+        "{with}"
+    );
+    let other = doctor::daemon_check(&format!("{LOOP} PATH={joined}"), &sandbox.home()).join("");
+    assert!(other.contains("same as this binary: false"), "{other}");
+
+    let without = check(format!("{LOOP} HOME=/h PATH={} X=1", dir(&empty)));
+    assert!(without.contains("PROBLEM no astrolabe"), "{without}");
+    assert!(
+        without.contains("no owner files, voice or guard"),
+        "{without}"
+    );
+
+    let unread = check(LOOP.to_owned());
+    assert!(
+        unread.contains("WARNING unknown") && !unread.contains("PROBLEM"),
+        "{unread}"
+    );
+
+    // A child's environment names the daemon's folder. That is not a daemon.
+    let child = format!("/bin/zsh FOO=1 PATH=/d/app-server-daemon/x:{}", dir(&empty));
+    assert!(check(child).contains("none running"));
+    assert!(check(String::new()).contains("none running"));
+}
+
+/// Unix only: a `ps` that prints this, so nothing depends on this machine's daemons.
+#[cfg(unix)]
+fn with_daemon(box_: &Sandbox, command: &mut Command, ps: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = box_.0.join("fake-ps");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("ps");
+    std::fs::write(&file, format!("#!/bin/sh\necho '{ps}'\n")).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    let paths = std::iter::once(dir).chain(std::env::split_paths(&path));
+    command.env("PATH", std::env::join_paths(paths).unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_refuses_while_the_daemon_cant_find_astrolabe() {
+    let box_ = Sandbox::new();
+    let mut init = box_.cli(&["init", "agent"]);
+    with_daemon(&box_, &mut init, "");
+    assert!(init.output().unwrap().status.success());
+    let config = box_.home().join(".codex/config.toml");
+    std::fs::write(&config, "").unwrap();
+    let mut apply = box_.cli(&["doctor", "apply"]);
+    with_daemon(&box_, &mut apply, &format!("{LOOP} PATH=/no/such/dir"));
+    let output = apply.output().unwrap();
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && text.contains("doctor install"),
+        "{text}"
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn install_shows_asks_and_only_a_yes_writes() {
+    let box_ = Sandbox::new();
+    let target = box_.home().join(".local/bin/astrolabe");
+    let run = |answer: &str| {
+        let mut install = box_.cli(&["doctor", "install"]);
+        with_daemon(&box_, &mut install, "");
+        install.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = install.spawn().unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        std::io::Write::write_all(&mut stdin, answer.as_bytes()).unwrap();
+        drop(stdin);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let no = run("no\n");
+    assert!(
+        no.contains("Copy ") && no.contains("There now: no file"),
+        "{no}"
+    );
+    assert!(!target.exists());
+
+    let yes = run("yes\n");
+    assert!(
+        yes.contains("written") && yes.contains("none running"),
+        "{yes}"
+    );
+    let version = Command::new(&target).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("astrolabe"));
+    assert!(run("").contains("already this binary"));
+
+    std::fs::write(&target, "someone else's").unwrap();
+    let before = trust::file_hash(&target);
+    let said = run("no\n");
+    assert!(
+        said.contains(&before) && said.contains("Replaced if different"),
+        "{said}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "someone else's");
+    assert!(run("yes\n").contains("written"));
+    assert_ne!(trust::file_hash(&target), before);
+    assert!(!box_.home().join(".zshrc").exists());
+}

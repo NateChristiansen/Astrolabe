@@ -157,6 +157,76 @@ fn client_line(provider: Provider, machine: &Machine) -> String {
     format!("{slug}: {path}, {version}, pin {pin}{pinned}{shim}{adapter}")
 }
 
+const NOT_FOUND: &str = "PROBLEM no astrolabe on its PATH";
+const UNKNOWN: &str = "WARNING unknown whether its PATH has astrolabe";
+
+fn before_var(text: &str) -> String {
+    let words = text.split(' ').take_while(|word| !word.contains('='));
+    words.collect::<Vec<_>>().join(" ")
+}
+
+/// Hooks name `astrolabe` bare, so a daemon-hosted TUI needs it on the daemon's own PATH.
+pub fn daemon_check(ps: &str, this_binary: &Path) -> Vec<String> {
+    let exe = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
+    let mut lines = Vec::new();
+    for line in ps.lines().map(str::trim) {
+        let (start, path) = line.split_once(" PATH=").unwrap_or((line, ""));
+        if daemon_lines(&before_var(start)).is_empty() {
+            continue;
+        }
+        let path = before_var(path);
+        let mut files = std::env::split_paths(&path).map(|d| d.join(&exe));
+        lines.push(match files.find(|f| f.is_file()) {
+            None if path.is_empty() => format!("codex daemon: {UNKNOWN}"),
+            None => format!(
+                "codex daemon: {NOT_FOUND}: plain Codex would run with no owner files, voice or guard. Fix: astrolabe doctor install. PATH: {path}"
+            ),
+            Some(file) => {
+                let same = trust::file_hash(&file) == trust::file_hash(this_binary);
+                let version = stdout(Command::new(&file).arg("--version"));
+                let (file, version) = (file.display(), version.trim());
+                format!("codex daemon finds {file}, {version}, same as this binary: {same}")
+            }
+        });
+    }
+    lines.dedup();
+    if lines.is_empty() {
+        lines.push("codex daemon: none running. One started later inherits its starter's environment, not shown here".to_owned());
+    }
+    lines
+}
+
+fn daemon_state() -> Result<Vec<String>> {
+    let ps = match cfg!(windows) {
+        true => processes(),
+        false => stdout(Command::new("ps").args(["eww", "-ax", "-o", "command="])),
+    };
+    Ok(daemon_check(&ps, &std::env::current_exe()?))
+}
+
+/// To `.local/bin` under the home: on the Mac daemon's PATH; on Windows a choice, unverified.
+pub fn install(ask: Ask) -> Result<Vec<String>> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
+    let dir = PathBuf::from(home.ok_or(Error::Setup("no home set".to_owned()))?).join(".local/bin");
+    let target = dir.join(format!("astrolabe{}", std::env::consts::EXE_SUFFIX));
+    let source = std::env::current_exe()?;
+    let (new, old) = (trust::file_hash(&source), trust::file_hash(&target));
+    let (from, to) = (source.display(), target.display());
+    let text = format!("Copy {from}\nto {to}\nThere now: {old}. Replaced if different.");
+    if new == old {
+        return Ok(vec![format!("{to}: already this binary")]);
+    }
+    if !ask(&text) || trust::file_hash(&target) != old {
+        return Ok(vec![format!("{to}: nothing written")]);
+    }
+    std::fs::create_dir_all(&dir)?;
+    let aside = dir.join(format!(".astrolabe-install-{}", std::process::id()));
+    std::fs::copy(&source, &aside).and_then(|_| std::fs::rename(&aside, &target))?;
+    let mut said = vec![format!("{to}: written. To undo, delete it")];
+    said.extend(daemon_state()?);
+    Ok(said)
+}
+
 /// Writes nothing to a home. It can't say a hash is current: verify and launches check that.
 pub fn inspect(machine: &Machine) -> Result<Vec<String>> {
     let mut lines: Vec<String> = Vec::new();
@@ -167,9 +237,10 @@ pub fn inspect(machine: &Machine) -> Result<Vec<String>> {
     let exe = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
     let path = std::env::var_os("PATH").unwrap_or_default();
     let found = std::env::split_paths(&path).any(|dir| dir.join(&exe).is_file());
-    let line = "astrolabe on PATH, which plain clients' hooks need";
+    let line = "astrolabe on this shell's PATH";
     lines.push(format!("{line}: {found}"));
     lines.extend(daemon_lines(&processes()));
+    lines.extend(daemon_state()?);
     let (config, claude) = (&machine.homes.codex_config, &machine.homes.claude_json);
     let hash = trust::file_hash(config);
     lines.push(format!("{}: {hash}", config.display()));
@@ -244,6 +315,11 @@ pub fn plan_codex(client: &Path, repo: &Path) -> Result<CodexPlan> {
 
 /// `ask` is the only way in, and shows the write. Claude's trust is the owner's dialog.
 pub fn apply(machine: &Machine, ask: Ask) -> Result<Vec<String>> {
+    let said = daemon_state()?.join("; ");
+    if said.contains(NOT_FOUND) {
+        return Err(Error::Setup(format!("nothing written. {said}")));
+    }
+    println!("{said}");
     let repo = machine.registry.checkout(AGENT)?;
     let client = find_client(Provider::Codex).ok_or(Error::Setup("no codex".to_owned()))?;
     let plan = plan_codex(&client, &repo)?;
@@ -440,5 +516,6 @@ pub fn verify(machine: &Machine, repo: Option<&str>, say: Say) -> Result<bool> {
             Some(problem) => format!("{slug}: FAIL {problem}"),
         });
     }
+    say("verify covers the launcher route only, not a plain TUI: see doctor inspect".to_owned());
     Ok(passed)
 }
