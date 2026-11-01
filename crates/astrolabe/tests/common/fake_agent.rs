@@ -14,6 +14,10 @@ struct Agent {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--replay") {
+        replay(&args[1], args[2].parse().unwrap());
+        return;
+    }
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     if flag("--sleep") {
         std::thread::sleep(std::time::Duration::from_secs(10));
@@ -100,6 +104,43 @@ fn main() {
             _ => {}
         }
     }
+}
+
+/// A trimmed real-adapter trace, with each outgoing client message checked before
+/// releasing the recorded response. No provider executable or network is used.
+fn replay(path: &str, process: u64) {
+    let records = std::fs::read_to_string(path).unwrap();
+    let mut input = io::stdin().lines();
+    for line in records.lines() {
+        let record: Value = serde_json::from_str(line).unwrap();
+        if record["process"] != process {
+            continue;
+        }
+        if let Some(stderr) = record["stderr"].as_str() {
+            eprint!("{stderr}");
+        } else if let Some(code) = record["exit_code"].as_i64() {
+            std::process::exit(code as i32);
+        } else if record["direction"] == "from_agent" {
+            send(&record["message"]);
+        } else {
+            let line = input
+                .next()
+                .expect("client closed before trace ended")
+                .unwrap();
+            let mut actual: Value = serde_json::from_str(&line).unwrap();
+            // The fixture uses a public placeholder for the disposable test cwd.
+            if let Some(cwd) = actual.pointer_mut("/params/cwd") {
+                assert_eq!(
+                    std::fs::canonicalize(cwd.as_str().unwrap()).unwrap(),
+                    std::env::current_dir().unwrap()
+                );
+                *cwd = json!("/fixture/project");
+            }
+            assert_eq!(actual, record["message"], "outgoing replay mismatch");
+        }
+    }
+    // Some recordings lack a final proxy exit record. EOF here is a test-harness
+    // exit, not evidence of the real adapter's exit code.
 }
 
 impl Agent {

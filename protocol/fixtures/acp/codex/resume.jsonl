@@ -1,0 +1,31 @@
+{"process":0,"elapsed_ms":0,"direction":"to_agent","message":{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"astrolabe","version":"0.0.0"},"protocolVersion":1}}}
+{"process":0,"elapsed_ms":475,"direction":"from_agent","message":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"auth":{"logout":{}},"providers":{},"loadSession":true,"promptCapabilities":{"embeddedContext":true,"image":true},"sessionCapabilities":{"resume":{},"list":{},"close":{},"delete":{},"fork":{},"additionalDirectories":{},"subagents":{},"systemPrompt":{}},"mcpCapabilities":{"acp":false,"http":true,"sse":false},"_meta":{"authStatus":{}}}}}}
+{"process":0,"elapsed_ms":475,"direction":"to_agent","message":{"id":2,"jsonrpc":"2.0","method":"session/new","params":{"cwd":"/fixture/project","mcpServers":[]}}}
+{"process":0,"elapsed_ms":836,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"_auth/status_update","params":{}}}
+{"process":0,"elapsed_ms":897,"direction":"from_agent","message":{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1"}}}
+{"process":0,"elapsed_ms":900,"direction":"to_agent","message":{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"type":"text","text":"fixture prompt 1"}],"sessionId":"session-1"}}}
+{"process":0,"elapsed_ms":934,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}}
+{"process":0,"elapsed_ms":1103,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":0,"elapsed_ms":3081,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ACK"}}}}}
+{"process":0,"elapsed_ms":3140,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"usage_update","size":1000,"used":100}}}}
+{"process":0,"elapsed_ms":3147,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":0,"elapsed_ms":3148,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":0,"elapsed_ms":3149,"direction":"from_agent","message":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}}
+{"process":0,"stderr":"AppServerUnavailableError: The Codex app-server exited with code 0. The agent is shutting down.\n"}
+{"process":0,"exit_code":0}
+{"process":1,"elapsed_ms":0,"direction":"to_agent","message":{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"astrolabe","version":"0.0.0"},"protocolVersion":1}}}
+{"process":1,"elapsed_ms":464,"direction":"from_agent","message":{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"auth":{"logout":{}},"providers":{},"loadSession":true,"promptCapabilities":{"embeddedContext":true,"image":true},"sessionCapabilities":{"resume":{},"list":{},"close":{},"delete":{},"fork":{},"additionalDirectories":{},"subagents":{},"systemPrompt":{}},"mcpCapabilities":{"acp":false,"http":true,"sse":false},"_meta":{"authStatus":{}}}}}}
+{"process":1,"elapsed_ms":465,"direction":"to_agent","message":{"id":2,"jsonrpc":"2.0","method":"session/resume","params":{"cwd":"/fixture/project","mcpServers":[],"sessionId":"session-1"}}}
+{"process":1,"elapsed_ms":697,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"_auth/status_update","params":{}}}
+{"process":1,"elapsed_ms":898,"direction":"from_agent","message":{"jsonrpc":"2.0","id":2,"result":{}}}
+{"process":1,"elapsed_ms":901,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":1,"elapsed_ms":901,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"usage_update","size":1000,"used":100}}}}
+{"process":1,"elapsed_ms":901,"direction":"to_agent","message":{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"type":"text","text":"fixture prompt 1"}],"sessionId":"session-1"}}}
+{"process":1,"elapsed_ms":925,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":1,"elapsed_ms":946,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}}}
+{"process":1,"elapsed_ms":2942,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"OR"}}}}}
+{"process":1,"elapsed_ms":2942,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"BIT"}}}}}
+{"process":1,"elapsed_ms":3097,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"usage_update","size":1000,"used":100}}}}
+{"process":1,"elapsed_ms":3118,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"session_info_update"}}}}
+{"process":1,"elapsed_ms":3120,"direction":"from_agent","message":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}}
+{"process":1,"stderr":"AppServerUnavailableError: The Codex app-server exited with code 0. The agent is shutting down.\n"}
