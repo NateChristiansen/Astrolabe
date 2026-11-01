@@ -3,7 +3,7 @@
 //! an upgrade keeps their trust hashes. A test holds `layer/` to `Layer::protected`.
 use crate::error::{Error, Result};
 use crate::registry::{AGENT, Registry};
-use crate::worktree::git;
+use crate::worktree::{clone_without_hooks, git, isolated_git};
 use std::path::{Path, PathBuf};
 
 pub const LAYER: [(&str, &str); 3] = [
@@ -82,20 +82,26 @@ pub fn create(registry: &Registry, path: &Path) -> Result<Vec<String>> {
     for folder in KEPT.split(' ') {
         write(&path.join(folder).join(".gitkeep"), "")?;
     }
-    let run = |args: &[&'static str]| {
-        let args: Vec<&std::ffi::OsStr> = args.iter().map(AsRef::as_ref).collect();
-        git(path, &args).map_err(Error::Setup)
+    let run = |args: &[&str]| isolated_git(path, args).map_err(Error::Setup);
+    let identity = |key: &str| {
+        let args = ["config".as_ref(), key.as_ref()];
+        let value = git(path, &args).unwrap_or_default();
+        format!("{key}={}", value.trim())
     };
-    run(&["init", "-q", "-b", "main"])?;
+    let (name, email) = (identity("user.name"), identity("user.email"));
+    run(&["init", "-q", "--template=", "-b", "main"])?;
     let mut said = finish(registry, path)?;
     run(&["add", "."])?;
-    if let Err(error) = run(&["commit", "-qm", "Create agent repo"]) {
+    let text = "Create agent repo";
+    let commit = ["-c", &name, "-c", &email, "commit", "-qm", text];
+    if let Err(error) = run(&commit) {
         said.push(format!("not committed: {error}"));
     }
     Ok(said)
 }
 
-/// A second device. Files it replaces stay uncommitted.
+/// A second device. Files it replaces stay uncommitted. It keeps the owner's home, which holds
+/// the credentials a private remote needs, but runs no hook or template from it.
 pub fn clone(registry: &Registry, url: &str, path: Option<&str>) -> Result<Vec<String>> {
     let last = url.trim_end_matches('/').rsplit(['/', ':']).next();
     let named = last.unwrap_or(url).trim_end_matches(".git");
@@ -103,7 +109,6 @@ pub fn clone(registry: &Registry, url: &str, path: Option<&str>) -> Result<Vec<S
     crate::doctor::refuse(&path)?;
     let parent = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let args = ["clone".as_ref(), url.as_ref(), path.as_os_str()];
-    git(parent, &args).map_err(Error::Setup)?;
+    clone_without_hooks(url, &path, parent).map_err(Error::Setup)?;
     finish(registry, &path)
 }

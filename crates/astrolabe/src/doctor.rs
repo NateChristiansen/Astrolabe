@@ -16,13 +16,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const PIN_CODEX: &str = "0.166.0";
 pub const PIN_CLAUDE: &str = "2.1.314";
+type Failure = Result<Option<String>>;
 const VERIFY_LIMIT: Duration = Duration::from_secs(300);
 
 fn stdout(command: &mut Command) -> String {
     let output = command.stdin(Stdio::null()).stderr(Stdio::null()).output();
-    output.map_or(String::new(), |o| {
-        String::from_utf8_lossy(&o.stdout).into_owned()
-    })
+    let text = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+    output.map_or(String::new(), text)
 }
 
 pub fn refuse(path: &Path) -> Result<()> {
@@ -48,13 +48,41 @@ pub fn folder_check(cwd: &Path) -> std::result::Result<(), String> {
 }
 
 fn is_native(path: &Path) -> bool {
-    let bytes = std::fs::read(path).unwrap_or_default();
-    let script = path.extension().is_some_and(|e| e == "cmd" || e == "ps1");
-    !bytes.is_empty() && !bytes.starts_with(b"#!") && !script
+    let mut start = [0; 2];
+    let file = std::fs::File::open(path);
+    let read = file.and_then(|mut f| std::io::Read::read_exact(&mut f, &mut start));
+    let extension = path.extension().unwrap_or_default();
+    let script = ["cmd", "ps1", "js"].iter().any(|e| extension == *e);
+    read.is_ok() && &start != b"#!" && !script
 }
 
-/// Its variable if set, else the first on `PATH`. A shim isn't followed into its package:
-/// inspect reports it, and the owner sets the variable to the native binary.
+fn find_native(dir: &Path, file: &str, depth: usize) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path());
+    let mut entries: Vec<PathBuf> = entries.collect();
+    entries.sort();
+    entries.iter().find_map(|path| {
+        if path.is_dir() {
+            return (depth > 0).then(|| find_native(path, file, depth - 1))?;
+        }
+        let under = path.components().any(|part| part.as_os_str() == "vendor");
+        let named = path.file_name().is_some_and(|name| name == file);
+        (under && named && is_native(path)).then(|| path.clone())
+    })
+}
+
+/// Under the script's `@scope` on the Mac, `<shim dir>/node_modules/@openai` on Windows.
+pub fn native_behind(shim: &Path, file: &str) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(shim).unwrap_or_else(|_| shim.to_path_buf());
+    let scope = real.parent()?.parent()?.parent()?;
+    let scoped = scope.file_name()?.to_string_lossy().starts_with('@');
+    let installed = shim.parent()?.join("node_modules/@openai");
+    if scoped && let Some(found) = find_native(scope, file, 9) {
+        return Some(found);
+    }
+    find_native(&installed, file, 9)
+}
+
+/// Its variable always wins. Else the first on `PATH`, or the native binary behind that shim.
 pub fn find_client(provider: Provider) -> Option<PathBuf> {
     let (var, name) = match provider {
         Provider::Codex => ("CODEX_PATH", "codex"),
@@ -68,10 +96,15 @@ pub fn find_client(provider: Provider) -> Option<PathBuf> {
     } else {
         &[""]
     };
-    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
+    let found = std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
         let mut files = names.iter().map(|s| dir.join(format!("{name}{s}")));
         files.find(|file| file.is_file())
-    })
+    })?;
+    if is_native(&found) {
+        return Some(std::fs::canonicalize(&found).unwrap_or(found));
+    }
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    native_behind(&found, &file).or(Some(found))
 }
 
 /// One can host a TUI at another version, its children outliving quit. Only reported.
@@ -113,16 +146,12 @@ fn client_line(provider: Provider, machine: &Machine) -> String {
     // Codex unpacks helpers under a home that exists, on any run. This one doesn't.
     let mut ask = Command::new(&path);
     let version = stdout(ask.arg("--version").env("CODEX_HOME", "no-such-home"));
-    let pinned = if version.contains(pin) {
-        ""
-    } else {
-        ", PROBLEM mismatch"
-    };
-    let shim = if is_native(&path) {
-        ""
-    } else {
-        ", PROBLEM not native; set its path variable"
-    };
+    let flag = |good: bool, text| if good { "" } else { text };
+    let pinned = flag(version.contains(pin), ", PROBLEM mismatch");
+    let shim = flag(
+        is_native(&path),
+        ", PROBLEM not native; set its path variable",
+    );
     let (path, version) = (path.display(), version.trim());
     format!("{slug}: {path}, {version}, pin {pin}{pinned}{shim}{adapter}")
 }
@@ -137,16 +166,12 @@ pub fn inspect(machine: &Machine) -> Result<Vec<String>> {
     let exe = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
     let path = std::env::var_os("PATH").unwrap_or_default();
     let found = std::env::split_paths(&path).any(|dir| dir.join(&exe).is_file());
-    lines.push(format!(
-        "astrolabe on PATH, which plain clients' hooks need: {found}"
-    ));
+    let line = "astrolabe on PATH, which plain clients' hooks need";
+    lines.push(format!("{line}: {found}"));
     lines.extend(daemon_lines(&processes()));
     let (config, claude) = (&machine.homes.codex_config, &machine.homes.claude_json);
-    lines.push(format!(
-        "{}: {}",
-        config.display(),
-        trust::file_hash(config)
-    ));
+    let hash = trust::file_hash(config);
+    lines.push(format!("{}: {hash}", config.display()));
     let Some(agent) = machine.registry.agent_repo()? else {
         lines.push("agent repo: none here; run astrolabe init".to_owned());
         return Ok(lines);
@@ -160,9 +185,8 @@ pub fn inspect(machine: &Machine) -> Result<Vec<String>> {
     let dialog = trust::claude_state(claude, &key);
     let state = crate::init::layer_state(&agent);
     lines.push(format!("agent repo {native}, layer real: {state:?}"));
-    lines.push(format!(
-        "  codex project line: {codex}, {hooks} hook lines, hashes unchecked"
-    ));
+    let line = format!("{hooks} hook lines, hashes unchecked");
+    lines.push(format!("  codex project line: {codex}, {line}"));
     lines.push(format!("  claude entry: {dialog:?}"));
     Ok(lines)
 }
@@ -190,8 +214,7 @@ pub fn plan_from_list(response: &Value, project: &str) -> Result<CodexPlan> {
     Ok(CodexPlan { project, hooks })
 }
 
-/// Keys and hashes from the client, on a temporary home beside the repo (one under the temp
-/// folder warns on Windows). Before anyone is asked, proves the lines work there.
+/// Keys and hashes from the client on a temporary home; proves the lines work there first.
 pub fn plan_codex(client: &Path, repo: &Path) -> Result<CodexPlan> {
     let native = trust::native(repo);
     let parent = Path::new(&native).parent().unwrap_or(Path::new("."));
@@ -200,12 +223,8 @@ pub fn plan_codex(client: &Path, repo: &Path) -> Result<CodexPlan> {
     let config = home.join("config.toml");
     let outcome = (|| {
         let (project, _) = trust::keys(&native, cfg!(windows));
-        let hooks = Vec::new();
-        let project2 = project.clone();
-        let bare = CodexPlan {
-            project: project2,
-            hooks,
-        };
+        let mut bare = CodexPlan::default();
+        bare.project.clone_from(&project);
         std::fs::write(&config, bare.lines().join("\n") + "\n")?;
         let plan = plan_from_list(&codex::list_in_home(client, repo, &home)?, &project)?;
         std::fs::write(&config, plan.lines().join("\n") + "\n")?;
@@ -234,22 +253,52 @@ pub fn remove(machine: &Machine, ask: Ask) -> Result<Vec<String>> {
     let (_, key) = trust::keys(&repo, cfg!(windows));
     let removed = trust::remove_codex(&machine.homes.codex_config, ask)?;
     let state = trust::claude_state(&machine.homes.claude_json, &key);
-    let left = format!("claude: entry for {key} is {state:?}, and is not removed here");
+    let file = machine.homes.claude_json.display();
+    let left = format!(
+        "claude: entry is {state:?} and is not removed here. To remove it, delete projects[{key:?}] from {file}, with Claude closed."
+    );
     Ok(vec![removed, left])
 }
 
-/// `None` is proof: a write of the real cwd landed, and a write through `sh` did.
-pub fn judge(direct: Option<&str>, shell_landed: bool, cwd: &Path) -> Option<String> {
-    let same = direct.is_some_and(|found| comparable(Path::new(found)) == comparable(cwd));
-    let shown = cwd.display();
-    let text = format!("wanted {shown}, cwd written: {direct:?}, write through sh: {shell_landed}");
-    (!same || !shell_landed).then_some(text)
+/// Git Bash on Windows prints `/c/x` for `C:\x`.
+fn same_folder(printed: &str, cwd: &Path) -> bool {
+    let printed = printed.trim();
+    let drive = printed
+        .strip_prefix('/')
+        .and_then(|rest| rest.split_once('/'));
+    let printed = match drive {
+        Some((drive, rest)) if cfg!(windows) && drive.len() == 1 => format!("{drive}:/{rest}"),
+        _ => printed.to_owned(),
+    };
+    comparable(Path::new(&printed)) == comparable(cwd)
 }
 
-/// One session to the end of its first turn. Allows only the commands bearing the token.
+/// `None` is proof: each file holds the cwd its own command printed.
+pub fn judge(direct: Option<&str>, shell: Option<&str>, cwd: &Path) -> Option<String> {
+    let good = |found: Option<&str>| found.is_some_and(|found| same_folder(found, cwd));
+    let shown = cwd.display();
+    let text = format!("wanted {shown}, direct wrote: {direct:?}, sh wrote: {shell:?}");
+    (!good(direct) || !good(shell)).then_some(text)
+}
+
+pub fn commands(token: &str) -> [String; 2] {
+    [
+        format!("node -e \"require('fs').writeFileSync('{token}-direct',process.cwd())\""),
+        format!("sh -c 'pwd > {token}-sh'"),
+    ]
+}
+
+/// Only an exact match on the raw input the adapter sent. Titles can differ from what runs.
+pub fn allowed(input: Option<&Value>, commands: &[String]) -> bool {
+    let command = input.and_then(|input| input["command"].as_str());
+    command.is_some_and(|command| commands.iter().any(|wanted| wanted == command))
+}
+
 fn run_session(engine: &Engine, ready: &Prepared, token: &str, say: Say) -> Result<()> {
+    let wanted = commands(token);
+    let [first, second] = &wanted;
     let text = format!(
-        "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens.\n1. node -e \"require('fs').writeFileSync('{token}-direct',process.cwd())\"\n2. sh -c 'pwd > {token}-sh'"
+        "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens.\n1. {first}\n2. {second}"
     );
     let mut session = AcpClient::launch(engine, &ready.launch, &ready.cwd)?;
     let deadline = Instant::now() + VERIFY_LIMIT;
@@ -257,7 +306,7 @@ fn run_session(engine: &Engine, ready: &Prepared, token: &str, say: Say) -> Resu
         match session.next_event(Duration::from_millis(200))? {
             Some(ClientEvent::Ready) => session.prompt(&text)?,
             Some(ClientEvent::Alert(Alert::NeedsYou(request))) => {
-                let ours = request.title.contains(token);
+                let ours = allowed(session.requested_input(&request.rpc_id), &wanted);
                 let kind = if ours { "allow_once" } else { "reject_once" };
                 say(format!("  asked: {} -> {kind}", request.title));
                 let option = request.options.iter().find(|o| o.kind == kind);
@@ -277,12 +326,7 @@ fn run_session(engine: &Engine, ready: &Prepared, token: &str, say: Say) -> Resu
     Err(Error::Setup("no end of turn in time".to_owned()))
 }
 
-fn verify_one(
-    machine: &Machine,
-    provider: Provider,
-    repo: &str,
-    say: Say,
-) -> Result<Option<String>> {
+fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Failure {
     let client = &find_client(provider).ok_or(Error::Setup("no client".to_owned()))?;
     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
     let stamp = now.map_or(0, |time| time.as_millis());
@@ -303,7 +347,8 @@ fn verify_one(
     let direct = ready.cwd.join(format!("{token}-direct"));
     let shell = ready.cwd.join(format!("{token}-sh"));
     let found = std::fs::read_to_string(&direct).ok();
-    let problem = judge(found.as_deref(), shell.is_file(), &ready.cwd);
+    let printed = std::fs::read_to_string(&shell).ok();
+    let problem = judge(found.as_deref(), printed.as_deref(), &ready.cwd);
     let _ = std::fs::remove_file(&direct);
     let _ = std::fs::remove_file(&shell);
     if let Some(made) = &ready.worktree {
@@ -328,7 +373,7 @@ pub fn verify(machine: &Machine, repo: Option<&str>, say: Say) -> Result<bool> {
         let problem = outcome.unwrap_or_else(|error| Some(error.to_string()));
         passed &= problem.is_none();
         say(match problem {
-            None => format!("{slug}: PASS real cwd, both writes landed, receipt held"),
+            None => format!("{slug}: PASS both files hold the real cwd, receipt held"),
             Some(problem) => format!("{slug}: FAIL {problem}"),
         });
     }

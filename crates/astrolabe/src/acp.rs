@@ -113,6 +113,14 @@ pub fn adapter_entry(adapters_dir: &Path, package: &str) -> Result<PathBuf> {
     }
 }
 
+/// `rawInput` from a permission request, or from the tool call it names.
+pub fn requested_input(message: &Value, known: &HashMap<String, Value>) -> Option<Value> {
+    let call = message.pointer("/params/toolCall")?;
+    let own = call.get("rawInput").filter(|raw| !raw.is_null());
+    let known = || known.get(call.get("toolCallId")?.as_str()?);
+    own.or_else(known).cloned()
+}
+
 /// What the owner of the client hears. Engine state is already updated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
@@ -219,6 +227,9 @@ pub struct AcpClient<'e> {
     receipt_done: bool,
     /// Held for its drop: on Windows, closing it ends what the adapter started.
     job: Option<crate::job::Job>,
+    /// Each tool call's latest `rawInput`, and what each open permission request asks to run.
+    tool_inputs: HashMap<String, Value>,
+    asked: HashMap<String, Value>,
 }
 
 impl<'e> AcpClient<'e> {
@@ -354,6 +365,8 @@ impl<'e> AcpClient<'e> {
             receipt_checked: None,
             receipt_done: false,
             job,
+            tool_inputs: HashMap::new(),
+            asked: HashMap::new(),
         })
     }
 
@@ -505,6 +518,11 @@ impl<'e> AcpClient<'e> {
     fn fail_launch(&mut self, message: String) -> Result<()> {
         self.failure = Some(message);
         self.finish()
+    }
+
+    /// What a permission request asks to run, as the adapter sent it. A title can differ.
+    pub fn requested_input(&self, rpc_id: &str) -> Option<&Value> {
+        self.asked.get(rpc_id)
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -803,7 +821,12 @@ impl<'e> AcpClient<'e> {
         };
         let id = message.get("id").filter(|id| !id.is_null()).cloned();
         match (message.get("method").and_then(Value::as_str), id) {
-            (Some("session/request_permission"), Some(_)) => self.ingest(&message),
+            (Some("session/request_permission"), Some(id)) => {
+                if let Some(input) = requested_input(&message, &self.tool_inputs) {
+                    self.asked.insert(id.to_string(), input);
+                }
+                self.ingest(&message)
+            }
             (Some(method), Some(id)) => {
                 let method = method.to_owned();
                 self.refuse(id, &method);
@@ -811,6 +834,13 @@ impl<'e> AcpClient<'e> {
             }
             (Some("session/update"), None) => {
                 let update = message.pointer("/params/update");
+                if let Some(call) = update
+                    && let (Some(id), Some(raw)) =
+                        (call["toolCallId"].as_str(), call.get("rawInput"))
+                    && !raw.is_null()
+                {
+                    self.tool_inputs.insert(id.to_owned(), raw.clone());
+                }
                 let kind = update.and_then(|update| update.get("sessionUpdate"));
                 let mode = if kind.is_some_and(|kind| kind == "current_mode_update") {
                     update.and_then(|update| update.get("currentModeId"))

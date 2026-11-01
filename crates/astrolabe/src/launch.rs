@@ -107,10 +107,10 @@ fn make_worktree(repo: &Path, name: &str, say: Say) -> Result<Worktree> {
     }
 }
 
-/// An agent repo holding the real layer supplies it all, so the launch adds nothing. Codex
-/// without trust lines is then refused by its hook check. Anything else gets the whole layer. Codex's setting would replace a repo's own
-/// `developer_instructions`, so a repo that has them reads Unknown, which the driver refuses.
-fn target_for(layer: &Layer, repo: &Path, agent: bool) -> Target {
+/// An agent repo holding the real layer supplies it all, and Codex's hook check refuses it
+/// untrusted. Anything else gets the whole layer, and a repo with its own
+/// `developer_instructions` reads Unknown, as Codex's setting would replace them.
+pub fn target_for(layer: &Layer, repo: &Path, agent: bool) -> Target {
     let states = crate::init::layer_state(repo);
     let real = states.iter().all(|(_, state)| *state == Some(true));
     if agent && real {
@@ -169,15 +169,18 @@ fn build(
 /// Syncs, makes the worktree and composes, saying so. `AcpClient::launch` takes the result.
 pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepared> {
     let registry = &machine.registry;
+    if !worktree::valid_name(request.session) {
+        let name = request.session;
+        return Err(Error::Setup(format!("session name {name:?} is not safe")));
+    }
     let slug = request.provider.slug();
     if !registry.provider_on(slug)? {
         return Err(Error::Setup(format!("{slug} is off on this machine")));
     }
     let repo = registry.checkout(request.repo)?;
     let holder = registry.agent_repo()?;
-    let agent = holder
-        .as_deref()
-        .is_some_and(|a| comparable(a) == comparable(&repo));
+    let is_repo = |a: &Path| comparable(a) == comparable(&repo);
+    let agent = holder.as_deref().is_some_and(is_repo);
     say("syncing".to_owned());
     if let Err(why) = registry::sync(&repo) {
         say(format!("not synced, going on: {why}"));
@@ -189,7 +192,7 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
     let cwd = made.as_ref().map_or(&repo, |made| &made.path).clone();
     let note = holder.as_deref().filter(|_| !agent);
     let layer = Layer::protected(&instructions(note, request.repo, request.dials));
-    let target = target_for(&layer, &repo, agent);
+    let target = target_for(&layer, &cwd, agent);
     let built = build(machine, request, &target, &layer, &cwd);
     if let (Err(_), Some(made)) = (&built, &made) {
         let _ = worktree::close(made);

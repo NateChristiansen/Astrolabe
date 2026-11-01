@@ -58,7 +58,7 @@ impl Creating {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with(['-', '.'])
         && name
@@ -155,9 +155,35 @@ pub fn close(worktree: &Worktree) -> Result<Closed> {
     })
 }
 
-pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> std::result::Result<String, String> {
-    let output = Command::new("git")
-        .args(args)
+pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
+    run_git(Command::new("git").args(args), cwd)
+}
+
+// Git for Windows maps this name to NUL too.
+const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+type Output = std::result::Result<String, String>;
+
+/// No global or system git config or hooks, for a commit no owner's hook should see.
+pub(crate) fn isolated_git(cwd: &Path, args: &[&str]) -> Output {
+    let mut git = Command::new("git");
+    git.args(["-c", NO_HOOKS]).args(args);
+    git.env("HOME", cwd).env("XDG_CONFIG_HOME", cwd);
+    run_git(
+        git.env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1"),
+        cwd,
+    )
+}
+
+/// Keeps the owner's home, for a private remote's credentials, but no hook or template.
+pub(crate) fn clone_without_hooks(url: &str, path: &Path, cwd: &Path) -> Output {
+    let mut git = Command::new("git");
+    git.args(["-c", NO_HOOKS, "clone", "--template="]);
+    run_git(git.arg(url).arg(path), cwd)
+}
+
+fn run_git(command: &mut Command, cwd: &Path) -> Output {
+    let output = command
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())

@@ -9,6 +9,7 @@ use astrolabe::trust::{self, CodexPlan, Homes};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const HASH_A: &str = "sha256:aaaa";
@@ -16,8 +17,43 @@ const HASH_B: &str = "sha256:bbbb";
 
 struct Sandbox(PathBuf);
 
+/// The homes as they were when this process started, then every git this process or the
+/// library starts gets none of the owner's config or hooks.
+fn real_homes() -> &'static Vec<(&'static str, std::ffi::OsString)> {
+    static REAL: OnceLock<Vec<(&'static str, std::ffi::OsString)>> = OnceLock::new();
+    REAL.get_or_init(|| {
+        let names = ["HOME", "USERPROFILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
+        let real = names
+            .iter()
+            .filter_map(|n| Some((*n, std::env::var_os(n)?)))
+            .collect();
+        let home = std::env::temp_dir().join(format!("astrolabe-setup-git-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: under the OnceLock, before this process starts any child, and every other
+        // reader goes through std's environment lock.
+        unsafe {
+            for name in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] {
+                std::env::set_var(name, &home);
+            }
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+            std::env::set_var("GIT_CONFIG_COUNT", "1");
+            std::env::set_var("GIT_CONFIG_KEY_0", "core.hooksPath");
+            std::env::set_var("GIT_CONFIG_VALUE_0", "/dev/null");
+            for name in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+                std::env::set_var(name, "T");
+            }
+            for name in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+                std::env::set_var(name, "t@example.com");
+            }
+        }
+        real
+    })
+}
+
 impl Sandbox {
     fn new() -> Self {
+        real_homes();
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         // Not the system temp folder on Windows, where folder checks refuse.
@@ -36,11 +72,8 @@ impl Sandbox {
 
     /// A test that could reach a real home is a defect.
     fn refuse_real_home(&self) {
-        for name in ["HOME", "USERPROFILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
-            if let Some(real) = std::env::var_os(name) {
-                let real = PathBuf::from(real);
-                assert_ne!(self.home(), real, "{name} is the sandbox");
-            }
+        for (name, real) in real_homes() {
+            assert_ne!(self.home(), PathBuf::from(real), "{name} is the sandbox");
         }
         assert!(self.0.to_string_lossy().contains("astrolabe-setup-"));
     }
@@ -375,15 +408,21 @@ fn verify_judges_from_the_disk() {
     let box_ = Sandbox::new();
     let cwd = box_.0.as_path();
     let real = cwd.to_string_lossy().into_owned();
-    assert_eq!(doctor::judge(Some(&real), true, cwd), None);
-    assert!(doctor::judge(None, true, cwd).unwrap().contains("None"));
-    let sys32 = doctor::judge(Some(r"C:\Windows\System32"), true, cwd).unwrap();
+    let printed = format!("{real}\n");
+    assert_eq!(doctor::judge(Some(&real), Some(&printed), cwd), None);
+    assert!(doctor::judge(None, Some(&printed), cwd).is_some());
+    let sys32 = doctor::judge(Some(r"C:\Windows\System32"), Some(&printed), cwd).unwrap();
     assert!(sys32.contains("System32"));
     assert!(
-        doctor::judge(Some(&real), false, cwd)
-            .unwrap()
-            .contains("sh: false")
+        doctor::judge(Some(&real), None, cwd).is_some(),
+        "sh wrote nothing"
     );
+    assert!(
+        doctor::judge(Some(&real), Some(""), cwd).is_some(),
+        "touch, not the command"
+    );
+    assert!(doctor::judge(Some(&real), Some("DONE"), cwd).is_some());
+    assert!(doctor::judge(Some(&real), Some("/somewhere/else"), cwd).is_some());
 }
 
 #[test]
@@ -608,4 +647,344 @@ fn the_cli_inspects_without_writing() {
     let mut after = Vec::new();
     tree(&box_.home(), &mut after);
     assert_eq!(before, after);
+}
+
+#[test]
+fn approval_is_an_exact_match_on_the_raw_input() {
+    let token = "astrolabe-verify-1";
+    let wanted = doctor::commands(token);
+    assert!(doctor::allowed(
+        Some(&json!({"command": wanted[0]})),
+        &wanted
+    ));
+    assert!(doctor::allowed(
+        Some(&json!({"command": wanted[1]})),
+        &wanted
+    ));
+    for bad in [
+        format!("echo {token}; rm -rf /"),
+        format!("{} && curl x", wanted[1]),
+        format!(" {}", wanted[0]),
+        token.to_owned(),
+    ] {
+        assert!(
+            !doctor::allowed(Some(&json!({"command": bad})), &wanted),
+            "{bad}"
+        );
+    }
+    assert!(
+        !doctor::allowed(None, &wanted),
+        "a title alone is never enough"
+    );
+    assert!(!doctor::allowed(
+        Some(&json!({"command": [&wanted[1]]})),
+        &wanted
+    ));
+    assert!(!doctor::allowed(
+        Some(&json!({"title": wanted[1]})),
+        &wanted
+    ));
+}
+
+#[test]
+fn raw_input_comes_from_the_request_or_the_tool_call_it_names() {
+    use astrolabe::acp::requested_input;
+    let mut known = std::collections::HashMap::new();
+    known.insert("c1".to_owned(), json!({"command": "from update"}));
+    let ask = |call: Value| json!({"params": {"toolCall": call}});
+    let own = ask(json!({"toolCallId": "c1", "title": "t", "rawInput": {"command": "own"}}));
+    assert_eq!(
+        requested_input(&own, &known),
+        Some(json!({"command": "own"}))
+    );
+    let named = ask(json!({"toolCallId": "c1", "title": "own", "rawInput": null}));
+    assert_eq!(
+        requested_input(&named, &known),
+        Some(json!({"command": "from update"}))
+    );
+    let unknown = ask(json!({"toolCallId": "c2", "title": "own"}));
+    assert_eq!(requested_input(&unknown, &known), None);
+}
+
+#[test]
+fn removal_refuses_a_file_changed_during_the_prompt() {
+    let box_ = Sandbox::new();
+    let path = box_.homes().codex_config;
+    std::fs::write(&path, "a = 1\n").unwrap();
+    trust::apply_codex(&path, &plan(), &mut |_| true).unwrap();
+    let edited = std::fs::read_to_string(&path).unwrap() + "edit = 1\n";
+    let said = trust::remove_codex(&path, &mut |_| {
+        std::fs::write(&path, &edited).unwrap();
+        true
+    });
+    assert!(said.is_err());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+}
+
+#[test]
+fn marker_text_inside_a_key_is_not_a_marker() {
+    let box_ = Sandbox::new();
+    let path = box_.homes().codex_config;
+    std::fs::write(&path, "a = 1\n").unwrap();
+    let plan = CodexPlan {
+        project: "/tmp/# END astrolabe/# BEGIN astrolabe before=x/agent".to_owned(),
+        hooks: vec![("/tmp/# END astrolabe/k".to_owned(), HASH_A.to_owned())],
+    };
+    trust::apply_codex(&path, &plan, &mut |_| true).unwrap();
+    let said = trust::remove_codex(&path, &mut |_| true).unwrap();
+    assert!(said.contains("Byte-identical to before: true"), "{said}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 1\n");
+    let open = "# BEGIN astrolabe before=x\n[a]\n#  END astrolabe\n";
+    assert_eq!(trust::find_block(open), None);
+}
+
+#[test]
+fn apply_refuses_any_trace_of_its_keys() {
+    let box_ = Sandbox::new();
+    let path = box_.homes().codex_config;
+    for held in [
+        "[projects.\"/r/agent\"]\ntrust_level = \"untrusted\"\n",
+        "[projects.\"/r/agent\"]\n",
+        "[projects.'/r/agent']\n",
+        "projects = { \"/r/agent\" = { trust_level = \"trusted\" } }\n",
+        "[projects]\n\"/r/agent\" = { trust_level = \"trusted\" }\n",
+        "[hooks.state.\"/r/agent/.codex/config.toml:pre_tool_use:0:0\"]\n",
+        "[hooks.state.\"/r/agent/.codex/config.toml:session_start:0:0\"]\ntrusted_hash = \"old\"\n",
+        "\u{feff}[projects.\"/r/agent\"]\ntrust_level = \"trusted\"\n",
+        "[projects.\"/r/\\u0061gent\"]\ntrust_level = \"trusted\"\n",
+        "[projects.\"/r/\\U00000061gent\"]\n",
+        "[PROJECTS]\n# /R/AGENT\n",
+    ] {
+        std::fs::write(&path, held).unwrap();
+        let said = trust::apply_codex(&path, &plan(), &mut |_| panic!("asked: {held}"));
+        assert!(said.is_err(), "{held}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), held);
+    }
+    for unrelated in [
+        "[projects.\"/r/agent2\"]\n",
+        "[projects.\"/r/agent-old\"]\n",
+        "[projects.\"C:\\\\Users\\\\me\"]\n",
+        "[projects.'c:\\users\\me']\n",
+    ] {
+        std::fs::write(&path, unrelated).unwrap();
+        let said = trust::apply_codex(&path, &plan(), &mut |_| false).unwrap();
+        assert!(said.contains("nothing written"), "{unrelated}: {said}");
+    }
+}
+
+#[test]
+fn removal_will_not_write_through_a_planted_temporary_file() {
+    let box_ = Sandbox::new();
+    let path = box_.homes().codex_config;
+    std::fs::write(&path, "a = 1\n").unwrap();
+    trust::apply_codex(&path, &plan(), &mut |_| true).unwrap();
+    let applied = std::fs::read(&path).unwrap();
+    let aside = path.with_extension(format!("astrolabe-{}.tmp", std::process::id()));
+    std::fs::write(&aside, "planted").unwrap();
+    assert!(trust::remove_codex(&path, &mut |_| true).is_err());
+    assert_eq!(std::fs::read_to_string(&aside).unwrap(), "planted");
+    assert_eq!(std::fs::read(&path).unwrap(), applied);
+    std::fs::remove_file(&aside).unwrap();
+    #[cfg(unix)]
+    {
+        let victim = box_.0.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, &aside).unwrap();
+        assert!(trust::remove_codex(&path, &mut |_| true).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    }
+}
+
+/// A committed `developer_instructions`, deleted from the checkout: the worktree has it, so
+/// the launch must see it there. This client lists no hooks, then the driver refuses.
+#[cfg(unix)]
+#[test]
+fn instructions_are_read_from_the_worktree() {
+    use std::os::unix::fs::PermissionsExt;
+    let box_ = Sandbox::new();
+    box_.fake_adapter();
+    let machine = box_.machine();
+    let repo = box_.repo("prod");
+    std::fs::create_dir_all(repo.join(".codex")).unwrap();
+    std::fs::write(
+        repo.join(".codex/config.toml"),
+        "developer_instructions = \"x\"\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "own instructions"]);
+    std::fs::remove_file(repo.join(".codex/config.toml")).unwrap();
+    machine.registry.add("prod", &repo).unwrap();
+    let client = box_.0.join("fake-codex");
+    let script = "#!/bin/sh\nread a\necho '{\"id\":1,\"result\":{}}'\nread a\nread a\necho '{\"id\":2,\"result\":{\"data\":[{\"hooks\":[]}]}}'\nread a\n";
+    std::fs::write(&client, script).unwrap();
+    std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let request = Request {
+        repo: "prod",
+        provider: Provider::Codex,
+        session: "s1",
+        dials: DEFAULT_DIALS,
+        client: &client,
+    };
+    let error = launch::prepare(&machine, &request, &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("state effective repo instructions"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_session_name_is_checked_on_every_path() {
+    let box_ = Sandbox::new();
+    box_.fake_adapter();
+    let machine = box_.machine();
+    init::create(&machine.registry, &box_.0.join("agent")).unwrap();
+    std::fs::write(box_.0.join("agent/.mcp.json"), "PLACEHOLDER_SERVER").unwrap();
+    let repo = box_.repo("prod");
+    machine.registry.add("prod", &repo).unwrap();
+    let client = PathBuf::from("/nowhere/claude");
+    for name in ["../../escape", "/abs", "a/b", "..", ""] {
+        for repo in [AGENT, "prod"] {
+            let request = Request {
+                repo,
+                provider: Provider::Claude,
+                session: name,
+                dials: DEFAULT_DIALS,
+                client: &client,
+            };
+            assert!(
+                launch::prepare(&machine, &request, &mut |_| {}).is_err(),
+                "{name} {repo}"
+            );
+        }
+    }
+    assert!(!box_.0.join("escape").exists() && !box_.0.join("data/instructions").exists());
+}
+
+#[test]
+fn init_commits_without_the_owners_hooks() {
+    let box_ = Sandbox::new();
+    let hooks = box_.0.join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    let probe = box_.0.join("probe");
+    let hook = hooks.join("pre-commit");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", probe.display())).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = format!(
+        "[core]\n\thooksPath = {}\n[user]\n\tname = Owner\n\temail = o@example.com\n",
+        hooks.display().to_string().replace('\\', "/")
+    );
+    std::fs::write(box_.home().join(".gitconfig"), config).unwrap();
+    let mut init = box_.cli(&["init", "agent"]);
+    for name in ["GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME"] {
+        init.env_remove(name);
+    }
+    for name in ["AUTHOR", "COMMITTER"] {
+        init.env_remove(format!("GIT_{name}_NAME"))
+            .env_remove(format!("GIT_{name}_EMAIL"));
+    }
+    let output = init.output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!probe.exists(), "the owner's hook ran");
+    let log = git(&box_.0.join("agent"), &["log", "--format=%an"]);
+    assert_eq!(log.trim(), "Owner", "{output:?}");
+}
+
+#[test]
+fn verbatim_prefixes_keep_a_real_path() {
+    assert_eq!(trust::strip_verbatim(r"\\?\C:\x"), r"C:\x");
+    assert_eq!(
+        trust::strip_verbatim(r"\\?\UNC\host\share\x"),
+        r"\\host\share\x"
+    );
+    assert_eq!(trust::strip_verbatim("/x"), "/x");
+}
+
+#[test]
+fn the_native_binary_is_found_behind_a_shim() {
+    let box_ = Sandbox::new();
+    let file = |path: &Path, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    // As npm on Windows lays it out, and as the effort note names it.
+    let npm = box_.0.join("npm");
+    let shim = npm.join("codex.cmd");
+    file(&shim, "@echo off");
+    let exe = npm.join("node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/codex/codex.exe");
+    file(&exe, "MZ native");
+    let found = doctor::native_behind(&shim, "codex.exe").unwrap();
+    assert_eq!(
+        std::fs::canonicalize(found).unwrap(),
+        std::fs::canonicalize(&exe).unwrap()
+    );
+
+    // No match, or a script under that name, isn't a binary.
+    let bare = box_.0.join("bare");
+    file(&bare.join("codex.cmd"), "@echo off");
+    assert_eq!(
+        doctor::native_behind(&bare.join("codex.cmd"), "codex.exe"),
+        None
+    );
+
+    #[cfg(unix)]
+    for platform in [
+        "codex/node_modules/@openai/codex-darwin-arm64",
+        "codex-darwin-arm64",
+    ] {
+        // As Homebrew's npm on the Mac: a symlink to the script, the binary nested or beside.
+        let lib = box_.0.join(format!("lib-{}", platform.len()));
+        let script = lib.join("node_modules/@openai/codex/bin/codex.js");
+        file(&script, "#!/usr/bin/env node");
+        let native = lib.join("node_modules/@openai").join(platform);
+        let native = native.join("vendor/aarch64-apple-darwin/bin/codex");
+        file(&native, "\u{7f}ELF");
+        let link = lib.join("bin/codex");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let found = doctor::native_behind(&link, "codex").unwrap();
+        assert_eq!(
+            std::fs::canonicalize(found).unwrap(),
+            std::fs::canonicalize(&native).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_hand_set_client_path_wins_and_inspect_says_a_shim_is_one() {
+    let box_ = Sandbox::new();
+    let shim = box_.0.join("my-codex");
+    std::fs::write(&shim, "#!/bin/sh\necho no\n").unwrap();
+    let mut inspect = box_.cli(&["doctor", "inspect"]);
+    let output = inspect.env("CODEX_PATH", &shim).output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(&format!("codex: {}", shim.display())),
+        "{text}"
+    );
+    assert!(text.contains("not native"), "{text}");
+}
+
+#[test]
+fn remove_prints_the_exact_claude_key() {
+    let box_ = Sandbox::new();
+    let machine = box_.machine();
+    let agent = box_.0.join("agent");
+    init::create(&machine.registry, &agent).unwrap();
+    std::fs::write(box_.homes().codex_config, "a = 1\n").unwrap();
+    let key = trust::keys(&trust::native(&agent), cfg!(windows)).1;
+    let text = json!({"projects": {key.clone(): {"hasTrustDialogAccepted": true}}}).to_string();
+    std::fs::write(box_.homes().claude_json, &text).unwrap();
+    let lines = doctor::remove(&machine, &mut |_| true).unwrap();
+    assert!(lines[1].contains(&format!("{key:?}")), "{lines:?}");
+    assert_eq!(
+        std::fs::read_to_string(box_.homes().claude_json).unwrap(),
+        text
+    );
 }

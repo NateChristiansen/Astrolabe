@@ -37,7 +37,15 @@ impl Homes {
 /// A folder's plain name, without the `\\?\` that canonicalizing adds on Windows.
 pub fn native(path: &Path) -> String {
     let path = crate::hook::comparable(path);
-    path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+    strip_verbatim(&path)
+}
+
+/// `\\?\C:\x` to `C:\x`, and `\\?\UNC\host\x` to `\\host\x`.
+pub fn strip_verbatim(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path).to_owned()
 }
 
 /// As each client writes them. Windows: Codex lowercased, Claude forward slashes, case kept.
@@ -128,21 +136,45 @@ fn read_text(path: &Path) -> Result<String> {
     String::from_utf8(std::fs::read(path)?).map_err(not_utf8)
 }
 
-/// The byte range, with the line ending before it, and the recorded hash.
+/// The byte range, with the ending before it, and the recorded hash. Whole lines only.
 pub fn find_block(text: &str) -> Option<(usize, usize, String)> {
-    let begin = text.find(BEGIN)?;
-    let tail = &text[begin..];
-    let end = begin + tail.find(END)? + END.len();
-    let end = end + usize::from(text[end..].starts_with('\r'));
-    let end = end + usize::from(text[end..].starts_with('\n'));
-    let start = begin - usize::from(text[..begin].ends_with('\n'));
-    let start = start - usize::from(text[..start].ends_with('\r'));
-    let before = tail[BEGIN.len()..].lines().next().unwrap_or("");
-    Some((start, end, before.to_owned()))
+    let (mut at, mut found) = (0, None);
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\r', '\n']);
+        match (&found, bare.strip_prefix(BEGIN)) {
+            (None, Some(hash)) => found = Some((at, hash.to_owned())),
+            (Some((begin, hash)), _) if bare == END => {
+                let start = begin - usize::from(text[..*begin].ends_with('\n'));
+                let start = start - usize::from(text[..start].ends_with('\r'));
+                return Some((start, at + line.len(), hash.clone()));
+            }
+            _ => {}
+        }
+        at += line.len();
+    }
+    None
 }
 
-/// Appends from bytes, in the file's own line ending. Some lines already there is refused,
-/// as two tables under one key break TOML. A missing file is refused, so removal restores it.
+/// The key in any case or slash style, or a TOML unicode escape, which could spell anything.
+pub fn mentions(text: &str, key: &str) -> bool {
+    let fold = |s: &str| s.replace("\\\\", "/").replace('\\', "/").to_lowercase();
+    let (folded, key) = (fold(text), fold(key));
+    let path_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    let named = folded.match_indices(&key).any(|(at, _)| {
+        let next = folded[at + key.len()..].chars().next();
+        !next.is_some_and(path_char)
+    });
+    let escaped = |line: &str| {
+        let line = line.trim_start_matches(['\u{feff}', ' ', '\t', '[']);
+        let bare = line.replace("\\\\", "");
+        let ours = line.starts_with("projects") || line.starts_with("hooks");
+        ours && line.contains('"') && (bare.contains("\\u") || bare.contains("\\U"))
+    };
+    named || text.lines().any(escaped)
+}
+
+/// Appends from bytes, in the file's own line ending. Any trace of these keys is refused, in
+/// any state or form, as two tables under one key break TOML. A missing file is refused, so removal restores it.
 pub fn apply_codex(path: &Path, plan: &CodexPlan, ask: Ask) -> Result<String> {
     let name = path.display();
     let text = read_text(path)?;
@@ -152,10 +184,10 @@ pub fn apply_codex(path: &Path, plan: &CodexPlan, ask: Ask) -> Result<String> {
     if project && all {
         return Ok(format!("{name}: already trusted"));
     }
-    let key = |(key, _): &(String, String)| plan.hooks.iter().any(|(k, _)| k == key);
-    if project || hooks.iter().any(key) {
+    let mut keys = plan.hooks.iter().map(|(key, _)| key.as_str());
+    if mentions(&text, &plan.project) || keys.any(|key| mentions(&text, key)) {
         return Err(Error::Setup(format!(
-            "{name} already holds some of these lines, from a client or an older apply. Run doctor remove, or take them out in that client's own way: {:?}",
+            "{name} already mentions these keys, or holds a line this can't read. Nothing written. Run doctor remove, or take them out by hand: {:?}",
             plan.lines()
         )));
     }
@@ -184,8 +216,14 @@ pub fn remove_codex(path: &Path, ask: Ask) -> Result<String> {
     if !ask(&format!("Remove from {name}:\n{}", &text[start..end])) {
         return Ok(format!("{name}: nothing removed"));
     }
-    let aside = path.with_extension("astrolabe.tmp");
-    std::fs::write(&aside, format!("{}{}", &text[..start], &text[end..]))?;
+    if read_text(path)? != text {
+        return Err(Error::Setup(format!("{name} changed while asking")));
+    }
+    let aside = path.with_extension(format!("astrolabe-{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    let mut file = options.write(true).create_new(true).open(&aside)?;
+    file.write_all(format!("{}{}", &text[..start], &text[end..]).as_bytes())?;
+    drop(file);
     std::fs::set_permissions(&aside, std::fs::metadata(path)?.permissions())?;
     std::fs::rename(&aside, path)?;
     let now = file_hash(path);
