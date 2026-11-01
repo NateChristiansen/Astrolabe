@@ -333,7 +333,13 @@ fn after_options<'a>(mut args: &'a [Word], taking_value: &[&str]) -> &'a [Word] 
 fn wrapped<'a>(name: &str, args: &'a [Word]) -> Option<&'a [Word]> {
     let values: &[&str] = match name {
         "env" => &["-u", "--unset", "-C", "--chdir"],
-        "command" if args.first().is_some_and(|a| a.text == "-v") => return Some(&[]),
+        "command"
+            if args
+                .first()
+                .is_some_and(|a| matches!(a.text.as_str(), "-v" | "-V")) =>
+        {
+            return Some(&[]);
+        }
         "exec" => &["-a"],
         "command" | "builtin" | "nohup" | "setsid" | "time" => &[],
         "nice" => &["-n", "--adjustment"],
