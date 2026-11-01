@@ -1,9 +1,9 @@
 # Codex ACP replay fixtures
 
-Recorded on macOS, 2026-10-31, using codex-acp 2.5.0, bundled codex-cli
-0.165.0 (confirmed by the lead; the original recorder incorrectly
-probed PATH codex 0.166.0), Node v26.9.0 and gpt-6.1-terra with low reasoning effort.
+Recorded on macOS, 2026-10-31, using codex-acp 2.5.0, codex-cli 0.166.0
+selected through `CODEX_PATH`, Node v26.9.0 and gpt-6.1-terra with low reasoning effort.
 Six successful manual recorder scenarios; no provider is used during replay.
+History: the earlier bundled 0.165.0 recordings were initially mislabeled 0.166.0 because the recorder probed PATH instead of the adapter's selected executable.
 
 Each JSONL row names a zero-based process (resume uses two). Wire rows carry
 `direction`, `message` and the original process-relative `elapsed_ms`. The fake
@@ -26,19 +26,31 @@ These are deliberately trimmed protocol fixtures, not raw logs:
 - Stderr retains only one path-free AppServerUnavailableError summary per process
   where observed. Cancel had no stderr.
 
-The reject process and second resume process have no recorded final exit row.
-The fake returns normally at trace end for those two segments; its code 0 is harness
-behavior, not measured real-exit evidence. Other segments replay observed code 0.
+Full-turn, allow, reject and the second resume process have no recorded final exit
+row. The fake returns normally at trace end for those segments; its code 0 is
+harness behavior, not measured real-exit evidence. Two-turns, cancel and the first
+resume process replay observed code 0. All six recorder commands exited 0 and
+reported config unchanged; recorder success is separate from proxy exit evidence.
 The recorder explicitly shut down the adapters after successful turns; these are
 not spontaneous crash recordings. Shutdown did not log ClientEvent::Exited.
 
 No history updates preceded the real resume response. This recording therefore
 checks route selection, session identity and continuation, not handling of
 history replay (covered separately by the shared client's synthetic tests).
+The resume response contains model/mode/config catalogs without `sessionId` and
+is projected to `{}`. The same response shape occurs in the earlier 0.165.0 log.
 No tool status update emitted `pending`; permission requests contain a `pending`
-tool snapshot, answered after 1 ms in each approval trace. These short traces
+tool snapshot, answered within 0–1 ms in these approval traces. These short traces
 cannot establish long pending behavior. Idle launch and child-session scenarios
 are outside these fixtures.
+
+Compared with the earlier 0.165.0 traces, protocol shapes, capabilities, answers,
+permission outcomes and stop reasons are unchanged. Beyond timing, reject swaps
+the failed tool update and a session-info update; the resumed turn swaps command
+and session-info updates. Full-turn and allow no longer have proxy exit rows.
+Raw usage counts and generated ids differ, and reject's command catalog grows
+from 22 to 52 entries (catalog contents are omitted). These are observed run
+differences, not established version-specific behavior changes.
 
 Regenerating fixtures (Node, no Python):
 

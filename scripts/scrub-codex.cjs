@@ -11,6 +11,7 @@ if (!answers[scenario] || !input || !output || input === output) {
   throw Error('usage: node scripts/scrub-codex.cjs <scenario> <private.jsonl> <public.jsonl>');
 }
 const processes = new Map(), sessions = new Map(), tools = new Map(), turns = new Map(), texts = new Map();
+const requests = new Map();
 const rows = [];
 const alias = (map, value, prefix) => {
   if (typeof value !== 'string') throw Error(`missing ${prefix} id`);
@@ -37,6 +38,8 @@ function message(m, process, direction) {
   if (m.id !== undefined && !(typeof m.id === 'number' || /^\d+$/.test(m.id))) {
     throw Error('non-numeric RPC id needs manual review');
   }
+  const requestKey = `${process}:${m.id}`;
+  if (direction === 'to_agent' && m.method && m.id !== undefined) requests.set(requestKey, m.method);
   const p = m.params;
   if (m.method === 'initialize') {
     result.params = {protocolVersion: p.protocolVersion,
@@ -83,6 +86,14 @@ function message(m, process, direction) {
     result.result.agentCapabilities._meta = {authStatus: {}};
   } else if (m.result?.sessionId !== undefined) {
     result.result = {sessionId: alias(sessions, m.result.sessionId, 'session')};
+  } else if (direction === 'from_agent' && requests.get(requestKey) === 'session/resume'
+      && m.result && Object.keys(m.result).length === 3
+      && m.result.models && typeof m.result.models === 'object' && !Array.isArray(m.result.models)
+      && m.result.modes && typeof m.result.modes === 'object' && !Array.isArray(m.result.modes)
+      && Array.isArray(m.result.configOptions)) {
+    // Resume returns catalogs without sessionId in both CLI 0.165.0 and 0.166.0.
+    // Drop all catalog contents; preserve the absence of a returned session id.
+    result.result = {};
   } else if (m.result?.stopReason !== undefined) result.result = {stopReason: m.result.stopReason};
   else if (m.result?.outcome) {
     const o = m.result.outcome;
@@ -90,6 +101,7 @@ function message(m, process, direction) {
     result.result = {outcome: pick(o, ['optionId', 'outcome'])};
   } else if (m.result && Object.keys(m.result).length === 0) result.result = {};
   else throw Error(`unknown ${direction} response`);
+  if (!m.method && m.id !== undefined) requests.delete(requestKey);
   return result;
 }
 const stderrSeen = new Set();
