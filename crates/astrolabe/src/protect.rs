@@ -5,7 +5,7 @@ use crate::acp::Launch;
 use crate::hook::{SELF_TEST_SESSION, session_start_since};
 use crate::layer::{DATA_DIR_VAR, PROGRAM, launch_env};
 use serde_json::{Value, json};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -136,8 +136,30 @@ impl Protection {
     }
 }
 
+/// Only the launch's own PATH, as the client will search it. `Command` alone won't do: on
+/// Windows it also looks beside this program, in system folders and on this process's
+/// PATH, so it can find a guard the client can't. A relative entry doesn't count, since it
+/// would find a copy in the repo.
+fn find_guard(launch: &Launch) -> Option<PathBuf> {
+    let is_path =
+        |name: &OsStr| name == "PATH" || (cfg!(windows) && name.eq_ignore_ascii_case("PATH"));
+    let set = (launch.env.iter().rev()).find(|(name, _)| is_path(name));
+    let path = match set {
+        Some((_, value)) => Some(value.clone()),
+        None if launch.env_remove.iter().any(|name| is_path(name)) => None,
+        None => std::env::var_os("PATH"),
+    }?;
+    let file = format!("{PROGRAM}{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
 fn run_guard(launch: &Launch, cwd: &Path, input: &str) -> Result<String, String> {
-    let mut command = Command::new(PROGRAM);
+    let program = find_guard(launch)
+        .ok_or_else(|| format!("`{PROGRAM}` could not start: not on the launch's PATH"))?;
+    let mut command = Command::new(program);
     for name in &launch.env_remove {
         command.env_remove(name);
     }
