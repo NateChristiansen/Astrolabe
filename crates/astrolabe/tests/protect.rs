@@ -6,6 +6,7 @@ use astrolabe::acp::{AcpClient, ClientEvent, Launch, ReceiptAt, adapter_entry};
 use astrolabe::driver::{claude, codex};
 use astrolabe::layer::{Layer, RepoSupplies, Target, TargetKind, compose, guard_rules};
 use astrolabe::model::RunState;
+use astrolabe::protect::unsafe_folder;
 use astrolabe::worktree::{self, Closed, Progress};
 use astrolabe::{Error, Result};
 use common::{Harness, TempDir};
@@ -232,7 +233,7 @@ fn adapters(package: &str) -> TempDir {
 }
 
 #[test]
-fn the_codex_driver_sets_the_platform_mode_and_forbids_agent() {
+fn the_codex_driver_sets_the_one_mode_forbids_agent_and_checks_the_folder() {
     let dir = adapters(astrolabe::acp::CODEX_ADAPTER);
     let launch = codex::launch(&dir.0, None, &json!({})).unwrap();
     assert_eq!(launch.forbidden_mode.as_deref(), Some("agent"));
@@ -240,11 +241,89 @@ fn the_codex_driver_sets_the_platform_mode_and_forbids_agent() {
         .env
         .iter()
         .find(|(name, _)| name == "INITIAL_AGENT_MODE");
-    match codex::platform_mode() {
-        Some(expected) => assert_eq!(mode.unwrap().1, expected),
-        None => assert!(mode.is_none()),
+    assert_eq!(mode.unwrap().1, "workspace-write");
+    assert!(launch.folder_check.is_some());
+    let claude_dir = adapters(astrolabe::acp::CLAUDE_ADAPTER);
+    let claude = claude::launch(&claude_dir.0, None, None).unwrap();
+    assert!(
+        claude.folder_check.is_none(),
+        "Claude is unaffected as far as known"
+    );
+}
+
+fn windows_roots() -> [(&'static str, String); 3] {
+    [
+        ("LOCALAPPDATA", r"C:\Users\me\AppData\Local".to_owned()),
+        ("TEMP", r"C:\Users\me\AppData\Local\Temp".to_owned()),
+        ("TMP", String::new()),
+    ]
+}
+
+#[test]
+fn a_session_under_local_app_data_or_temp_is_refused_with_the_reason() {
+    for cwd in [
+        r"C:\Users\me\AppData\Local\x",
+        r"c:\users\ME\appdata\local\Temp\x",
+        r"\\?\C:\Users\me\AppData\Local\x",
+        "C:/Users/me/AppData/Local",
+    ] {
+        let message = unsafe_folder(cwd, &windows_roots()).expect(cwd);
+        assert!(message.contains("%LOCALAPPDATA%"), "{message}");
+        assert!(message.contains("system32"), "{message}");
     }
-    assert_eq!(codex::platform_mode().is_none(), cfg!(windows));
+    let roots = [("TEMP", r"D:\t".to_owned())];
+    assert!(unsafe_folder(r"D:\t\x", &roots).unwrap().contains("%TEMP%"));
+}
+
+/// Real checkouts, a sibling that only shares a prefix, and an unset variable.
+#[test]
+fn a_session_elsewhere_passes() {
+    for cwd in [
+        r"C:\Users\me\workspace\x",
+        r"C:\Users\Public\x",
+        r"C:\Users\me\AppData\LocalLow\x",
+    ] {
+        assert_eq!(unsafe_folder(cwd, &windows_roots()), None, "{cwd}");
+    }
+}
+
+/// Stops: anything starting in a refused folder, on a launch or a resume.
+#[test]
+fn a_refused_folder_starts_nothing() {
+    fn refuse(_: &Path) -> std::result::Result<(), String> {
+        Err("no".to_owned())
+    }
+    let h = Harness::new();
+    let launch = Launch {
+        command: fake_agent().into(),
+        args: vec!["--dump-init".into()],
+        folder_check: Some(refuse),
+        ..Launch::default()
+    };
+    let error = AcpClient::launch(&h.engine, &launch, &h.dir.0).err();
+    assert!(
+        matches!(error, Some(Error::UnsafeSessionFolder(_))),
+        "{error:?}"
+    );
+    assert!(!h.dir.0.join("init.json").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn the_real_check_refuses_this_machines_temp_folder() {
+    let dir = TempDir::new();
+    let message = astrolabe::protect::refuse_unsafe_windows_folder(&dir.0).unwrap_err();
+    assert!(message.contains("system32"), "{message}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn the_real_check_has_no_opinion_off_windows() {
+    let dir = TempDir::new();
+    assert_eq!(
+        astrolabe::protect::refuse_unsafe_windows_folder(&dir.0),
+        Ok(())
+    );
 }
 
 fn product() -> Target {

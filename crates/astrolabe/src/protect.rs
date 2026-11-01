@@ -21,6 +21,50 @@ pub const RECEIPT_WAIT: Duration = Duration::from_secs(30);
 pub const RECEIPT_WAIT_VAR: &str = "ASTROLABE_RECEIPT_WAIT_MS";
 const SELF_TEST_WAIT: Duration = Duration::from_secs(10);
 
+/// Runs before a launch or resume starts anything. A real command's cwd and a write in the
+/// folder belong to the doctor, which can add itself here; this only reads the path.
+pub type FolderCheck = fn(&Path) -> Result<(), String>;
+
+/// Codex on Windows, seen on one PC in three folders: under %LOCALAPPDATA% commands run in
+/// system32 and writes fail silently, and the model can still report success. Cause not
+/// proved; %TEMP% is presumed the same, untested. Refused because no answer from the
+/// session could be trusted to show it.
+pub fn refuse_unsafe_windows_folder(cwd: &Path) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    let cwd = crate::hook::comparable(cwd);
+    let roots = ["LOCALAPPDATA", "TEMP", "TMP"].map(|name| {
+        let value = std::env::var_os(name).unwrap_or_default();
+        (name, crate::hook::comparable(Path::new(&value)))
+    });
+    match unsafe_folder(&cwd, &roots) {
+        Some(message) => Err(message),
+        None => Ok(()),
+    }
+}
+
+/// Whole path parts, ignoring case and slash style. An unset variable is no root.
+pub fn unsafe_folder(cwd: &str, roots: &[(&str, String)]) -> Option<String> {
+    let parts = |path: &str| -> Vec<String> {
+        let path = path.trim_start_matches(r"\\?\").replace('\\', "/");
+        path.to_lowercase()
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let folder = parts(cwd);
+    roots.iter().find_map(|(name, root)| {
+        let root = parts(root);
+        (!root.is_empty() && folder.starts_with(&root)).then(|| {
+            format!(
+                "{cwd} is under %{name}%, where commands run in system32 and writes fail silently while the model can still report success. Use a folder outside AppData and the temp folder."
+            )
+        })
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiptAt {
     /// Hold `Ready` until it arrives.

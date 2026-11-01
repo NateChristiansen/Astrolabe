@@ -11,7 +11,7 @@ mod job;
 pub mod layer;
 pub mod mcp;
 pub mod model;
-mod protect;
+pub mod protect;
 mod serve;
 mod stall;
 mod store;

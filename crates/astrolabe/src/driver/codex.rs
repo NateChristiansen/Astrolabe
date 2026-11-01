@@ -20,16 +20,8 @@ pub const RECEIPT_AT: ReceiptAt = ReceiptAt::AfterFirstPrompt;
 /// reach the client, and it has let a force push through against a client that rejects.
 pub const FORBIDDEN_MODE: &str = "agent";
 const MODE_VAR: &str = "INITIAL_AGENT_MODE";
-/// Overrides the platform's value.
-const MODE_OVERRIDE: &str = "ASTROLABE_CODEX_MODE";
-
-/// Per platform. In this mode requests reach the client. Windows is left open: with its
-/// sandbox setting a PC probe saw this mode unable to write the workspace, and the
-/// decision is pending. Until then a Windows launch ends in the forbidden-mode failure
-/// unless `ASTROLABE_CODEX_MODE` names one.
-pub fn platform_mode() -> Option<&'static str> {
-    (!cfg!(windows)).then_some("workspace-write")
-}
+/// On every platform. In this mode requests reach the client.
+pub const MODE: &str = "workspace-write";
 
 /// Each event's hooks and their client names, for events this client has.
 fn event_name(event: HookEvent) -> Option<(&'static str, &'static str)> {
@@ -314,12 +306,9 @@ pub fn launch(
     launch
         .env
         .push(("CODEX_CONFIG".into(), config.to_string().into()));
-    let mode = std::env::var(MODE_OVERRIDE).ok();
-    let mode = mode.as_deref().or(platform_mode());
-    if let Some(mode) = mode {
-        launch.env.push((MODE_VAR.into(), mode.into()));
-    }
+    launch.env.push((MODE_VAR.into(), MODE.into()));
     launch.forbidden_mode = Some(FORBIDDEN_MODE.to_owned());
+    launch.folder_check = Some(crate::protect::refuse_unsafe_windows_folder);
     if let Some(path) = client_path {
         launch.env.push(("CODEX_PATH".into(), path.into()));
     }

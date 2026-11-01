@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::events::error_text;
 use crate::host::Clock;
 use crate::model::{Alert, Request, SessionId};
-pub use crate::protect::{Protection, ReceiptAt};
+pub use crate::protect::{FolderCheck, Protection, ReceiptAt};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -65,6 +65,8 @@ pub struct Launch {
     /// launches with no layer, such as a driver's own fixtures.
     pub protection: Option<Protection>,
     /// The launch fails loudly if the adapter reports this mode at any point.
+    /// Refuses a session folder before anything starts. The seam for a fuller check.
+    pub folder_check: Option<FolderCheck>,
     pub forbidden_mode: Option<String>,
 }
 
@@ -262,6 +264,9 @@ impl<'e> AcpClient<'e> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(check) = launch.folder_check {
+            check(cwd).map_err(Error::UnsafeSessionFolder)?;
+        }
         if let Some(protection) = &launch.protection {
             protection
                 .check_guard(launch, cwd)
