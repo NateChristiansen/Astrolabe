@@ -72,6 +72,64 @@ fn hook_never_fails_the_agent() {
 }
 
 #[test]
+fn hook_exits_zero_with_stderr_closed_and_nowhere_to_write() {
+    let dir = TempDir::new();
+    let blocked = dir.0.join("blocked");
+    std::fs::write(&blocked, "").unwrap();
+    let mut child = astrolabe(&blocked, &dir.0, &["hook", "session-start"])
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}
+
+#[test]
+fn hook_keeps_input_from_a_client_that_keeps_stdin_open() {
+    let dir = TempDir::new();
+    let mut child = astrolabe(&dir.0, &dir.0, &["hook", "session-start"])
+        .spawn()
+        .unwrap();
+    let mut held_open = child.stdin.take().unwrap();
+    let input = json!({ "session_id": "s1" }).to_string();
+    held_open.write_all(input.as_bytes()).unwrap();
+    held_open.flush().unwrap();
+    assert!(child.wait().unwrap().success());
+    let reports = read_reports(&reports_dir_in(&dir.0));
+    assert_eq!(reports[0].session_id.as_deref(), Some("s1"));
+}
+
+#[test]
+fn only_regular_files_of_a_sane_size_are_reports() {
+    let dir = TempDir::new();
+    fire(&dir.0, &dir.0, "{}");
+    let reports = reports_dir_in(&dir.0);
+    let big = serde_json::json!({
+        "event": "x".repeat(1 << 17), "cwd": "c", "at_ms": 1, "session_id": null,
+    });
+    std::fs::write(reports.join("big.json"), big.to_string()).unwrap();
+    std::fs::create_dir(reports.join("folder.json")).unwrap();
+    #[cfg(unix)]
+    {
+        let fifo = reports.join("blocked.json");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let link = reports.join("endless.json");
+        std::os::unix::fs::symlink("/dev/zero", link).unwrap();
+    }
+    // On a thread: with the bug this never returns.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(read_reports(&reports)));
+    let found = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(found.len(), 1);
+}
+
+#[test]
 fn hook_does_not_wait_for_a_client_that_keeps_stdin_open() {
     let dir = TempDir::new();
     let mut child = astrolabe(&dir.0, &dir.0, &["hook", "session-start"])
@@ -152,6 +210,11 @@ fn server_offers_one_tool_that_reports_what_reached_this_folder() {
         "params": { "protocolVersion": "2025-03-26" },
     }));
     assert_eq!(hello["result"]["protocolVersion"], "2025-03-26");
+    let future = server.call(&json!({
+        "jsonrpc": "2.0", "id": 10, "method": "initialize",
+        "params": { "protocolVersion": "2099-01-01" },
+    }));
+    assert_eq!(future["result"]["protocolVersion"], "2025-06-18");
     // A notification gets no answer: the next line read answers the next call.
     writeln!(
         server.stdin,

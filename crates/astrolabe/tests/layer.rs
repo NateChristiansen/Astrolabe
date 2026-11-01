@@ -31,7 +31,7 @@ fn agent() -> Target {
         supplies: RepoSupplies {
             instructions: Some("Repo text.".to_owned()),
             hooks: layer.hooks,
-            mcp_names: vec![MCP_NAME.to_owned()],
+            mcp: layer.mcp,
             denies: layer.denies,
             memory_off: true,
         },
@@ -40,7 +40,7 @@ fn agent() -> Target {
 
 #[test]
 fn agent_repo_adds_nothing_it_supplies() {
-    let delivery = compose(&agent(), &layer());
+    let delivery = compose(&agent(), &layer()).unwrap();
     assert_eq!(delivery, Delivery::default());
     let claude = claude::deliver(&delivery, Path::new("dir"));
     assert_eq!(claude.options, None);
@@ -52,7 +52,7 @@ fn agent_repo_still_gets_what_it_lacks() {
     let mut target = agent();
     target.supplies.hooks.clear();
     target.supplies.denies.clear();
-    let delivery = compose(&target, &layer());
+    let delivery = compose(&target, &layer()).unwrap();
     assert_eq!(delivery.hooks, layer().hooks);
     assert_eq!(delivery.denies, layer().denies);
     assert_eq!(delivery.instructions, None);
@@ -61,7 +61,7 @@ fn agent_repo_still_gets_what_it_lacks() {
 
 #[test]
 fn product_repo_gets_the_whole_layer() {
-    let delivery = compose(&product(RepoSupplies::default()), &layer());
+    let delivery = compose(&product(RepoSupplies::default()), &layer()).unwrap();
     let layer = layer();
     assert_eq!(delivery.hooks, layer.hooks);
     assert_eq!(delivery.mcp, layer.mcp);
@@ -77,12 +77,12 @@ fn no_duplicate_hooks() {
         hooks: layer().hooks,
         ..RepoSupplies::default()
     };
-    assert_eq!(compose(&product(supplies), &layer()).hooks, vec![]);
+    assert_eq!(compose(&product(supplies), &layer()).unwrap().hooks, vec![]);
 
     // The layer repeats itself.
     let mut twice = layer();
     twice.hooks.extend(layer().hooks);
-    let delivery = compose(&product(RepoSupplies::default()), &twice);
+    let delivery = compose(&product(RepoSupplies::default()), &twice).unwrap();
     assert_eq!(delivery.hooks, layer().hooks);
     let options = claude::deliver(&delivery, Path::new("dir"))
         .options
@@ -103,7 +103,87 @@ fn no_duplicate_hooks() {
         }],
         ..RepoSupplies::default()
     };
-    assert_eq!(compose(&product(supplies), &layer()).hooks, layer().hooks);
+    assert_eq!(
+        compose(&product(supplies), &layer()).unwrap().hooks,
+        layer().hooks
+    );
+}
+
+#[test]
+fn a_malformed_deny_fails_the_composition_on_every_target() {
+    for rule in [
+        "",
+        " ",
+        "Bash()",
+        "Bash( )",
+        "()",
+        "(x)",
+        "bash",
+        "Bash(touch",
+        "Bash(touch) ",
+        "Bash(touch)x",
+        "Bash(:*)",
+        "Read(x:*)",
+        "mcp__s__t(x)",
+        r"Read(C:\\(x\\)\\y)",
+    ] {
+        let layer = Layer::standard(TEXT, &[rule]);
+        for target in [agent(), product(RepoSupplies::default())] {
+            let error = compose(&target, &layer).unwrap_err();
+            assert!(error.to_string().contains("deny rule"), "{rule:?}: {error}");
+        }
+    }
+    // The repo holding the same bad rule must not hide it.
+    let bad = Layer::standard(TEXT, &["Bash()"]);
+    let mut holding = agent();
+    holding.supplies.denies = bad.denies.clone();
+    assert!(compose(&holding, &bad).is_err());
+
+    for rule in [
+        "Bash",
+        "Bash(touch:*)",
+        "Bash(git push --force:*)",
+        "Bash(npm *)",
+        "Read(./secret.txt)",
+        "Read(./a(b).txt)",
+        "mcp__server",
+        "mcp__server__tool",
+    ] {
+        let layer = Layer::standard(TEXT, &[rule]);
+        assert!(
+            compose(&product(RepoSupplies::default()), &layer).is_ok(),
+            "{rule}"
+        );
+    }
+}
+
+#[test]
+fn this_server_under_another_name_is_not_added_again() {
+    let server = |name: &str, command: &str| McpServer {
+        name: name.to_owned(),
+        command: command.to_owned(),
+        args: vec!["mcp".to_owned()],
+        tools: vec![],
+    };
+    let mcp = |kind, theirs: McpServer| {
+        let target = Target {
+            kind,
+            supplies: RepoSupplies {
+                mcp: vec![theirs],
+                ..RepoSupplies::default()
+            },
+        };
+        compose(&target, &layer()).unwrap().mcp.len()
+    };
+    let alias = || server("astro", "astrolabe");
+    assert_eq!(mcp(TargetKind::Product, alias()), 0);
+    assert_eq!(mcp(TargetKind::Agent, alias()), 0);
+    // Same name: on a product repo the launch's wins, so one runs either way.
+    assert_eq!(mcp(TargetKind::Product, server(MCP_NAME, "astrolabe")), 1);
+    assert_eq!(mcp(TargetKind::Agent, server(MCP_NAME, "astrolabe")), 0);
+    // Another program under another name is another server.
+    assert_eq!(mcp(TargetKind::Product, server("other", "other")), 1);
+    assert_eq!(mcp(TargetKind::Agent, server("other", "other")), 1);
 }
 
 #[test]
@@ -124,7 +204,7 @@ fn merged_instructions_keep_the_repos_and_never_repeat() {
             instructions: repo.map(str::to_owned),
             ..RepoSupplies::default()
         };
-        let delivery = compose(&product(supplies), &layer());
+        let delivery = compose(&product(supplies), &layer()).unwrap();
         delivery.instructions.unwrap().merged()
     };
     assert_eq!(merged(Some("Repo text.\n")), "Repo text.\n\nLayer text.");
@@ -142,7 +222,7 @@ fn claude_gets_only_the_layers_text_in_its_added_directory() {
     };
     let dir = TempDir::new();
     let instructions = dir.0.join("instructions");
-    let delivery = compose(&product(supplies), &layer());
+    let delivery = compose(&product(supplies), &layer()).unwrap();
     let claude = claude::deliver(&delivery, &instructions);
     claude.write_instructions().unwrap();
     assert_eq!(
@@ -159,7 +239,7 @@ fn claude_gets_only_the_layers_text_in_its_added_directory() {
 
 #[test]
 fn claude_options_carry_the_layer() {
-    let delivery = compose(&product(RepoSupplies::default()), &layer());
+    let delivery = compose(&product(RepoSupplies::default()), &layer()).unwrap();
     let options = claude::deliver(&delivery, Path::new("dir"))
         .options
         .unwrap();
@@ -207,7 +287,7 @@ fn opened(client: &mut AcpClient) {
 #[test]
 fn resume_sends_the_layer_again() {
     let h = Harness::new();
-    let delivery = compose(&product(RepoSupplies::default()), &layer());
+    let delivery = compose(&product(RepoSupplies::default()), &layer()).unwrap();
     let options = claude::deliver(&delivery, Path::new("dir"))
         .options
         .unwrap();

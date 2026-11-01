@@ -3,6 +3,7 @@
 //! its own form: `driver::claude::deliver` here, and the Codex driver's `CODEX_CONFIG`
 //! after it. A Codex driver reads `Instructions::merged`, since its setting replaces
 //! the repo's; Claude reads `Instructions::layer`, since a repo's files stay loaded.
+use crate::error::{Error, Result};
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -93,7 +94,8 @@ pub enum TargetKind {
 pub struct RepoSupplies {
     pub instructions: Option<String>,
     pub hooks: Vec<Hook>,
-    pub mcp_names: Vec<String>,
+    /// `tools` is not compared. A client loads a second copy of a different name.
+    pub mcp: Vec<McpServer>,
     pub denies: Vec<String>,
     pub memory_off: bool,
 }
@@ -131,11 +133,15 @@ pub struct Delivery {
     pub memory_off: bool,
 }
 
-/// An identical hook is dropped on any target, because Codex would run it twice. A
-/// same-named server, a deny and memory-off stay on a product repo: the launch's server
-/// wins by name, a repeated deny costs nothing, and a product repo's config can't be
-/// counted on. On an agent repo they are the repo's to supply.
-pub fn compose(target: &Target, layer: &Layer) -> Delivery {
+/// An identical hook, or this server under another name, is dropped on any target: either
+/// would otherwise run twice. A same-named server, a deny and memory-off stay on a product
+/// repo: the launch's server wins by name, a repeated deny costs nothing, and a product
+/// repo's config can't be counted on. On an agent repo they are the repo's to supply.
+/// Fails on a malformed deny, on any target, since a client would drop it and carry on.
+pub fn compose(target: &Target, layer: &Layer) -> Result<Delivery> {
+    for deny in &layer.denies {
+        check_deny(deny)?;
+    }
     let agent = target.kind == TargetKind::Agent;
     let supplies = &target.supplies;
     let mut hooks = Vec::new();
@@ -145,14 +151,21 @@ pub fn compose(target: &Target, layer: &Layer) -> Delivery {
         }
     }
     let wanted = |supplied: bool| !(agent && supplied);
-    Delivery {
+    let supplied_server = |server: &McpServer| {
+        supplies.mcp.iter().any(|theirs| {
+            let same_name = theirs.name == server.name;
+            let same_program = theirs.command == server.command && theirs.args == server.args;
+            (same_program && !same_name) || (agent && same_name)
+        })
+    };
+    Ok(Delivery {
         instructions: wanted(supplies.instructions.is_some()).then(|| Instructions {
             repo: supplies.instructions.clone(),
             layer: layer.instructions.clone(),
         }),
         hooks,
         mcp: (layer.mcp.iter())
-            .filter(|server| wanted(supplies.mcp_names.contains(&server.name)))
+            .filter(|server| !supplied_server(server))
             .cloned()
             .collect(),
         denies: (layer.denies.iter())
@@ -160,7 +173,49 @@ pub fn compose(target: &Target, layer: &Layer) -> Delivery {
             .cloned()
             .collect(),
         memory_off: layer.memory_off && wanted(supplies.memory_off),
+    })
+}
+
+/// Refuses what Claude Code 2.1.314 would skip with no effect on the session: `Tool` or
+/// `Tool(content)` only. Stricter than the client where it costs nothing. A client's rule
+/// grammar can grow, so passing here does not prove a rule took effect.
+fn check_deny(rule: &str) -> Result<()> {
+    let bad = |why: &str| Err(Error::InvalidLayer(format!("deny rule {rule:?}: {why}")));
+    let (tool, content) = match rule.split_once('(') {
+        Some((tool, rest)) => match rest.strip_suffix(')') {
+            Some(content) => (tool, Some(content)),
+            None => return bad("must end at the closing parenthesis"),
+        },
+        None => (rule, None),
+    };
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    if tool.is_empty() || !tool.chars().all(word) {
+        return bad("needs a tool name");
     }
+    if tool.starts_with("mcp__") {
+        return match content {
+            Some(_) => bad("an MCP rule takes no pattern"),
+            None => Ok(()),
+        };
+    }
+    if !tool.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return bad("a tool name starts with a capital");
+    }
+    let Some(content) = content else {
+        return Ok(());
+    };
+    if content.trim().is_empty() {
+        return bad("empty parentheses");
+    }
+    if content.contains("\\(") || content.contains("\\)") {
+        return bad("an escaped parenthesis is ambiguous; use [(] or [)]");
+    }
+    if let Some(prefix) = content.strip_suffix(":*")
+        && (tool != "Bash" || prefix.trim().is_empty())
+    {
+        return bad(":* needs Bash and a prefix before it");
+    }
+    Ok(())
 }
 
 /// For every launch on every target, since a repo's own hook needs them too: `PATH`

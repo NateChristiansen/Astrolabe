@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 pub const START_EVENT: &str = "mcp-start";
 const NOT_FOUND: i64 = -32601;
 const PARSE_ERROR: i64 = -32700;
-const LATEST_PROTOCOL: &str = "2025-06-18";
+/// All these need is what this server does. The newest comes first, as the answer to
+/// a version not listed, which the client may then refuse.
+const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Enough to see a session's own reports. The rest stay in the folder.
 const SHOWN_REPORTS: usize = 50;
 
@@ -18,7 +20,8 @@ pub fn serve() -> io::Result<()> {
     if let Some(dir) = &dir
         && let Err(error) = write_report(dir, START_EVENT, None, &cwd)
     {
-        eprintln!("astrolabe mcp: {error}");
+        // Not `eprintln!`, which panics if stderr is closed.
+        let _ = writeln!(io::stderr(), "astrolabe mcp: {error}");
     }
     let mut out = io::stdout();
     for line in io::stdin().lock().lines() {
@@ -43,7 +46,10 @@ fn handle(line: &str, dir: Option<&Path>, cwd: &Path) -> Option<Value> {
     let params = &message["params"];
     let result = match message["method"].as_str().unwrap_or_default() {
         "initialize" => json!({
-            "protocolVersion": params["protocolVersion"].as_str().unwrap_or(LATEST_PROTOCOL),
+            "protocolVersion": PROTOCOLS
+                .into_iter()
+                .find(|version| params["protocolVersion"] == *version)
+                .unwrap_or(PROTOCOLS[0]),
             "capabilities": { "tools": {} },
             "serverInfo": { "name": "astrolabe", "version": env!("CARGO_PKG_VERSION") },
         }),

@@ -79,7 +79,8 @@ impl ClaudeDelivery {
     }
 }
 
-/// Pure. `instructions_dir` is added to the session as a whole, so it should hold nothing
+/// Sets no `settingSources`: production stays on the adapter's default, so the user's own
+/// settings and plugins load alongside the layer. Pure. `instructions_dir` is added to the session as a whole, so it should hold nothing
 /// else. Only the layer's text goes in it: a repo's own instructions stay loaded.
 pub fn deliver(delivery: &Delivery, instructions_dir: &Path) -> ClaudeDelivery {
     let mut settings = Map::new();

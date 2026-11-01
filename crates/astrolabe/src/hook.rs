@@ -6,12 +6,14 @@ use crate::host::{Clock, SystemClock};
 use crate::layer::DATA_DIR_VAR;
 use crate::store::default_db_path;
 use serde_json::{Value, json};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+/// Reports we write are far smaller. Anything bigger is not one of ours.
+const REPORT_LIMIT: u64 = 1 << 16;
 /// A client writes the hook's input at once. One that doesn't still gets its receipt.
 const STDIN_WAIT: Duration = Duration::from_secs(1);
 const STDIN_LIMIT: u64 = 1 << 20;
@@ -51,20 +53,34 @@ pub fn run(event: &str) {
         return;
     };
     if let Err(error) = write_report(&dir, event, session_id, &cwd) {
-        eprintln!("astrolabe hook: {error}");
+        // Not `eprintln!`, which panics if stderr is closed.
+        let _ = writeln!(io::stderr(), "astrolabe hook: {error}");
     }
 }
 
-/// On a thread, because a client that holds stdin open must not hold the hook.
+/// On a thread, because a client that holds stdin open must not hold the hook. Ends
+/// as soon as the input is whole, whether or not the client closes the pipe.
 fn read_input() -> Value {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut input = Vec::new();
-        let _ = io::stdin().take(STDIN_LIMIT).read_to_end(&mut input);
-        let _ = sender.send(input);
+        let mut stdin = io::stdin().take(STDIN_LIMIT);
+        let mut chunk = [0; 8192];
+        while let Ok(read @ 1..) = stdin.read(&mut chunk) {
+            if sender.send(chunk[..read].to_vec()).is_err() {
+                return;
+            }
+        }
     });
-    let input = receiver.recv_timeout(STDIN_WAIT).unwrap_or_default();
-    serde_json::from_slice(&input).unwrap_or(Value::Null)
+    let deadline = Instant::now() + STDIN_WAIT;
+    let mut input = Vec::new();
+    while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        input.extend(chunk);
+        if let Ok(value) = serde_json::from_slice(&input) {
+            return value;
+        }
+    }
+    Value::Null
 }
 
 /// Appears whole or not at all: written aside, then renamed.
@@ -98,7 +114,8 @@ pub fn comparable(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// Oldest first. A missing folder or an unreadable file is no report.
+/// Oldest first. A missing folder or an unreadable file is no report. Only regular
+/// files, read to a limit: a pipe or a link to a device here must not hold up the core.
 pub fn read_reports(dir: &Path) -> Vec<Report> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -110,7 +127,18 @@ pub fn read_reports(dir: &Path) -> Vec<Report> {
             if !file.ends_with(".json") {
                 return None;
             }
-            let body: Value = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            let mut opened = std::fs::File::open(entry.path())
+                .ok()?
+                .take(REPORT_LIMIT + 1);
+            opened.read_to_end(&mut bytes).ok()?;
+            if bytes.len() as u64 > REPORT_LIMIT {
+                return None;
+            }
+            let body: Value = serde_json::from_slice(&bytes).ok()?;
             Some(Report {
                 file,
                 event: body["event"].as_str()?.to_owned(),

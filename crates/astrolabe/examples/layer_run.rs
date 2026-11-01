@@ -5,6 +5,7 @@
 //! `overlap` composes for a product repo in a repo that also holds the layer. Codex
 //! agent/overlap require effective, trusted repo config; the caller proves that first.
 //! The optional text file holds effective repo developer_instructions, never AGENTS.md.
+//! `LAYER_RUN_DEFAULT_SOURCES_WIRE=<path>` runs Claude on the production `settingSources`.
 //! Hook and server starts land in
 //! `<data-dir>/reports`, and this prints them; the model's words are printed as they come.
 use astrolabe::acp::{AcpClient, ClientEvent, Launch};
@@ -40,7 +41,7 @@ fn main() {
     let holds_layer = RepoSupplies {
         instructions: Some("See AGENTS.md".to_owned()),
         hooks: layer.hooks.clone(),
-        mcp_names: vec![MCP_NAME.to_owned()],
+        mcp: layer.mcp.clone(),
         denies: layer.denies.clone(),
         memory_off: true,
     };
@@ -76,7 +77,10 @@ fn main() {
         },
         other => panic!("no scenario {other}"),
     };
-    let delivery = compose(&target, &layer);
+    // Set: the adapter's default settingSources, the production route, with the wire
+    // logged to this path and SDK messages on it. Those load the user's own hooks.
+    let wire_log = std::env::var_os("LAYER_RUN_DEFAULT_SOURCES_WIRE").map(PathBuf::from);
+    let delivery = compose(&target, &layer).expect("a valid layer");
     println!("delivery: {delivery:?}");
     let mut spec = match provider.as_str() {
         "claude" => {
@@ -84,10 +88,20 @@ fn main() {
             claude.write_instructions().unwrap();
             // Probe only. Production settingSources stays the adapter default.
             let mut options = claude.options.unwrap_or_else(|| json!({}));
-            options["settingSources"] = json!(["project"]);
+            if wire_log.is_none() {
+                options["settingSources"] = json!(["project"]);
+            }
             options["promptSuggestions"] = json!(false);
             println!("options: {options}");
-            claude::launch(Path::new(adapters), Some(Path::new(client)), Some(options))
+            claude::launch(Path::new(adapters), Some(Path::new(client)), Some(options)).map(
+                |mut spec| {
+                    if wire_log.is_some() {
+                        spec.meta.as_mut().unwrap()["claudeCode"]["emitRawSDKMessages"] =
+                            json!(true);
+                    }
+                    spec
+                },
+            )
         }
         "codex" => {
             let keys = if delivery.hooks.is_empty() {
@@ -114,7 +128,7 @@ fn main() {
     spec.env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
 
     let engine = Engine::open(&data.join("astrolabe.db"), SystemClock, OsProcessProbe).unwrap();
-    let mut session = AcpClient::launch(&engine, &spec, &repo).unwrap();
+    let mut session = AcpClient::launch(&engine, &tapped(&spec, &wire_log, "1"), &repo).unwrap();
     wait_ready(&mut session);
     let id = session.session_id();
     println!("agent session {}", session.agent_session_id());
@@ -122,7 +136,7 @@ fn main() {
     session.shutdown().unwrap();
     show_reports(&data, "after first process");
 
-    let mut session = resume(&engine, id, &spec, &repo);
+    let mut session = resume(&engine, id, &tapped(&spec, &wire_log, "2"), &repo);
     wait_ready(&mut session);
     turn(&mut session, &prompt(provider, "marker-2"));
     session.shutdown().unwrap();
@@ -132,6 +146,24 @@ fn main() {
     for name in ["marker-1.txt", "marker-2.txt"] {
         println!("{name} exists: {}", repo.join(name).exists());
     }
+}
+
+fn tapped(spec: &Launch, wire_log: &Option<PathBuf>, process: &str) -> Launch {
+    let mut spec = spec.clone();
+    if let Some(log) = wire_log {
+        let tap = std::env::current_exe()
+            .unwrap()
+            .with_file_name("record_claude");
+        let mut args = vec![
+            "--tee".into(),
+            log.with_extension(process).into(),
+            spec.command,
+        ];
+        args.append(&mut spec.args);
+        spec.command = tap.into();
+        spec.args = args;
+    }
+    spec
 }
 
 fn prompt(provider: &str, marker: &str) -> String {

@@ -38,6 +38,8 @@ pub enum Error {
         option: String,
     },
     AdapterNotFound(String),
+    /// The layer can't be delivered as written. The launch must not go ahead.
+    InvalidLayer(String),
 }
 
 impl fmt::Display for Error {
@@ -79,6 +81,7 @@ impl fmt::Display for Error {
                 write!(f, "request {request} did not offer option {option}")
             }
             Self::AdapterNotFound(detail) => write!(f, "adapter not found: {detail}"),
+            Self::InvalidLayer(detail) => write!(f, "invalid layer: {detail}"),
         }
     }
 }

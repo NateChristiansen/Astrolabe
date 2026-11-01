@@ -28,6 +28,7 @@ fn product() -> Delivery {
         },
         &Layer::standard("Layer word LAYER-OWL.", &[]),
     )
+    .unwrap()
 }
 
 #[test]
@@ -75,12 +76,12 @@ fn empty_and_fully_supplied_agent_deliver_nothing() {
         supplies: RepoSupplies {
             instructions: Some("Layer".into()),
             hooks: layer.hooks.clone(),
-            mcp_names: vec![MCP_NAME.into()],
+            mcp: layer.mcp.clone(),
             memory_off: true,
             ..Default::default()
         },
     };
-    for delivery in [Delivery::default(), compose(&target, &layer)] {
+    for delivery in [Delivery::default(), compose(&target, &layer).unwrap()] {
         let output = codex::deliver(&delivery, &[]).unwrap();
         assert_eq!(output.config, json!({}));
         assert!(output.mcp_servers.is_empty());
@@ -98,7 +99,7 @@ fn identical_repo_hook_is_not_delivered_or_trusted_twice() {
             ..Default::default()
         },
     };
-    let output = codex::deliver(&compose(&target, &layer), &[]).unwrap();
+    let output = codex::deliver(&compose(&target, &layer).unwrap(), &[]).unwrap();
     assert!(output.config.get("hooks").is_none());
     assert!(output.config.get("features.hooks").is_none());
 }
