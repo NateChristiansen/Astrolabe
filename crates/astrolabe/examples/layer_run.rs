@@ -1,11 +1,14 @@
 //! A real session with the composed layer, through the real driver. A manual Mac tool.
 //! One turn, then the same turn again on a resume in a new process. Usage:
-//! `layer_run <agent|product|overlap> <repo> <data-dir> <adapters-dir> <client-path>`
-//! `overlap` composes for a product repo in a repo that also holds the layer. The Codex
-//! delivery adds its own provider argument here. Hook and server starts land in
+//! `layer_run <claude|codex> <agent|product|overlap> <repo> <data-dir> <adapters-dir> <client-path> [hooks-list.json] [repo-instructions.txt]`
+//! `layer_run hooks-list <repo> <codex-path> <output.json>` discovers session hook trust.
+//! `overlap` composes for a product repo in a repo that also holds the layer. Codex
+//! agent/overlap require effective, trusted repo config; the caller proves that first.
+//! The optional text file holds effective repo developer_instructions, never AGENTS.md.
+//! Hook and server starts land in
 //! `<data-dir>/reports`, and this prints them; the model's words are printed as they come.
 use astrolabe::acp::{AcpClient, ClientEvent, Launch};
-use astrolabe::driver::claude;
+use astrolabe::driver::{claude, codex};
 use astrolabe::hook::{read_reports, reports_dir_in};
 use astrolabe::layer::*;
 use astrolabe::model::Alert;
@@ -23,7 +26,13 @@ const PROMPT: &str = "Do these in order. 1. List every codeword from your instru
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [scenario, repo, data, adapters, client] = args.as_slice() else {
+    if let [mode, repo, client, output] = args.as_slice()
+        && mode == "hooks-list"
+    {
+        discover_hooks(repo, client, output);
+        return;
+    }
+    let [provider, scenario, repo, data, adapters, client, extra @ ..] = args.as_slice() else {
         panic!("see the usage at the top of this file");
     };
     let (repo, data) = (PathBuf::from(repo), PathBuf::from(data));
@@ -35,29 +44,69 @@ fn main() {
         denies: layer.denies.clone(),
         memory_off: true,
     };
+    let instructions = extra
+        .get(1)
+        .map(|file| std::fs::read_to_string(file).unwrap());
+    assert!(
+        provider != "codex" || scenario != "overlap" || instructions.is_some(),
+        "Codex overlap needs a file containing the effective repo developer_instructions"
+    );
     let target = match scenario.as_str() {
         "agent" => Target {
             kind: TargetKind::Agent,
             supplies: holds_layer,
         },
-        "product" | "overlap" => Target {
+        "product" => Target {
             kind: TargetKind::Product,
-            supplies: RepoSupplies::default(),
+            supplies: RepoSupplies {
+                instructions,
+                ..RepoSupplies::default()
+            },
+        },
+        "overlap" => Target {
+            kind: TargetKind::Product,
+            supplies: if provider == "codex" {
+                RepoSupplies {
+                    instructions,
+                    ..holds_layer
+                }
+            } else {
+                RepoSupplies::default()
+            },
         },
         other => panic!("no scenario {other}"),
     };
     let delivery = compose(&target, &layer);
     println!("delivery: {delivery:?}");
-    let claude = claude::deliver(&delivery, &data.join("instructions"));
-    claude.write_instructions().unwrap();
-
-    // `project` only: the user's own hooks and plugins stay out of a probe.
-    let mut options = claude.options.clone().unwrap_or_else(|| json!({}));
-    options["settingSources"] = json!(["project"]);
-    options["promptSuggestions"] = json!(false);
-    println!("options: {options}");
-    let mut spec = claude::launch(Path::new(adapters), Some(Path::new(client)), Some(options))
-        .expect("the adapter");
+    let mut spec = match provider.as_str() {
+        "claude" => {
+            let claude = claude::deliver(&delivery, &data.join("instructions"));
+            claude.write_instructions().unwrap();
+            // Probe only. Production settingSources stays the adapter default.
+            let mut options = claude.options.unwrap_or_else(|| json!({}));
+            options["settingSources"] = json!(["project"]);
+            options["promptSuggestions"] = json!(false);
+            println!("options: {options}");
+            claude::launch(Path::new(adapters), Some(Path::new(client)), Some(options))
+        }
+        "codex" => {
+            let keys = if delivery.hooks.is_empty() {
+                vec![]
+            } else {
+                let file = extra
+                    .first()
+                    .expect("Codex hooks need hooks-list.json from this machine");
+                let response =
+                    serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+                codex::SessionFlagKey::from_hooks_list(&response).unwrap()
+            };
+            let codex = codex::deliver(&delivery, &keys).unwrap();
+            println!("CODEX_CONFIG: {}", codex.config);
+            codex.launch(Path::new(adapters), Some(Path::new(client)))
+        }
+        other => panic!("no provider {other}"),
+    }
+    .expect("the adapter");
     let program = std::env::current_exe().unwrap();
     let program = program.parent().unwrap().parent().unwrap();
     spec.env
@@ -69,13 +118,13 @@ fn main() {
     wait_ready(&mut session);
     let id = session.session_id();
     println!("agent session {}", session.agent_session_id());
-    turn(&mut session, &PROMPT.replace("marker-N", "marker-1"));
+    turn(&mut session, &prompt(provider, "marker-1"));
     session.shutdown().unwrap();
     show_reports(&data, "after first process");
 
     let mut session = resume(&engine, id, &spec, &repo);
     wait_ready(&mut session);
-    turn(&mut session, &PROMPT.replace("marker-N", "marker-2"));
+    turn(&mut session, &prompt(provider, "marker-2"));
     session.shutdown().unwrap();
     show_reports(&data, "after resume");
     let new = engine.ingest_reports(&reports_dir_in(&data)).unwrap();
@@ -83,6 +132,57 @@ fn main() {
     for name in ["marker-1.txt", "marker-2.txt"] {
         println!("{name} exists: {}", repo.join(name).exists());
     }
+}
+
+fn prompt(provider: &str, marker: &str) -> String {
+    let prompt = PROMPT.replace("marker-N", marker);
+    if provider == "codex" {
+        prompt.replace("Bash command", "shell command")
+    } else {
+        prompt
+    }
+}
+
+/// Read-only app-server discovery; no thread, model request, config write or trust line.
+fn discover_hooks(repo: &str, client: &str, output: &str) {
+    const SCRIPT: &str = r#"
+const {spawn} = require('node:child_process');
+const [repo, client] = process.argv.slice(1);
+const hooks = 'hooks={SessionStart=[{hooks=[{type="command",command="astrolabe hook session-start"}]}]}';
+const child = spawn(client, ['app-server', '-c', hooks], {cwd:repo, stdio:['pipe','pipe','inherit']});
+const timer = setTimeout(() => { child.kill(); process.exitCode=2; }, 15000);
+let buffer='';
+child.on('error', error => { console.error(error); clearTimeout(timer); process.exitCode=2; });
+child.stdout.on('data', chunk => {
+  buffer += chunk; let end;
+  while ((end=buffer.indexOf('\n')) >= 0) {
+    const line=buffer.slice(0,end); buffer=buffer.slice(end+1);
+    let message; try { message=JSON.parse(line); } catch { continue; }
+    if (message.id===1) {
+      if (message.error) { console.error(message); child.kill(); process.exitCode=2; clearTimeout(timer); return; }
+      child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'initialized'})+'\n');
+      child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:2,method:'hooks/list',params:{cwds:[repo]}})+'\n');
+    }
+    if (message.id===2) { console.log(JSON.stringify(message)); clearTimeout(timer); child.stdin.end(); child.kill(); }
+  }
+});
+child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{clientInfo:{name:'astrolabe-layer-probe',version:'0'}}})+'\n');
+"#;
+    let result = std::process::Command::new("node")
+        .args(["-e", SCRIPT, repo, client])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "hooks/list failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let response: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let keys = codex::SessionFlagKey::from_hooks_list(&response).unwrap();
+    assert!(!keys.is_empty(), "no session-flags hooks returned");
+    std::fs::write(output, result.stdout).unwrap();
+    println!("session hooks: {keys:?}");
 }
 
 fn resume<'e>(
