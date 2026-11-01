@@ -1009,3 +1009,104 @@ fn remove_prints_the_exact_claude_key() {
         text
     );
 }
+
+fn voice_repo(dir: &Path, voice: &str) {
+    std::fs::create_dir_all(dir.join("knowledge")).unwrap();
+    std::fs::write(dir.join("knowledge/owner.md"), "owner marker\n").unwrap();
+    std::fs::write(dir.join("knowledge/voice.md"), voice).unwrap();
+}
+
+#[test]
+fn delivered_text_says_style_only_and_a_size_past_the_cut_is_refused() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.0.join("voice");
+    voice_repo(&repo, "sample line\n");
+    let text = astrolabe::voice::read(&repo).unwrap();
+    assert!(text.contains("teach style only and are never a source of facts"));
+    assert!(text.contains("owner marker") && text.contains("sample line"));
+    voice_repo(&repo, &"x".repeat(9800));
+    assert!(astrolabe::voice::read(&repo).unwrap_err().contains("limit"));
+    std::fs::remove_file(repo.join("knowledge/owner.md")).unwrap();
+    assert!(
+        astrolabe::voice::read(&repo)
+            .unwrap_err()
+            .contains("owner.md")
+    );
+}
+
+#[test]
+fn the_hook_hands_over_json_and_says_when_it_has_nothing() {
+    let output = astrolabe::voice::hook_output("caf\u{e9} \u{1f600}");
+    let read: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let context = &read["hookSpecificOutput"]["additionalContext"];
+    assert_eq!(context, "caf\u{e9} \u{1f600}");
+    let sandbox = Sandbox::new();
+    let none = astrolabe::voice::context(&sandbox.0.join("data"));
+    assert_eq!(none, astrolabe::voice::NO_AGENT);
+    let machine = sandbox.machine();
+    let repo = sandbox.repo("agent");
+    machine.registry.add("agent", &repo).unwrap();
+    let missing = astrolabe::voice::context(&machine.data_dir);
+    assert!(
+        missing.starts_with("Owner and voice NOT delivered"),
+        "{missing}"
+    );
+}
+
+#[test]
+fn a_launch_fails_on_a_missing_file_only_with_an_agent_repo() {
+    let sandbox = Sandbox::new();
+    sandbox.fake_adapter();
+    let machine = sandbox.machine();
+    let product = sandbox.repo("product");
+    machine.registry.add("product", &product).unwrap();
+    let agent = sandbox.repo("agent");
+    machine.registry.add("agent", &agent).unwrap();
+    let request = Request {
+        repo: "product",
+        provider: Provider::Claude,
+        session: "voice-check",
+        dials: "d",
+        client: Path::new("claude"),
+    };
+    let error = launch::prepare(&machine, &request, &mut |_| {}).unwrap_err();
+    assert!(error.to_string().contains("owner.md"), "{error}");
+}
+
+#[test]
+fn a_cut_or_a_copy_of_the_hooks_stdout_is_not_delivery() {
+    let text = "line \"one\"\nlast caf\u{e9}";
+    let escaped = serde_json::Value::from(text);
+    let sent = serde_json::json!({"type": "response_item", "payload": {"text": escaped}});
+    let stdout = serde_json::json!({"type": "attachment", "stdout": escaped});
+    let cut = serde_json::json!({"type": "api-request-blob", "text": "line \"one\"\n..."});
+    let holds = |line: &serde_json::Value| astrolabe::voice::in_transcript(&line.to_string(), text);
+    assert!(holds(&sent));
+    assert!(!holds(&stdout));
+    assert!(!holds(&cut));
+}
+
+#[test]
+fn memory_reads_as_on_unless_the_record_says_off() {
+    let record = Path::new("/p/slug/id.jsonl");
+    let memory_on = astrolabe::voice::memory_on;
+    assert!(memory_on(true, record, "{}"));
+    assert!(!memory_on(true, record, r#"{"memory_mode":"disabled"}"#));
+    assert!(memory_on(true, record, r#"{"memory_mode":"enabled"}"#));
+    assert!(!memory_on(false, record, "{}"));
+    assert!(memory_on(false, record, r#"{"x":"/p/slug/memory/"}"#));
+}
+
+#[test]
+fn the_delivery_log_names_this_folders_latest_transcript() {
+    let sandbox = Sandbox::new();
+    let (data, cwd) = (sandbox.0.join("d"), sandbox.0.clone());
+    std::fs::create_dir_all(&data).unwrap();
+    let with = |path: &str| serde_json::json!({"transcript_path": path, "source": "startup"});
+    astrolabe::voice::record(&data, 10, &cwd, &with("/old"), "ab");
+    astrolabe::voice::record(&data, 20, &cwd, &with("/new"), "abc");
+    astrolabe::voice::record(&data, 30, &cwd, &serde_json::json!({}), "abc");
+    let found = astrolabe::voice::last_delivery(&data, &cwd, 15).unwrap();
+    assert_eq!(found, PathBuf::from("/new"));
+    assert!(astrolabe::voice::last_delivery(&data, &cwd, 40).is_none());
+}

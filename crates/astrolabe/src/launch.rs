@@ -181,6 +181,10 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
     let holder = registry.agent_repo()?;
     let is_repo = |a: &Path| comparable(a) == comparable(&repo);
     let agent = holder.as_deref().is_some_and(is_repo);
+    match &holder {
+        Some(repo) => drop(crate::voice::read(repo).map_err(Error::Setup)?),
+        None => say(crate::voice::NO_AGENT.to_owned()),
+    }
     say("syncing".to_owned());
     if let Err(why) = registry::sync(&repo) {
         say(format!("not synced, going on: {why}"));

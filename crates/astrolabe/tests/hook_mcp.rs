@@ -36,14 +36,16 @@ fn fire(data: &Path, cwd: &Path, input: &str) -> std::process::Output {
 }
 
 #[test]
-fn hook_leaves_one_receipt_per_fire_and_says_nothing() {
+fn hook_leaves_one_receipt_per_fire_and_says_what_it_delivered() {
     let dir = TempDir::new();
     let input = json!({ "session_id": "s1", "cwd": dir.0 }).to_string();
     for _ in 0..2 {
         let output = fire(&dir.0, &dir.0, &input);
         assert!(output.status.success());
         // A SessionStart hook's stdout goes into the session's context.
-        assert!(output.stdout.is_empty());
+        let said: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let context = &said["hookSpecificOutput"]["additionalContext"];
+        assert_eq!(context, astrolabe::voice::NO_AGENT);
     }
     let reports = read_reports(&reports_dir_in(&dir.0));
     assert_eq!(reports.len(), 2);
@@ -68,7 +70,8 @@ fn hook_never_fails_the_agent() {
     std::fs::write(&blocked, "").unwrap();
     let output = fire(&blocked, &dir.0, "{}");
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
+    // The model is told, as there's no launch here to stop.
+    assert!(String::from_utf8_lossy(&output.stdout).contains("NOT delivered"));
 }
 
 #[test]

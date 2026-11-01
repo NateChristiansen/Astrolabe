@@ -8,6 +8,7 @@ use crate::launch::{self, DEFAULT_DIALS, Machine, Prepared, Provider, Request, S
 use crate::model::Alert;
 use crate::registry::AGENT;
 use crate::trust::{self, Ask, CodexPlan};
+use crate::voice;
 use crate::{Engine, OsProcessProbe, SystemClock};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -304,13 +305,14 @@ pub fn allowed(input: Option<&Value>, commands: &[String]) -> bool {
     command.is_some_and(|command| commands.iter().any(|wanted| wanted == command))
 }
 
-fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say) -> Result<()> {
+fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say) -> Result<String> {
     let [first, second] = &wanted;
     let text = format!(
-        "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens.\n1. {first}\n2. {second}"
+        "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens. On the next line of that reply, repeat exactly the last line of the voice file text given at session start, if you were given one, without reading any file.\n1. {first}\n2. {second}"
     );
     let mut session = AcpClient::launch(engine, &ready.launch, &ready.cwd)?;
     let deadline = Instant::now() + VERIFY_LIMIT;
+    let mut reply = String::new();
     while Instant::now() < deadline {
         match session.next_event(Duration::from_millis(200))? {
             Some(ClientEvent::Ready) => session.prompt(&text)?,
@@ -322,7 +324,14 @@ fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say)
                 let none = || Error::Setup(format!("{kind} was not offered"));
                 session.answer(&request.id, &option.ok_or_else(none)?.option_id)?;
             }
-            Some(ClientEvent::TurnEnded { .. }) => return session.shutdown(),
+            Some(ClientEvent::TurnEnded { .. }) => return session.shutdown().map(|()| reply),
+            Some(ClientEvent::Update(update))
+                if update["params"]["update"]["sessionUpdate"] == "agent_message_chunk" =>
+            {
+                reply += update["params"]["update"]["content"]["text"]
+                    .as_str()
+                    .unwrap_or_default();
+            }
             Some(ClientEvent::LaunchFailed { message } | ClientEvent::PromptError { message }) => {
                 return Err(Error::Setup(message));
             }
@@ -333,6 +342,38 @@ fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say)
         }
     }
     Err(Error::Setup("no end of turn in time".to_owned()))
+}
+
+/// From the client's record of what it sent; a reply alone could come from reading the file.
+fn delivery_problem(
+    machine: &Machine,
+    codex: bool,
+    (cwd, since): (&Path, i64),
+    reply: &str,
+) -> Result<Option<String>> {
+    let Some(record) = voice::last_delivery(&machine.data_dir, cwd, since) else {
+        return Ok(Some("no delivery record: the hook gave nothing".to_owned()));
+    };
+    let (text, shown) = (std::fs::read_to_string(&record)?, record.display());
+    let wanted = machine
+        .registry
+        .agent_repo()?
+        .map(|agent| voice::read(&agent));
+    let wanted = wanted
+        .transpose()
+        .map_err(Error::Setup)?
+        .unwrap_or_default();
+    Ok(if voice::memory_on(codex, &record, &text) {
+        Some(format!("native memory is on in {shown}"))
+    } else if !voice::in_transcript(&text, &wanted) {
+        Some(format!("owner and voice not whole in {shown}"))
+    } else if !reply.contains(wanted.lines().last().unwrap_or_default()) {
+        Some(format!(
+            "the model did not repeat the voice line: {reply:?}"
+        ))
+    } else {
+        None
+    })
 }
 
 fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Failure {
@@ -348,6 +389,7 @@ fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Fa
         dials: DEFAULT_DIALS,
         client,
     };
+    let since = crate::host::Clock::now_ms(&SystemClock);
     let mut ready = launch::prepare(machine, &request, say)?;
     let env = &mut ready.launch.env;
     env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
@@ -372,7 +414,13 @@ fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Fa
     }
     Ok(match ran {
         Err(why) => Some(format!("{why}. On disk: {problem:?}")),
-        Ok(()) => problem,
+        Ok(reply) if problem.is_none() => delivery_problem(
+            machine,
+            provider == Provider::Codex,
+            (&ready.cwd, since),
+            &reply,
+        )?,
+        Ok(_) => problem,
     })
 }
 
@@ -389,7 +437,7 @@ pub fn verify(machine: &Machine, repo: Option<&str>, say: Say) -> Result<bool> {
         let problem = outcome.unwrap_or_else(|error| Some(error.to_string()));
         passed &= problem.is_none();
         say(match problem {
-            None => format!("{slug}: PASS both files hold the real cwd, receipt held"),
+            None => format!("{slug}: PASS cwd, receipt, any owner, voice in record, memory off"),
             Some(problem) => format!("{slug}: FAIL {problem}"),
         });
     }

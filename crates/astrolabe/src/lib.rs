@@ -20,6 +20,7 @@ mod serve;
 mod stall;
 mod store;
 pub mod trust;
+pub mod voice;
 pub mod worktree;
 
 pub use engine::Engine;

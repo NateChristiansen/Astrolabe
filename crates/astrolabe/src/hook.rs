@@ -55,6 +55,13 @@ pub fn run(event: &str) {
         // Not `eprintln!`, which panics if stderr is closed.
         let _ = writeln!(io::stderr(), "astrolabe hook: {error}");
     }
+    if event == HookEvent::SessionStart.slug()
+        && let Some(data) = dir.parent()
+    {
+        let text = crate::voice::context(data);
+        crate::voice::record(data, SystemClock.now_ms(), &cwd, &input, &text);
+        let _ = writeln!(io::stdout(), "{}", crate::voice::hook_output(&text));
+    }
 }
 
 /// On a thread, because a client that holds stdin open must not hold the hook. Ends
