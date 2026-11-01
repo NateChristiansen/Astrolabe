@@ -183,6 +183,7 @@ pub struct AcpClient<'e> {
     events: VecDeque<ClientEvent>,
     exit_checked: Instant,
     exit_seen: Option<Instant>,
+    reaped: Option<ExitStatus>,
     gone: bool,
 }
 
@@ -282,6 +283,7 @@ impl<'e> AcpClient<'e> {
             events: VecDeque::new(),
             exit_checked: Instant::now(),
             exit_seen: None,
+            reaped: None,
             gone: false,
         })
     }
@@ -806,23 +808,30 @@ impl<'e> AcpClient<'e> {
     /// pass to anyone else before `wait_or_kill` signals it. On Windows `Child` holds
     /// a handle, which keeps the pid just the same.
     fn has_exited(&mut self) -> Result<bool> {
-        if cfg!(windows) {
-            return Ok(self.child.try_wait()?.is_some());
+        if self.reaped.is_some() {
+            return Ok(true);
         }
-        let output = Command::new("ps")
-            .args(["-o", "stat=", "-p", &self.child.id().to_string()])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output();
-        Ok(output.is_ok_and(|output| {
-            let stat = String::from_utf8_lossy(&output.stdout);
-            let stat = stat.trim();
-            stat.is_empty() || stat.starts_with('Z')
-        }))
+        if !cfg!(windows) {
+            let output = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &self.child.id().to_string()])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output();
+            if let Ok(output) = output {
+                let stat = String::from_utf8_lossy(&output.stdout);
+                let stat = stat.trim();
+                return Ok(stat.is_empty() || stat.starts_with('Z'));
+            }
+        }
+        // With no way to look without reaping, the group goes unsignalled if it exited.
+        self.reaped = self.child.try_wait()?;
+        Ok(self.reaped.is_some())
     }
 
     /// Whatever the adapter started goes with it, so nothing keeps changing the repo
-    /// after the session reads closed. The leader is reaped only after the signal.
+    /// after the session reads closed. Once the leader is reaped its pid can pass to
+    /// anyone, so `reaped` is set first and no later cleanup signals. Windows can only
+    /// walk the tree from a live root, which is what is left by the signal below.
     fn wait_or_kill(&mut self) -> Result<ExitStatus> {
         let deadline = Instant::now() + CLOSE_WAIT;
         let mut exited = self.has_exited()?;
@@ -830,12 +839,14 @@ impl<'e> AcpClient<'e> {
             thread::sleep(Duration::from_millis(20));
             exited = self.has_exited()?;
         }
-        // Windows can only walk the tree from a live root.
-        if !exited || !cfg!(windows) {
-            kill_tree(self.child.id());
+        if let Some(status) = self.reaped {
+            return Ok(status);
         }
+        kill_tree(self.child.id());
         let _ = self.child.kill();
-        Ok(self.child.wait()?)
+        let status = self.child.wait()?;
+        self.reaped = Some(status);
+        Ok(status)
     }
 }
 
@@ -881,7 +892,7 @@ fn kill_tree(pid: u32) {
         taskkill.args(["/T", "/F", "/PID", &pid.to_string()]);
         taskkill
     } else {
-        let mut kill = Command::new("kill");
+        let mut kill = Command::new("/bin/kill");
         kill.args(["-KILL", "--", &format!("-{pid}")]);
         kill
     };
