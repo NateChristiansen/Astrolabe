@@ -35,12 +35,6 @@ fn real_homes() -> &'static Vec<(&'static str, std::ffi::OsString)> {
             for name in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] {
                 std::env::set_var(name, &home);
             }
-            let temp = std::env::temp_dir();
-            let ceiling = [temp.clone(), temp.canonicalize().unwrap_or(temp)];
-            std::env::set_var(
-                "GIT_CEILING_DIRECTORIES",
-                std::env::join_paths(ceiling).unwrap(),
-            );
             std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
             std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
             std::env::set_var("GIT_CONFIG_COUNT", "1");
@@ -471,7 +465,11 @@ fn registry_maps_a_name_to_this_machines_checkout() {
     let registry = &machine.registry;
     assert!(registry.checkout("x").is_err());
     assert_eq!(registry.agent_repo().unwrap(), None);
-    assert!(registry.add("x", &box_.0).is_err(), "not a repo");
+    // Outside the checkout: on Windows the sandbox sits inside this repo's target folder.
+    let bare = std::env::temp_dir().join(format!("astrolabe-not-a-repo-{}", std::process::id()));
+    std::fs::create_dir_all(&bare).unwrap();
+    assert!(registry.add("x", &bare).is_err(), "not a repo");
+    std::fs::remove_dir_all(&bare).unwrap();
     let (one, two) = (box_.repo("one"), box_.repo("two"));
     registry.add("x", &one).unwrap();
     assert_eq!(registry.checkout("x").unwrap(), one);
