@@ -969,16 +969,23 @@ fn keep_tail(mut source: impl Read, tail: &Mutex<VecDeque<u8>>) {
 }
 
 /// Stderr means nothing by itself: a healthy adapter may write on every launch, as
-/// the Claude adapter does with its `durationMs=` timing lines. Those go; of the rest,
-/// the end is the part most likely to say why.
+/// the Claude adapter does with its phase timings. Those go, and they would otherwise
+/// push out a reason written before them; of the rest, the end is the part most likely
+/// to say why. Only that exact shape goes: other lines can carry timings and a cause.
 fn useful_stderr(stderr: &str) -> String {
     let lines: Vec<&str> = stderr
         .lines()
-        .filter(|line| !line.contains(" durationMs="))
+        .filter(|line| !is_phase_timing(line))
         .collect();
     let useful = lines.join("\n");
     let skip = useful.chars().count().saturating_sub(STDERR_SHOWN);
     useful.chars().skip(skip).collect()
+}
+
+fn is_phase_timing(line: &str) -> bool {
+    line.starts_with("[session/create] sessionId=")
+        && line.contains(" phase=")
+        && line.contains(" durationMs=")
 }
 
 fn protocol_error(message: impl Into<String>) -> Error {

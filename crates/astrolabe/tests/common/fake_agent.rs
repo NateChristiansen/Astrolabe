@@ -26,6 +26,8 @@ fn main() {
             eprintln!("chatter {n} from a healthy adapter, of no interest here");
         }
         eprintln!("the useful reason");
+        eprintln!("connection failed durationMs=2000 cause=ECONNREFUSED");
+        eprintln!("[session/create] sessionId=s failed durationMs=9 cause=ENOENT");
         for n in 0..20 {
             eprintln!("[session/create] sessionId=s phase=p{n} durationMs=0 totalMs=0");
         }

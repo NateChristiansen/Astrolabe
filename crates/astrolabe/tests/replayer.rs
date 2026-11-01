@@ -139,6 +139,15 @@ fn the_cwd_is_compared_canonically_on_both_sides() {
         let rows = [expect(format, &want), exit(format, 0)];
         let missing = json!({ "id": 1, "params": {} });
         caught(run(&dir.0, &rows, &[missing]), "no cwd");
+
+        for wrong in [json!(null), json!(5)] {
+            let dir = TempDir::new();
+            let rows = [expect(format, &want), exit(format, 0)];
+            caught(
+                run(&dir.0, &rows, &[cwd_message(wrong)]),
+                "cwd not a string",
+            );
+        }
     }
 }
 

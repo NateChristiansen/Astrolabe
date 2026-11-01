@@ -117,7 +117,10 @@ fn check(want: &Value, got: &str) {
     let Ok(got) = serde_json::from_str::<Value>(got) else {
         fail(&format!("client wrote invalid JSON: {got}"));
     };
-    if let Some(cwd) = got.pointer("/params/cwd").and_then(Value::as_str) {
+    if want.pointer("/params/cwd").is_some() {
+        let Some(cwd) = got.pointer("/params/cwd").and_then(Value::as_str) else {
+            fail(&format!("expected a cwd string, got {got}"));
+        };
         let here = std::env::current_dir().and_then(std::fs::canonicalize);
         let theirs = std::fs::canonicalize(cwd);
         if !matches!((&here, &theirs), (Ok(here), Ok(theirs)) if here == theirs) {

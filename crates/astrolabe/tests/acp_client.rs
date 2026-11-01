@@ -815,7 +815,9 @@ fn a_launch_failure_carries_the_useful_end_of_stderr() {
     let message = launch_failure(&["--noisy-stderr", "--fail-new"]);
     assert!(message.starts_with("cannot create a session"), "{message}");
     assert!(message.contains("the useful reason"), "{message}");
-    assert!(!message.contains("durationMs"), "{message}");
+    assert!(!message.contains("phase="), "{message}");
+    assert!(message.contains("cause=ECONNREFUSED"), "{message}");
+    assert!(message.contains("cause=ENOENT"), "{message}");
     assert!(!message.contains("chatter 0 "), "{message}");
     assert!(message.len() < 600, "{message}");
 }

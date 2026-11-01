@@ -1,4 +1,4 @@
-//! A launch from inside a Claude Code session, through the real driver and a real
+//! A launch from inside a Claude Code session and an ordinary one, through the real driver and a real
 //! child process. Its own binary with one test, because it sets this process's
 //! environment, which is unsound with another thread running.
 mod common;
@@ -10,10 +10,10 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+const MARK: &str = "CLAUDECODE";
 /// Named here on purpose, not read from the driver: dropping one must fail.
-const NESTED: [&str; 11] = [
+const NESTED: [&str; 10] = [
     "ANTHROPIC_BASE_URL",
-    "CLAUDECODE",
     "CLAUDE_CODE_ACCOUNT_UUID",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_HOST_SESSION_ID",
@@ -38,12 +38,8 @@ fn adapters(dir: &TempDir) -> PathBuf {
     dir.0.clone()
 }
 
-#[test]
-fn a_nested_launch_loses_the_parents_identity_and_keeps_the_login() {
-    for name in NESTED.iter().chain(&KEPT[..2]) {
-        // SAFETY: the only test in this binary, before any thread of its own starts.
-        unsafe { std::env::set_var(name, "from-the-parent") };
-    }
+/// The names of what reached the adapter, through the real driver.
+fn launched_env() -> Vec<String> {
     let h = Harness::new();
     let mut spec = claude::launch(&adapters(&h.dir), None, None).unwrap();
     let profile = std::env::current_exe().unwrap();
@@ -58,14 +54,39 @@ fn a_nested_launch_loses_the_parents_identity_and_keeps_the_login() {
         assert!(Instant::now() < deadline, "no Ready");
     }
     client.shutdown().unwrap();
-
     let names = std::fs::read_to_string(h.dir.0.join("env.txt")).unwrap();
-    let names: Vec<&str> = names.lines().collect();
+    names.lines().map(str::to_owned).collect()
+}
+
+#[test]
+fn only_a_nested_launch_loses_the_parents_identity_and_both_keep_the_login() {
+    let has = |names: &[String], name: &str| names.iter().any(|n| n == name);
+    // SAFETY: the only test in this binary. What an earlier launch left running only
+    // reads and writes pipes, never the environment.
+    unsafe {
+        // This suite may itself run inside a Claude Code session.
+        std::env::remove_var(MARK);
+        for name in NESTED.iter().chain(&KEPT[..2]) {
+            std::env::set_var(name, "from-the-parent");
+        }
+    }
+    let ordinary = launched_env();
+    for name in NESTED.iter().chain(&KEPT) {
+        assert!(
+            has(&ordinary, name),
+            "{name} was taken from an ordinary launch"
+        );
+    }
+
+    // SAFETY: as above.
+    unsafe { std::env::set_var(MARK, "1") };
+    let nested = launched_env();
+    assert!(!has(&nested, MARK), "the mark reached the adapter");
     for name in NESTED {
-        assert!(!names.contains(&name), "{name} reached the adapter");
+        assert!(!has(&nested, name), "{name} reached the adapter");
     }
     for name in KEPT {
-        assert!(names.contains(&name), "{name} was taken away");
+        assert!(has(&nested, name), "{name} was taken away");
     }
-    assert!(names.contains(&"DISABLE_AUTOUPDATER"));
+    assert!(has(&nested, "DISABLE_AUTOUPDATER"));
 }
