@@ -31,6 +31,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo run --locked -p protocol --bin export-schemas
       - run: git diff --exit-code -- protocol/schemas
+      - run: pnpm --dir adapters install --frozen-lockfile --ignore-scripts
       - run: pnpm --dir app install --frozen-lockfile
       - run: pnpm --dir app generate:protocol
       - run: git diff --exit-code -- app/src/protocol

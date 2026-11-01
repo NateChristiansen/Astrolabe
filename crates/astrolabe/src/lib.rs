@@ -1,4 +1,5 @@
 //! The Astrolabe core: live state for agent sessions, kept in one local database.
+pub mod acp;
 mod engine;
 mod error;
 pub mod events;

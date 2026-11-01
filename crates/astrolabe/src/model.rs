@@ -1,5 +1,6 @@
 //! Live-state vocabulary. Rows store these as text so the database stays readable.
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
+use serde_json::{Value, json};
 
 macro_rules! text_enum {
     ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
@@ -91,6 +92,8 @@ pub type OutcomeId = i64;
 pub struct Session {
     pub id: SessionId,
     pub pid: u32,
+    /// The id the adapter gave this session. Any other id that speaks is a child.
+    pub agent_session_id: Option<String>,
     pub lifecycle: Lifecycle,
     pub activity_ms: i64,
     pub snooze_until_ms: i64,
@@ -116,6 +119,50 @@ pub struct Tool {
     pub snooze_until_ms: i64,
 }
 
+/// One answer an adapter offered, exactly as sent. `kind` is the protocol's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+impl PermissionOption {
+    /// Reads the protocol's option list. An entry without an id cannot be answered.
+    pub(crate) fn list(options: Option<&Value>) -> Vec<Self> {
+        let field = |option: &Value, name: &str| {
+            let text = option.get(name).and_then(Value::as_str);
+            text.map(str::to_owned)
+        };
+        let options = options.and_then(Value::as_array).map(Vec::as_slice);
+        options
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|option| {
+                Some(Self {
+                    option_id: field(option, "optionId")?,
+                    name: field(option, "name").unwrap_or_default(),
+                    kind: field(option, "kind").unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn to_json(options: &[Self]) -> String {
+        let list: Vec<Value> = options
+            .iter()
+            .map(|option| {
+                json!({
+                    "optionId": option.option_id,
+                    "name": option.name,
+                    "kind": option.kind,
+                })
+            })
+            .collect();
+        Value::Array(list).to_string()
+    }
+}
+
 /// An open request stays open until it is resolved by id; nothing else closes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -123,9 +170,22 @@ pub struct Request {
     pub session_id: SessionId,
     /// The child session that asked, when a child asked.
     pub worker_id: Option<String>,
+    /// The JSON text of the raw JSON-RPC id, which the answer must echo exactly.
+    pub rpc_id: String,
     pub title: String,
+    pub options: Vec<PermissionOption>,
     pub opened_ms: i64,
     pub resolution: Option<String>,
+}
+
+impl Request {
+    /// The option that says no, when the adapter offered one.
+    pub fn reject_option(&self) -> Option<&str> {
+        self.options
+            .iter()
+            .find(|option| option.kind.starts_with("reject"))
+            .map(|option| option.option_id.as_str())
+    }
 }
 
 /// One "may be stuck" card: one per stuck tool, or one for a quiet session.

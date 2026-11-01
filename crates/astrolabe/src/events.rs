@@ -1,5 +1,5 @@
 //! Maps ACP-shaped JSON-RPC messages to normalized core events.
-use crate::model::ToolStatus;
+use crate::model::{PermissionOption, ToolStatus};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub enum CoreEvent {
     RequestOpened {
         rpc_id: String,
         title: String,
+        options: Vec<PermissionOption>,
     },
     TurnEnded(TurnEnd),
     /// A JSON-RPC error. It ends the turn only if it answers the active prompt,
@@ -40,6 +41,8 @@ pub enum CoreEvent {
 pub struct AgentMessage {
     /// Which agent session spoke; a child's differs from its parent's.
     pub agent_session_id: Option<String>,
+    /// For a response, the id it answers. Only the active prompt's id ends a turn.
+    pub rpc_id: Option<String>,
     pub event: CoreEvent,
 }
 
@@ -59,6 +62,7 @@ pub fn map_message(message: &Value) -> Option<AgentMessage> {
                     .and_then(|call| text(call, "title"))
                     .unwrap_or("permission requested")
                     .to_owned(),
+                options: PermissionOption::list(params?.get("options")),
             }
         }
         Some(_) => return None,
@@ -66,6 +70,7 @@ pub fn map_message(message: &Value) -> Option<AgentMessage> {
     };
     Some(AgentMessage {
         agent_session_id,
+        rpc_id: message.get("method").is_none().then(|| rpc_id(message)),
         event,
     })
 }

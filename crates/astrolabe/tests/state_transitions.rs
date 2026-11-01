@@ -45,7 +45,7 @@ fn acp_messages_map_to_core_events() {
     };
     assert_eq!(keepalive.status, Some(ToolStatus::Running));
 
-    let Some(CoreEvent::RequestOpened { rpc_id, title }) =
+    let Some(CoreEvent::RequestOpened { rpc_id, title, .. }) =
         event(acp::request_permission(AGENT, 7, "git push"))
     else {
         panic!("permission request must open a request");

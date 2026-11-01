@@ -206,6 +206,7 @@ fn a_worker_turn_end_touches_only_that_worker() {
 
     let turn_end = AgentMessage {
         agent_session_id: Some(CHILD.to_owned()),
+        rpc_id: None,
         event: CoreEvent::TurnEnded(TurnEnd::Completed),
     };
     h.engine.apply(session, &turn_end).unwrap();
@@ -234,6 +235,7 @@ fn a_worker_turn_end_retires_only_that_workers_cards() {
 
     let turn_end = AgentMessage {
         agent_session_id: Some(CHILD.to_owned()),
+        rpc_id: None,
         event: CoreEvent::TurnEnded(TurnEnd::Failed),
     };
     h.engine.apply(session, &turn_end).unwrap();

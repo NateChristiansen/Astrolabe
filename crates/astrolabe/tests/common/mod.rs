@@ -99,6 +99,11 @@ impl Harness {
     }
 
     pub fn send(&mut self, session: SessionId, message: Value) {
+        // A stop reason counts only for the active prompt, so these fixtures send
+        // that prompt first. Closed sessions refuse it, which is what they test.
+        if message.pointer("/result/stopReason").is_some() {
+            let _ = self.engine.prompt_sent(session, &message["id"]);
+        }
         let alerts = self.engine.ingest(session, &message).unwrap();
         self.alerts.extend(alerts);
     }

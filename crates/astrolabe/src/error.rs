@@ -21,6 +21,21 @@ pub enum Error {
     },
     OutcomeNotSubmitted(OutcomeId),
     AlreadyServing(std::path::PathBuf),
+    SessionStillOpen(SessionId),
+    /// The adapter process has gone, or its pipe has; nothing more can be sent.
+    AgentGone(SessionId),
+    /// The adapter never reached a usable session. The session is closed as failed.
+    Launch {
+        session_id: SessionId,
+        message: String,
+    },
+    /// The request came from an earlier process, so no one can receive its answer.
+    RequestNotLive(String),
+    UnknownOption {
+        request: String,
+        option: String,
+    },
+    AdapterNotFound(String),
 }
 
 impl fmt::Display for Error {
@@ -48,6 +63,19 @@ impl fmt::Display for Error {
             Self::AlreadyServing(path) => {
                 write!(f, "another core is serving {}", path.display())
             }
+            Self::SessionStillOpen(id) => write!(f, "session {id} is still open"),
+            Self::AgentGone(id) => write!(f, "session {id}: the agent process is gone"),
+            Self::Launch {
+                session_id,
+                message,
+            } => write!(f, "session {session_id}: launch failed: {message}"),
+            Self::RequestNotLive(id) => {
+                write!(f, "request {id} belongs to a process that has gone")
+            }
+            Self::UnknownOption { request, option } => {
+                write!(f, "request {request} did not offer option {option}")
+            }
+            Self::AdapterNotFound(detail) => write!(f, "adapter not found: {detail}"),
         }
     }
 }

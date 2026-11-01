@@ -36,6 +36,29 @@ impl Engine {
         })
     }
 
+    /// Records the id the adapter gave this session. From here on, any other id
+    /// that speaks through this process is a child of this session.
+    pub fn set_agent_session(&self, session_id: SessionId, agent_session_id: &str) -> Result<()> {
+        self.store.session(session_id)?;
+        self.store.set_agent_session(session_id, agent_session_id)
+    }
+
+    /// A new process has taken up a session whose process ended. Like a launch, it
+    /// starts the stall timer, and requests from the old process stay open.
+    pub fn reopen(&self, session_id: SessionId, pid: u32) -> Result<RunId> {
+        let now = self.clock.now_ms();
+        self.store.transaction(|| {
+            if self.store.session(session_id)?.lifecycle == Lifecycle::Open {
+                return Err(Error::SessionStillOpen(session_id));
+            }
+            self.store.set_pid(session_id, pid)?;
+            self.store.set_lifecycle(session_id, Lifecycle::Open)?;
+            self.store.set_stop_requested(session_id, None)?;
+            self.store.record_activity(session_id, now)?;
+            self.store.insert_run(session_id, RunState::Queued)
+        })
+    }
+
     /// Begins the next turn of an open session whose last run has ended.
     pub fn start_turn(&self, session_id: SessionId) -> Result<RunId> {
         let now = self.clock.now_ms();
@@ -54,13 +77,17 @@ impl Engine {
     /// Records the id of the prompt the driver is about to send. Only an error
     /// answering this id may end the turn, so call this before sending.
     pub fn prompt_sent(&self, session_id: SessionId, prompt_id: &Value) -> Result<()> {
+        let now = self.clock.now_ms();
         self.store.transaction(|| {
             let run = self.store.latest_run(session_id)?;
             if !run.state.is_active() {
                 return Err(Error::NoActiveRun(session_id));
             }
             let id = rpc_id(&serde_json::json!({ "id": prompt_id }));
-            self.store.set_prompt_rpc_id(run.id, &id)
+            self.store.set_prompt_rpc_id(run.id, &id)?;
+            // Time before the prompt was the owner's, not a quiet agent's.
+            self.store.record_activity(session_id, now)?;
+            self.store.retire_quiet_card(session_id, now)
         })
     }
 
@@ -96,12 +123,26 @@ impl Engine {
         self.store.transaction(|| {
             let session = self.store.session(session_id)?;
             let worker = match &message.agent_session_id {
+                Some(id)
+                    if session
+                        .agent_session_id
+                        .as_ref()
+                        .is_some_and(|own| own != id) =>
+                {
+                    self.store.insert_worker(id, session_id, id)?;
+                    Some(id.as_str())
+                }
                 Some(id) if self.store.is_worker(id, session_id)? => Some(id.as_str()),
                 _ => None,
             };
             // A request is never dropped, even from a session thought to be gone.
-            if let CoreEvent::RequestOpened { rpc_id, title } = &message.event {
-                return self.open_request(session_id, worker, rpc_id, title, now);
+            if let CoreEvent::RequestOpened {
+                rpc_id,
+                title,
+                options,
+            } = &message.event
+            {
+                return self.open_request(session_id, worker, rpc_id, title, options, now);
             }
             if let CoreEvent::ResponseError { rpc_id, message } = &message.event {
                 let run = self.store.latest_run(session_id)?;
@@ -127,7 +168,13 @@ impl Engine {
                 CoreEvent::Tool(event) => self.apply_tool(session_id, worker, event, now)?,
                 CoreEvent::TurnEnded(end) => match worker {
                     Some(worker) => self.end_worker_turn(session_id, worker, now)?,
-                    None => self.end_turn(session_id, *end, now)?,
+                    // A stop reason ends only the prompt it answers.
+                    None => {
+                        let run = self.store.latest_run(session_id)?;
+                        if run.prompt_rpc_id.is_some() && run.prompt_rpc_id == message.rpc_id {
+                            self.end_turn(session_id, *end, now)?;
+                        }
+                    }
                 },
                 CoreEvent::Keepalive
                 | CoreEvent::RequestOpened { .. }
@@ -194,6 +241,7 @@ impl Engine {
         worker: Option<&str>,
         rpc_id: &str,
         title: &str,
+        options: &[PermissionOption],
         now: i64,
     ) -> Result<Vec<Alert>> {
         // JSON-RPC ids restart with each process, so the id is scoped to the run.
@@ -202,7 +250,9 @@ impl Engine {
             id: format!("{}:{rpc_id}", run.id),
             session_id,
             worker_id: worker.map(str::to_owned),
+            rpc_id: rpc_id.to_owned(),
             title: title.to_owned(),
+            options: options.to_vec(),
             opened_ms: now,
             resolution: None,
         };
@@ -365,6 +415,10 @@ impl Engine {
 
     pub fn outcomes(&self, session_id: SessionId) -> Result<Vec<Outcome>> {
         self.store.outcomes(session_id)
+    }
+
+    pub fn request(&self, id: &str) -> Result<Option<(Request, bool)>> {
+        self.store.request(id)
     }
 
     pub fn open_requests(&self) -> Result<Vec<Request>> {

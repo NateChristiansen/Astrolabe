@@ -5,11 +5,12 @@ use crate::model::*;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const SCHEMA: &str = "
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY,
     pid INTEGER NOT NULL,
+    agent_session_id TEXT,
     lifecycle TEXT NOT NULL,
     activity_ms INTEGER NOT NULL,
     snooze_until_ms INTEGER NOT NULL DEFAULT 0,
@@ -41,7 +42,9 @@ CREATE TABLE requests (
     id TEXT PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
     worker_id TEXT,
+    rpc_id TEXT NOT NULL,
     title TEXT NOT NULL,
+    options TEXT NOT NULL,
     opened_ms INTEGER NOT NULL,
     resolved_ms INTEGER,
     resolution TEXT
@@ -69,7 +72,10 @@ CREATE TABLE outcomes (
 );
 ";
 
-const REQUEST_COLUMNS: &str = "id, session_id, worker_id, title, opened_ms, resolution";
+const REQUEST_COLUMNS: &str =
+    "id, session_id, worker_id, rpc_id, title, options, opened_ms, resolution";
+const SESSION_COLUMNS: &str =
+    "id, pid, agent_session_id, lifecycle, activity_ms, snooze_until_ms, stop_requested_ms";
 const CARD_COLUMNS: &str = "id, session_id, worker_id, tool_call_id, tool, since_ms, raised_ms";
 const OUTCOME_COLUMNS: &str = "id, session_id, run_id, summary, state";
 
@@ -126,8 +132,7 @@ impl Store {
     pub fn session(&self, id: SessionId) -> Result<Session> {
         self.conn
             .query_row(
-                "SELECT id, pid, lifecycle, activity_ms, snooze_until_ms, stop_requested_ms
-                 FROM sessions WHERE id = ?1",
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
                 [id],
                 session_row,
             )
@@ -136,10 +141,9 @@ impl Store {
     }
 
     pub fn open_sessions(&self) -> Result<Vec<Session>> {
-        let mut statement = self.conn.prepare(
-            "SELECT id, pid, lifecycle, activity_ms, snooze_until_ms, stop_requested_ms
-             FROM sessions WHERE lifecycle = ?1 ORDER BY id",
-        )?;
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions WHERE lifecycle = ?1 ORDER BY id"
+        ))?;
         let rows = statement.query_map([Lifecycle::Open], session_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -148,6 +152,22 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET lifecycle = ?2 WHERE id = ?1",
             params![id, lifecycle],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_agent_session(&self, id: SessionId, agent_session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
+            params![id, agent_session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_pid(&self, id: SessionId, pid: u32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET pid = ?2 WHERE id = ?1",
+            params![id, pid],
         )?;
         Ok(())
     }
@@ -310,13 +330,16 @@ impl Store {
     /// Returns none when the id already exists, so a redelivery cannot alert twice.
     pub fn insert_request(&self, request: &Request) -> Result<bool> {
         let inserted = self.conn.execute(
-            "INSERT OR IGNORE INTO requests (id, session_id, worker_id, title, opened_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO requests
+             (id, session_id, worker_id, rpc_id, title, options, opened_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 request.id,
                 request.session_id,
                 request.worker_id,
+                request.rpc_id,
                 request.title,
+                PermissionOption::to_json(&request.options),
                 request.opened_ms,
             ],
         )?;
@@ -331,7 +354,7 @@ impl Store {
                     "SELECT {REQUEST_COLUMNS}, resolved_ms IS NOT NULL FROM requests WHERE id = ?1"
                 ),
                 [id],
-                |row| Ok((request_row(row)?, row.get(6)?)),
+                |row| Ok((request_row(row)?, row.get(8)?)),
             )
             .optional()?)
     }
@@ -506,10 +529,11 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
         id: row.get(0)?,
         pid: row.get(1)?,
-        lifecycle: row.get(2)?,
-        activity_ms: row.get(3)?,
-        snooze_until_ms: row.get(4)?,
-        stop_requested_ms: row.get(5)?,
+        agent_session_id: row.get(2)?,
+        lifecycle: row.get(3)?,
+        activity_ms: row.get(4)?,
+        snooze_until_ms: row.get(5)?,
+        stop_requested_ms: row.get(6)?,
     })
 }
 
@@ -526,13 +550,16 @@ fn tool_row(row: &Row<'_>) -> rusqlite::Result<Tool> {
 }
 
 fn request_row(row: &Row<'_>) -> rusqlite::Result<Request> {
+    let options: String = row.get(5)?;
     Ok(Request {
         id: row.get(0)?,
         session_id: row.get(1)?,
         worker_id: row.get(2)?,
-        title: row.get(3)?,
-        opened_ms: row.get(4)?,
-        resolution: row.get(5)?,
+        rpc_id: row.get(3)?,
+        title: row.get(4)?,
+        options: PermissionOption::list(serde_json::from_str(&options).ok().as_ref()),
+        opened_ms: row.get(6)?,
+        resolution: row.get(7)?,
     })
 }
 

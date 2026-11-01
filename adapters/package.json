@@ -1,0 +1,9 @@
+{
+  "name": "astrolabe-adapters",
+  "private": true,
+  "packageManager": "pnpm@11.0.9",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.99.1",
+    "@agentclientprotocol/codex-acp": "2.5.0"
+  }
+}
