@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|doctor|init|serve [--db <path>]>";
+const USAGE: &str = "Usage: astrolabe <--version|doctor|init|serve [--db <path>]|hook <event>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -17,6 +17,12 @@ fn main() {
             None => fail("no app-data directory found; pass --db <path>"),
         },
         ["serve", "--db", db] => serve(&PathBuf::from(db)),
+        ["hook", event] => astrolabe::hook::run(event),
+        ["mcp"] => {
+            if let Err(error) = astrolabe::mcp::serve() {
+                fail(&error.to_string());
+            }
+        }
         [] | ["--help" | "-h"] => println!("{USAGE}"),
         _ => {
             eprintln!("{USAGE}");

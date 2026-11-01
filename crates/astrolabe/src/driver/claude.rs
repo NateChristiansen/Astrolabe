@@ -1,8 +1,9 @@
 //! Launches the pinned Claude adapter. Login is whatever the client already has.
 use crate::acp::{CLAUDE_ADAPTER, Launch, adapter_entry};
 use crate::error::Result;
-use serde_json::{Value, json};
-use std::path::Path;
+use crate::layer::{Delivery, Hook, HookEvent};
+use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
 
 /// Claude Code reads this; the adapter passes its environment on.
 const NO_UPDATES: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
@@ -49,4 +50,100 @@ pub fn launch(
     }
     launch.meta = options.map(|options| json!({ "claudeCode": { "options": options } }));
     Ok(launch)
+}
+
+/// The added directory's file, for Claude Code to read as instructions.
+const INSTRUCTIONS_FILE: &str = "CLAUDE.md";
+/// Claude Code ignores instruction files in added directories without this.
+const READ_ADDED_INSTRUCTIONS: &str = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
+
+/// A `Delivery` in Claude's form. Pass `options` to `launch` on a new session and on
+/// every resume: nothing in it outlives its process.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeDelivery {
+    /// None when the launch adds nothing.
+    pub options: Option<Value>,
+    /// For `write_instructions`, before the launch.
+    pub instructions: Option<(PathBuf, String)>,
+}
+
+impl ClaudeDelivery {
+    pub fn write_instructions(&self) -> Result<()> {
+        if let Some((file, text)) = &self.instructions {
+            if let Some(dir) = file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(file, text)?;
+        }
+        Ok(())
+    }
+}
+
+/// Pure. `instructions_dir` is added to the session as a whole, so it should hold nothing
+/// else. Only the layer's text goes in it: a repo's own instructions stay loaded.
+pub fn deliver(delivery: &Delivery, instructions_dir: &Path) -> ClaudeDelivery {
+    let mut settings = Map::new();
+    if !delivery.hooks.is_empty() {
+        settings.insert("hooks".into(), hooks(&delivery.hooks));
+    }
+    let allow: Vec<String> = (delivery.mcp.iter())
+        .flat_map(|server| server.tools.iter().map(move |tool| (server, tool)))
+        .map(|(server, tool)| format!("mcp__{}__{tool}", server.name))
+        .collect();
+    let mut permissions = Map::new();
+    if !delivery.denies.is_empty() {
+        permissions.insert("deny".into(), json!(delivery.denies));
+    }
+    if !allow.is_empty() {
+        permissions.insert("allow".into(), json!(allow));
+    }
+    if !permissions.is_empty() {
+        settings.insert("permissions".into(), permissions.into());
+    }
+    if delivery.memory_off {
+        settings.insert("autoMemoryEnabled".into(), json!(false));
+    }
+
+    let mut options = Map::new();
+    if !settings.is_empty() {
+        options.insert("settings".into(), settings.into());
+    }
+    if !delivery.mcp.is_empty() {
+        let servers: Map<String, Value> = (delivery.mcp.iter())
+            .map(|server| {
+                let entry = json!({
+                    "type": "stdio",
+                    "command": server.command,
+                    "args": server.args,
+                });
+                (server.name.clone(), entry)
+            })
+            .collect();
+        options.insert("mcpServers".into(), servers.into());
+    }
+    let instructions = delivery.instructions.as_ref().map(|instructions| {
+        options.insert("additionalDirectories".into(), json!([instructions_dir]));
+        options.insert("env".into(), json!({ READ_ADDED_INSTRUCTIONS: "1" }));
+        (
+            instructions_dir.join(INSTRUCTIONS_FILE),
+            instructions.layer.clone(),
+        )
+    });
+    ClaudeDelivery {
+        options: (!options.is_empty()).then(|| options.into()),
+        instructions,
+    }
+}
+
+fn hooks(hooks: &[Hook]) -> Value {
+    let mut by_event: Map<String, Value> = Map::new();
+    for hook in hooks {
+        let name = match hook.event {
+            HookEvent::SessionStart => "SessionStart",
+        };
+        let entry = json!({ "hooks": [{ "type": "command", "command": hook.command }] });
+        let list = by_event.entry(name).or_insert_with(|| json!([]));
+        list.as_array_mut().expect("built above").push(entry);
+    }
+    by_event.into()
 }

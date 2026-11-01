@@ -92,6 +92,14 @@ fn main() {
                 }
                 send(&result(id, agent.capabilities()));
             }
+            "session/new" if flag("--dump-open") => {
+                dump_open(&message);
+                send(&result(id, json!({ "sessionId": SESSION })));
+            }
+            "session/resume" if flag("--dump-open") => {
+                dump_open(&message);
+                send(&result(id, json!({})));
+            }
             "session/new" => {
                 if flag("--fail-new") {
                     send(&failure(id, "cannot create a session"));
@@ -117,6 +125,17 @@ fn main() {
             _ => {}
         }
     }
+}
+
+/// What each open route was sent, one line per open, for a test to read.
+fn dump_open(message: &Value) {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("open.jsonl")
+        .unwrap();
+    writeln!(file, "{message}").unwrap();
 }
 
 impl Agent {

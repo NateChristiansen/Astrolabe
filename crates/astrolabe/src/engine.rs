@@ -1,6 +1,7 @@
 //! Session, run, worker, request and outcome transitions, plus restart reconcile.
 use crate::error::{Error, Result};
 use crate::events::{AgentMessage, CoreEvent, ToolEvent, TurnEnd, map_message, rpc_id};
+use crate::hook::{Report, read_reports};
 use crate::host::{Clock, ProcessProbe};
 use crate::model::*;
 use crate::store::Store;
@@ -439,6 +440,22 @@ impl Engine {
 
     pub fn active_cards(&self) -> Result<Vec<Card>> {
         self.store.active_cards()
+    }
+
+    /// Takes in what hooks left in `dir`, and returns what is new. Reports can wait there
+    /// for as long as the core is down.
+    pub fn ingest_reports(&self, dir: &Path) -> Result<Vec<Report>> {
+        let mut new = Vec::new();
+        for report in read_reports(dir) {
+            if self.store.insert_report(&report)? {
+                new.push(report);
+            }
+        }
+        Ok(new)
+    }
+
+    pub fn session_reports(&self, agent_session_id: &str) -> Result<Vec<Report>> {
+        self.store.session_reports(agent_session_id)
     }
 
     /// The card's inspect action. Reads only.

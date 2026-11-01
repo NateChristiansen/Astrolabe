@@ -341,12 +341,27 @@ fn a_previous_schema_opens_and_keeps_its_sessions() {
     let mut h = Harness::new();
     let session = h.engine.launch(PID).unwrap();
     let conn = rusqlite::Connection::open(h.dir.db()).unwrap();
-    conn.execute_batch("ALTER TABLE sessions DROP COLUMN ready; PRAGMA user_version = 2;")
-        .unwrap();
+    conn.execute_batch(
+        "DROP TABLE hook_reports; ALTER TABLE sessions DROP COLUMN ready;
+             PRAGMA user_version = 2;",
+    )
+    .unwrap();
     drop(conn);
     h.restart();
     let view = h.engine.inspect(session).unwrap();
     assert!(!view.session.ready);
     h.engine.session_ready(session).unwrap();
     assert!(h.engine.inspect(session).unwrap().session.ready);
+}
+
+/// Catches: a database from before hook reports refusing to open.
+#[test]
+fn a_database_without_reports_opens_and_takes_them() {
+    let mut h = Harness::new();
+    let conn = rusqlite::Connection::open(h.dir.db()).unwrap();
+    conn.execute_batch("DROP TABLE hook_reports; PRAGMA user_version = 3;")
+        .unwrap();
+    drop(conn);
+    h.restart();
+    assert_eq!(h.engine.session_reports("s1").unwrap(), vec![]);
 }

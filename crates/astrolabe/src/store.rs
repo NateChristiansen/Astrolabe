@@ -1,11 +1,21 @@
 //! The one SQLite database. Each engine operation commits as one transaction,
 //! so a process that dies at any moment leaves a state reconcile can trust.
 use crate::error::{Error, Result};
+use crate::hook::Report;
 use crate::model::*;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
+const REPORTS_TABLE: &str = "
+CREATE TABLE hook_reports (
+    file TEXT PRIMARY KEY,
+    event TEXT NOT NULL,
+    session_id TEXT,
+    cwd TEXT NOT NULL,
+    at_ms INTEGER NOT NULL
+);
+";
 const SCHEMA: &str = "
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY,
@@ -107,11 +117,14 @@ impl Store {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => conn.execute_batch(&format!(
-                "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                "BEGIN; {SCHEMA} {REPORTS_TABLE} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             2 => conn.execute_batch(&format!(
                 "BEGIN; ALTER TABLE sessions ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
-                 PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+                 {REPORTS_TABLE} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
+            3 => conn.execute_batch(&format!(
+                "BEGIN; {REPORTS_TABLE} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             SCHEMA_VERSION => {}
             other => return Err(Error::UnsupportedSchema(other)),
@@ -484,6 +497,39 @@ impl Store {
             "session_id = ?2 AND worker_id IS ?3 AND tool_call_id = ?4",
             &[&now, &session_id, &tool.worker_id, &tool.tool_call_id],
         )
+    }
+
+    /// True the first time the core sees this report.
+    pub fn insert_report(&self, report: &Report) -> Result<bool> {
+        let added = self.conn.execute(
+            "INSERT OR IGNORE INTO hook_reports (file, event, session_id, cwd, at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                report.file,
+                report.event,
+                report.session_id,
+                report.cwd,
+                report.at_ms
+            ],
+        )?;
+        Ok(added == 1)
+    }
+
+    pub fn session_reports(&self, session_id: &str) -> Result<Vec<Report>> {
+        let mut statement = self.conn.prepare(
+            "SELECT file, event, session_id, cwd, at_ms FROM hook_reports
+             WHERE session_id = ?1 ORDER BY at_ms, file",
+        )?;
+        let rows = statement.query_map([session_id], |row| {
+            Ok(Report {
+                file: row.get(0)?,
+                event: row.get(1)?,
+                session_id: row.get(2)?,
+                cwd: row.get(3)?,
+                at_ms: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn insert_outcome(

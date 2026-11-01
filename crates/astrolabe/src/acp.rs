@@ -55,6 +55,8 @@ pub struct Launch {
     pub env_remove: Vec<OsString>,
     /// Sent as `_meta` on `session/new` and on the resume route.
     pub meta: Option<Value>,
+    /// Sent as `mcpServers` on the same routes. Empty unless a driver fills it.
+    pub mcp_servers: Vec<Value>,
 }
 
 impl Launch {
@@ -264,7 +266,10 @@ impl<'e> AcpClient<'e> {
         let tail = Arc::new(Mutex::new(VecDeque::new()));
         let writer = tail.clone();
         let stderr_reader = thread::spawn(move || keep_tail(stderr, &writer));
-        let mut open_params = json!({ "cwd": cwd.to_string_lossy(), "mcpServers": [] });
+        let mut open_params = json!({
+            "cwd": cwd.to_string_lossy(),
+            "mcpServers": launch.mcp_servers,
+        });
         if let Some(meta) = &launch.meta {
             open_params["_meta"] = meta.clone();
         }

@@ -1,6 +1,7 @@
 //! `astrolabe serve`: the long-lived core process, separate from any window.
 use crate::engine::Engine;
 use crate::error::{Error, Result};
+use crate::hook::reports_dir_in;
 use crate::host::{OsProcessProbe, SystemClock};
 use crate::model::Alert;
 use std::fs::{self, OpenOptions, TryLockError};
@@ -39,7 +40,13 @@ pub fn serve(db: &Path) -> Result<()> {
         report.open_requests,
         report.active_cards,
     ));
+    let reports = db.parent().map(reports_dir_in);
     loop {
+        if let Some(reports) = &reports {
+            for report in engine.ingest_reports(reports)? {
+                say(&format!("{} in {}", report.event, report.cwd));
+            }
+        }
         for alert in engine.tick()? {
             if let Alert::MayBeStuck(card) = alert {
                 say(&format!(
