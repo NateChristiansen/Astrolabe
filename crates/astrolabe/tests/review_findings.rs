@@ -91,6 +91,25 @@ fn only_an_error_for_the_active_prompt_fails_the_run() {
     ));
 }
 
+/// Catches: a stop reason ending a turn it does not answer.
+#[test]
+fn only_a_stop_reason_for_the_active_prompt_ends_the_run() {
+    let mut h = Harness::new();
+    let session = h.engine.launch(PID).unwrap();
+    let state = |h: &Harness| h.engine.inspect(session).unwrap().run.state;
+
+    h.send(session, acp::turn_end("end_turn"));
+    assert_eq!(state(&h), RunState::Queued, "no prompt is out yet");
+
+    h.engine.prompt_sent(session, &json!(5)).unwrap();
+    h.send(session, acp::turn_end("end_turn"));
+    assert_eq!(state(&h), RunState::Queued, "id 2 does not answer id 5");
+
+    let answer = json!({ "id": 5, "result": { "stopReason": "end_turn" } });
+    h.send(session, answer);
+    assert_eq!(state(&h), RunState::Completed);
+}
+
 /// Catches: each stuck tool not getting its own card, or one tool finishing or
 /// being snoozed taking the other's card with it.
 #[test]

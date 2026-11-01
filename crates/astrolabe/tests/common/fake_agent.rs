@@ -20,13 +20,28 @@ fn main() {
     }
     if flag("--hold-stdout") {
         // A tool left behind by the adapter keeps the pipes open after it dies.
-        let exe = std::env::current_exe().unwrap();
-        std::process::Command::new(exe)
-            .arg("--sleep")
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
+        spawn_tool();
         std::process::exit(4);
+    }
+    if flag("--stop-reading") {
+        // Alive and answering nothing: the handshake is done, then stdin goes unread.
+        let mut input = io::stdin().lines();
+        for reply in [
+            json!({ "protocolVersion": 1, "agentCapabilities": {} }),
+            json!({ "sessionId": SESSION }),
+        ] {
+            let line = input.next().unwrap().unwrap();
+            let message: Value = serde_json::from_str(&line).unwrap();
+            send(&result(message["id"].clone(), reply));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        return;
+    }
+    if flag("--ignore-eof") {
+        // Started a tool, and will not leave when its pipe closes.
+        spawn_tool();
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        return;
     }
     let resume_method = if flag("--load") {
         Some("session/load")
@@ -75,7 +90,8 @@ fn main() {
             }
             "session/resume" | "session/load" => {
                 assert_eq!(message["params"]["sessionId"], SESSION);
-                // Replayed history: a tool that looks like it is still running.
+                // Replayed history, including a tool that looks like it is running.
+                send(&say(SESSION, "replayed"));
                 send(&tool_call(SESSION, "old-call", "in_progress"));
                 send(&result(id, json!({})));
             }
@@ -157,13 +173,28 @@ impl Agent {
             "unrelated-error" => {
                 send(&failure(json!(999), "unrelated"));
                 send(&result(json!(998), json!({ "stopReason": "end_turn" })));
+                send(&tool_call(SESSION, "call-2", "in_progress"));
+                // Holds the turn open so the test can see the run survived.
+                send(&permission("9", SESSION));
+                self.answer_to("9");
                 send(&say(SESSION, "still going"));
+            }
+            "flood-exit" => {
+                for n in 0..3 {
+                    send(&say(SESSION, &format!("line {n}")));
+                }
+                send(&result(id, json!({ "stopReason": "end_turn" })));
+                std::process::exit(0);
             }
             "child" => {
                 send(&tool_call("child-1", "child-call", "in_progress"));
                 send(&permission("8", "child-1"));
                 self.answer_to("8");
                 send(&tool_update_in("child-1", "child-call", "completed"));
+                // A completion that is not the parent's, then a hold.
+                send(&result(json!(997), json!({ "stopReason": "end_turn" })));
+                send(&permission("9", SESSION));
+                self.answer_to("9");
             }
             _ => send(&say(SESSION, &format!("turn {}", turns + 1))),
         }
@@ -185,6 +216,19 @@ impl Agent {
             }
         }
     }
+}
+
+/// Starts a process that inherits the pipes, and leaves its pid in the cwd. It is
+/// deliberately never waited on: outliving this process is the point.
+#[allow(clippy::zombie_processes)]
+fn spawn_tool() {
+    let exe = std::env::current_exe().unwrap();
+    let tool = std::process::Command::new(exe)
+        .arg("--sleep")
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::fs::write("tool.pid", tool.id().to_string()).unwrap();
 }
 
 fn send(message: &Value) {

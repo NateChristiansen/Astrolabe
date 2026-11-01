@@ -56,7 +56,7 @@ fn quiet_tool_that_succeeds_retires_its_card_and_the_turn_completes() {
     h.send(session, acp::tool_done(AGENT, "call-2"));
     assert!(h.engine.active_cards().unwrap().is_empty());
     h.send(session, acp::message(AGENT, "tests pass"));
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
 
     let view = h.engine.inspect(session).unwrap();
     assert_eq!(view.run.state, RunState::Completed);
@@ -283,7 +283,7 @@ fn new_activity_retires_the_card_but_never_a_request() {
     assert!(h.engine.active_cards().unwrap().is_empty());
 
     h.send(session, acp::message(AGENT, "while I wait"));
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
     let view = h.engine.inspect(session).unwrap();
     assert_eq!(view.open_requests.len(), 1);
     assert_eq!(view.display, SessionDisplay::NeedsYou);
@@ -301,7 +301,7 @@ fn an_idle_session_is_not_watched() {
     let mut h = Harness::new();
     let session = h.engine.launch(PID).unwrap();
     h.send(session, acp::message(AGENT, "done for now"));
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
     h.wait(3 * STALL_AFTER_MS);
     assert_eq!(h.stuck_alerts(), 0);
 }

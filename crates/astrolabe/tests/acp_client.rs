@@ -2,11 +2,11 @@
 //! names the defect it catches.
 mod common;
 
-use astrolabe::Error;
 use astrolabe::acp::{
-    AcpClient, CLAUDE_ADAPTER, CODEX_ADAPTER, ClientEvent, HANDSHAKE_TIMEOUT, Launch, adapter_entry,
+    AcpClient, CLAUDE_ADAPTER, CODEX_ADAPTER, ClientEvent, Launch, adapter_entry,
 };
 use astrolabe::model::{Alert, Lifecycle, Request, RunState, SessionDisplay};
+use astrolabe::{Error, OsProcessProbe, ProcessProbe, STALL_AFTER_MS};
 use common::{Harness, TempDir};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -32,8 +32,50 @@ fn launch_spec(flags: &[&str]) -> Launch {
     }
 }
 
+fn ready(event: &ClientEvent) -> bool {
+    matches!(event, ClientEvent::Ready)
+}
+
 fn start<'e>(h: &'e Harness, flags: &[&str]) -> AcpClient<'e> {
-    AcpClient::launch(&h.engine, &launch_spec(flags), &h.dir.0, HANDSHAKE_TIMEOUT).unwrap()
+    let mut client = AcpClient::launch(&h.engine, &launch_spec(flags), &h.dir.0).unwrap();
+    until(&mut client, ready);
+    client
+}
+
+fn resume<'e>(
+    h: &'e Harness,
+    session: astrolabe::model::SessionId,
+    flags: &[&str],
+) -> (AcpClient<'e>, Vec<ClientEvent>) {
+    let spec = launch_spec(flags);
+    let mut client = AcpClient::resume(&h.engine, session, &spec, &h.dir.0).unwrap();
+    let events = until(&mut client, ready);
+    (client, events)
+}
+
+/// Waits for a pid to go, as a killed process may take a moment to leave the table.
+fn gone(pid: u32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if !OsProcessProbe.is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn tool_pid(h: &Harness) -> u32 {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(h.dir.0.join("tool.pid"))
+            && let Ok(pid) = text.parse()
+        {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("the fake never started its tool");
 }
 
 /// Reads events until one matches, returning all of them.
@@ -216,14 +258,12 @@ fn resume_in_new_process(flags: &[&str]) {
     let old_pid = first.pid();
     first.shutdown().unwrap();
 
-    let mut second = AcpClient::resume(
-        &h.engine,
-        session,
-        &launch_spec(flags),
-        &h.dir.0,
-        HANDSHAKE_TIMEOUT,
-    )
-    .unwrap();
+    let (mut second, replay) = resume(&h, session, flags);
+    assert_eq!(
+        said(&replay),
+        ["replayed"],
+        "history must reach the transcript"
+    );
     let view = h.engine.inspect(session).unwrap();
     assert_ne!(view.session.pid, old_pid);
     assert_eq!(view.session.lifecycle, Lifecycle::Open);
@@ -259,8 +299,14 @@ fn a_resume_with_no_route_fails_visibly() {
     let session = first.session_id();
     first.shutdown().unwrap();
     let spec = launch_spec(&["--no-resume"]);
-    let result = AcpClient::resume(&h.engine, session, &spec, &h.dir.0, HANDSHAKE_TIMEOUT);
-    assert!(matches!(result, Err(Error::Launch { .. })));
+    let mut second = AcpClient::resume(&h.engine, session, &spec, &h.dir.0).unwrap();
+    let events = until(&mut second, exited);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ClientEvent::LaunchFailed { .. })),
+        "{events:?}"
+    );
     let lifecycle = h.engine.inspect(session).unwrap().session.lifecycle;
     assert_eq!(lifecycle, Lifecycle::Closed);
 }
@@ -276,14 +322,7 @@ fn a_request_from_an_earlier_process_cannot_be_answered() {
     let request = next_request(&mut first);
     first.shutdown().unwrap();
 
-    let mut second = AcpClient::resume(
-        &h.engine,
-        session,
-        &launch_spec(&[]),
-        &h.dir.0,
-        HANDSHAKE_TIMEOUT,
-    )
-    .unwrap();
+    let (mut second, _) = resume(&h, session, &[]);
     assert!(matches!(
         second.answer(&request.id, "yes"),
         Err(Error::RequestNotLive(_))
@@ -316,15 +355,109 @@ fn an_adapter_crash_mid_turn_fails_the_run() {
     assert_eq!(client.next_event(Duration::ZERO).unwrap(), None);
 }
 
-/// Catches: waiting on end of file when a process left behind holds stdout open.
+/// Catches: waiting on end of file when a process left behind holds stdout open, or
+/// that process outliving a session reported closed. Windows cannot reach a tool
+/// once its adapter has died, a gap recorded in the report.
 #[test]
 fn an_exit_is_seen_while_a_left_behind_process_holds_the_pipe() {
     let h = Harness::new();
     let spec = launch_spec(&["--hold-stdout"]);
     let started = Instant::now();
-    let result = AcpClient::launch(&h.engine, &spec, &h.dir.0, PATIENCE);
-    assert!(matches!(result, Err(Error::Launch { .. })));
-    assert!(started.elapsed() < Duration::from_secs(15));
+    let mut client = AcpClient::launch(&h.engine, &spec, &h.dir.0).unwrap();
+    let events = until(&mut client, exited);
+    assert!(started.elapsed() < Duration::from_secs(9), "{events:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ClientEvent::LaunchFailed { .. }))
+    );
+    if cfg!(unix) {
+        assert!(gone(tool_pid(&h)), "the tool outlived the session");
+    }
+}
+
+/// Catches: `shutdown` ending the adapter and leaving what it started running.
+#[test]
+fn shutdown_ends_the_adapter_and_what_it_started() {
+    let h = Harness::new();
+    let client = AcpClient::launch(&h.engine, &launch_spec(&["--ignore-eof"]), &h.dir.0).unwrap();
+    let tool = tool_pid(&h);
+    let adapter = client.pid();
+    assert!(OsProcessProbe.is_alive(tool));
+    client.shutdown().unwrap();
+    assert!(gone(adapter), "the adapter is still running");
+    assert!(gone(tool), "the tool outlived the session");
+}
+
+/// Catches: a full pipe blocking the owner, which could then neither read nor stop.
+/// Runs on its own thread so a blocked owner fails the test instead of hanging it.
+#[test]
+fn an_agent_not_reading_cannot_block_the_owner() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let h = Harness::new();
+        let mut client = start(&h, &["--stop-reading"]);
+        let large = "x".repeat(4 * 1024 * 1024);
+        client.prompt(&large).unwrap();
+        assert_eq!(client.next_event(Duration::from_millis(50)).unwrap(), None);
+        let run = h.engine.inspect(client.session_id()).unwrap().run;
+        assert!(run.state.is_active());
+        client.shutdown().unwrap();
+        done.send(()).unwrap();
+    });
+    finished
+        .recv_timeout(Duration::from_secs(8))
+        .expect("the owner blocked on a pipe nobody reads");
+}
+
+/// Catches: a lost final answer. The process has exited and its lines are waiting,
+/// and an owner slow to read them must still get the true end of the turn.
+#[test]
+fn buffered_lines_are_delivered_after_a_slow_owner_returns() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    let session = client.session_id();
+    client.prompt("flood-exit").unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let first = client.next_event(Duration::from_millis(100)).unwrap();
+    assert!(first.is_some());
+    std::thread::sleep(Duration::from_millis(2300));
+    let events = until(&mut client, exited);
+    assert!(events.iter().any(turn_end), "{events:?}");
+    assert_eq!(
+        h.engine.inspect(session).unwrap().run.state,
+        RunState::Completed
+    );
+}
+
+/// Catches: killing an adapter for being silent, or silence going unflagged. The
+/// design's answer to a launch that never speaks is a card and the owner's stop.
+#[test]
+fn a_silent_adapter_is_flagged_and_stays_up_until_stopped() {
+    let h = Harness::new();
+    let spec = launch_spec(&["--hang-initialize"]);
+    let mut client = AcpClient::launch(&h.engine, &spec, &h.dir.0).unwrap();
+    let session = client.session_id();
+    assert_eq!(client.next_event(Duration::from_millis(300)).unwrap(), None);
+    assert!(matches!(client.prompt("x"), Err(Error::NotReady(_))));
+
+    h.advance(STALL_AFTER_MS);
+    let alerts = h.engine.tick().unwrap();
+    assert!(
+        matches!(alerts.as_slice(), [Alert::MayBeStuck(_)]),
+        "{alerts:?}"
+    );
+    assert_eq!(client.next_event(Duration::from_millis(100)).unwrap(), None);
+    let adapter = client.pid();
+    assert!(OsProcessProbe.is_alive(adapter), "silence must not kill it");
+
+    h.engine.request_stop(session).unwrap();
+    client.shutdown().unwrap();
+    assert!(gone(adapter));
+    assert_eq!(
+        h.engine.inspect(session).unwrap().run.state,
+        RunState::Cancelled
+    );
 }
 
 /// Catches: a prompt to a process that has gone hanging the run.
@@ -333,10 +466,10 @@ fn a_prompt_to_a_gone_process_is_never_a_hang() {
     let h = Harness::new();
     let mut client = start(&h, &["--exit-after-new"]);
     let session = client.session_id();
-    // Delivery may fail outright or the write may land just before the exit.
+    // Queued, or refused when the exit has already been seen.
     let sent = client.prompt("hello");
     assert!(
-        sent.is_ok() || matches!(sent, Err(Error::Io(_))),
+        sent.is_ok() || matches!(sent, Err(Error::AgentGone(_))),
         "{sent:?}"
     );
     until(&mut client, exited);
@@ -415,27 +548,38 @@ fn a_prompt_answer_without_a_stop_reason_fails_the_run() {
 }
 
 /// Catches: the read loop stopping on `Error::AgentRpc`, or a stop reason for some
-/// other id ending the turn.
+/// other id ending the turn in the engine.
 #[test]
 fn unrelated_answers_leave_the_turn_running() {
     let h = Harness::new();
     let mut client = start(&h, &[]);
+    let session = client.session_id();
     client.prompt("unrelated-error").unwrap();
-    let events = until(&mut client, turn_end);
-    assert!(events.contains(&ClientEvent::AgentError {
+    let before = until(&mut client, |e| matches!(e, ClientEvent::Alert(_)));
+    assert!(before.contains(&ClientEvent::AgentError {
         rpc_id: "999".to_owned(),
         message: "unrelated".to_owned(),
     }));
+    let Some(ClientEvent::Alert(Alert::NeedsYou(request))) = before.last() else {
+        panic!("expected a request: {before:?}");
+    };
+
+    let view = h.engine.inspect(session).unwrap();
+    assert_eq!(view.run.state, RunState::Waiting, "the turn ended early");
+    assert_eq!(view.running_tools.len(), 1, "its tool was finished early");
+
+    client.answer(&request.id, "yes").unwrap();
+    let events = until(&mut client, turn_end);
+    assert_eq!(said(&events), ["still going"]);
     assert_eq!(
-        said(&events),
-        ["still going"],
-        "the turn ended early: {events:?}"
+        h.engine.inspect(session).unwrap().run.state,
+        RunState::Completed
     );
     client.shutdown().unwrap();
 }
 
 /// Catches: a child's tool or approval counted as the parent's, or the parent's run
-/// ended by the child.
+/// ended by a completion that is not its own.
 #[test]
 fn a_child_session_update_is_attributed_to_its_parent() {
     let h = Harness::new();
@@ -450,11 +594,49 @@ fn a_child_session_update_is_attributed_to_its_parent() {
     assert_eq!(view.run.state, RunState::Waiting);
 
     client.answer(&request.id, "yes").unwrap();
+    let hold = next_request(&mut client);
+    assert_eq!(hold.worker_id, None);
+    assert_eq!(
+        h.engine.inspect(session).unwrap().run.state,
+        RunState::Waiting,
+        "the child's completion ended the parent's turn"
+    );
+    client.answer(&hold.id, "yes").unwrap();
     until(&mut client, turn_end);
     assert_eq!(
         h.engine.inspect(session).unwrap().run.state,
         RunState::Completed
     );
+    client.shutdown().unwrap();
+}
+
+/// Catches: a permission already on its way when the owner cancels: unanswered, the
+/// cancelled turn never ends, and it must not surface as an approval either.
+#[test]
+fn cancel_also_answers_a_request_not_yet_read() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    let session = client.session_id();
+    client.prompt("cancel").unwrap();
+    // Nothing has been read since the prompt, so no request is known yet.
+    assert!(h.engine.open_requests().unwrap().is_empty());
+    client.cancel().unwrap();
+
+    let events = until(&mut client, turn_end);
+    assert!(
+        !events.iter().any(|e| matches!(e, ClientEvent::Alert(_))),
+        "{events:?}"
+    );
+    assert_eq!(
+        h.engine.inspect(session).unwrap().run.state,
+        RunState::Cancelled
+    );
+    // The answer's own report may still be behind the turn's end in the queue.
+    let deadline = Instant::now() + PATIENCE;
+    while !h.engine.open_requests().unwrap().is_empty() && Instant::now() < deadline {
+        client.next_event(Duration::from_millis(50)).unwrap();
+    }
+    assert!(h.engine.open_requests().unwrap().is_empty());
     client.shutdown().unwrap();
 }
 
@@ -482,53 +664,45 @@ fn cancel_answers_open_requests_and_waits_for_the_agent() {
     client.shutdown().unwrap();
 }
 
-fn launch_failure(flags: &[&str], timeout: Duration) -> (String, Harness) {
+fn launch_failure(flags: &[&str]) -> String {
     let h = Harness::new();
-    let result = AcpClient::launch(&h.engine, &launch_spec(flags), &h.dir.0, timeout);
-    let Err(Error::Launch {
-        session_id,
-        message,
-    }) = result
-    else {
-        panic!("expected a launch failure for {flags:?}");
-    };
+    let mut client = AcpClient::launch(&h.engine, &launch_spec(flags), &h.dir.0).unwrap();
+    let session_id = client.session_id();
+    let events = until(&mut client, exited);
     let view = h.engine.inspect(session_id).unwrap();
     assert_eq!(view.run.state, RunState::Failed, "{flags:?}");
     assert_eq!(view.session.lifecycle, Lifecycle::Closed, "{flags:?}");
-    (message, h)
+    events
+        .iter()
+        .find_map(|event| match event {
+            ClientEvent::LaunchFailed { message } => Some(message.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no launch failure in {events:?}"))
 }
 
 /// Catches: an error before any prompt being lost, or leaving a session "working".
 #[test]
 fn errors_before_any_prompt_fail_the_launch_visibly() {
-    let (message, _h) = launch_failure(&["--fail-initialize"], PATIENCE);
+    let message = launch_failure(&["--fail-initialize"]);
     assert!(message.contains("cannot initialize"), "{message}");
-    let (message, _h) = launch_failure(&["--fail-new"], PATIENCE);
+    let message = launch_failure(&["--fail-new"]);
     assert!(message.contains("cannot create a session"), "{message}");
-    let (message, _h) = launch_failure(&["--stderr-then-exit"], PATIENCE);
+    let message = launch_failure(&["--stderr-then-exit"]);
     assert!(message.contains("adapter cannot start"), "{message}");
-}
-
-/// Catches: an adapter that never answers the handshake hanging the launch.
-#[test]
-fn a_silent_adapter_fails_the_launch_in_time() {
-    let (message, _h) = launch_failure(&["--hang-initialize"], Duration::from_millis(300));
-    assert!(message.contains("initialize"), "{message}");
 }
 
 /// Catches: a stray error during startup, with no prompt to answer, ending the read.
 #[test]
 fn a_stray_error_before_any_prompt_does_not_stop_the_launch() {
     let h = Harness::new();
-    let mut client = start(&h, &["--stray-error"]);
-    let event = client.next_event(PATIENCE).unwrap();
-    assert_eq!(
-        event,
-        Some(ClientEvent::AgentError {
-            rpc_id: "null".to_owned(),
-            message: "stray".to_owned(),
-        })
-    );
+    let spec = launch_spec(&["--stray-error"]);
+    let mut client = AcpClient::launch(&h.engine, &spec, &h.dir.0).unwrap();
+    let events = until(&mut client, ready);
+    assert!(events.contains(&ClientEvent::AgentError {
+        rpc_id: "null".to_owned(),
+        message: "stray".to_owned(),
+    }));
     let run = h.engine.inspect(client.session_id()).unwrap().run;
     assert_eq!(run.state, RunState::Queued);
     client.shutdown().unwrap();
@@ -542,7 +716,7 @@ fn a_missing_program_is_an_error_and_creates_no_session() {
         command: h.dir.0.join("no-such-adapter").into(),
         ..Launch::default()
     };
-    let result = AcpClient::launch(&h.engine, &spec, &h.dir.0, PATIENCE);
+    let result = AcpClient::launch(&h.engine, &spec, &h.dir.0);
     assert!(matches!(result, Err(Error::Io(_))));
     assert!(h.engine.inspect(1).is_err());
 }
@@ -577,6 +751,43 @@ fn an_adapter_resolves_from_its_explicit_directory() {
     write_package(&dir.0, CLAUDE_ADAPTER, &manifest, None);
     let no_script = adapter_entry(&dir.0, CLAUDE_ADAPTER);
     assert!(matches!(no_script, Err(Error::AdapterNotFound(_))));
+}
+
+/// Catches: a relative adapter directory breaking once the adapter runs in the target
+/// repo. Launches real node from a different working directory.
+#[test]
+fn a_relative_adapter_directory_works_from_another_cwd() {
+    let name = format!("adapter-test-{}", std::process::id());
+    std::fs::create_dir_all(&name).unwrap();
+    struct Remove<'a>(&'a str);
+    impl Drop for Remove<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.0);
+        }
+    }
+    let _remove = Remove(&name);
+    let manifest = json!({ "bin": "dist/index.js" });
+    write_package(
+        Path::new(&name),
+        CODEX_ADAPTER,
+        &manifest,
+        Some("dist/index.js"),
+    );
+    let entry = adapter_entry(Path::new(&name), CODEX_ADAPTER).unwrap();
+    let script = r#"
+        require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
+            const { id, method } = JSON.parse(line);
+            const result = method === "initialize" ? { protocolVersion: 1 } : { sessionId: "node" };
+            console.log(JSON.stringify({ jsonrpc: "2.0", id, result }));
+        });
+    "#;
+    std::fs::write(&entry, script).unwrap();
+
+    let h = Harness::new();
+    let mut client = AcpClient::launch(&h.engine, &Launch::node(&entry), &h.dir.0).unwrap();
+    until(&mut client, ready);
+    assert_eq!(client.agent_session_id(), "node");
+    client.shutdown().unwrap();
 }
 
 /// Catches: an adapter pin drifting from the manifest, the lockfile or the docs.

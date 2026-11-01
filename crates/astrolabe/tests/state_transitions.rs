@@ -106,7 +106,7 @@ fn a_run_moves_from_queued_through_waiting_to_completed() {
         "a late keepalive revived a finished tool"
     );
 
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
     assert_eq!(state(&h), RunState::Completed);
 
     let next = h.engine.start_turn(session).unwrap();
@@ -121,7 +121,7 @@ fn idle_never_means_done() {
     let mut h = Harness::new();
     let session = h.engine.launch(PID).unwrap();
     h.send(session, acp::message(AGENT, "all finished!"));
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
 
     let view = h.engine.inspect(session).unwrap();
     assert_eq!(view.display, SessionDisplay::YourTurn);
@@ -152,7 +152,7 @@ fn cancelled_needs_actual_stop_evidence() {
 
     // Evidence: the agent reported a cancelled turn.
     let reported = h.engine.launch(PID).unwrap();
-    h.send(reported, acp::turn_end("cancelled"));
+    h.end_turn(reported, "cancelled");
     assert_eq!(
         h.engine.inspect(reported).unwrap().run.state,
         RunState::Cancelled
@@ -182,13 +182,13 @@ fn cancelled_needs_actual_stop_evidence() {
 fn terminal_runs_stay_terminal() {
     let mut h = Harness::new();
     let session = h.engine.launch(PID).unwrap();
-    h.send(session, acp::turn_end("max_tokens"));
+    h.end_turn(session, "max_tokens");
     let run = h.engine.inspect(session).unwrap();
     assert_eq!(run.run.state, RunState::Failed);
     assert_eq!(run.display, SessionDisplay::Failed);
 
     h.send(session, acp::message(AGENT, "late"));
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
     assert_eq!(
         h.engine.inspect(session).unwrap().run.state,
         RunState::Failed
@@ -273,7 +273,7 @@ fn the_same_rpc_id_in_a_later_run_is_a_new_request() {
     h.send(session, acp::request_permission(AGENT, 1, "first"));
     let first = h.engine.open_requests().unwrap()[0].id.clone();
     h.engine.resolve_request(&first, "allow").unwrap();
-    h.send(session, acp::turn_end("end_turn"));
+    h.end_turn(session, "end_turn");
     h.engine.start_turn(session).unwrap();
 
     h.send(session, acp::request_permission(AGENT, 1, "second"));
@@ -321,7 +321,7 @@ fn state_survives_a_restart_and_reconcile_is_idempotent() {
     let active_gone = h.engine.launch(PID + 2).unwrap();
     let ended = h.engine.launch(PID + 3).unwrap();
     h.send(live, acp::tool_start(AGENT, "c1", "build"));
-    h.send(idle_gone, acp::turn_end("end_turn"));
+    h.end_turn(idle_gone, "end_turn");
     h.engine.process_exited(ended).unwrap();
     h.processes.kill(PID + 1);
     h.processes.kill(PID + 2);

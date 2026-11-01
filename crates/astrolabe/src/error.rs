@@ -24,7 +24,9 @@ pub enum Error {
     SessionStillOpen(SessionId),
     /// The adapter process has gone, or its pipe has; nothing more can be sent.
     AgentGone(SessionId),
-    /// The adapter never reached a usable session. The session is closed as failed.
+    /// The session has no agent session yet, so nothing can be sent to it.
+    NotReady(SessionId),
+    /// A resume was asked for that cannot even be attempted.
     Launch {
         session_id: SessionId,
         message: String,
@@ -65,6 +67,7 @@ impl fmt::Display for Error {
             }
             Self::SessionStillOpen(id) => write!(f, "session {id} is still open"),
             Self::AgentGone(id) => write!(f, "session {id}: the agent process is gone"),
+            Self::NotReady(id) => write!(f, "session {id} is not ready yet"),
             Self::Launch {
                 session_id,
                 message,

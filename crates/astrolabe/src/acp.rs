@@ -1,33 +1,38 @@
 //! A provider-neutral ACP client: one adapter process, one session, driven through
 //! the engine. A driver supplies only a `Launch`. Plain threads and channels: the
-//! engine is single-threaded, so one reader thread hands lines to the owner, and an
-//! async runtime would add a large dependency for one pipe.
+//! engine is single-threaded, so reader and writer threads talk to the owner over
+//! channels, and an async runtime would add a large dependency for one pipe. The
+//! owner never blocks on the agent: the handshake and every write move on as events
+//! arrive, and a silent agent is the stall watch's to flag and the owner's to stop.
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::model::{Alert, Request, SessionId};
 use serde_json::{Value, json};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub const CLAUDE_ADAPTER: &str = "@agentclientprotocol/claude-agent-acp";
 pub const CODEX_ADAPTER: &str = "@agentclientprotocol/codex-acp";
-/// A starting value. Real adapters are measured in part B.
-pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
 
 const PROTOCOL_VERSION: u64 = 1;
 const METHOD_NOT_FOUND: i64 = -32601;
 const TICK: Duration = Duration::from_millis(50);
 /// After the adapter exits, how long its last lines get to arrive when a process
-/// it left behind keeps the pipe open, and how long such chatter can delay the end.
+/// it left behind keeps the pipe open, and when such chatter stops being read.
+/// Lines already received are always delivered.
 const EXIT_QUIET: Duration = Duration::from_millis(200);
-const EXIT_LIMIT: Duration = Duration::from_secs(5);
+const EXIT_LIMIT: Duration = Duration::from_secs(2);
+/// How long an answer call waits to hear its bytes reached the pipe. Past this the
+/// answer stays queued and the request resolves when they do.
+const ANSWER_WAIT: Duration = Duration::from_millis(500);
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
 const STDERR_TAIL: usize = 4096;
 const SHOWN_LINE: usize = 200;
@@ -74,7 +79,8 @@ pub fn adapter_entry(adapters_dir: &Path, package: &str) -> Result<PathBuf> {
         .ok_or_else(|| not_found("package.json names no command".to_owned()))?;
     let entry = script.split('/').fold(root, |path, part| path.join(part));
     if entry.is_file() {
-        Ok(entry)
+        // Absolute: the adapter runs with the target repo as its working directory.
+        Ok(std::path::absolute(entry)?)
     } else {
         Err(not_found(format!("{} is missing", entry.display())))
     }
@@ -83,7 +89,14 @@ pub fn adapter_entry(adapters_dir: &Path, package: &str) -> Result<PathBuf> {
 /// What the owner of the client hears. Engine state is already updated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientEvent {
-    /// Raw `session/update`, for a transcript.
+    /// The session exists; prompts can be sent. Silence before this is a stall, which
+    /// the engine's watch flags from launch.
+    Ready,
+    /// The adapter refused or left before a session existed. `Exited` follows.
+    LaunchFailed {
+        message: String,
+    },
+    /// Raw `session/update`, for a transcript, including history replayed on resume.
     Update(Value),
     /// A request or card was raised. Answer requests with `AcpClient::answer`.
     Alert(Alert),
@@ -118,19 +131,48 @@ pub enum ClientEvent {
     },
 }
 
+/// What the reader and writer threads tell the owner, in one queue.
+enum Input {
+    Line(Vec<u8>),
+    StdoutClosed,
+    Written(u64),
+    WriteFailed(String),
+}
+
+/// A write whose outcome matters, until the writer reports it.
+enum Pending {
+    Prompt(Value),
+    Answer { request: String, resolution: String },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Stage {
+    Initializing,
+    Opening,
+    Ready,
+}
+
 pub struct AcpClient<'e> {
     engine: &'e Engine,
     session: SessionId,
     agent_session: String,
     child: Child,
-    stdin: Option<ChildStdin>,
-    lines: Receiver<Vec<u8>>,
+    writes: Option<Sender<(u64, Vec<u8>)>>,
+    unwritten: HashMap<u64, Pending>,
+    next_write: u64,
+    input: Receiver<Input>,
+    stop_reading: Arc<AtomicBool>,
     stderr: Arc<Mutex<VecDeque<u8>>>,
     stderr_reader: JoinHandle<()>,
     next_id: u64,
+    stage: Stage,
+    open_params: Value,
+    resuming: bool,
+    failure: Option<String>,
     prompt_id: Option<Value>,
+    /// The owner cancelled this turn: any request still arriving is answered so.
+    cancelling: bool,
     awaited: Option<Value>,
-    response: Option<Value>,
     /// During a resume, history may replay; it is not live progress.
     replaying: bool,
     /// Requests this process raised: the only ones its pipe can answer.
@@ -141,36 +183,33 @@ pub struct AcpClient<'e> {
 }
 
 impl<'e> AcpClient<'e> {
-    /// Starts an adapter and a new session. Any failure leaves no process behind
-    /// and, once the session exists, marks it failed.
-    pub fn launch(
-        engine: &'e Engine,
-        launch: &Launch,
-        cwd: &Path,
-        handshake_timeout: Duration,
-    ) -> Result<Self> {
-        let client = Self::spawn(engine, launch, cwd, |pid| engine.launch(pid))?;
-        client.handshake(launch, cwd, None, handshake_timeout)
+    /// Starts an adapter and returns at once. `Ready` or `LaunchFailed` follows.
+    pub fn launch(engine: &'e Engine, launch: &Launch, cwd: &Path) -> Result<Self> {
+        let mut client = Self::spawn(engine, launch, cwd, |pid| engine.launch(pid))?;
+        client.begin();
+        Ok(client)
     }
 
     /// Takes up an ended session in a new process, through whichever route the
-    /// adapter says it has.
+    /// adapter says it has. `Ready` or `LaunchFailed` follows.
     pub fn resume(
         engine: &'e Engine,
         session: SessionId,
         launch: &Launch,
         cwd: &Path,
-        handshake_timeout: Duration,
     ) -> Result<Self> {
         let agent_session = engine.inspect(session)?.session.agent_session_id;
         let agent_session = agent_session.ok_or(Error::Launch {
             session_id: session,
             message: "no agent session id was recorded".to_owned(),
         })?;
-        let client = Self::spawn(engine, launch, cwd, |pid| {
+        let mut client = Self::spawn(engine, launch, cwd, |pid| {
             engine.reopen(session, pid).map(|_| session)
         })?;
-        client.handshake(launch, cwd, Some(agent_session), handshake_timeout)
+        client.agent_session = agent_session;
+        client.resuming = true;
+        client.begin();
+        Ok(client)
     }
 
     fn spawn(
@@ -197,38 +236,43 @@ impl<'e> AcpClient<'e> {
                 return Err(error);
             }
         };
-        let stdin = child.stdin.take();
+        let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let stderr = child.stderr.take().expect("stderr is piped");
-        let (sender, lines) = mpsc::channel();
-        // Both threads end at end of file. A process the adapter left behind can
-        // hold the pipes open, so nothing joins them.
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = Vec::new();
-                match reader.read_until(b'\n', &mut line) {
-                    Ok(n) if n > 0 && sender.send(line).is_ok() => {}
-                    _ => return,
-                }
-            }
-        });
+        let (sender, input) = mpsc::channel();
+        let (writes, queue) = mpsc::channel();
+        let stop_reading = Arc::new(AtomicBool::new(false));
+        // These threads end at end of file or a failed write. A process the adapter
+        // left behind can hold the pipes open, so nothing joins them.
+        spawn_writer(stdin, queue, sender.clone());
+        spawn_reader(stdout, sender, stop_reading.clone());
         let tail = Arc::new(Mutex::new(VecDeque::new()));
         let writer = tail.clone();
         let stderr_reader = thread::spawn(move || keep_tail(stderr, &writer));
+        let mut open_params = json!({ "cwd": cwd.to_string_lossy(), "mcpServers": [] });
+        if let Some(meta) = &launch.meta {
+            open_params["_meta"] = meta.clone();
+        }
         Ok(Self {
             engine,
             session,
             agent_session: String::new(),
             child,
-            stdin,
-            lines,
+            writes: Some(writes),
+            unwritten: HashMap::new(),
+            next_write: 1,
+            input,
+            stop_reading,
             stderr: tail,
             stderr_reader,
             next_id: 1,
+            stage: Stage::Initializing,
+            open_params,
+            resuming: false,
+            failure: None,
             prompt_id: None,
+            cancelling: false,
             awaited: None,
-            response: None,
             replaying: false,
             live: HashSet::new(),
             events: VecDeque::new(),
@@ -237,43 +281,8 @@ impl<'e> AcpClient<'e> {
         })
     }
 
-    fn handshake(
-        mut self,
-        launch: &Launch,
-        cwd: &Path,
-        resume: Option<String>,
-        timeout: Duration,
-    ) -> Result<Self> {
-        match self.exchange(launch, cwd, resume, Instant::now() + timeout) {
-            Ok(()) => Ok(self),
-            Err(error) => {
-                // No turn has begun, so closing here cannot cost any work.
-                let session_id = self.session;
-                if !self.gone {
-                    self.finish()?;
-                }
-                let stderr = self.stderr_text();
-                let mut message = error.to_string();
-                if !stderr.is_empty() {
-                    message.push_str("; stderr: ");
-                    message.push_str(&stderr);
-                }
-                Err(Error::Launch {
-                    session_id,
-                    message,
-                })
-            }
-        }
-    }
-
-    fn exchange(
-        &mut self,
-        launch: &Launch,
-        cwd: &Path,
-        resume: Option<String>,
-        deadline: Instant,
-    ) -> Result<()> {
-        let initialized = self.request(
+    fn begin(&mut self) {
+        self.request(
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -283,38 +292,60 @@ impl<'e> AcpClient<'e> {
                 },
                 "clientInfo": { "name": "astrolabe", "version": env!("CARGO_PKG_VERSION") },
             }),
-            deadline,
-        )?;
-        let version = initialized.get("protocolVersion").and_then(Value::as_u64);
-        if version != Some(PROTOCOL_VERSION) {
-            return Err(protocol_error(format!(
-                "adapter speaks protocol {version:?}"
-            )));
+        );
+    }
+
+    /// A handshake request. A pipe already gone shows up as `WriteFailed` input.
+    fn request(&mut self, method: &str, params: Value) {
+        let id = self.take_id();
+        self.awaited = Some(id.clone());
+        let message = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let _ = self.write(&message, None);
+    }
+
+    /// The adapter answered the handshake request. An adapter that refuses is closed:
+    /// that is its answer, not silence.
+    fn advance(&mut self, response: &Value) -> Result<()> {
+        if let Some(error) = response.get("error") {
+            return self.fail_launch(error_text(error));
         }
-        let mut params = json!({ "cwd": cwd.to_string_lossy(), "mcpServers": [] });
-        if let Some(meta) = &launch.meta {
-            params["_meta"] = meta.clone();
-        }
-        match resume {
-            None => {
-                let created = self.request("session/new", params, deadline)?;
-                let id = created.get("sessionId").and_then(Value::as_str);
-                let id = id.ok_or_else(|| protocol_error("no sessionId from session/new"))?;
-                self.agent_session = id.to_owned();
-                self.engine.set_agent_session(self.session, id)?;
+        let result = response.get("result").unwrap_or(&Value::Null);
+        if self.stage == Stage::Initializing {
+            let version = result.get("protocolVersion").and_then(Value::as_u64);
+            if version != Some(PROTOCOL_VERSION) {
+                return self.fail_launch(format!("adapter speaks protocol {version:?}"));
             }
-            Some(id) => {
-                let route = resume_route(&initialized)
-                    .ok_or_else(|| protocol_error("adapter offers no way to resume"))?;
-                params["sessionId"] = json!(id);
-                self.agent_session = id;
+            let mut params = self.open_params.take();
+            let route = if self.resuming {
+                let Some(route) = resume_route(result) else {
+                    return self.fail_launch("adapter offers no way to resume".to_owned());
+                };
+                params["sessionId"] = json!(self.agent_session);
                 self.replaying = true;
-                let resumed = self.request(route, params, deadline);
-                self.replaying = false;
-                resumed?;
-            }
+                route
+            } else {
+                "session/new"
+            };
+            self.stage = Stage::Opening;
+            self.request(route, params);
+            return Ok(());
         }
+        if !self.resuming {
+            let Some(id) = result.get("sessionId").and_then(Value::as_str) else {
+                return self.fail_launch("no sessionId from session/new".to_owned());
+            };
+            self.agent_session = id.to_owned();
+            self.engine.set_agent_session(self.session, id)?;
+        }
+        self.replaying = false;
+        self.stage = Stage::Ready;
+        self.events.push_back(ClientEvent::Ready);
         Ok(())
+    }
+
+    fn fail_launch(&mut self, message: String) -> Result<()> {
+        self.failure = Some(message);
+        self.finish()
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -329,11 +360,14 @@ impl<'e> AcpClient<'e> {
         self.child.id()
     }
 
-    /// Sends a prompt, on the launch's waiting run or as a new turn. A turn still
+    /// Queues a prompt, on the launch's waiting run or as a new turn. A turn still
     /// going is refused: say-what-instead is a reject, then this once the turn ends.
     pub fn prompt(&mut self, text: &str) -> Result<()> {
         if self.gone {
             return Err(Error::AgentGone(self.session));
+        }
+        if self.stage != Stage::Ready {
+            return Err(Error::NotReady(self.session));
         }
         let run = self.engine.inspect(self.session)?.run;
         if !run.state.is_active() || run.prompt_rpc_id.is_some() {
@@ -342,29 +376,33 @@ impl<'e> AcpClient<'e> {
         let id = self.take_id();
         self.engine.prompt_sent(self.session, &id)?;
         self.prompt_id = Some(id.clone());
-        let sent = self.write(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "session/prompt",
-            "params": {
-                "sessionId": self.agent_session,
-                "prompt": [{ "type": "text", "text": text }],
-            },
-        }));
+        let sent = self.write(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": self.agent_session,
+                    "prompt": [{ "type": "text", "text": text }],
+                },
+            }),
+            Some(Pending::Prompt(id.clone())),
+        );
         if let Err(error) = sent {
-            self.fail_prompt(&id, &format!("prompt not delivered: {error}"))?;
+            self.fail_prompt(&format!("prompt not delivered: {error}"))?;
             return Err(error);
         }
         Ok(())
     }
 
-    /// Delivers the option the owner chose, then resolves the request. Choosing is
-    /// the caller's job. Returns false when it was already resolved.
+    /// Delivers the option the owner chose; the request resolves once the bytes reach
+    /// the pipe. Choosing is the caller's job. Returns false when it was already
+    /// resolved or answered. An agent not reading leaves the answer queued.
     pub fn answer(&mut self, request_id: &str, option_id: &str) -> Result<bool> {
         let Some((request, resolved)) = self.engine.request(request_id)? else {
             return Err(Error::UnknownRequest(request_id.to_owned()));
         };
-        if resolved {
+        if resolved || self.answering(request_id) {
             return Ok(false);
         }
         if !request.options.iter().any(|o| o.option_id == option_id) {
@@ -374,24 +412,42 @@ impl<'e> AcpClient<'e> {
             });
         }
         let outcome = json!({ "outcome": "selected", "optionId": option_id });
-        self.reply(&request, outcome, option_id)
+        self.reply(&request, outcome, option_id)?;
+        self.settle()?;
+        if self.gone || self.writes.is_none() {
+            let (_, resolved) = self.engine.request(request_id)?.unwrap_or((request, false));
+            if !resolved {
+                return Err(Error::AgentGone(self.session));
+            }
+        }
+        Ok(true)
     }
 
     /// Asks the agent to stop. The run ends only on the agent's own evidence. Open
-    /// requests are answered as cancelled, as the protocol requires.
+    /// requests, and any that arrive before the turn ends, are answered as cancelled,
+    /// as the protocol requires.
     pub fn cancel(&mut self) -> Result<()> {
+        if self.stage != Stage::Ready {
+            return Err(Error::NotReady(self.session));
+        }
         self.engine.request_stop(self.session)?;
-        self.write(&json!({
-            "jsonrpc": "2.0",
-            "method": "session/cancel",
-            "params": { "sessionId": self.agent_session },
-        }))?;
+        self.write(
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "session/cancel",
+                "params": { "sessionId": self.agent_session },
+            }),
+            None,
+        )?;
+        self.cancelling = self.prompt_id.is_some();
         for id in self.live.clone() {
-            if let Some((request, false)) = self.engine.request(&id)? {
+            if let Some((request, false)) = self.engine.request(&id)?
+                && !self.answering(&id)
+            {
                 self.reply(&request, json!({ "outcome": "cancelled" }), "cancelled")?;
             }
         }
-        Ok(())
+        self.settle()
     }
 
     /// Waits up to `wait` for the next event. None means nothing arrived, or the
@@ -428,76 +484,113 @@ impl<'e> AcpClient<'e> {
         json!(id)
     }
 
-    fn request(&mut self, method: &str, params: Value, deadline: Instant) -> Result<Value> {
-        let id = self.take_id();
-        self.awaited = Some(id.clone());
-        self.response = None;
-        self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
-        loop {
-            if let Some(response) = self.response.take() {
-                if let Some(error) = response.get("error") {
-                    return Err(Error::AgentRpc {
-                        session_id: self.session,
-                        rpc_id: id.to_string(),
-                        message: error_text(error),
-                    });
-                }
-                return Ok(response.get("result").cloned().unwrap_or(Value::Null));
-            }
-            if self.gone {
-                return Err(Error::AgentGone(self.session));
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(protocol_error(format!("no answer to {method} in time")));
-            }
-            self.pump(left)?;
-        }
+    fn answering(&self, request_id: &str) -> bool {
+        self.unwritten.values().any(
+            |pending| matches!(pending, Pending::Answer { request, .. } if request == request_id),
+        )
     }
 
-    fn reply(&mut self, request: &Request, outcome: Value, resolution: &str) -> Result<bool> {
+    /// Queues an answer. Never reads, so it is safe while handling a line.
+    fn reply(&mut self, request: &Request, outcome: Value, resolution: &str) -> Result<()> {
         if !self.live.contains(&request.id) {
             return Err(Error::RequestNotLive(request.id.clone()));
         }
         let raw_id: Value = serde_json::from_str(&request.rpc_id)
             .map_err(|error| protocol_error(format!("stored request id: {error}")))?;
-        // Delivered first: a failed write must leave the request open, not lost.
-        self.write(&json!({
-            "jsonrpc": "2.0",
-            "id": raw_id,
-            "result": { "outcome": outcome },
-        }))?;
-        self.live.remove(&request.id);
-        self.engine.resolve_request(&request.id, resolution)
+        self.write(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": raw_id,
+                "result": { "outcome": outcome },
+            }),
+            Some(Pending::Answer {
+                request: request.id.clone(),
+                resolution: resolution.to_owned(),
+            }),
+        )
     }
 
-    fn write(&mut self, message: &Value) -> Result<()> {
-        let Some(stdin) = self.stdin.as_mut() else {
+    /// Reads for a short while so queued answers can resolve before the call returns.
+    fn settle(&mut self) -> Result<()> {
+        let deadline = Instant::now() + ANSWER_WAIT;
+        while !self.gone
+            && Instant::now() < deadline
+            && self
+                .unwritten
+                .values()
+                .any(|pending| matches!(pending, Pending::Answer { .. }))
+        {
+            self.pump(TICK)?;
+        }
+        Ok(())
+    }
+
+    /// Hands a message to the writer thread, so a full pipe can never block the owner.
+    fn write(&mut self, message: &Value, pending: Option<Pending>) -> Result<()> {
+        let Some(writes) = &self.writes else {
             return Err(Error::AgentGone(self.session));
         };
+        let tag = self.next_write;
+        self.next_write += 1;
         let mut line = message.to_string();
         line.push('\n');
-        let written = stdin
-            .write_all(line.as_bytes())
-            .and_then(|()| stdin.flush());
-        if let Err(error) = written {
-            self.stdin = None;
-            return Err(error.into());
+        writes
+            .send((tag, line.into_bytes()))
+            .map_err(|_| Error::AgentGone(self.session))?;
+        if let Some(pending) = pending {
+            self.unwritten.insert(tag, pending);
+        }
+        Ok(())
+    }
+
+    fn written(&mut self, tag: u64) -> Result<()> {
+        if let Some(Pending::Answer {
+            request,
+            resolution,
+        }) = self.unwritten.remove(&tag)
+        {
+            self.live.remove(&request);
+            self.engine.resolve_request(&request, &resolution)?;
+        }
+        Ok(())
+    }
+
+    /// Nothing more can reach the agent. Answers not delivered leave their requests
+    /// open; a prompt not delivered fails its run, since no answer can come.
+    fn write_failed(&mut self, message: String) -> Result<()> {
+        self.writes = None;
+        let lost_prompt = self.unwritten.drain().any(
+            |(_, pending)| matches!(pending, Pending::Prompt(id) if Some(&id) == self.prompt_id.as_ref()),
+        );
+        self.events.push_back(ClientEvent::WriteFailed {
+            message: message.clone(),
+        });
+        if self.stage != Stage::Ready {
+            return self.fail_launch(format!("write failed: {message}"));
+        }
+        if lost_prompt {
+            self.fail_prompt(&format!("prompt not delivered: {message}"))?;
         }
         Ok(())
     }
 
     fn pump(&mut self, wait: Duration) -> Result<()> {
+        if self.gone {
+            return Ok(());
+        }
         if self.exit_seen.is_none() && self.child.try_wait()?.is_some() {
             self.exit_seen = Some(Instant::now());
         }
         let since_exit = self.exit_seen.map(|seen| seen.elapsed());
         if since_exit.is_some_and(|since| since >= EXIT_LIMIT) {
-            return self.finish();
+            // What is already queued still gets delivered; only further reads stop.
+            self.stop_reading.store(true, Ordering::Relaxed);
         }
-        match self.lines.recv_timeout(wait.min(TICK)) {
-            Ok(line) => self.handle_line(&line),
-            Err(RecvTimeoutError::Disconnected) => self.finish(),
+        match self.input.recv_timeout(wait.min(TICK)) {
+            Ok(Input::Line(line)) => self.handle_line(&line),
+            Ok(Input::Written(tag)) => self.written(tag),
+            Ok(Input::WriteFailed(message)) => self.write_failed(message),
+            Ok(Input::StdoutClosed) | Err(RecvTimeoutError::Disconnected) => self.finish(),
             Err(RecvTimeoutError::Timeout) => {
                 // Exited, yet something it started still holds the pipe open.
                 if since_exit.is_some_and(|since| since >= EXIT_QUIET) {
@@ -528,8 +621,10 @@ impl<'e> AcpClient<'e> {
                 self.refuse(id, &method);
                 Ok(())
             }
-            (Some("session/update"), None) if !self.replaying => {
-                self.ingest(&message)?;
+            (Some("session/update"), None) => {
+                if !self.replaying {
+                    self.ingest(&message)?;
+                }
                 self.events.push_back(ClientEvent::Update(message));
                 Ok(())
             }
@@ -547,8 +642,7 @@ impl<'e> AcpClient<'e> {
     fn handle_response(&mut self, message: Value, id: Option<Value>) -> Result<()> {
         if id.is_some() && id == self.awaited {
             self.awaited = None;
-            self.response = Some(message);
-            return Ok(());
+            return self.advance(&message);
         }
         let is_prompt = id.is_some() && id == self.prompt_id;
         let stop_reason = message
@@ -556,13 +650,12 @@ impl<'e> AcpClient<'e> {
             .and_then(Value::as_str);
         if is_prompt && stop_reason.is_none() && message.get("error").is_none() {
             // Left alone, this run would look active forever.
-            let id = id.unwrap_or_default();
-            self.prompt_id = None;
-            return self.fail_prompt(&id, "prompt answered without a stop reason");
+            return self.fail_prompt("prompt answered without a stop reason");
         }
         self.ingest(&message)?;
         if is_prompt {
             self.prompt_id = None;
+            self.cancelling = false;
             self.events.push_back(match stop_reason {
                 Some(reason) => ClientEvent::TurnEnded {
                     stop_reason: reason.to_owned(),
@@ -583,6 +676,13 @@ impl<'e> AcpClient<'e> {
                 for alert in alerts {
                     if let Alert::NeedsYou(request) = &alert {
                         self.live.insert(request.id.clone());
+                        if self.cancelling {
+                            let cancelled = json!({ "outcome": "cancelled" });
+                            let replied = self.reply(request, cancelled, "cancelled");
+                            if replied.is_ok() {
+                                continue;
+                            }
+                        }
                     }
                     self.events.push_back(ClientEvent::Alert(alert));
                 }
@@ -599,10 +699,13 @@ impl<'e> AcpClient<'e> {
         }
     }
 
-    fn fail_prompt(&mut self, id: &Value, message: &str) -> Result<()> {
+    fn fail_prompt(&mut self, message: &str) -> Result<()> {
+        let Some(id) = self.prompt_id.take() else {
+            return Ok(());
+        };
+        self.cancelling = false;
         let failure = json!({ "id": id, "error": { "message": message } });
         self.engine.ingest(self.session, &failure)?;
-        self.prompt_id = None;
         self.events.push_back(ClientEvent::PromptError {
             message: message.to_owned(),
         });
@@ -610,11 +713,17 @@ impl<'e> AcpClient<'e> {
     }
 
     fn refuse(&mut self, id: Value, method: &str) {
-        let refused = self.write(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": METHOD_NOT_FOUND, "message": format!("{method} is not supported") },
-        }));
+        let refused = self.write(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": METHOD_NOT_FOUND,
+                    "message": format!("{method} is not supported"),
+                },
+            }),
+            None,
+        );
         if let Err(error) = refused {
             self.events.push_back(ClientEvent::WriteFailed {
                 message: error.to_string(),
@@ -641,32 +750,106 @@ impl<'e> AcpClient<'e> {
         String::from_utf8_lossy(&tail).trim().to_owned()
     }
 
-    /// The process is over or cannot be heard any more. Closing stdin lets a healthy
-    /// adapter leave by itself; one still there has lost its only channel to us.
+    /// The process is over or cannot be heard any more, or the owner or the adapter's
+    /// own refusal ended it. Closing stdin lets a healthy adapter leave by itself.
+    /// Silence never leads here: a live adapter that is merely quiet stays up.
     fn finish(&mut self) -> Result<()> {
-        self.stdin = None;
+        self.writes = None;
+        self.unwritten.clear();
         let status = self.wait_or_kill()?;
         self.gone = true;
         self.live.clear();
         self.engine.process_exited(self.session)?;
+        let stderr = self.stderr_text();
+        if self.stage != Stage::Ready {
+            let reason = self.failure.take();
+            let mut message =
+                reason.unwrap_or_else(|| "process ended before the session was ready".to_owned());
+            if !stderr.is_empty() {
+                message.push_str("; stderr: ");
+                message.push_str(&stderr);
+            }
+            self.events.push_back(ClientEvent::LaunchFailed { message });
+        }
         self.events.push_back(ClientEvent::Exited {
             code: status.code(),
-            stderr: self.stderr_text(),
+            stderr,
         });
         Ok(())
     }
 
+    /// Whatever the adapter started goes with it, so nothing keeps changing the repo
+    /// after the session reads closed.
     fn wait_or_kill(&mut self) -> Result<ExitStatus> {
+        let pid = self.child.id();
         let deadline = Instant::now() + CLOSE_WAIT;
         while Instant::now() < deadline {
             if let Some(status) = self.child.try_wait()? {
+                // Windows can only walk the tree from a live root.
+                if !cfg!(windows) {
+                    kill_tree(pid);
+                }
                 return Ok(status);
             }
             thread::sleep(Duration::from_millis(10));
         }
+        kill_tree(pid);
         let _ = self.child.kill();
         Ok(self.child.wait()?)
     }
+}
+
+fn spawn_reader(stdout: ChildStdout, input: Sender<Input>, stop: Arc<AtomicBool>) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = Vec::new();
+            let read = reader.read_until(b'\n', &mut line);
+            if !matches!(read, Ok(1..)) || stop.load(Ordering::Relaxed) {
+                let _ = input.send(Input::StdoutClosed);
+                return;
+            }
+            if input.send(Input::Line(line)).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+fn spawn_writer(mut stdin: ChildStdin, queue: Receiver<(u64, Vec<u8>)>, input: Sender<Input>) {
+    thread::spawn(move || {
+        for (tag, bytes) in queue {
+            let written = stdin.write_all(&bytes).and_then(|()| stdin.flush());
+            let report = match written {
+                Ok(()) => Input::Written(tag),
+                Err(error) => Input::WriteFailed(error.to_string()),
+            };
+            let failed = matches!(report, Input::WriteFailed(_));
+            if input.send(report).is_err() || failed {
+                return;
+            }
+        }
+    });
+}
+
+/// Asks the OS tool, as `OsProcessProbe` does, so this needs no native bindings. The
+/// adapter leads its own process group on Unix. A process that left the group, or
+/// any tree under an already-dead root on Windows, is out of reach.
+fn kill_tree(pid: u32) {
+    let mut command = if cfg!(windows) {
+        let mut taskkill = Command::new("taskkill");
+        taskkill.args(["/T", "/F", "/PID", &pid.to_string()]);
+        taskkill
+    } else {
+        let mut kill = Command::new("kill");
+        kill.args(["-KILL", "--", &format!("-{pid}")]);
+        kill
+    };
+    let _ = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// The adapter's stdin is the JSON-RPC pipe; nothing it starts should find a
