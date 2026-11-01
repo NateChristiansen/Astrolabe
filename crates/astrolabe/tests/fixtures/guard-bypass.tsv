@@ -1,0 +1,246 @@
+# The guard's bypass table. Columns, by tab: expect, machine, tool, command.
+# expect: deny; allow; miss = dangerous and known to get past the guard, listed so the
+# limit is visible and a change shows up. A miss is asserted as not denied.
+# machine: mac has worktree /work/repo; win has C:\work\repo. Both start at the root.
+# The sign ⏎ stands for a newline.
+deny	mac	Bash	pkill node
+deny	mac	Bash	killall node
+deny	mac	Bash	/usr/bin/pkill node
+deny	mac	Bash	PKILL node
+deny	mac	Bash	pk\ill node
+deny	mac	Bash	p''kill node
+deny	mac	Bash	sudo -u root pkill node
+deny	mac	Bash	sh -c 'pkill node'
+deny	mac	Bash	bash -c 'pkill node'
+deny	mac	Bash	bash -lc 'pkill node'
+deny	mac	Bash	zsh -c "killall node"
+deny	mac	Bash	eval pkill node
+deny	mac	Bash	eval "pkill node"
+deny	mac	Bash	env pkill node
+deny	mac	Bash	env -i FOO=1 pkill node
+deny	mac	Bash	env -S 'pkill node'
+deny	mac	Bash	FOO=1 pkill node
+deny	mac	Bash	(pkill node)
+deny	mac	Bash	true && pkill node
+deny	mac	Bash	true; pkill node
+deny	mac	Bash	true || pkill node
+deny	mac	Bash	true | pkill node
+deny	mac	Bash	true & pkill node
+deny	mac	Bash	echo node | xargs pkill
+deny	mac	Bash	echo node | xargs -n 1 pkill
+deny	mac	Bash	nohup pkill node
+deny	mac	Bash	timeout 5 pkill node
+deny	mac	Bash	nice -n 5 pkill node
+deny	mac	Bash	command pkill node
+deny	mac	Bash	exec pkill node
+deny	mac	Bash	echo $(pkill node)
+deny	mac	Bash	echo "$(pkill node)"
+deny	mac	Bash	echo `pkill node`
+deny	mac	Bash	sh -c "sh -c 'pkill node'"
+deny	mac	Bash	sh -c "eval 'env bash -c \"pkill node\"'"
+deny	mac	Bash	sh <<'EOF'⏎pkill node⏎EOF
+deny	mac	Bash	bash <<< 'pkill node'
+deny	mac	Bash	if true; then pkill node; fi
+deny	mac	Bash	echo start⏎pkill node
+deny	mac	Bash	true \⏎&& pkill node
+deny	mac	Bash	pkill node 2>/dev/null
+deny	mac	Bash	sh -c 'pkill node
+deny	mac	Bash	echo "$(pkill node
+allow	mac	Bash	echo "pkill node"
+allow	mac	Bash	echo 'git push --force'
+allow	mac	Bash	grep -r pkill src
+allow	mac	Bash	cat <<'EOF'⏎pkill node⏎don't git push --force⏎EOF
+allow	mac	Bash	git commit -m "$(cat <<'EOF'⏎Don't call pkill or git push --force (ever)⏎EOF⏎)"
+allow	mac	Bash	git commit -m 'stop using rm -rf /'
+allow	mac	Bash	ls # pkill node
+allow	mac	Bash	command -v pkill
+deny	mac	Bash	git push --force
+deny	mac	Bash	git push -f origin main
+deny	mac	Bash	git push -uf origin main
+deny	mac	Bash	git push --force-with-lease
+deny	mac	Bash	git push --force-if-includes
+deny	mac	Bash	git push origin +main
+deny	mac	Bash	git push origin +main:main
+deny	mac	Bash	git push --mirror
+deny	mac	Bash	git -C /work/repo push --force
+deny	mac	Bash	git -c core.x=1 --no-pager push -f
+deny	mac	Bash	/usr/bin/git push --force
+deny	mac	Bash	sh -c 'git push --force'
+deny	mac	Bash	cd sub && git push --force
+deny	mac	Bash	git pu''sh --fo"rce"
+deny	mac	Bash	git -c alias.x='push --force' x
+deny	mac	Bash	git $SUB --force
+deny	mac	Bash	echo --force | xargs git push
+allow	mac	Bash	git push
+allow	mac	Bash	git push origin main
+allow	mac	Bash	git push -u origin my-branch
+allow	mac	Bash	git push origin feature-force
+allow	mac	Bash	git fetch --force
+allow	mac	Bash	git status
+deny	mac	Bash	git reset --hard
+deny	mac	Bash	git reset --hard HEAD~1
+deny	mac	Bash	bash -c 'git reset --hard'
+allow	mac	Bash	git reset --soft HEAD~1
+allow	mac	Bash	git reset HEAD file.txt
+deny	mac	Bash	git checkout -- .
+deny	mac	Bash	git checkout .
+deny	mac	Bash	git checkout HEAD -- .
+deny	mac	Bash	git checkout -- :/
+deny	mac	Bash	git checkout --
+allow	mac	Bash	git checkout -- src/a.rs
+allow	mac	Bash	git checkout main
+allow	mac	Bash	git checkout -b topic
+deny	mac	Bash	git restore .
+deny	mac	Bash	git restore :/
+deny	mac	Bash	git restore --source=HEAD~1 .
+deny	mac	Bash	git restore
+allow	mac	Bash	git restore src/a.rs
+allow	mac	Bash	git restore --staged .
+deny	mac	Bash	git restore --staged --worktree .
+deny	mac	Bash	find . -delete
+deny	mac	Bash	find . -name '*.tmp' -delete
+deny	mac	Bash	sh -c "find /tmp -delete"
+deny	mac	Bash	find / -exec rm -rf {} \;
+deny	mac	Bash	find . -exec pkill node \;
+allow	mac	Bash	find . -name '*.rs'
+allow	mac	Bash	find . -exec grep foo {} \;
+deny	mac	Bash	rm -rf /
+deny	mac	Bash	rm -rf /etc
+deny	mac	Bash	rm -rf ~
+deny	mac	Bash	rm -rf ~/work
+deny	mac	Bash	rm -rf ..
+deny	mac	Bash	rm -rf ../other
+deny	mac	Bash	rm -rf sub/../../other
+deny	mac	Bash	rm -fr /tmp/x
+deny	mac	Bash	rm -r -f /tmp/x
+deny	mac	Bash	rm --recursive --force /tmp/x
+deny	mac	Bash	rm -Rf /tmp/x
+deny	mac	Bash	rm -rf .
+deny	mac	Bash	rm -rf /work/repo
+deny	mac	Bash	rm -rf /work/repo-other
+deny	mac	Bash	rm -rf $HOME
+deny	mac	Bash	rm -rf "$DIR/build"
+deny	mac	Bash	rm -rf
+deny	mac	Bash	cd / && rm -rf etc
+deny	mac	Bash	cd "$X" && rm -rf a
+deny	mac	Bash	echo /tmp/x | xargs rm -rf
+deny	mac	Bash	sh -c 'rm -rf /tmp/x'
+deny	mac	Bash	rm -rf target /etc
+allow	mac	Bash	rm -rf target
+allow	mac	Bash	rm -rf ./target/debug
+allow	mac	Bash	rm -rf /work/repo/target
+allow	mac	Bash	rm -rf *
+allow	mac	Bash	cd sub && rm -rf build
+allow	mac	Bash	rm -rf -- target
+allow	mac	Bash	rm file.txt
+allow	mac	Bash	rm -f /tmp/x
+deny	mac	Bash	gh pr create --title x
+deny	mac	Bash	gh pr merge 3
+deny	mac	Bash	gh pr comment 3 --body x
+deny	mac	Bash	gh pr review 3 --approve
+deny	mac	Bash	gh pr close 3
+deny	mac	Bash	gh issue create --title x
+deny	mac	Bash	gh issue comment 3 -b x
+deny	mac	Bash	gh repo delete o/r --yes
+deny	mac	Bash	gh release create v1
+deny	mac	Bash	gh secret set X
+deny	mac	Bash	gh -R o/r pr create
+deny	mac	Bash	gh pr $VERB 3
+deny	mac	Bash	gh api repos/o/r/issues -f title=x
+deny	mac	Bash	gh api -X POST repos/o/r/issues
+deny	mac	Bash	gh api --method=DELETE repos/o/r
+deny	mac	Bash	gh api graphql -f query='mutation { x }'
+deny	mac	Bash	sh -c 'gh pr create'
+allow	mac	Bash	gh pr view 3
+allow	mac	Bash	gh pr list
+allow	mac	Bash	gh pr checks 3
+allow	mac	Bash	gh pr diff 3
+allow	mac	Bash	gh run view 5
+allow	mac	Bash	gh run watch 5
+allow	mac	Bash	gh issue list -R o/r
+allow	mac	Bash	gh auth status
+allow	mac	Bash	gh api repos/o/r/pulls
+allow	mac	Bash	gh api -X GET repos/o/r/pulls -f state=open
+allow	mac	Bash	gh api graphql -f query='query { viewer { login } }'
+allow	mac	Bash	gh --version
+allow	mac	Bash	ls -la
+allow	mac	Bash	cargo test --locked
+allow	mac	Write	not a command
+allow	mac	mcp__x__y	git push --force
+miss	mac	Bash	python3 -c "import os; os.system('git push --force')"
+miss	mac	Bash	node -e "require('child_process').execSync('pkill node')"
+miss	mac	Bash	perl -e 'system("pkill node")'
+miss	mac	Bash	./deploy.sh
+miss	mac	Bash	bash deploy.sh
+miss	mac	Bash	source deploy.sh
+miss	mac	Bash	echo Z2l0IHB1c2ggLWY= | base64 -d | sh
+miss	mac	Bash	echo 'git push --force' | sh
+miss	mac	Bash	CMD="git push --force"; $CMD
+miss	mac	Bash	F=--force; git push $F
+miss	mac	Bash	P=pkill; $P node
+miss	mac	Bash	sh -c "$CMD"
+miss	mac	Bash	{pkill,node}
+miss	mac	Bash	alias p=pkill; p node
+miss	mac	Bash	f() { echo; }; f --force
+miss	mac	Bash	git clean -fdx
+miss	mac	Bash	git branch -D main
+miss	mac	Bash	git stash drop
+miss	mac	Bash	git push origin :main
+miss	mac	Bash	git checkout -f
+deny	win	PowerShell	git push --force
+deny	win	PowerShell	git.exe push -f
+deny	win	PowerShell	& git push --force
+deny	win	PowerShell	& 'C:\Program Files\Git\cmd\git.exe' push --force
+deny	win	PowerShell	Invoke-Expression "git push --force"
+deny	win	PowerShell	iex 'git push --force'
+deny	win	PowerShell	powershell -Command "git push --force"
+deny	win	PowerShell	powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "git push --force"
+deny	win	PowerShell	pwsh -c 'git push --force'
+deny	win	PowerShell	powershell -Comm "git push --force"
+deny	win	PowerShell	cmd /c git push --force
+deny	win	PowerShell	cmd.exe /d /s /c "git push --force"
+deny	win	PowerShell	git reset --hard
+deny	win	PowerShell	if ($true) { git push --force }
+deny	win	PowerShell	$x = git push --force
+deny	win	PowerShell	echo $(git push --force)
+deny	win	PowerShell	g`it push --force
+deny	win	PowerShell	Remove-Item -Recurse -Force C:\Users\me
+deny	win	PowerShell	Remove-Item -Path C:\Users\me -Recurse
+deny	win	PowerShell	ri -r C:\Users\me
+deny	win	PowerShell	rm -r -fo ..\other
+deny	win	PowerShell	rm -Recurse $env:TEMP\x
+deny	win	PowerShell	cmd /c rmdir /s /q C:\Users\me
+deny	win	PowerShell	cmd /c rd /s /q ..\other
+deny	win	PowerShell	cmd /c del /s C:\Users\me\*
+deny	win	PowerShell	taskkill /F /IM node.exe
+deny	win	PowerShell	Stop-Process -Name node
+deny	win	PowerShell	Get-Process node | Stop-Process
+deny	win	PowerShell	gh pr create
+allow	win	PowerShell	Remove-Item -Recurse -Force target
+allow	win	PowerShell	Remove-Item -Recurse C:\work\repo\target
+allow	win	PowerShell	rm -Recurse -Force .\target\debug
+allow	win	PowerShell	Remove-Item file.txt -Force
+allow	win	PowerShell	cmd /c rmdir /s /q target
+allow	win	PowerShell	taskkill /F /PID 123
+allow	win	PowerShell	Stop-Process -Id 123
+allow	win	PowerShell	Stop-Process 123
+allow	win	PowerShell	git status
+allow	win	PowerShell	Get-ChildItem C:\Users
+miss	win	PowerShell	powershell -EncodedCommand ZwBpAHQA
+miss	win	PowerShell	powershell -enc ZwBpAHQA
+miss	win	PowerShell	powershell -File deploy.ps1
+miss	win	PowerShell	$c = 'git push --force'; & ([scriptblock]::Create($c))
+miss	win	PowerShell	Start-Process git -ArgumentList 'push --force'
+miss	win	PowerShell	python -c "import os; os.system('git push --force')"
+miss	win	PowerShell	cmd /c %CMD%
+deny	win	Bash	cmd //c git push --force
+deny	win	Bash	cmd /c git push --force
+deny	win	Bash	rm -rf /c/Users/me
+deny	win	Bash	rm -rf C:\\Users\\me
+deny	win	Bash	/c/Program\ Files/Git/cmd/git.exe push --force
+deny	win	Bash	Remove-Item -Recurse -Force C:\Users\me
+deny	win	Bash	powershell.exe -Command "git push --force"
+deny	win	Bash	powershell -Command "Remove-Item -Recurse -Force C:\Users\me"
+allow	win	Bash	rm -rf /c/work/repo/target
+allow	win	Bash	rm -rf /C/Work/Repo/target
+allow	win	Bash	rm -rf target

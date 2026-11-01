@@ -3,7 +3,7 @@
 //! no core at all, and each fire is its own file, so they can be counted. Files stay
 //! until step 4 settles retention.
 use crate::host::{Clock, SystemClock};
-use crate::layer::DATA_DIR_VAR;
+use crate::layer::{DATA_DIR_VAR, WORKTREE_VAR};
 use crate::store::default_db_path;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
@@ -42,8 +42,7 @@ pub fn reports_dir() -> Option<PathBuf> {
 }
 
 /// Always returns: whatever goes wrong here must not reach the agent. A missing receipt
-/// is for the launch to judge (step 4). A pre-command guard goes here as its own event
-/// (step 4), and is the one event that may answer the client.
+/// is for the launch to judge (step 4).
 pub fn run(event: &str) {
     let input = read_input();
     let session_id = input["session_id"].as_str();
@@ -61,6 +60,11 @@ pub fn run(event: &str) {
 /// On a thread, because a client that holds stdin open must not hold the hook. Ends
 /// as soon as the input is whole, whether or not the client closes the pipe.
 fn read_input() -> Value {
+    serde_json::from_slice(&read_bytes()).unwrap_or(Value::Null)
+}
+
+/// What arrived, whole or not.
+fn read_bytes() -> Vec<u8> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut stdin = io::stdin().take(STDIN_LIMIT);
@@ -76,11 +80,11 @@ fn read_input() -> Value {
     while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
     {
         input.extend(chunk);
-        if let Ok(value) = serde_json::from_slice(&input) {
-            return value;
+        if serde_json::from_slice::<Value>(&input).is_ok() {
+            break;
         }
     }
-    Value::Null
+    input
 }
 
 /// Appears whole or not at all: written aside, then renamed.
@@ -150,4 +154,97 @@ pub fn read_reports(dir: &Path) -> Vec<Report> {
         .collect();
     reports.sort_by(|a, b| (a.at_ms, &a.file).cmp(&(b.at_ms, &b.file)));
     reports
+}
+
+/// How a denial shows among the reports the core reads.
+pub const DENIAL_EVENT: &str = "pre-command-denied";
+/// One JSON line per denial, in the data folder.
+pub const DENIAL_LOG: &str = "guard-denials.log";
+/// A self-test's input: never reported, since nothing was attempted.
+pub const SELF_TEST_SESSION: &str = "astrolabe-self-test";
+const LOGGED_COMMAND: usize = 2000;
+
+/// `astrolabe hook pre-command`. Opposite of the other hooks, it fails closed as far as
+/// it can: a panic is caught, and input it can't read is denied if it names a denied
+/// program. A hook that dies outright, hangs or is never run fails open on both clients
+/// and they give no sign. Nothing here can change that; the plain rules and the receipt
+/// are there for it. Always exit 0: exit 2 fails open on Codex on Windows, and shows the
+/// hook's command line on Claude. No network, core or database.
+pub fn pre_command() {
+    std::panic::set_hook(Box::new(|_| {}));
+    let bytes = read_bytes();
+    let reason = std::panic::catch_unwind(|| judge(&bytes)).unwrap_or_else(|_| {
+        crate::guard::names_denied_program(&String::from_utf8_lossy(&bytes))
+            .then(|| "a command the guard could not read".to_owned())
+    });
+    let Some(reason) = reason else { return };
+    let _ = std::panic::catch_unwind(|| record_denial(&bytes, &reason));
+    let answer = json!({ "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason":
+            format!("Astrolabe denied {reason}. Ask the owner if this is really needed."),
+    }});
+    let mut stdout = io::stdout();
+    let _ = writeln!(stdout, "{answer}");
+    let _ = stdout.flush();
+}
+
+fn judge(bytes: &[u8]) -> Option<String> {
+    if std::env::var_os("ASTROLABE_GUARD_TEST_PANIC").is_some() {
+        panic!("test");
+    }
+    let Ok(input) = serde_json::from_slice::<Value>(bytes) else {
+        return crate::guard::names_denied_program(&String::from_utf8_lossy(bytes))
+            .then(|| "a command the guard could not read".to_owned());
+    };
+    let tool = input["tool_name"].as_str().unwrap_or_default();
+    let cwd = input["cwd"].as_str().map(PathBuf::from);
+    let cwd = cwd.or_else(|| std::env::current_dir().ok());
+    let scope = crate::guard::Scope {
+        root: worktree_root(cwd.as_deref()),
+        cwd: cwd.as_deref().map(comparable),
+    };
+    crate::guard::decide(tool, &input["tool_input"], &scope)
+}
+
+/// What the launch named, else the nearest folder holding a `.git`.
+fn worktree_root(cwd: Option<&Path>) -> Option<String> {
+    if let Some(root) = std::env::var_os(WORKTREE_VAR) {
+        return Some(comparable(Path::new(&root)));
+    }
+    let found = cwd?.ancestors().find(|dir| dir.join(".git").exists())?;
+    Some(comparable(found))
+}
+
+fn record_denial(bytes: &[u8], reason: &str) {
+    let input: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
+    let session_id = input["session_id"].as_str();
+    if session_id == Some(SELF_TEST_SESSION) {
+        return;
+    }
+    let cwd = input["cwd"].as_str().map(PathBuf::from);
+    let Some(cwd) = cwd.or_else(|| std::env::current_dir().ok()) else {
+        return;
+    };
+    let Some(dir) = reports_dir() else { return };
+    let _ = write_report(&dir, DENIAL_EVENT, session_id, &cwd);
+    let tool_input = &input["tool_input"];
+    let command = tool_input["command"].as_str().unwrap_or_default();
+    let line = json!({
+        "at_ms": SystemClock.now_ms(),
+        "session_id": session_id,
+        "agent_id": input["agent_id"],
+        "tool": input["tool_name"],
+        "reason": reason,
+        "command": command.chars().take(LOGGED_COMMAND).collect::<String>(),
+    });
+    let Some(data) = dir.parent() else { return };
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data.join(DENIAL_LOG));
+    if let Ok(mut log) = log {
+        let _ = log.write_all(format!("{line}\n").as_bytes());
+    }
 }

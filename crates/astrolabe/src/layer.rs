@@ -12,6 +12,8 @@ use std::path::Path;
 pub const PROGRAM: &str = "astrolabe";
 pub const MCP_NAME: &str = "astrolabe";
 pub const MCP_TOOLS: [&str; 1] = ["layer_check"];
+/// The launch names the worktree here for the guard. Unset, it looks for a `.git`.
+pub const WORKTREE_VAR: &str = "ASTROLABE_WORKTREE";
 /// Where hooks and the tool server find the core's files. Unset, the OS app-data folder.
 pub const DATA_DIR_VAR: &str = "ASTROLABE_DATA_DIR";
 

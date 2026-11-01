@@ -17,6 +17,7 @@ fn main() {
             None => fail("no app-data directory found; pass --db <path>"),
         },
         ["serve", "--db", db] => serve(&PathBuf::from(db)),
+        ["hook", "pre-command"] => astrolabe::hook::pre_command(),
         ["hook", event] => astrolabe::hook::run(event),
         ["mcp"] => {
             if let Err(error) = astrolabe::mcp::serve() {

@@ -4,6 +4,7 @@ pub mod driver;
 mod engine;
 mod error;
 pub mod events;
+pub mod guard;
 pub mod hook;
 mod host;
 pub mod layer;
