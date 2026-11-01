@@ -355,7 +355,7 @@ fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Fa
     let powershell = cfg!(windows) && matches!(provider, Provider::Codex);
     if powershell {
         say(
-            "  known limit: plain `sh` fails silently here unless escalated; git hooks may too"
+            "  known limit: plain `sh` and `git commit` fail here unless escalated; check results on disk"
                 .to_owned(),
         );
     }
