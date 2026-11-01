@@ -3,6 +3,7 @@
 //! a file in its working directory, so a resume in a new process can prove itself.
 use serde_json::{Value, json};
 use std::io::{self, Write};
+use std::path::Path;
 
 const SESSION: &str = "fake-session";
 
@@ -124,12 +125,21 @@ impl Agent {
         std::fs::write("turns.txt", (turns + 1).to_string()).unwrap();
         let scenario = message["params"]["prompt"][0]["text"].as_str().unwrap();
         match scenario {
-            "approve" | "cancel" => {
+            "answer-exit" => {
+                send(&permission("7", SESSION));
+                self.answer_to("7");
+                std::process::exit(0);
+            }
+            "approve" | "cancel" | "cancel-held" => {
                 send(&tool_call(SESSION, "call-1", "pending"));
                 // A string id: the answer must echo it with its type.
                 send(&permission("7", SESSION));
                 let outcome = self.answer_to("7");
                 if outcome["outcome"] == "cancelled" {
+                    // Held until the test has looked at the state before the answer.
+                    while scenario == "cancel-held" && !Path::new("release").exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                     send(&result(id, json!({ "stopReason": "cancelled" })));
                     return;
                 }

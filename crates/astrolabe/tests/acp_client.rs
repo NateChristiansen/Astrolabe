@@ -418,11 +418,17 @@ fn buffered_lines_are_delivered_after_a_slow_owner_returns() {
     let mut client = start(&h, &[]);
     let session = client.session_id();
     client.prompt("flood-exit").unwrap();
-    std::thread::sleep(Duration::from_millis(800));
+    std::thread::sleep(Duration::from_millis(1200));
     let first = client.next_event(Duration::from_millis(100)).unwrap();
     assert!(first.is_some());
     std::thread::sleep(Duration::from_millis(2300));
+    // Reaping before the group is signalled would free the pid for anyone to reuse.
+    let adapter = client.pid();
+    if cfg!(unix) {
+        assert!(OsProcessProbe.is_alive(adapter), "reaped too early");
+    }
     let events = until(&mut client, exited);
+    assert!(gone(adapter));
     assert!(events.iter().any(turn_end), "{events:?}");
     assert_eq!(
         h.engine.inspect(session).unwrap().run.state,
@@ -610,6 +616,19 @@ fn a_child_session_update_is_attributed_to_its_parent() {
     client.shutdown().unwrap();
 }
 
+/// Catches: an answer the agent acted on staying open because the process ended
+/// before the writer's report was read.
+#[test]
+fn an_answer_delivered_just_before_exit_still_resolves() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    client.prompt("answer-exit").unwrap();
+    let request = next_request(&mut client);
+    assert!(client.answer(&request.id, "yes").unwrap());
+    until(&mut client, exited);
+    assert!(h.engine.open_requests().unwrap().is_empty());
+}
+
 /// Catches: a permission already on its way when the owner cancels: unanswered, the
 /// cancelled turn never ends, and it must not surface as an approval either.
 #[test]
@@ -647,7 +666,7 @@ fn cancel_answers_open_requests_and_waits_for_the_agent() {
     let h = Harness::new();
     let mut client = start(&h, &[]);
     let session = client.session_id();
-    client.prompt("cancel").unwrap();
+    client.prompt("cancel-held").unwrap();
     next_request(&mut client);
 
     client.cancel().unwrap();
@@ -656,6 +675,7 @@ fn cancel_answers_open_requests_and_waits_for_the_agent() {
         h.engine.inspect(session).unwrap().run.state.is_active(),
         "cancelled only on evidence"
     );
+    std::fs::write(h.dir.0.join("release"), "").unwrap();
     until(&mut client, turn_end);
     assert_eq!(
         h.engine.inspect(session).unwrap().run.state,

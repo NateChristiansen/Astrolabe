@@ -30,6 +30,9 @@ const TICK: Duration = Duration::from_millis(50);
 /// Lines already received are always delivered.
 const EXIT_QUIET: Duration = Duration::from_millis(200);
 const EXIT_LIMIT: Duration = Duration::from_secs(2);
+/// How often to ask whether the adapter has exited with its pipe still open. End of
+/// file reports an ordinary exit at once, so this slow check matters only then.
+const EXIT_CHECK: Duration = Duration::from_secs(1);
 /// How long an answer call waits to hear its bytes reached the pipe. Past this the
 /// answer stays queued and the request resolves when they do.
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
@@ -178,6 +181,7 @@ pub struct AcpClient<'e> {
     /// Requests this process raised: the only ones its pipe can answer.
     live: HashSet<String>,
     events: VecDeque<ClientEvent>,
+    exit_checked: Instant,
     exit_seen: Option<Instant>,
     gone: bool,
 }
@@ -276,6 +280,7 @@ impl<'e> AcpClient<'e> {
             replaying: false,
             live: HashSet::new(),
             events: VecDeque::new(),
+            exit_checked: Instant::now(),
             exit_seen: None,
             gone: false,
         })
@@ -578,8 +583,11 @@ impl<'e> AcpClient<'e> {
         if self.gone {
             return Ok(());
         }
-        if self.exit_seen.is_none() && self.child.try_wait()?.is_some() {
-            self.exit_seen = Some(Instant::now());
+        if self.exit_seen.is_none() && self.exit_checked.elapsed() >= EXIT_CHECK {
+            self.exit_checked = Instant::now();
+            if self.has_exited()? {
+                self.exit_seen = Some(Instant::now());
+            }
         }
         let since_exit = self.exit_seen.map(|seen| seen.elapsed());
         if since_exit.is_some_and(|since| since >= EXIT_LIMIT) {
@@ -755,8 +763,9 @@ impl<'e> AcpClient<'e> {
     /// Silence never leads here: a live adapter that is merely quiet stays up.
     fn finish(&mut self) -> Result<()> {
         self.writes = None;
-        self.unwritten.clear();
         let status = self.wait_or_kill()?;
+        self.reconcile_writes()?;
+        self.unwritten.clear();
         self.gone = true;
         self.live.clear();
         self.engine.process_exited(self.session)?;
@@ -778,22 +787,53 @@ impl<'e> AcpClient<'e> {
         Ok(())
     }
 
-    /// Whatever the adapter started goes with it, so nothing keeps changing the repo
-    /// after the session reads closed.
-    fn wait_or_kill(&mut self) -> Result<ExitStatus> {
-        let pid = self.child.id();
-        let deadline = Instant::now() + CLOSE_WAIT;
-        while Instant::now() < deadline {
-            if let Some(status) = self.child.try_wait()? {
-                // Windows can only walk the tree from a live root.
-                if !cfg!(windows) {
-                    kill_tree(pid);
-                }
-                return Ok(status);
+    /// An answer the agent acted on before exiting may have its report still on the
+    /// way. Without this it would stay open forever although it was delivered.
+    fn reconcile_writes(&mut self) -> Result<()> {
+        let deadline = Instant::now() + EXIT_QUIET;
+        while !self.unwritten.is_empty() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.input.recv_timeout(left) {
+                Ok(Input::Written(tag)) => self.written(tag)?,
+                Ok(Input::Line(_) | Input::StdoutClosed) => {}
+                Ok(Input::WriteFailed(_)) | Err(_) => break,
             }
-            thread::sleep(Duration::from_millis(10));
         }
-        kill_tree(pid);
+        Ok(())
+    }
+
+    /// Never reaps on Unix: a zombie leader keeps its pid, so the group number cannot
+    /// pass to anyone else before `wait_or_kill` signals it. On Windows `Child` holds
+    /// a handle, which keeps the pid just the same.
+    fn has_exited(&mut self) -> Result<bool> {
+        if cfg!(windows) {
+            return Ok(self.child.try_wait()?.is_some());
+        }
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", &self.child.id().to_string()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        Ok(output.is_ok_and(|output| {
+            let stat = String::from_utf8_lossy(&output.stdout);
+            let stat = stat.trim();
+            stat.is_empty() || stat.starts_with('Z')
+        }))
+    }
+
+    /// Whatever the adapter started goes with it, so nothing keeps changing the repo
+    /// after the session reads closed. The leader is reaped only after the signal.
+    fn wait_or_kill(&mut self) -> Result<ExitStatus> {
+        let deadline = Instant::now() + CLOSE_WAIT;
+        let mut exited = self.has_exited()?;
+        while !exited && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+            exited = self.has_exited()?;
+        }
+        // Windows can only walk the tree from a live root.
+        if !exited || !cfg!(windows) {
+            kill_tree(self.child.id());
+        }
         let _ = self.child.kill();
         Ok(self.child.wait()?)
     }
