@@ -1094,7 +1094,9 @@ fn memory_reads_as_on_unless_the_record_says_off() {
     assert!(!memory_on(true, record, r#"{"memory_mode":"disabled"}"#));
     assert!(memory_on(true, record, r#"{"memory_mode":"enabled"}"#));
     assert!(!memory_on(false, record, "{}"));
-    assert!(memory_on(false, record, r#"{"x":"/p/slug/memory/"}"#));
+    let folder = record.with_file_name("memory").display().to_string();
+    let named = format!(r#"{{"x":"{}/"}}"#, folder.replace('\\', "\\\\"));
+    assert!(memory_on(false, record, &named));
 }
 
 #[test]
