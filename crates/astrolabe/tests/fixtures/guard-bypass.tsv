@@ -167,6 +167,8 @@ allow	mac	Bash	ls -la
 allow	mac	Bash	cargo test --locked
 allow	mac	Write	not a command
 allow	mac	mcp__x__y	git push --force
+allow	mac	apply_patch	*** Begin Patch⏎+git push --force⏎*** End Patch
+miss	mac	apply_patch	*** Add File: deploy.sh⏎+git push --force
 miss	mac	Bash	python3 -c "import os; os.system('git push --force')"
 miss	mac	Bash	node -e "require('child_process').execSync('pkill node')"
 miss	mac	Bash	perl -e 'system("pkill node")'

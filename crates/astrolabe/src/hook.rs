@@ -1,7 +1,7 @@
 //! `astrolabe hook <event>`, and the report files it leaves. A file because a hook must
 //! not wait on anything: the core reads them when it runs, a launch can read them with
-//! no core at all, and each fire is its own file, so they can be counted. Files stay
-//! until step 4 settles retention.
+//! no core at all, and each fire is its own file, so they can be counted. Files stay:
+//! retention isn't settled, though a receipt's cost doesn't grow past a listing.
 use crate::host::{Clock, SystemClock};
 use crate::layer::{DATA_DIR_VAR, HookEvent, WORKTREE_VAR};
 use crate::store::default_db_path;

@@ -39,6 +39,7 @@ mod windows {
 
     #[repr(C)]
     #[derive(Default)]
+    #[allow(dead_code)] // The OS reads these.
     struct BasicLimit {
         per_process_user_time: i64,
         per_job_user_time: i64,
@@ -53,12 +54,14 @@ mod windows {
 
     #[repr(C)]
     #[derive(Default)]
+    #[allow(dead_code)] // The OS reads these.
     struct IoCounters {
         counts: [u64; 6],
     }
 
     #[repr(C)]
     #[derive(Default)]
+    #[allow(dead_code)] // The OS reads these.
     struct ExtendedLimit {
         basic: BasicLimit,
         io: IoCounters,
@@ -87,13 +90,13 @@ mod windows {
             return None;
         }
         // SAFETY: `raw` was just returned by the OS and nothing else holds it.
-        let handle = unsafe { OwnedHandle::from_raw_handle(raw as RawHandle) };
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
         let mut limit = ExtendedLimit::default();
         limit.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         // SAFETY: the pointer and size describe a live struct of the class's layout.
         let set = unsafe {
             SetInformationJobObject(
-                handle.as_raw_handle() as *mut c_void,
+                handle.as_raw_handle(),
                 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                 (&raw const limit).cast(),
                 size_of::<ExtendedLimit>() as u32,
@@ -104,6 +107,6 @@ mod windows {
 
     pub fn assign(job: &OwnedHandle, process: RawHandle) -> bool {
         // SAFETY: both handles are live for this call.
-        unsafe { AssignProcessToJobObject(job.as_raw_handle() as *mut c_void, process as _) != 0 }
+        unsafe { AssignProcessToJobObject(job.as_raw_handle(), process) != 0 }
     }
 }

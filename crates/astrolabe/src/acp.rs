@@ -468,7 +468,15 @@ impl<'e> AcpClient<'e> {
         self.receipt_deadline = None;
         let message = protection.missing_message();
         if self.stage == Stage::Ready && self.prompt_id.is_some() {
-            let _ = self.cancel();
+            // Not `cancel`: this is a failed launch, not the owner stopping a run.
+            let _ = self.write(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/cancel",
+                    "params": { "sessionId": self.agent_session },
+                }),
+                None,
+            );
         }
         self.fail_launch(message)
     }

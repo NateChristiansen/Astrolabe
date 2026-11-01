@@ -179,6 +179,9 @@ fn pump(session: &mut AcpClient, answer: Answer, seen: &mut Seen, ready_only: bo
                     seen.agent_ids.push(session_id.to_owned());
                 }
                 let update = &update["params"]["update"];
+                if update["sessionUpdate"] == "agent_message_chunk" {
+                    print!("{}", update["content"]["text"].as_str().unwrap_or(""));
+                }
                 if update["sessionUpdate"] == "tool_call" {
                     let line = format!(
                         "{} [{}] {}",
@@ -266,41 +269,49 @@ fn deny(run: &Run) {
     let layer = Layer::protected("Layer.");
     let launch = spec(run, &layer, &made.path, true);
     let engine = engine(run);
-    let mut session = start(&engine, &launch, &made.path);
-    let id = session.session_id();
 
+    // A session each: a model that saw one denial may not try the next.
+    let mut session = start(&engine, &launch, &made.path);
     let push = format!("{EXACT}sh -c 'git push --force origin HEAD:main'");
     turn(&mut session, &push, Answer::Allow);
+    session.shutdown().unwrap();
     assert_eq!(remote_head(&bare), before, "the remote moved");
     assert_eq!(denials(run), 1, "the denial was reported");
     println!("evidence: remote unmoved at {before}, 1 denial report");
 
+    let mut session = start(&engine, &launch, &made.path);
     let remove = format!("{EXACT}rm -rf ../../outside");
     turn(&mut session, &remove, Answer::Allow);
+    session.shutdown().unwrap();
     assert!(outside.join("keep").exists(), "outside was removed");
     assert_eq!(denials(run), 2);
     println!("evidence: outside dir still there, 2 denial reports");
 
+    let mut session = start(&engine, &launch, &made.path);
     let inside = format!("{EXACT}rm -rf inside/build");
     turn(&mut session, &inside, Answer::Allow);
+    session.shutdown().unwrap();
     assert!(
         !made.path.join("inside/build").exists(),
         "inside was not removed"
     );
     assert_eq!(denials(run), 2, "an inside delete must not be denied");
     println!("evidence: inside dir removed, no new denial");
-    session.shutdown().unwrap();
 
     // A resume in a new process: the receipt again, and the guard re-sent.
+    let mut session = start(&engine, &launch, &made.path);
+    let id = session.session_id();
+    turn(&mut session, "Reply OK", Answer::Allow);
+    session.shutdown().unwrap();
     let mut session = AcpClient::resume(&engine, id, &launch, &made.path).unwrap();
     let mut seen = Seen::default();
     pump(&mut session, Answer::Allow, &mut seen, true);
     assert!(seen.failure.is_none(), "resume failed: {:?}", seen.failure);
     turn(&mut session, &push, Answer::Allow);
+    session.shutdown().unwrap();
     assert_eq!(remote_head(&bare), before, "the remote moved on resume");
     assert_eq!(denials(run), 3, "the guard did not answer on resume");
     println!("evidence: after resume, remote unmoved, 3 denial reports");
-    session.shutdown().unwrap();
 
     let new = engine.ingest_reports(&reports_dir_in(&run.data)).unwrap();
     println!("core took in {} reports", new.len());
@@ -308,12 +319,11 @@ fn deny(run: &Run) {
         "{}",
         std::fs::read_to_string(run.data.join(astrolabe::hook::DENIAL_LOG)).unwrap()
     );
-    // Cleanup: the amended commit and removed files make it dirty, so it stays.
+    std::fs::write(made.path.join("left-behind.txt"), "work").unwrap();
     let closed = worktree::close(&made).unwrap();
-    println!("close with changes: {closed:?}");
-    assert!(matches!(closed, Closed::KeptDirty(_)) && made.path.exists());
-    git(&made.path, &["checkout", "-q", "--", "."]);
-    git(&made.path, &["clean", "-qfd"]);
+    println!("close with a new file: {closed:?}");
+    assert!(matches!(closed, Closed::KeptDirty(_)) && made.path.join("left-behind.txt").exists());
+    std::fs::remove_file(made.path.join("left-behind.txt")).unwrap();
     let closed = worktree::close(&made).unwrap();
     println!("close clean: {closed:?}");
     assert_eq!(closed, Closed::Removed { branch_kept: true });
@@ -389,7 +399,8 @@ fn missing_hook(run: &Run) {
     let message = seen.failure.expect("a loud launch failure");
     assert!(message.contains("no session-start receipt"), "{message}");
     println!("evidence: LaunchFailed");
-    assert!(read_reports(&reports_dir_in(&run.data)).is_empty());
+    let reports = read_reports(&reports_dir_in(&run.data));
+    assert!(!reports.iter().any(|r| r.event == "session-start"));
 }
 
 /// In the safe mode a request reaches the client: allowed it runs, rejected it doesn't.

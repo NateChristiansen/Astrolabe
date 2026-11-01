@@ -393,7 +393,9 @@ struct Context {
 /// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
 /// would remove the client's approval prompt.
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
-    if tool.starts_with("mcp__") {
+    // Their `command` isn't a shell's: Codex's patch tool puts the patch text there. A tool
+    // unknown here that has a `command` is read as a shell, so a new one stays covered.
+    if tool.starts_with("mcp__") || tool == "apply_patch" {
         return None;
     }
     let windows = scope.root.as_deref().is_some_and(has_drive);
