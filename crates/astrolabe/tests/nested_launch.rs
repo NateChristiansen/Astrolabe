@@ -60,7 +60,8 @@ fn launched_env() -> Vec<String> {
 
 #[test]
 fn only_a_nested_launch_loses_the_parents_identity_and_both_keep_the_login() {
-    let has = |names: &[String], name: &str| names.iter().any(|n| n == name);
+    // Windows keeps its own spelling, such as `Path`, and matches names in any case.
+    let has = |names: &[String], name: &str| names.iter().any(|n| n.eq_ignore_ascii_case(name));
     // SAFETY: the only test in this binary. What an earlier launch left running only
     // reads and writes pipes, never the environment.
     unsafe {
