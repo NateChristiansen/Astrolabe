@@ -6,6 +6,7 @@
 //! arrive, and a silent agent is the stall watch's to flag and the owner's to stop.
 use crate::engine::Engine;
 use crate::error::{Error, Result};
+use crate::events::error_text;
 use crate::model::{Alert, Request, SessionId};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -37,7 +38,11 @@ const EXIT_CHECK: Duration = Duration::from_secs(1);
 /// answer stays queued and the request resolves when they do.
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
+/// How long `shutdown` gives an active turn to end after `session/cancel`.
+const CANCEL_WAIT: Duration = Duration::from_secs(2);
 const STDERR_TAIL: usize = 4096;
+/// How much of stderr a `LaunchFailed` message carries. `Exited` has all of the tail.
+const STDERR_SHOWN: usize = 500;
 const SHOWN_LINE: usize = 200;
 
 /// All a provider driver supplies. Update checks must be off in `env` or `args`.
@@ -46,6 +51,8 @@ pub struct Launch {
     pub command: OsString,
     pub args: Vec<OsString>,
     pub env: Vec<(OsString, OsString)>,
+    /// Inherited variables the adapter must not see. `env` wins over this.
+    pub env_remove: Vec<OsString>,
     /// Sent as `_meta` on `session/new` and on the resume route.
     pub meta: Option<Value>,
 }
@@ -224,6 +231,9 @@ impl<'e> AcpClient<'e> {
         register: impl FnOnce(u32) -> Result<SessionId>,
     ) -> Result<Self> {
         let mut command = Command::new(&launch.command);
+        for name in &launch.env_remove {
+            command.env_remove(name);
+        }
         command
             .args(&launch.args)
             .envs(launch.env.iter().map(|(name, value)| (name, value)))
@@ -345,6 +355,7 @@ impl<'e> AcpClient<'e> {
             self.engine.set_agent_session(self.session, id)?;
         }
         self.replaying = false;
+        self.engine.session_ready(self.session)?;
         self.stage = Stage::Ready;
         self.events.push_back(ClientEvent::Ready);
         Ok(())
@@ -476,9 +487,24 @@ impl<'e> AcpClient<'e> {
         }
     }
 
-    /// Closes the pipe, gives the adapter a moment, then ends it. Only an explicit
-    /// call does this: nothing here reacts to a stall.
+    /// Stops an active turn, closes the pipe, gives the adapter a moment, then ends
+    /// it. Only an explicit call does this: nothing here reacts to a stall. The cancel
+    /// comes first because a tool can leave the adapter's process group, where only
+    /// the adapter can stop it. A crash gets no such chance.
     pub fn shutdown(mut self) -> Result<()> {
+        let deadline = Instant::now() + CANCEL_WAIT;
+        if self.prompt_id.is_some() && !self.cancelling && !self.gone {
+            match self.cancel() {
+                Ok(()) | Err(Error::AgentGone(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        while self.prompt_id.is_some() && self.writes.is_some() && !self.gone {
+            if Instant::now() >= deadline {
+                break;
+            }
+            self.pump(TICK)?;
+        }
         if !self.gone {
             self.finish()?;
         }
@@ -776,9 +802,10 @@ impl<'e> AcpClient<'e> {
             let reason = self.failure.take();
             let mut message =
                 reason.unwrap_or_else(|| "process ended before the session was ready".to_owned());
-            if !stderr.is_empty() {
+            let useful = useful_stderr(&stderr);
+            if !useful.is_empty() {
                 message.push_str("; stderr: ");
-                message.push_str(&stderr);
+                message.push_str(&useful);
             }
             self.events.push_back(ClientEvent::LaunchFailed { message });
         }
@@ -828,8 +855,8 @@ impl<'e> AcpClient<'e> {
         Ok(self.reaped.is_some())
     }
 
-    /// Whatever the adapter started goes with it, so nothing keeps changing the repo
-    /// after the session reads closed. Once the leader is reaped its pid can pass to
+    /// What is left in the adapter's group goes with it. A tool in a group of its own
+    /// does not; see `shutdown`. Once the leader is reaped its pid can pass to
     /// anyone, so `reaped` is set first and no later cleanup signals. Windows can only
     /// walk the tree from a live root, which is what is left by the signal below.
     fn wait_or_kill(&mut self) -> Result<ExitStatus> {
@@ -941,9 +968,17 @@ fn keep_tail(mut source: impl Read, tail: &Mutex<VecDeque<u8>>) {
     }
 }
 
-fn error_text(error: &Value) -> String {
-    let message = error.get("message").and_then(Value::as_str);
-    message.unwrap_or("unknown error").to_owned()
+/// Stderr means nothing by itself: a healthy adapter may write on every launch, as
+/// the Claude adapter does with its `durationMs=` timing lines. Those go; of the rest,
+/// the end is the part most likely to say why.
+fn useful_stderr(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| !line.contains(" durationMs="))
+        .collect();
+    let useful = lines.join("\n");
+    let skip = useful.chars().count().saturating_sub(STDERR_SHOWN);
+    useful.chars().skip(skip).collect()
 }
 
 fn protocol_error(message: impl Into<String>) -> Error {

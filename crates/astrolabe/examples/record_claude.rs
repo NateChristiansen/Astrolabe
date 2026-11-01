@@ -139,6 +139,7 @@ fn tapped(launch: &Launch, out: &Path) -> Launch {
         command: std::env::current_exe().unwrap().into(),
         args,
         env: launch.env.clone(),
+        env_remove: launch.env_remove.clone(),
         meta: launch.meta.clone(),
     }
 }

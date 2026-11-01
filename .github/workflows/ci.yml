@@ -40,3 +40,4 @@ jobs:
       - run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
       - run: cargo check --manifest-path app/src-tauri/Cargo.toml --locked
       - run: node --test scripts/seed.test.cjs
+      - run: node --test scripts/scrub-codex.test.cjs

@@ -54,8 +54,20 @@ impl Engine {
             self.store.set_pid(session_id, pid)?;
             self.store.set_lifecycle(session_id, Lifecycle::Open)?;
             self.store.set_stop_requested(session_id, None)?;
+            self.store.set_ready(session_id, false)?;
             self.store.record_activity(session_id, now)?;
             self.store.insert_run(session_id, RunState::Queued)
+        })
+    }
+
+    /// The handshake is done. From here until a prompt goes out, quiet is the owner's
+    /// time, as `prompt_sent` says, so the quiet rule stands down.
+    pub fn session_ready(&self, session_id: SessionId) -> Result<()> {
+        let now = self.clock.now_ms();
+        self.store.transaction(|| {
+            self.store.set_ready(session_id, true)?;
+            self.store.record_activity(session_id, now)?;
+            self.store.retire_quiet_card(session_id, now)
         })
     }
 

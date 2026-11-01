@@ -91,11 +91,20 @@ fn map_update(update: &Value) -> Option<CoreEvent> {
     })
 }
 
+/// An adapter's reason often sits in `data.details`, under a generic message.
+pub(crate) fn error_text(error: &Value) -> String {
+    let message = text(error, "message").unwrap_or("unknown error");
+    match error.pointer("/data/details").and_then(Value::as_str) {
+        Some(details) => format!("{message}: {details}"),
+        None => message.to_owned(),
+    }
+}
+
 fn map_response(message: &Value) -> Option<CoreEvent> {
     if let Some(error) = message.get("error") {
         return Some(CoreEvent::ResponseError {
             rpc_id: rpc_id(message),
-            message: text(error, "message").unwrap_or("unknown error").to_owned(),
+            message: error_text(error),
         });
     }
     let reason = text(message.get("result")?, "stopReason")?;

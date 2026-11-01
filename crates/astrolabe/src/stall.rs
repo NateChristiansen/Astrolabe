@@ -12,6 +12,8 @@ impl Engine {
     /// request. A running tool flags on its own elapsed time, whatever else is
     /// happening. Only with no tool running does the quiet rule apply, based on
     /// the last activity, which starts at launch and which keepalives do not move.
+    /// It covers a handshake and a sent prompt: a ready session with no prompt out
+    /// is waiting for the owner, whatever its run reads.
     pub fn tick(&self) -> Result<Vec<Alert>> {
         let now = self.clock.now_ms();
         self.store.transaction(|| {
@@ -27,9 +29,8 @@ impl Engine {
 
     fn check(&self, session: &Session, now: i64) -> Result<Vec<Card>> {
         let mut raised = Vec::new();
-        if !self.store.latest_run(session.id)?.state.is_active()
-            || !self.store.open_requests(Some(session.id))?.is_empty()
-        {
+        let run = self.store.latest_run(session.id)?;
+        if !run.state.is_active() || !self.store.open_requests(Some(session.id))?.is_empty() {
             return Ok(raised);
         }
         let tools = self.store.running_tools(session.id)?;
@@ -42,7 +43,8 @@ impl Engine {
             }
             Ok(())
         };
-        if tools.is_empty() {
+        let owners_turn = session.ready && run.prompt_rpc_id.is_none();
+        if tools.is_empty() && !owners_turn {
             raise(None, session.activity_ms, session.snooze_until_ms)?;
         }
         for tool in &tools {

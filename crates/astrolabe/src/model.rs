@@ -98,6 +98,8 @@ pub struct Session {
     pub activity_ms: i64,
     pub snooze_until_ms: i64,
     pub stop_requested_ms: Option<i64>,
+    /// This process finished its handshake and can take a prompt.
+    pub ready: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

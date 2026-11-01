@@ -305,3 +305,48 @@ fn an_idle_session_is_not_watched() {
     h.wait(3 * STALL_AFTER_MS);
     assert_eq!(h.stuck_alerts(), 0);
 }
+
+/// Catches: a message after the handshake moving a run nobody started to `Running`,
+/// which is not a turn and must not read as one going quiet. A prompt ends this.
+#[test]
+fn a_ready_session_stays_the_owners_turn_until_a_prompt() {
+    let mut h = Harness::new();
+    let session = h.engine.launch(PID).unwrap();
+    h.engine.session_ready(session).unwrap();
+    h.send(session, acp::message(AGENT, "hello from the adapter"));
+    h.wait(3 * STALL_AFTER_MS);
+    assert_eq!(h.stuck_alerts(), 0);
+
+    h.engine
+        .prompt_sent(session, &serde_json::json!(5))
+        .unwrap();
+    h.wait(STALL_AFTER_MS);
+    assert_eq!(h.stuck_alerts(), 1);
+}
+
+/// Catches: a card raised by a slow handshake outliving the handshake.
+#[test]
+fn becoming_ready_retires_a_handshakes_card() {
+    let mut h = Harness::new();
+    let session = h.engine.launch(PID).unwrap();
+    h.wait(STALL_AFTER_MS);
+    assert_eq!(h.stuck_alerts(), 1);
+    h.engine.session_ready(session).unwrap();
+    assert!(h.engine.active_cards().unwrap().is_empty());
+}
+
+/// Catches: a database from before `ready` refusing to open.
+#[test]
+fn a_previous_schema_opens_and_keeps_its_sessions() {
+    let mut h = Harness::new();
+    let session = h.engine.launch(PID).unwrap();
+    let conn = rusqlite::Connection::open(h.dir.db()).unwrap();
+    conn.execute_batch("ALTER TABLE sessions DROP COLUMN ready; PRAGMA user_version = 2;")
+        .unwrap();
+    drop(conn);
+    h.restart();
+    let view = h.engine.inspect(session).unwrap();
+    assert!(!view.session.ready);
+    h.engine.session_ready(session).unwrap();
+    assert!(h.engine.inspect(session).unwrap().session.ready);
+}

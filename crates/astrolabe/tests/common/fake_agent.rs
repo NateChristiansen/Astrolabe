@@ -14,11 +14,22 @@ struct Agent {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "--replay") {
-        replay(&args[1], args[2].parse().unwrap());
-        return;
-    }
     let flag = |name: &str| args.iter().any(|arg| arg == name);
+    if flag("--dump-env") {
+        let names: Vec<_> = std::env::vars_os().map(|(name, _)| name).collect();
+        let names: Vec<_> = names.iter().map(|name| name.to_string_lossy()).collect();
+        std::fs::write("env.txt", names.join("\n")).unwrap();
+    }
+    if flag("--noisy-stderr") {
+        // As the real adapter does, with chatter and a real reason among it.
+        for n in 0..20 {
+            eprintln!("chatter {n} from a healthy adapter, of no interest here");
+        }
+        eprintln!("the useful reason");
+        for n in 0..20 {
+            eprintln!("[session/create] sessionId=s phase=p{n} durationMs=0 totalMs=0");
+        }
+    }
     if flag("--sleep") {
         std::thread::sleep(std::time::Duration::from_secs(10));
         return;
@@ -106,63 +117,6 @@ fn main() {
     }
 }
 
-/// A trimmed real-adapter trace, with each outgoing client message checked before
-/// releasing the recorded response. No provider executable or network is used.
-fn replay(path: &str, process: u64) {
-    let records = std::fs::read_to_string(path).unwrap();
-    let (tx, input) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in io::stdin().lines() {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let mut exit_code = None;
-    for line in records.lines() {
-        let record: Value = serde_json::from_str(line).unwrap();
-        if record["process"] != process {
-            continue;
-        }
-        if let Some(stderr) = record["stderr"].as_str() {
-            eprint!("{stderr}");
-        } else if let Some(code) = record["exit_code"].as_i64() {
-            exit_code = Some(code as i32);
-        } else if record["direction"] == "from_agent" {
-            send(&record["message"]);
-        } else {
-            let line = input
-                .recv()
-                .expect("client closed before trace ended")
-                .unwrap();
-            let mut actual: Value = serde_json::from_str(&line).unwrap();
-            // The fixture uses a public placeholder for the disposable test cwd.
-            if let Some(cwd) = actual.pointer_mut("/params/cwd") {
-                assert_eq!(
-                    std::fs::canonicalize(cwd.as_str().unwrap()).unwrap(),
-                    std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap()
-                );
-                *cwd = json!("/fixture/project");
-            }
-            assert_eq!(actual, record["message"], "outgoing replay mismatch");
-        }
-    }
-    // The ACP client keeps stdin open until it sees an exit. Allow a bounded
-    // quiet window to catch queued/trailing writes without deadlocking on EOF.
-    match input.recv_timeout(std::time::Duration::from_millis(250)) {
-        Err(
-            std::sync::mpsc::RecvTimeoutError::Disconnected
-            | std::sync::mpsc::RecvTimeoutError::Timeout,
-        ) => {}
-        other => panic!("extra client write after trace end: {other:?}"),
-    }
-    if let Some(code) = exit_code {
-        std::process::exit(code);
-    }
-    // Some recordings lack a final proxy exit record. EOF here is a test-harness
-    // exit, not evidence of the real adapter's exit code.
-}
-
 impl Agent {
     fn capabilities(&self) -> Value {
         let agent = match self.resume_method {
@@ -213,6 +167,10 @@ impl Agent {
                 };
                 send(&tool_update("call-1", status));
             }
+            "request-then-crash" => {
+                send(&permission("7", SESSION));
+                std::process::exit(3);
+            }
             "crash" => {
                 send(&tool_call(SESSION, "call-1", "in_progress"));
                 eprintln!("adapter crashed");
@@ -235,6 +193,30 @@ impl Agent {
             }
             "error" => {
                 send(&failure(id, "prompt refused"));
+                return;
+            }
+            "refused-with-details" => {
+                let data = json!({ "details": "login expired" });
+                let error = json!({ "code": -32603, "message": "Internal error", "data": data });
+                send(&json!({ "jsonrpc": "2.0", "id": id, "error": error }));
+                return;
+            }
+            "wait-for-cancel" => {
+                // Only `session/cancel` stops this tool, as with a real Bash tool.
+                send(&tool_call(SESSION, "call-1", "in_progress"));
+                while let Some(message) = self.read() {
+                    if message["method"] == "session/cancel" {
+                        std::fs::write("cancelled.txt", "").unwrap();
+                        send(&tool_update("call-1", "failed"));
+                        send(&result(id, json!({ "stopReason": "cancelled" })));
+                        return;
+                    }
+                }
+                return;
+            }
+            "silent" => {
+                // Never answers, cancel or not, until its pipe closes.
+                while self.read().is_some() {}
                 return;
             }
             "no-stop-reason" => {

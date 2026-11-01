@@ -5,7 +5,7 @@ use crate::model::*;
 use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 use std::path::{Path, PathBuf};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const SCHEMA: &str = "
 CREATE TABLE sessions (
     id INTEGER PRIMARY KEY,
@@ -14,7 +14,8 @@ CREATE TABLE sessions (
     lifecycle TEXT NOT NULL,
     activity_ms INTEGER NOT NULL,
     snooze_until_ms INTEGER NOT NULL DEFAULT 0,
-    stop_requested_ms INTEGER
+    stop_requested_ms INTEGER,
+    ready INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE runs (
     id INTEGER PRIMARY KEY,
@@ -75,7 +76,7 @@ CREATE TABLE outcomes (
 const REQUEST_COLUMNS: &str =
     "id, session_id, worker_id, rpc_id, title, options, opened_ms, resolution";
 const SESSION_COLUMNS: &str =
-    "id, pid, agent_session_id, lifecycle, activity_ms, snooze_until_ms, stop_requested_ms";
+    "id, pid, agent_session_id, lifecycle, activity_ms, snooze_until_ms, stop_requested_ms, ready";
 const CARD_COLUMNS: &str = "id, session_id, worker_id, tool_call_id, tool, since_ms, raised_ms";
 const OUTCOME_COLUMNS: &str = "id, session_id, run_id, summary, state";
 
@@ -107,6 +108,10 @@ impl Store {
         match version {
             0 => conn.execute_batch(&format!(
                 "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
+            ))?,
+            2 => conn.execute_batch(&format!(
+                "BEGIN; ALTER TABLE sessions ADD COLUMN ready INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
             ))?,
             SCHEMA_VERSION => {}
             other => return Err(Error::UnsupportedSchema(other)),
@@ -168,6 +173,14 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET pid = ?2 WHERE id = ?1",
             params![id, pid],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_ready(&self, id: SessionId, ready: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET ready = ?2 WHERE id = ?1",
+            params![id, ready],
         )?;
         Ok(())
     }
@@ -534,6 +547,7 @@ fn session_row(row: &Row<'_>) -> rusqlite::Result<Session> {
         activity_ms: row.get(4)?,
         snooze_until_ms: row.get(5)?,
         stop_requested_ms: row.get(6)?,
+        ready: row.get(7)?,
     })
 }
 

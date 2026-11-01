@@ -188,8 +188,8 @@ fn fixture_path(scenario: &str) -> std::path::PathBuf {
 fn replay_spec(scenario: &str, process: u64) -> astrolabe::acp::Launch {
     let path = fixture_path(scenario);
     astrolabe::acp::Launch {
-        command: example("fake_agent").into(),
-        args: vec!["--replay".into(), path.into(), process.to_string().into()],
+        command: example("replay_agent").into(),
+        args: vec![path.into(), process.to_string().into()],
         ..Default::default()
     }
 }
@@ -240,6 +240,9 @@ fn recorded_scenario(scenario: &str) {
         // no history updates before its response. The fake checks the route.
         assert_eq!(replay_event(&mut client), ClientEvent::Ready);
         assert_eq!(client.agent_session_id(), "session-1");
+        // Left idle, new or resumed, it is the owner's turn: no card.
+        h.advance(astrolabe::STALL_AFTER_MS + 1_000);
+        assert_eq!(h.engine.tick().unwrap(), []);
         assert_eq!(
             h.engine.inspect(session).unwrap().run.state,
             RunState::Queued
@@ -346,6 +349,8 @@ fn recorded_scenario(scenario: &str) {
             h.engine.inspect(session).unwrap().session.lifecycle,
             Lifecycle::Closed
         );
+        let mismatch = fs::read_to_string(h.dir.0.join("replay.mismatch"));
+        assert!(mismatch.is_err(), "replay: {mismatch:?}");
         // Drop is deferred because resume replaces the client on the next iteration.
     }
     client.shutdown().unwrap();
@@ -393,25 +398,15 @@ fn explicit_client_path_is_passed_without_shell_quoting() {
     );
 }
 
+/// Recordings run through the real client too: a different prompt leaves the mark
+/// even though nothing here reads the replay's exit code.
 #[test]
-fn replay_rejects_trailing_client_writes_with_or_without_recorded_exit() {
-    for exit_row in ["", "{\"process\":0,\"exit_code\":0}\n"] {
-        let dir = TempDir::new();
-        let trace = dir.0.join("trace.jsonl");
-        fs::write(&trace, exit_row).unwrap();
-        let mut child = Command::new(example("fake_agent"))
-            .args([OsStr::new("--replay"), trace.as_os_str(), OsStr::new("0")])
-            .stdin(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(b"{}\n").unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8(output.stderr)
-                .unwrap()
-                .contains("extra client write")
-        );
-    }
+fn a_client_that_differs_from_a_recording_is_caught() {
+    use astrolabe::acp::{AcpClient, ClientEvent};
+    let h = common::Harness::new();
+    let mut client = AcpClient::launch(&h.engine, &replay_spec("full-turn", 0), &h.dir.0).unwrap();
+    assert_eq!(replay_event(&mut client), ClientEvent::Ready);
+    client.prompt("not the recorded prompt").unwrap();
+    client.shutdown().unwrap();
+    assert!(h.dir.0.join("replay.mismatch").exists());
 }

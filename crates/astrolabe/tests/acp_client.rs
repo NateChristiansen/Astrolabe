@@ -27,8 +27,8 @@ fn launch_spec(flags: &[&str]) -> Launch {
     Launch {
         command: fake_agent().into(),
         args: flags.iter().map(|flag| (*flag).into()).collect(),
-        env: Vec::new(),
         meta: Some(json!({ "note": "from the driver" })),
+        ..Launch::default()
     }
 }
 
@@ -318,8 +318,11 @@ fn a_request_from_an_earlier_process_cannot_be_answered() {
     let h = Harness::new();
     let mut first = start(&h, &[]);
     let session = first.session_id();
-    first.prompt("approve").unwrap();
+    first.prompt("request-then-crash").unwrap();
     let request = next_request(&mut first);
+    until(&mut first, |event| {
+        matches!(event, ClientEvent::Exited { .. })
+    });
     first.shutdown().unwrap();
 
     let (mut second, _) = resume(&h, session, &[]);
@@ -387,6 +390,82 @@ fn shutdown_ends_the_adapter_and_what_it_started() {
     client.shutdown().unwrap();
     assert!(gone(adapter), "the adapter is still running");
     assert!(gone(tool), "the tool outlived the session");
+}
+
+/// Catches: `shutdown` closing the pipe under a tool only `session/cancel` can stop.
+#[test]
+fn shutdown_during_a_turn_cancels_it_and_hears_the_agents_word() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    let session = client.session_id();
+    client.prompt("wait-for-cancel").unwrap();
+    until(&mut client, |event| matches!(event, ClientEvent::Update(_)));
+    client.shutdown().unwrap();
+    assert!(h.dir.0.join("cancelled.txt").exists(), "no session/cancel");
+    let view = h.engine.inspect(session).unwrap();
+    assert_eq!(view.run.state, RunState::Cancelled);
+    assert_eq!(view.session.lifecycle, Lifecycle::Closed);
+}
+
+/// Catches: an agent that ignores the cancel holding `shutdown` up without limit.
+#[test]
+fn shutdown_gives_a_deaf_turn_a_bounded_time() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    let session = client.session_id();
+    let adapter = client.pid();
+    client.prompt("silent").unwrap();
+    let started = Instant::now();
+    client.shutdown().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(8), "unbounded");
+    assert!(started.elapsed() >= Duration::from_millis(1500), "no wait");
+    assert!(gone(adapter));
+    let view = h.engine.inspect(session).unwrap();
+    assert_eq!(view.session.lifecycle, Lifecycle::Closed);
+}
+
+/// Catches: a cancel going out when no turn is active, which is no one's to answer.
+#[test]
+fn shutdown_with_no_turn_sends_no_cancel_and_takes_no_extra_time() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    client.prompt("hello").unwrap();
+    until(&mut client, |event| {
+        matches!(event, ClientEvent::TurnEnded { .. })
+    });
+    let started = Instant::now();
+    client.shutdown().unwrap();
+    assert!(started.elapsed() < Duration::from_millis(1500));
+}
+
+/// Catches: the quiet rule treating a ready session as a stuck one, new or resumed,
+/// and a chatty adapter moving a run nobody started to `Running` to get there.
+#[test]
+fn a_ready_session_with_no_prompt_is_not_flagged_until_a_prompt_goes_quiet() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    let session = client.session_id();
+    h.advance(3 * STALL_AFTER_MS);
+    assert_eq!(h.engine.tick().unwrap(), [], "idle launch");
+
+    client.prompt("silent").unwrap();
+    h.advance(STALL_AFTER_MS);
+    let alerts = h.engine.tick().unwrap();
+    assert!(matches!(alerts[..], [Alert::MayBeStuck(_)]), "{alerts:?}");
+    client.shutdown().unwrap();
+
+    let (client, _) = resume(&h, session, &[]);
+    h.advance(3 * STALL_AFTER_MS);
+    assert_eq!(h.engine.tick().unwrap(), [], "idle resume");
+    client.shutdown().unwrap();
+
+    // A resume whose handshake goes silent is flagged like a launch.
+    let spec = launch_spec(&["--hang-initialize"]);
+    let client = AcpClient::resume(&h.engine, session, &spec, &h.dir.0).unwrap();
+    h.advance(STALL_AFTER_MS);
+    let alerts = h.engine.tick().unwrap();
+    assert!(matches!(alerts[..], [Alert::MayBeStuck(_)]), "{alerts:?}");
+    client.shutdown().unwrap();
 }
 
 /// Catches: a full pipe blocking the owner, which could then neither read nor stop.
@@ -710,6 +789,53 @@ fn errors_before_any_prompt_fail_the_launch_visibly() {
     assert!(message.contains("cannot create a session"), "{message}");
     let message = launch_failure(&["--stderr-then-exit"]);
     assert!(message.contains("adapter cannot start"), "{message}");
+}
+
+/// Catches: the reason an adapter gives in `data.details` being dropped.
+#[test]
+fn a_refusals_details_reach_the_owner() {
+    let h = Harness::new();
+    let mut client = start(&h, &[]);
+    client.prompt("refused-with-details").unwrap();
+    let events = until(&mut client, |event| {
+        matches!(event, ClientEvent::PromptError { .. })
+    });
+    assert_eq!(
+        events.last(),
+        Some(&ClientEvent::PromptError {
+            message: "Internal error: login expired".to_owned(),
+        })
+    );
+    client.shutdown().unwrap();
+}
+
+/// Catches: an adapter's routine stderr swamping why its launch failed.
+#[test]
+fn a_launch_failure_carries_the_useful_end_of_stderr() {
+    let message = launch_failure(&["--noisy-stderr", "--fail-new"]);
+    assert!(message.starts_with("cannot create a session"), "{message}");
+    assert!(message.contains("the useful reason"), "{message}");
+    assert!(!message.contains("durationMs"), "{message}");
+    assert!(!message.contains("chatter 0 "), "{message}");
+    assert!(message.len() < 600, "{message}");
+}
+
+/// Catches: non-empty stderr being read as a failure.
+#[test]
+fn stderr_alone_is_not_a_failure() {
+    let h = Harness::new();
+    let mut client = start(&h, &["--noisy-stderr"]);
+    client.prompt("hello").unwrap();
+    let events = until(&mut client, |event| {
+        matches!(event, ClientEvent::TurnEnded { .. })
+    });
+    assert_eq!(
+        events.last(),
+        Some(&ClientEvent::TurnEnded {
+            stop_reason: "end_turn".to_owned(),
+        })
+    );
+    client.shutdown().unwrap();
 }
 
 /// Catches: a stray error during startup, with no prompt to answer, ending the read.

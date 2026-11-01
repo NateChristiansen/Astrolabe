@@ -340,6 +340,22 @@ fn cancel_during_a_tool_ends_on_the_agents_word() {
     finish(client, &h);
 }
 
+/// The recording's `session/cancel`, with no one but `shutdown` to send it. Closing
+/// the pipe instead would leave the real tool running, and marks the replay.
+#[test]
+fn shutdown_during_a_tool_cancels_it_first() {
+    let h = Harness::new();
+    let mut client = start(&h, "cancel.jsonl");
+    let session = client.session_id();
+    let prompt = "Use the Bash tool to run exactly: python3 -c \"import time; time.sleep(47)\"\nThen reply DONE.";
+    client.prompt(prompt).unwrap();
+    let request = next_request(&mut client);
+    assert!(client.answer(&request.id, "allow-once").unwrap());
+    finish(client, &h);
+    let view = h.engine.inspect(session).unwrap();
+    assert_eq!(view.run.state, RunState::Cancelled);
+}
+
 /// A tool stays `pending` after its approval, for 30 s here, while it really runs.
 /// Short tools go straight from `pending` to `completed`. So `pending` must count as
 /// running, and does.
@@ -390,10 +406,10 @@ fn a_child_tool_arrives_under_the_parents_session_id() {
     assert!(recording.contains("parentToolUseId"));
 }
 
-/// Records the known false card (step 2 part A): a real launch left without a prompt
-/// is quiet, and its queued run reads as active.
+/// Catches the false card a real launch raised when left without a prompt: its
+/// queued run reads as active, yet it is the owner's turn.
 #[test]
-fn an_idle_launch_raises_the_quiet_card() {
+fn an_idle_launch_raises_no_quiet_card() {
     let h = Harness::new();
     let spec = replaying(&h, "idle.jsonl");
     let session;
@@ -402,11 +418,7 @@ fn an_idle_launch_raises_the_quiet_card() {
         until(&mut client, |event| matches!(event, ClientEvent::Ready));
         session = client.session_id();
         h.advance(STALL_AFTER_MS + 1_000);
-        let alerts = h.engine.tick().unwrap();
-        assert!(
-            matches!(&alerts[..], [Alert::MayBeStuck(card)] if card.tool_call_id.is_none()),
-            "{alerts:?}"
-        );
+        assert_eq!(h.engine.tick().unwrap(), []);
         finish(client, &h);
     }
     assert_eq!(
@@ -444,7 +456,8 @@ fn a_refused_session_is_a_failed_launch() {
         matches!(event, ClientEvent::Exited { .. })
     });
     assert!(
-        matches!(&events[0], ClientEvent::LaunchFailed { message } if message.starts_with("Internal error")),
+        matches!(&events[0], ClientEvent::LaunchFailed { message }
+            if message.starts_with("Internal error: Claude Code native binary not found")),
         "{events:?}"
     );
     assert!(matches!(

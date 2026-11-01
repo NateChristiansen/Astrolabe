@@ -92,7 +92,7 @@ Regenerating fixtures (Node, no Python):
    ```
 
 Replay canonicalizes both cwd paths, including on Windows (checked by CI only).
-At trace end, including recorded exit rows, the fake checks for trailing client
+At trace end, including recorded exit rows, `examples/replay_agent.rs` checks for trailing client
 messages until EOF or 250 ms of quiet; stdin stays open while the client awaits
 exit, so this is a bounded check, not proof against arbitrarily delayed writes.
 Exit codes are compared to evidence only when a recorded exit row exists.
