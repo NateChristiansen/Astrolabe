@@ -1,8 +1,10 @@
 //! The pre-command matcher, provider-neutral and pure: an accident guard, not a sandbox.
-//! It reads what a command says, not what it would do, so a program it can't see (a
-//! script file, an interpreter, encoded text, a variable) gets past it. Those limits are
-//! rows in `tests/fixtures/guard-bypass.tsv`. A command that names a denied program and
-//! can't be fully parsed is denied; everything else is allowed.
+//! Its target is a command a careless agent would plausibly write, with one wrapping layer,
+//! not one written to get past it. It reads what a command says, not what it would do. The
+//! limits are rows in `tests/fixtures/guard-bypass.tsv`. A command that names a denied
+//! program and can't be read is denied; everything else is allowed.
+//! Later growth comes from a real entry in the denial log or a real incident, not from
+//! imagined bypasses.
 use serde_json::Value;
 
 /// How deep wrappers and substitutions nest before the text counts as unparsed.
@@ -19,375 +21,201 @@ enum Dialect {
 struct Word {
     /// What the shell would pass, as far as it can be told.
     text: String,
-    /// The same with backslashes kept, for Windows paths under a POSIX reading.
-    raw: String,
     /// Holds a variable or a substitution, so `text` isn't the final value.
     dynamic: bool,
 }
 
-#[derive(Default)]
-struct SimpleCommand {
-    words: Vec<Word>,
-    /// Heredoc or here-string text, which a shell would run.
-    stdin: Option<String>,
-    /// A `cd` here doesn't reach the commands after it, or may not have run: in a subshell
-    /// or substitution, or beside a pipe, `||` or `&`.
-    scoped: bool,
-}
-
-#[derive(Default)]
-struct Parsed {
-    commands: Vec<SimpleCommand>,
-    broken: bool,
-}
-
+/// What the next word is. A redirect's target or a here-string is only skipped.
 enum Expect {
     Word,
-    RedirectTarget,
-    HereString,
-    Heredoc { strip_tabs: bool },
-}
-
-struct Heredoc {
-    delimiter: String,
-    strip_tabs: bool,
-    /// None while its command is still being read.
-    command: Option<usize>,
+    Skip,
+    Heredoc,
 }
 
 struct Parser {
     chars: Vec<char>,
     at: usize,
     dialect: Dialect,
-    out: Parsed,
+    escape: char,
+    commands: Vec<Vec<Word>>,
+    broken: bool,
 }
 
-fn parse(text: &str, dialect: Dialect, depth: usize) -> Parsed {
+fn parse(text: &str, dialect: Dialect, depth: usize) -> Parser {
+    let escape = match dialect {
+        Dialect::Sh => '\\',
+        Dialect::Ps => '`',
+        Dialect::Cmd => '^',
+    };
     let mut parser = Parser {
         chars: text.chars().collect(),
         at: 0,
         dialect,
-        out: Parsed::default(),
+        escape,
+        commands: Vec::new(),
+        broken: false,
     };
-    parser.list(false, depth);
-    parser.out
+    parser.list(None, depth);
+    parser
 }
 
 /// Everything flat: `&&`, `;`, pipes, subshells and substitutions all just separate
 /// commands, each of which is checked whether or not it would have run.
 impl Parser {
-    fn peek(&self, ahead: usize) -> Option<char> {
-        self.chars.get(self.at + ahead).copied()
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.at).copied()
     }
 
-    fn list(&mut self, in_substitution: bool, depth: usize) {
+    /// `until` is what closes a substitution; running out before it means unparsed.
+    fn list(&mut self, until: Option<char>, depth: usize) {
         if depth > MAX_DEPTH {
-            self.out.broken = true;
+            self.broken = true;
             self.at = self.chars.len();
             return;
         }
-        let mut command = SimpleCommand::default();
+        let mut command = Vec::new();
         let mut word: Option<Word> = None;
         let mut expect = Expect::Word;
-        let mut heredocs: Vec<Heredoc> = Vec::new();
+        let mut heredocs = Vec::new();
         let mut parens = 0usize;
-        // After a pipe, `||` or `&`.
-        let mut after_split = false;
-        while let Some(c) = self.peek(0) {
+        while let Some(c) = self.peek() {
+            self.at += 1;
             match c {
+                c if c == self.escape => {
+                    let next = self.peek().filter(|next| *next != '\n');
+                    self.at += 1;
+                    if let Some(next) = next {
+                        word.get_or_insert_default().text.push(next);
+                    }
+                }
                 '\'' => {
-                    self.at += 1;
-                    let word = word.get_or_insert_default();
-                    match self.chars[self.at..].iter().position(|c| *c == '\'') {
-                        Some(end) => {
-                            let inner: String = self.chars[self.at..self.at + end].iter().collect();
-                            word.text.push_str(&inner);
-                            word.raw.push_str(&inner);
-                            self.at += end + 1;
-                        }
-                        None => {
-                            self.out.broken = true;
-                            self.at = self.chars.len();
-                        }
-                    }
+                    let rest = &self.chars[self.at..];
+                    let end = rest.iter().position(|c| *c == '\'');
+                    self.broken |= end.is_none();
+                    let end = end.unwrap_or(rest.len());
+                    word.get_or_insert_default().text.extend(&rest[..end]);
+                    self.at += end + 1;
                 }
-                '"' => {
-                    self.at += 1;
-                    self.double_quoted(word.get_or_insert_default(), depth);
-                }
-                '\\' if self.dialect == Dialect::Sh => {
-                    self.at += 1;
-                    match self.peek(0) {
-                        Some('\n') => self.at += 1,
-                        Some(next) => {
-                            let word = word.get_or_insert_default();
-                            word.text.push(next);
-                            word.raw.push('\\');
-                            word.raw.push(next);
-                            self.at += 1;
-                        }
-                        None => {}
-                    }
-                }
-                '`' if self.dialect == Dialect::Ps => {
-                    self.at += 1;
-                    if let Some(next) = self.peek(0) {
-                        self.at += 1;
-                        if next != '\n' {
-                            push(word.get_or_insert_default(), next);
-                        }
-                    }
-                }
-                '^' if self.dialect == Dialect::Cmd => {
-                    self.at += 1;
-                    if let Some(next) = self.peek(0) {
-                        self.at += 1;
-                        push(word.get_or_insert_default(), next);
-                    }
-                }
-                '`' => {
-                    self.at += 1;
-                    self.backticks(word.get_or_insert_default(), depth);
-                }
+                '"' => self.double_quoted(word.get_or_insert_default(), depth),
                 '$' => self.dollar(word.get_or_insert_default(), depth),
                 ' ' | '\t' | '\r' => {
-                    self.at += 1;
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
                 }
                 '#' if word.is_none() && self.dialect != Dialect::Cmd => {
-                    while self.peek(0).is_some_and(|c| c != '\n') {
+                    while self.peek().is_some_and(|c| c != '\n') {
                         self.at += 1;
                     }
                 }
                 '<' | '>' => {
-                    if word
-                        .as_ref()
-                        .is_some_and(|w| w.text.chars().all(|c| c.is_ascii_digit()))
-                    {
-                        word = None;
-                    }
+                    // The 2 in `2>`.
+                    word.take_if(|w| w.text.chars().all(|c| c.is_ascii_digit()));
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-                    expect = self.redirect();
-                }
-                '&' if self.peek(1) == Some('>') => {
-                    self.at += 1;
-                    end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-                    expect = self.redirect();
-                }
-                '\n' | ';' | '|' | '&' | '(' | ')' => {
-                    if c == ')' && parens == 0 && in_substitution {
+                    let next = self.chars.get(self.at + 1);
+                    let heredoc = c == '<' && self.peek() == Some('<') && next != Some(&'<');
+                    while matches!(self.peek(), Some('<' | '>' | '&' | '|')) {
                         self.at += 1;
-                        end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-                        command.scoped = true;
-                        self.finish(&mut command, &mut heredocs);
-                        return;
                     }
-                    let doubled = matches!(c, '|' | '&') && self.peek(1) == Some(c);
-                    let single = matches!(c, '|' | '&') && !doubled;
-                    self.at += if doubled { 2 } else { 1 };
+                    expect = Expect::Skip;
+                    if heredoc {
+                        expect = Expect::Heredoc;
+                    }
+                }
+                c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-                    command.scoped = parens > 0 || in_substitution || after_split || single;
-                    self.finish(&mut command, &mut heredocs);
-                    after_split = single || (doubled && c == '|');
+                    self.finish(&mut command);
                     match c {
+                        c if until == Some(c) && parens == 0 => return,
                         '(' => parens += 1,
                         ')' => parens = parens.saturating_sub(1),
+                        '\n' => self.read_heredocs(&mut heredocs),
                         _ => {}
                     }
-                    if c == '\n' {
-                        self.read_heredocs(&mut heredocs);
-                    }
                 }
-                _ => {
-                    self.at += 1;
-                    push(word.get_or_insert_default(), c);
+                '`' if self.dialect == Dialect::Sh => {
+                    self.substitution(word.get_or_insert_default(), '`', depth);
                 }
+                _ => word.get_or_insert_default().text.push(c),
             }
         }
         end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-        command.scoped = parens > 0 || in_substitution || after_split;
-        self.finish(&mut command, &mut heredocs);
-        if in_substitution {
-            self.out.broken = true;
+        self.finish(&mut command);
+        self.broken |= until.is_some();
+    }
+
+    fn finish(&mut self, command: &mut Vec<Word>) {
+        if !command.is_empty() {
+            self.commands.push(std::mem::take(command));
         }
     }
 
-    fn finish(&mut self, command: &mut SimpleCommand, heredocs: &mut [Heredoc]) {
-        let index = self.out.commands.len();
-        for heredoc in heredocs.iter_mut().filter(|h| h.command.is_none()) {
-            heredoc.command = Some(index);
-        }
-        if !command.words.is_empty() {
-            self.out.commands.push(std::mem::take(command));
-        }
-    }
-
-    /// Consumes the operator and says what the next word is. A `|` in `>|` too.
-    fn redirect(&mut self) -> Expect {
-        let first = self.peek(0);
-        self.at += 1;
-        if first == Some('<') && self.peek(0) == Some('<') {
-            self.at += 1;
-            if self.peek(0) == Some('<') {
-                self.at += 1;
-                return Expect::HereString;
-            }
-            let strip_tabs = self.peek(0) == Some('-');
-            if strip_tabs {
-                self.at += 1;
-            }
-            return Expect::Heredoc { strip_tabs };
-        }
-        while matches!(self.peek(0), Some('>' | '&' | '|')) {
-            self.at += 1;
-        }
-        Expect::RedirectTarget
-    }
-
-    fn read_heredocs(&mut self, heredocs: &mut Vec<Heredoc>) {
-        for heredoc in heredocs.drain(..) {
-            let mut body = String::new();
+    /// A heredoc's body is text, skipped so that prose in it isn't read as commands. Tabs
+    /// are stripped for `<<` as for `<<-`, so a plain one can end early.
+    fn read_heredocs(&mut self, heredocs: &mut Vec<String>) {
+        for delimiter in heredocs.drain(..) {
             while self.at < self.chars.len() {
-                let mut line = String::new();
-                while let Some(c) = self.peek(0) {
-                    self.at += 1;
-                    if c == '\n' {
-                        break;
-                    }
-                    line.push(c);
-                }
-                let compared = if heredoc.strip_tabs {
-                    line.trim_start_matches('\t')
-                } else {
-                    line.as_str()
-                };
-                if compared.trim_end_matches('\r') == heredoc.delimiter {
+                let rest = &self.chars[self.at..];
+                let end = rest.iter().position(|c| *c == '\n').unwrap_or(rest.len());
+                let line: String = rest[..end].iter().collect();
+                self.at += end + 1;
+                if line.trim_start_matches('\t').trim_end_matches('\r') == delimiter {
                     break;
                 }
-                body.push_str(&line);
-                body.push('\n');
-            }
-            if let Some(command) = heredoc.command.and_then(|i| self.out.commands.get_mut(i)) {
-                command.stdin = Some(body);
             }
         }
     }
 
     fn double_quoted(&mut self, word: &mut Word, depth: usize) {
-        while let Some(c) = self.peek(0) {
-            match c {
-                '"' if self.dialect != Dialect::Sh && self.peek(1) == Some('"') => {
-                    self.at += 2;
-                    push(word, '"');
-                }
-                '"' => {
-                    self.at += 1;
-                    return;
-                }
-                '\\' if self.dialect == Dialect::Sh => {
-                    self.at += 1;
-                    if let Some(next) = self.peek(0) {
-                        self.at += 1;
-                        if matches!(next, '"' | '\\' | '$' | '`') {
-                            word.text.push(next);
-                            word.raw.push(next);
-                        } else if next != '\n' {
-                            word.text.push('\\');
-                            word.text.push(next);
-                            word.raw.push('\\');
-                            word.raw.push(next);
-                        }
-                    }
-                }
-                '`' if self.dialect == Dialect::Ps => {
-                    self.at += 1;
-                    if let Some(next) = self.peek(0) {
-                        self.at += 1;
-                        push(word, next);
-                    }
-                }
-                '`' if self.dialect == Dialect::Sh => {
-                    self.at += 1;
-                    self.backticks(word, depth);
-                }
-                '$' if self.dialect != Dialect::Cmd => self.dollar(word, depth),
-                _ => {
-                    self.at += 1;
-                    push(word, c);
-                }
-            }
-        }
-        self.out.broken = true;
-    }
-
-    fn dollar(&mut self, word: &mut Word, depth: usize) {
-        self.at += 1;
-        match self.peek(0) {
-            Some('(') => {
-                self.at += 1;
-                word.dynamic = true;
-                self.list(true, depth + 1);
-            }
-            Some(next)
-                if next.is_alphanumeric() || matches!(next, '{' | '_' | '?' | '@' | '*' | '!') =>
-            {
-                word.dynamic = true;
-                push(word, '$');
-            }
-            _ => push(word, '$'),
-        }
-    }
-
-    fn backticks(&mut self, word: &mut Word, depth: usize) {
-        word.dynamic = true;
-        let mut inner = String::new();
-        while let Some(c) = self.peek(0) {
+        while let Some(c) = self.peek() {
             self.at += 1;
             match c {
-                '`' => {
-                    let nested = parse(&inner, self.dialect, depth + 1);
-                    self.out.broken |= nested.broken;
-                    let nested_commands = nested.commands.into_iter();
-                    self.out.commands.extend(nested_commands.map(|mut command| {
-                        command.scoped = true;
-                        command
-                    }));
-                    return;
-                }
-                '\\' => {
-                    if let Some(next) = self.peek(0) {
-                        self.at += 1;
-                        inner.push(next);
+                '"' => return,
+                '\\' | '`' if c == self.escape => {
+                    let Some(next) = self.peek() else { continue };
+                    self.at += 1;
+                    if c == '\\' && !matches!(next, '"' | '\\' | '$' | '`' | '\n') {
+                        word.text.push('\\');
+                    }
+                    if next != '\n' {
+                        word.text.push(next);
                     }
                 }
-                _ => inner.push(c),
+                '`' if self.dialect == Dialect::Sh => self.substitution(word, '`', depth),
+                '$' if self.dialect != Dialect::Cmd => self.dollar(word, depth),
+                _ => word.text.push(c),
             }
         }
-        self.out.broken = true;
+        self.broken = true;
     }
-}
 
-fn push(word: &mut Word, c: char) {
-    word.text.push(c);
-    word.raw.push(c);
+    /// Just past a `$`.
+    fn dollar(&mut self, word: &mut Word, depth: usize) {
+        if self.peek() == Some('(') {
+            self.at += 1;
+            self.substitution(word, ')', depth);
+            return;
+        }
+        word.dynamic |= (self.peek())
+            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '{' | '_' | '?' | '@' | '*' | '!'));
+        word.text.push('$');
+    }
+
+    fn substitution(&mut self, word: &mut Word, until: char, depth: usize) {
+        word.dynamic = true;
+        self.list(Some(until), depth + 1);
+    }
 }
 
 fn end_word(
     word: &mut Option<Word>,
-    command: &mut SimpleCommand,
+    command: &mut Vec<Word>,
     expect: &mut Expect,
-    heredocs: &mut Vec<Heredoc>,
+    heredocs: &mut Vec<String>,
 ) {
     let Some(done) = word.take() else { return };
     match std::mem::replace(expect, Expect::Word) {
-        Expect::Word => command.words.push(done),
-        Expect::RedirectTarget => {}
-        Expect::HereString => command.stdin = Some(done.text),
-        Expect::Heredoc { strip_tabs } => heredocs.push(Heredoc {
-            delimiter: done.text,
-            strip_tabs,
-            command: None,
-        }),
+        Expect::Word => command.push(done),
+        Expect::Skip => {}
+        Expect::Heredoc => heredocs.push(done.text.trim_start_matches('-').to_owned()),
     }
 }
 
@@ -401,6 +229,7 @@ pub struct Scope {
 
 struct Context {
     root: Option<String>,
+    /// None once a command has changed folder: not followed, so it stops being known.
     cwd: Option<String>,
     windows: bool,
 }
@@ -431,21 +260,15 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     } else {
         Dialect::Sh
     };
-    let command = input.get("command").or_else(|| input.get("cmd"))?;
-    match command {
+    match input.get("command").or_else(|| input.get("cmd"))? {
         Value::String(text) => script(text, dialect, &mut context, 0),
         Value::Array(parts) => {
-            let words: Vec<Word> = (parts.iter())
-                .map(|part| {
-                    let text = part.as_str().unwrap_or_default();
-                    Word {
-                        text: text.to_owned(),
-                        raw: text.to_owned(),
-                        dynamic: false,
-                    }
-                })
-                .collect();
-            simple(&words, None, dialect, &mut context, 0, false)
+            let word = |part: &Value| Word {
+                text: part.as_str().unwrap_or_default().to_owned(),
+                dynamic: false,
+            };
+            let words: Vec<Word> = parts.iter().map(word).collect();
+            simple(&words, dialect, &mut context, 0, false)
         }
         _ => None,
     }
@@ -453,21 +276,10 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
 
 /// For when nothing could be parsed at all: does this text name a denied program?
 pub fn names_denied_program(text: &str) -> bool {
-    const NAMES: [&str; 10] = [
-        "pkill",
-        "killall",
-        "git",
-        "gh",
-        "rm",
-        "find",
-        "taskkill",
-        "remove-item",
-        "stop-process",
-        "rmdir",
-    ];
+    const NAMES: &str = "pkill killall git gh rm find taskkill remove-item stop-process rmdir";
     text.to_ascii_lowercase()
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-        .any(|word| NAMES.contains(&word))
+        .any(|word| NAMES.split(' ').any(|name| name == word))
 }
 
 fn unparsed() -> String {
@@ -475,37 +287,10 @@ fn unparsed() -> String {
 }
 
 fn script(text: &str, dialect: Dialect, context: &mut Context, depth: usize) -> Option<String> {
-    if depth > MAX_DEPTH {
-        return names_denied_program(text).then(unparsed);
-    }
     let parsed = parse(text, dialect, depth);
-    for command in &parsed.commands {
-        let stdin = command.stdin.as_deref();
-        let before = context.cwd.clone();
-        let reason = simple(&command.words, stdin, dialect, context, depth, false);
-        if reason.is_some() {
-            return reason;
-        }
-        // A `cd` that may not reach what follows: stop claiming to know where this is.
-        let branch = (command.words.first()).is_some_and(|w| KEYWORDS.contains(&w.text.as_str()));
-        if (command.scoped || branch) && context.cwd != before {
-            context.cwd = None;
-        }
-    }
-    (parsed.broken && names_denied_program(text)).then(unparsed)
-}
-
-/// A shell of its own: what it does to its folder stays with it.
-fn child_script(
-    text: &str,
-    dialect: Dialect,
-    context: &mut Context,
-    depth: usize,
-) -> Option<String> {
-    let before = context.cwd.clone();
-    let reason = script(text, dialect, context, depth);
-    context.cwd = before;
-    reason
+    (parsed.commands.iter())
+        .find_map(|command| simple(command, dialect, context, depth, false))
+        .or_else(|| (parsed.broken && names_denied_program(text)).then(unparsed))
 }
 
 const KEYWORDS: [&str; 12] = [
@@ -513,67 +298,59 @@ const KEYWORDS: [&str; 12] = [
 ];
 
 fn is_assignment(word: &Word) -> bool {
-    let Some((name, _)) = word.text.split_once('=') else {
-        return false;
-    };
-    name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    let name = word.text.split_once('=').map(|(name, _)| name);
+    name.is_some_and(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
 }
 
-/// Lowercase, no folder, no Windows extension. Case folded because the Mac's and
-/// Windows' file systems would find the program either way.
+/// Lowercase, no folder, no `.exe`. Case folded because the Mac's and Windows' file
+/// systems would find the program either way.
 fn program(word: &str) -> String {
     let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
     let name = name.to_ascii_lowercase();
-    for extension in [".exe", ".cmd", ".bat"] {
-        if let Some(stem) = name.strip_suffix(extension) {
-            return stem.to_owned();
-        }
-    }
-    name
+    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
 }
 
 fn join(words: &[Word]) -> String {
-    (words.iter())
-        .map(|word| word.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
+    let texts: Vec<&str> = words.iter().map(|word| word.text.as_str()).collect();
+    texts.join(" ")
+}
+
+/// The letters of a `-abc`, not of a `--long`.
+fn short_flags(text: &str) -> Option<&str> {
+    text.strip_prefix('-').filter(|f| !f.starts_with('-'))
 }
 
 /// Past a wrapper's own options. `taking_value` lists those that consume the next word.
 fn after_options<'a>(mut args: &'a [Word], taking_value: &[&str]) -> &'a [Word] {
-    while let Some(first) = args.first() {
-        if first.text == "--" {
-            return &args[1..];
-        }
-        if !first.text.starts_with('-') || first.text.len() == 1 {
-            break;
-        }
-        let skip = if taking_value.contains(&first.text.as_str()) {
-            2
-        } else {
-            1
-        };
+    while args.first().is_some_and(|a| a.text.starts_with('-')) {
+        let skip = 1 + usize::from(taking_value.contains(&args[0].text.as_str()));
         args = args.get(skip..).unwrap_or_default();
     }
     args
 }
 
-/// Git and GNU tools accept a long option cut short.
-fn long_option(word: &str, option: &str) -> bool {
-    word.len() >= 3 && option.starts_with(word)
-}
-
-/// True if `word` abbreviates `option`, as PowerShell allows: `-enc`, `-Comm`.
-fn abbreviates(word: &str, option: &str) -> bool {
-    let word = word.to_ascii_lowercase();
-    word.len() >= 2 && option.starts_with(&word)
+/// The command a plain wrapper runs, or None if `name` isn't one.
+fn wrapped<'a>(name: &str, args: &'a [Word]) -> Option<&'a [Word]> {
+    let values: &[&str] = match name {
+        "env" => &["-u", "--unset", "-C", "--chdir"],
+        "command" if args.first().is_some_and(|a| a.text == "-v") => return Some(&[]),
+        "exec" => &["-a"],
+        "command" | "builtin" | "nohup" | "setsid" | "time" => &[],
+        "nice" => &["-n", "--adjustment"],
+        "timeout" => {
+            let rest = after_options(args, &["-k", "-s", "--kill-after", "--signal"]);
+            return Some(rest.get(1..).unwrap_or_default());
+        }
+        "sudo" => &["-u", "-g", "-h", "-p", "-C", "-D", "-T", "-U", "-r", "-t"],
+        "xargs" => &["-I", "-n", "-P", "-L", "-s", "-d", "-E", "-J", "-R", "-S"],
+        _ => return None,
+    };
+    Some(after_options(args, values))
 }
 
 /// One command. `piped` means more arguments arrive at run time, from `xargs` or `find`.
 fn simple(
     words: &[Word],
-    stdin: Option<&str>,
     dialect: Dialect,
     context: &mut Context,
     depth: usize,
@@ -597,170 +374,46 @@ fn simple(
     let name = program(&first.text);
     let args = &words[1..];
     let depth = depth + 1;
-    let wrapped = |rest: &[Word], context: &mut Context, piped: bool| {
-        let before = context.cwd.clone();
-        let reason = simple(rest, stdin, dialect, context, depth, piped);
-        // `env cd x` moves nothing; `command cd x` does. Not worth telling apart.
-        if context.cwd != before {
-            context.cwd = None;
-        }
-        reason
+    // `env -C dir` and `sudo -D dir` change folder, like `cd`.
+    let moves = |a: &Word| {
+        ["-C", "-D", "--chdir"]
+            .iter()
+            .any(|o| a.text.starts_with(o))
     };
-    // `env -C dir` and `sudo -D dir`: the wrapped command runs somewhere it can't follow.
-    let moved = matches!(name.as_str(), "env" | "sudo" | "doas")
-        && args.iter().any(|a| {
-            a.text.starts_with("-C") || a.text.starts_with("-D") || a.text.starts_with("--chdir")
-        });
-    if moved {
-        let before = context.cwd.take();
-        // Wrappers' option parsing can't be trusted here, so read every tail as a command.
-        let reason = (0..args.len())
-            .find_map(|at| simple(&args[at..], stdin, dialect, context, depth, piped));
-        context.cwd = before;
-        return reason;
+    if matches!(name.as_str(), "env" | "sudo") && args.iter().any(moves) {
+        context.cwd = None;
     }
+    if let Some(rest) = wrapped(&name, args) {
+        return simple(rest, dialect, context, depth, piped || name == "xargs");
+    }
+    let lowered = |arg: &Word| arg.text.to_ascii_lowercase();
     match name.as_str() {
-        "env" => {
-            let mut rest = args;
-            loop {
-                rest = after_options(rest, &["-u", "--unset", "-C", "--chdir"]);
-                match rest {
-                    [first, ..] if is_assignment(first) => rest = &rest[1..],
-                    _ => break,
-                }
-            }
-            if let Some(at) = args
-                .iter()
-                .position(|a| a.text == "-S" || a.text == "--split-string")
-                && let Some(text) = args.get(at + 1)
-            {
-                let joined = format!("{} {}", text.text, join(&args[at + 2..]));
-                return child_script(&joined, dialect, context, depth);
-            }
-            wrapped(rest, context, piped)
-        }
-        "command" | "builtin" => {
-            if args
-                .first()
-                .is_some_and(|a| a.text == "-v" || a.text == "-V")
-            {
-                return None;
-            }
-            wrapped(after_options(args, &[]), context, piped)
-        }
-        "exec" => wrapped(after_options(args, &["-a"]), context, piped),
-        "nohup" | "setsid" | "time" | "caffeinate" | "busybox" => {
-            wrapped(after_options(args, &["-t", "-w"]), context, piped)
-        }
-        "nice" | "ionice" => wrapped(
-            after_options(args, &["-n", "-c", "-p", "--adjustment"]),
-            context,
-            piped,
-        ),
-        "stdbuf" => wrapped(after_options(args, &["-i", "-o", "-e"]), context, piped),
-        "watch" => wrapped(after_options(args, &["-n", "--interval"]), context, piped),
-        "timeout" => {
-            let rest = after_options(args, &["-k", "-s", "--kill-after", "--signal"]);
-            wrapped(rest.get(1..).unwrap_or_default(), context, piped)
-        }
-        "sudo" | "doas" => wrapped(
-            after_options(
-                args,
-                &[
-                    "-u",
-                    "-g",
-                    "-h",
-                    "-p",
-                    "-C",
-                    "-T",
-                    "-U",
-                    "-r",
-                    "-t",
-                    "--user",
-                    "--group",
-                    "--host",
-                    "--prompt",
-                    "--close-from",
-                    "--command-timeout",
-                    "--other-user",
-                    "--role",
-                    "--type",
-                ],
-            ),
-            context,
-            piped,
-        ),
-        "xargs" => wrapped(
-            after_options(
-                args,
-                &["-I", "-n", "-P", "-L", "-s", "-d", "-E", "-J", "-R", "-S"],
-            ),
-            context,
-            true,
-        ),
-        "eval" | "iex" | "invoke-expression" => {
-            let rest = after_options(args, &["-Command"]);
-            script(&join(rest), dialect, context, depth)
-        }
+        "eval" | "iex" | "invoke-expression" => script(&join(args), dialect, context, depth),
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" | "fish" => {
-            let flag = args.iter().position(|arg| {
-                let text = &arg.text;
-                text.starts_with('-')
-                    && !text.starts_with("--")
-                    && text[1..].chars().all(|c| c.is_ascii_alphabetic())
-                    && text.contains('c')
-            });
-            if let Some(at) = flag {
-                let inner = args.get(at + 1)?;
-                return child_script(&inner.text, Dialect::Sh, context, depth);
-            }
-            stdin.and_then(|text| child_script(text, Dialect::Sh, context, depth))
+            let has_c = |a: &Word| short_flags(&a.text).is_some_and(|f| f.contains('c'));
+            let flag = args.iter().position(has_c)?;
+            script(&args.get(flag + 1)?.text, Dialect::Sh, context, depth)
         }
-        "powershell" | "pwsh" => powershell(args, stdin, context, depth),
-        "cmd" => {
-            let flag = args.iter().position(|arg| {
-                let text = arg.text.to_ascii_lowercase();
-                matches!(text.as_str(), "/c" | "/k" | "//c" | "//k")
-                    || text.starts_with("/c ")
-                    || text.starts_with("//c ")
-            })?;
-            let text = args[flag].text.to_ascii_lowercase();
-            let inline = text.len() > 2 && text.starts_with("/c ");
-            let rest = &args[flag + usize::from(!inline)..];
-            let mut joined = join(rest);
-            if inline {
-                joined = joined.trim_start_matches(['/', 'c', 'C']).to_owned();
-            }
-            child_script(&joined, Dialect::Cmd, context, depth)
-        }
-        "cd" | "pushd" | "chdir" | "set-location" | "sl" => {
-            let target = args.iter().find(|arg| !arg.text.starts_with('-'));
-            context.cwd = match target {
-                Some(target) if !target.dynamic && !target.text.starts_with('~') => {
-                    resolve(path_text(target, context), context)
-                }
-                _ => None,
+        "powershell" | "pwsh" | "cmd" => {
+            let (flags, inner): (&[&str], _) = if name == "cmd" {
+                (&["/c", "/k", "//c", "//k"], Dialect::Cmd)
+            } else {
+                (&["-command", "-c"], Dialect::Ps)
             };
-            None
+            let flag = args.iter().position(|a| flags.contains(&&*lowered(a)))?;
+            script(&join(&args[flag + 1..]), inner, context, depth)
         }
-        "popd" | "pop-location" => {
+        "cd" | "pushd" | "popd" | "chdir" | "set-location" | "sl" | "pop-location" => {
             context.cwd = None;
             None
         }
-        "pkill" => Some("machine-wide pkill".to_owned()),
-        "killall" => Some("machine-wide killall".to_owned()),
-        "kill" => (args.iter().skip(1).any(|arg| arg.text == "-1"))
-            .then(|| "a kill of every process".to_owned()),
-        "taskkill" => (args.iter().any(|arg| {
-            let text = arg.text.to_ascii_lowercase();
-            text == "/im" || text == "//im"
-        }))
-        .then(|| "machine-wide taskkill by name".to_owned()),
+        "pkill" | "killall" => Some(format!("machine-wide {name}")),
+        "taskkill" => (args.iter().any(|a| matches!(&*lowered(a), "/im" | "//im")))
+            .then(|| "machine-wide taskkill by name".to_owned()),
         "stop-process" | "spps" => {
-            let by_id = args.iter().any(|arg| {
-                abbreviates(&arg.text, "-id") || arg.text.chars().all(|c| c.is_ascii_digit())
-            });
-            (!by_id).then(|| "Stop-Process by name".to_owned())
+            let by_id =
+                |a: &Word| lowered(a) == "-id" || a.text.chars().all(|c| c.is_ascii_digit());
+            (!args.iter().any(by_id)).then(|| "Stop-Process by name".to_owned())
         }
         "git" => git(args, piped),
         "gh" => gh(args),
@@ -772,63 +425,16 @@ fn simple(
     }
 }
 
-fn powershell(
-    args: &[Word],
-    stdin: Option<&str>,
-    context: &mut Context,
-    depth: usize,
-) -> Option<String> {
-    let mut at = 0;
-    while let Some(arg) = args.get(at) {
-        let text = arg.text.as_str();
-        if abbreviates(text, "-command") || text.eq_ignore_ascii_case("/c") {
-            return child_script(&join(&args[at + 1..]), Dialect::Ps, context, depth);
-        }
-        // Encoded text and script files are known misses.
-        if abbreviates(text, "-encodedcommand") || abbreviates(text, "-file") {
-            return None;
-        }
-        if abbreviates(text, "-workingdirectory") {
-            context.cwd = None;
-        }
-        if ["-executionpolicy", "-windowstyle", "-workingdirectory"]
-            .iter()
-            .any(|option| abbreviates(text, option))
-            || ["-inputformat", "-outputformat", "-configurationname"]
-                .iter()
-                .any(|option| abbreviates(text, option))
-        {
-            at += 2;
-        } else if text.starts_with('-') {
-            at += 1;
-        } else {
-            // A bare argument runs as a command, on Windows PowerShell.
-            return child_script(&join(&args[at..]), Dialect::Ps, context, depth);
-        }
-    }
-    stdin.and_then(|text| child_script(text, Dialect::Ps, context, depth))
+fn unscoped(paths: &[Word]) -> bool {
+    const UNSCOPED_PATHS: [&str; 7] = [".", "./", "*", ":/", ":", "/", ":/*"];
+    (paths.iter()).any(|arg| UNSCOPED_PATHS.contains(&arg.text.as_str()))
 }
-
-const UNSCOPED_PATHS: [&str; 7] = [".", "./", "*", ":/", ":", "/", ":/*"];
 
 fn git(args: &[Word], piped: bool) -> Option<String> {
     let mut rest = args;
     while let Some(first) = rest.first() {
         let text = first.text.as_str();
-        if text == "-c" && rest.get(1).is_some_and(|c| c.text.starts_with("alias.")) {
-            return Some("a git alias defined on the command line".to_owned());
-        }
-        let takes_value = matches!(
-            text,
-            "-C" | "-c"
-                | "--git-dir"
-                | "--work-tree"
-                | "--namespace"
-                | "--exec-path"
-                | "--super-prefix"
-                | "--config-env"
-        );
-        if takes_value {
+        if matches!(text, "-C" | "-c" | "--git-dir" | "--work-tree") {
             rest = rest.get(2..).unwrap_or_default();
         } else if text.starts_with('-') {
             rest = &rest[1..];
@@ -837,305 +443,128 @@ fn git(args: &[Word], piped: bool) -> Option<String> {
         }
     }
     let (sub, args) = rest.split_first()?;
-    if sub.dynamic {
-        return Some("a git command hidden in a variable".to_owned());
-    }
-    match sub.text.as_str() {
+    let has = |option: &str| args.iter().any(|arg| arg.text == option);
+    let (denied, what) = match sub.text.as_str() {
+        _ if sub.dynamic => (true, "a git command hidden in a variable"),
+        // Through `xargs`, arguments arrive at run time.
         "push" => {
-            if piped {
-                return Some("a git push whose arguments arrive at run time".to_owned());
-            }
-            (args.iter().any(|arg| is_force_push_argument(&arg.text)))
-                .then(|| "force-push".to_owned())
+            let force = args.iter().any(|arg| is_force_push_argument(&arg.text));
+            (piped || force, "force-push")
         }
-        "reset" => (args.iter().any(|arg| long_option(&arg.text, "--hard")))
-            .then(|| "reset --hard".to_owned()),
+        "reset" => (has("--hard"), "reset --hard"),
         "checkout" => {
             let dashes = args.iter().position(|arg| arg.text == "--");
-            let unscoped = match dashes {
-                Some(at) => {
-                    args.len() == at + 1
-                        || args[at + 1..]
-                            .iter()
-                            .any(|arg| UNSCOPED_PATHS.contains(&arg.text.as_str()))
-                }
-                None => args
-                    .iter()
-                    .any(|arg| UNSCOPED_PATHS.contains(&arg.text.as_str())),
-            };
-            unscoped.then(|| "an unscoped git checkout".to_owned())
+            let paths = &args[dashes.map_or(0, |at| at + 1)..];
+            let all = (dashes.is_some() && paths.is_empty()) || unscoped(paths);
+            (all, "an unscoped git checkout")
         }
         "restore" => {
-            let staged = args.iter().any(|a| a.text == "--staged" || a.text == "-S");
-            let worktree = args
-                .iter()
-                .any(|a| a.text == "--worktree" || a.text == "-W");
-            if staged && !worktree {
-                return None;
-            }
-            let paths = after_options(args, &["-s", "--source"]);
-            let has_paths = paths.iter().any(|a| !a.text.starts_with('-'));
-            (!has_paths
-                || paths
-                    .iter()
-                    .any(|a| UNSCOPED_PATHS.contains(&a.text.as_str())))
-            .then(|| "an unscoped git restore".to_owned())
+            let staged_only = (has("--staged") || has("-S")) && !(has("--worktree") || has("-W"));
+            let has_paths = args.iter().any(|a| !a.text.starts_with('-'));
+            let all = !staged_only && (!has_paths || unscoped(args));
+            (all, "an unscoped git restore")
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    denied.then(|| what.to_owned())
 }
 
 fn is_force_push_argument(text: &str) -> bool {
-    if text.starts_with('+') || long_option(text, "--mirror") {
-        return true;
-    }
-    if let Some(long) = text.strip_prefix("--") {
-        return long_option(text, "--force") || long.starts_with("force-");
-    }
-    // `origin +main:main` is above; short flags may cluster, as in `-uf`.
-    text.strip_prefix('-')
-        .is_some_and(|short| short.contains('f') && short.chars().all(|c| c.is_ascii_alphabetic()))
-        || text.contains(":+")
+    text.starts_with('+')
+        || text == "--mirror"
+        || text.starts_with("--force")
+        || short_flags(text).is_some_and(|flags| flags.contains('f'))
 }
 
 /// By operation, reads named: anything else on `gh` posts, changes or deletes something,
-/// or is new to this list, which is the same to a guard that can't tell.
+/// or is new to this list, as a variable is: the same to a guard that can't tell.
 fn gh(args: &[Word]) -> Option<String> {
-    let denied = || Some("a gh call that posts or changes something".to_owned());
-    let positional: Vec<&Word> = {
-        let mut positional = Vec::new();
-        let mut rest = args;
-        while let Some((first, tail)) = rest.split_first() {
-            if matches!(first.text.as_str(), "-R" | "--repo") {
-                rest = tail.get(1..).unwrap_or_default();
-                continue;
-            }
-            if !first.text.starts_with('-') {
-                positional.push(first);
-            }
-            rest = tail;
-        }
-        positional
-    };
-    let group = positional.first()?;
-    if group.dynamic {
-        return denied();
-    }
-    match group.text.as_str() {
-        "help" | "version" | "status" | "search" | "browse" | "completion" => return None,
-        "api" => return gh_api(args, denied),
-        _ => {}
-    }
-    let verb = positional.get(1)?;
-    let read = [
+    const READS: [&str; 13] = [
         "view", "list", "ls", "status", "diff", "checks", "watch", "download", "checkout", "clone",
         "get", "token", "verify",
     ];
-    if !verb.dynamic && read.contains(&verb.text.as_str()) {
-        None
-    } else {
-        denied()
-    }
+    let mut positional = args.iter().filter(|arg| !arg.text.starts_with('-'));
+    let denied = match positional.next()?.text.as_str() {
+        "help" | "version" | "status" | "search" | "browse" | "completion" => false,
+        "api" => gh_api_writes(args),
+        _ => !READS.contains(&positional.next()?.text.as_str()),
+    };
+    denied.then(|| "a gh call that posts or changes something".to_owned())
 }
 
-fn gh_api(args: &[Word], denied: impl Fn() -> Option<String>) -> Option<String> {
+/// All of `graphql` counts as a write: telling a query from a mutation isn't worth it.
+fn gh_api_writes(args: &[Word]) -> bool {
     let mut method = None;
     let mut fields = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let text = arg.text.as_str();
         if text == "-X" || text == "--method" {
-            let value = iter.next()?;
-            if value.dynamic {
-                return denied();
-            }
-            method = Some(value.text.to_ascii_uppercase());
+            method = iter.next().map(|value| value.text.to_ascii_uppercase());
         } else if let Some(value) = text.strip_prefix("--method=").or(text.strip_prefix("-X")) {
             method = Some(value.to_ascii_uppercase());
-        } else if ["-f", "-F", "--field", "--raw-field", "--input"].contains(&text)
-            || text.starts_with("--field=")
-            || text.starts_with("--raw-field=")
-            || text.starts_with("--input=")
-            || (!text.starts_with("--") && (text.starts_with("-f") || text.starts_with("-F")))
-        {
-            fields = true;
         }
+        let key = text.split('=').next().unwrap_or(text);
+        fields |= ["-f", "-F", "--field", "--raw-field", "--input"].contains(&key);
     }
     let graphql = args.iter().any(|arg| arg.text == "graphql");
-    if graphql {
-        let hidden = args.iter().any(|arg| arg.dynamic);
-        let mutation = args.iter().any(|arg| arg.text.contains("mutation"));
-        return if hidden || mutation { denied() } else { None };
-    }
-    match method.as_deref() {
-        Some("GET" | "HEAD") => None,
-        Some(_) => denied(),
-        None if fields => denied(),
-        None => None,
-    }
+    graphql || method.map_or(fields, |method| method != "GET" && method != "HEAD")
 }
 
-/// `find`'s tests that take a value, so a `-delete` there is only text.
-const FIND_VALUES: [&str; 28] = [
-    "-name",
-    "-iname",
-    "-path",
-    "-ipath",
-    "-wholename",
-    "-iwholename",
-    "-regex",
-    "-iregex",
-    "-lname",
-    "-ilname",
-    "-type",
-    "-xtype",
-    "-size",
-    "-perm",
-    "-user",
-    "-group",
-    "-uid",
-    "-gid",
-    "-mtime",
-    "-atime",
-    "-ctime",
-    "-mmin",
-    "-amin",
-    "-cmin",
-    "-links",
-    "-inum",
-    "-samefile",
-    "-printf",
-];
-
+/// A plain check on the arguments, so `find . -name -delete` is denied too.
 fn find(args: &[Word], dialect: Dialect, context: &mut Context, depth: usize) -> Option<String> {
-    let mut at = 0;
-    while let Some(arg) = args.get(at) {
-        let text = arg.text.as_str();
-        if text == "-delete" {
-            return Some("find -delete".to_owned());
-        }
-        if matches!(text, "-exec" | "-execdir" | "-ok" | "-okdir") {
-            let rest = &args[at + 1..];
-            let end = (rest.iter())
-                .position(|arg| arg.text == ";" || arg.text == "+")
-                .unwrap_or(rest.len());
-            let reason = simple(&rest[..end], None, dialect, context, depth, true);
-            if reason.is_some() {
-                return reason;
-            }
-            at += end + 2;
-        } else if FIND_VALUES.contains(&text) || text.starts_with("-newer") {
-            at += 2;
-        } else {
-            at += 1;
-        }
+    if args.iter().any(|arg| arg.text == "-delete") {
+        return Some("find -delete".to_owned());
     }
-    None
+    // What follows its `;` reads as more arguments, which only ever adds a denial.
+    const EXEC: [&str; 4] = ["-exec", "-execdir", "-ok", "-okdir"];
+    (args.iter().enumerate())
+        .filter(|(_, arg)| EXEC.contains(&arg.text.as_str()))
+        .find_map(|(at, _)| simple(&args[at + 1..], dialect, context, depth, true))
 }
 
 fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<String> {
-    let lowered = |word: &Word| word.text.to_ascii_lowercase();
     let recursive = args.iter().any(|arg| {
-        let text = lowered(arg);
-        match name {
-            "rm" => {
-                long_option(&text, "--recursive")
-                    || abbreviates(&text, "-recurse")
-                    || (text.starts_with('-')
-                        && !text.starts_with("--")
-                        && !abbreviates(&text, "-force")
-                        && text.contains('r'))
-            }
-            "rmdir" | "rd" => {
-                text == "/s" || text == "//s" || abbreviates(&text, "-recurse") || text == "--r"
-            }
-            "del" | "erase" => text == "/s" || text == "//s" || abbreviates(&text, "-recurse"),
-            _ => abbreviates(&text, "-recurse"),
-        }
+        let text = arg.text.to_ascii_lowercase();
+        // PowerShell's `-Force` isn't a cluster holding `r`.
+        let cluster = |f: &str| name == "rm" && f != "force" && f.contains('r');
+        short_flags(&text).is_some_and(cluster)
+            || ["--recursive", "-r", "-recurse", "/s", "//s"].contains(&text.as_str())
     });
-    if !recursive {
-        return None;
-    }
-    let mut ended = false;
-    let paths: Vec<&Word> = args
-        .iter()
-        .filter(|arg| {
-            if arg.text == "--" && !ended {
-                ended = true;
-                return false;
-            }
-            let text = arg.text.as_str();
-            let single_letter_slash = text.len() <= 3
-                && text.starts_with('/')
-                && matches!(name, "rmdir" | "rd" | "del" | "erase");
-            ended || !(text.starts_with('-') || single_letter_slash)
-        })
-        .collect();
-    let outside = || Some("a recursive delete outside the worktree".to_owned());
-    if piped || paths.is_empty() {
-        return Some("a recursive delete whose paths can't be read".to_owned());
-    }
-    let unreadable = || Some("a recursive delete whose paths can't be read".to_owned());
-    for path in paths {
-        if path.dynamic || path.text.contains('%') || path.text.starts_with('~') {
-            return unreadable();
-        }
-        // PowerShell takes `a,b` as two paths and `@(...)` as a list.
-        for part in path_text(path, context)
-            .split(',')
-            .filter(|p| !p.is_empty())
-        {
-            if part.ends_with('@') || climbs_after_a_name(part) {
-                return unreadable();
-            }
-            let Some(resolved) = resolve(part, context) else {
-                return Some("a recursive delete from a folder it couldn't follow".to_owned());
-            };
-            let Some(root) = &context.root else {
-                return outside();
-            };
-            if !resolved.starts_with(&format!("{root}/")) {
-                return outside();
-            }
-        }
-    }
-    None
-}
-
-/// `link/../x`: if `link` is a link, this leaves the tree while reading as inside it.
-fn climbs_after_a_name(path: &str) -> bool {
-    let mut named = false;
-    for part in path.split(['/', '\\']) {
-        match part {
-            ".." if named => return true,
-            "" | "." | ".." => {}
-            _ => named = true,
-        }
-    }
-    false
-}
-
-fn path_text<'a>(path: &'a Word, context: &Context) -> &'a str {
-    if context.windows {
-        &path.raw
-    } else {
-        &path.text
-    }
+    let slash_options = matches!(name, "rmdir" | "rd" | "del" | "erase");
+    let is_path = |arg: &&Word| {
+        let slash_option = slash_options && arg.text.starts_with('/') && arg.text.len() <= 3;
+        !arg.text.starts_with('-') && !slash_option
+    };
+    let paths: Vec<&Word> = args.iter().filter(is_path).collect();
+    let inside = |part: &str| {
+        let resolved = resolve(part, context).zip(context.root.as_ref());
+        // `@(...)` is not read.
+        !part.ends_with('@')
+            && resolved.is_some_and(|(path, root)| path.starts_with(&format!("{root}/")))
+    };
+    // PowerShell takes `a,b` as two paths.
+    let readable = |path: &&Word| {
+        !path.dynamic
+            && !path.text.contains('%')
+            && !path.text.starts_with('~')
+            && path.text.split(',').filter(|p| !p.is_empty()).all(inside)
+    };
+    let reason =
+        "a recursive delete not plainly inside the worktree; after a cd, use an absolute path";
+    let denied = piped || paths.is_empty() || !paths.iter().all(readable);
+    (recursive && denied).then(|| reason.to_owned())
 }
 
 /// Lexical: an existing link isn't resolved. See the misses in the table.
 fn resolve(text: &str, context: &Context) -> Option<String> {
-    let absolute = text.starts_with('/') || (context.windows && (is_rooted_windows(text)));
-    if absolute {
+    let rooted_windows = context.windows && (has_drive(text) || text.starts_with('\\'));
+    if text.starts_with('/') || rooted_windows {
         Some(normal(text, context.windows))
     } else {
         let cwd = context.cwd.as_ref()?;
         Some(normal(&format!("{cwd}/{text}"), context.windows))
     }
-}
-
-fn is_rooted_windows(text: &str) -> bool {
-    has_drive(text) || text.starts_with('\\')
 }
 
 fn has_drive(text: &str) -> bool {
@@ -1149,28 +578,20 @@ fn normal(path: &str, windows: bool) -> String {
     if windows {
         text = text.replace('\\', "/").to_ascii_lowercase();
         text = text.trim_start_matches("//?/").to_owned();
-        let bytes = text.as_bytes();
-        if bytes.len() >= 2
-            && bytes[0] == b'/'
-            && bytes[1].is_ascii_alphabetic()
-            && (bytes.len() == 2 || bytes[2] == b'/')
+        if let [b'/', drive, tail @ ..] = text.as_bytes()
+            && drive.is_ascii_alphabetic()
+            && matches!(tail.first(), None | Some(b'/'))
         {
-            let drive = bytes[1] as char;
-            text = format!("{drive}:{}", &text[2..]);
+            text = format!("{}:{}", *drive as char, &text[2..]);
         }
     }
-    let (prefix, rest) = if windows && text.as_bytes().get(1) == Some(&b':') {
-        text.split_at(2)
-    } else {
-        ("", text.as_str())
-    };
+    let drive = windows && text.as_bytes().get(1) == Some(&b':');
+    let (prefix, rest) = text.split_at(if drive { 2 } else { 0 });
     let mut parts: Vec<&str> = Vec::new();
     for part in rest.split('/') {
         match part {
             "" | "." => {}
-            ".." => {
-                parts.pop();
-            }
+            ".." => parts.truncate(parts.len().saturating_sub(1)),
             part => parts.push(part),
         }
     }

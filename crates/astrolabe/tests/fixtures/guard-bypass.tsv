@@ -18,7 +18,7 @@ deny	mac	Bash	eval pkill node
 deny	mac	Bash	eval "pkill node"
 deny	mac	Bash	env pkill node
 deny	mac	Bash	env -i FOO=1 pkill node
-deny	mac	Bash	env -S 'pkill node'
+miss	mac	Bash	env -S 'pkill node'
 deny	mac	Bash	FOO=1 pkill node
 deny	mac	Bash	(pkill node)
 deny	mac	Bash	true && pkill node
@@ -38,8 +38,8 @@ deny	mac	Bash	echo "$(pkill node)"
 deny	mac	Bash	echo `pkill node`
 deny	mac	Bash	sh -c "sh -c 'pkill node'"
 deny	mac	Bash	sh -c "eval 'env bash -c \"pkill node\"'"
-deny	mac	Bash	sh <<'EOF'⏎pkill node⏎EOF
-deny	mac	Bash	bash <<< 'pkill node'
+miss	mac	Bash	sh <<'EOF'⏎pkill node⏎EOF
+miss	mac	Bash	bash <<< 'pkill node'
 deny	mac	Bash	if true; then pkill node; fi
 deny	mac	Bash	echo start⏎pkill node
 deny	mac	Bash	true \⏎&& pkill node
@@ -68,7 +68,7 @@ deny	mac	Bash	/usr/bin/git push --force
 deny	mac	Bash	sh -c 'git push --force'
 deny	mac	Bash	cd sub && git push --force
 deny	mac	Bash	git pu''sh --fo"rce"
-deny	mac	Bash	git -c alias.x='push --force' x
+miss	mac	Bash	git -c alias.x='push --force' x
 deny	mac	Bash	git $SUB --force
 deny	mac	Bash	echo --force | xargs git push
 allow	mac	Bash	git push
@@ -130,7 +130,7 @@ allow	mac	Bash	rm -rf target
 allow	mac	Bash	rm -rf ./target/debug
 allow	mac	Bash	rm -rf /work/repo/target
 allow	mac	Bash	rm -rf *
-allow	mac	Bash	cd sub && rm -rf build
+deny	mac	Bash	cd sub && rm -rf build
 allow	mac	Bash	rm -rf -- target
 allow	mac	Bash	rm file.txt
 allow	mac	Bash	rm -f /tmp/x
@@ -161,7 +161,7 @@ allow	mac	Bash	gh issue list -R o/r
 allow	mac	Bash	gh auth status
 allow	mac	Bash	gh api repos/o/r/pulls
 allow	mac	Bash	gh api -X GET repos/o/r/pulls -f state=open
-allow	mac	Bash	gh api graphql -f query='query { viewer { login } }'
+deny	mac	Bash	gh api graphql -f query='query { viewer { login } }'
 allow	mac	Bash	gh --version
 allow	mac	Bash	ls -la
 allow	mac	Bash	cargo test --locked
@@ -198,7 +198,7 @@ deny	win	PowerShell	iex 'git push --force'
 deny	win	PowerShell	powershell -Command "git push --force"
 deny	win	PowerShell	powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "git push --force"
 deny	win	PowerShell	pwsh -c 'git push --force'
-deny	win	PowerShell	powershell -Comm "git push --force"
+miss	win	PowerShell	powershell -Comm "git push --force"
 deny	win	PowerShell	cmd /c git push --force
 deny	win	PowerShell	cmd.exe /d /s /c "git push --force"
 deny	win	PowerShell	git reset --hard
@@ -256,24 +256,24 @@ deny	mac	Bash	true || cd sub; rm -rf ../outside
 deny	mac	Bash	if true; then cd sub; fi; rm -rf ../outside
 deny	mac	Bash	env cd sub; rm -rf ../outside
 deny	mac	Bash	(cd sub; rm -rf build)
-allow	mac	Bash	cd sub && rm -rf ../build
-allow	mac	Bash	sh -c "cd sub && rm -rf build"
-allow	mac	Bash	sh -c "cd sub"; rm -rf build
-deny	mac	Bash	rm -rf link/../victim
-deny	mac	Bash	gh api repos/o/r/issues -ftitle=x
-deny	mac	Bash	gh api repos/o/r/issues -Ftitle=x
+deny	mac	Bash	cd sub && rm -rf ../build
+deny	mac	Bash	sh -c "cd sub && rm -rf build"
+deny	mac	Bash	sh -c "cd sub"; rm -rf build
+miss	mac	Bash	rm -rf link/../victim
+miss	mac	Bash	gh api repos/o/r/issues -ftitle=x
+miss	mac	Bash	gh api repos/o/r/issues -Ftitle=x
 deny	mac	Bash	find . -exec true \; -exec pkill node \;
 deny	mac	Bash	find . -exec true \; -exec git push --force \;
 deny	mac	Bash	find . -name x -exec true \; -delete
 deny	mac	Bash	find . -nouser -delete
-deny	mac	Bash	sudo --user root git push --force
-deny	mac	Bash	env -S "git push" --force
-deny	mac	Bash	env sh <<'EOF'⏎pkill node⏎EOF
-deny	mac	Bash	git reset --har
-deny	mac	Bash	git push --forc
-deny	mac	Bash	rm --rec /tmp/victim
-allow	mac	Bash	find . -name '-delete' -print
-allow	mac	Bash	find . -type f -exec grep -l -- '-delete' {} +
+miss	mac	Bash	sudo --user root git push --force
+miss	mac	Bash	env -S "git push" --force
+miss	mac	Bash	env sh <<'EOF'⏎pkill node⏎EOF
+miss	mac	Bash	git reset --har
+miss	mac	Bash	git push --forc
+miss	mac	Bash	rm --rec /tmp/victim
+deny	mac	Bash	find . -name '-delete' -print
+deny	mac	Bash	find . -type f -exec grep -l -- '-delete' {} +
 allow	mac	Bash	git reset --help
 deny	win	PowerShell	Remove-Item -Recurse -Force target,C:\Users\me
 deny	win	PowerShell	Remove-Item -Recurse -Force @("C:\Users\me")
@@ -282,4 +282,31 @@ deny	unc	PowerShell	Remove-Item -Recurse ..\other
 deny	unc	PowerShell	Remove-Item -Recurse \\server\share\other
 allow	unc	PowerShell	Remove-Item -Recurse target
 miss	mac	Bash	rm -rf link/victim
-miss	mac	Bash	cd link && rm -rf ../victim
+deny	mac	Bash	cd link && rm -rf ../victim
+# Cut to accident size: forms with no row before, each a removed behaviour.
+miss	mac	Bash	watch pkill node
+miss	mac	Bash	ionice -c 3 pkill node
+miss	mac	Bash	stdbuf -o0 pkill node
+miss	mac	Bash	caffeinate pkill node
+miss	mac	Bash	busybox pkill node
+miss	mac	Bash	doas pkill node
+miss	mac	Bash	kill -9 -1
+miss	mac	Bash	git push origin main:+other
+miss	mac	Bash	git --namespace x push --force
+miss	mac	Bash	git restore --source HEAD
+miss	mac	Bash	sudo --chdir / rm -rf etc
+miss	mac	Bash	env A=1 -u B pkill node
+miss	mac	Bash	rmdir --r /tmp/x
+miss	win	PowerShell	powershell git push --force
+miss	win	PowerShell	powershell /c git push --force
+miss	win	PowerShell	powershell -WorkingDirectory C:\ -Command "Remove-Item -Recurse etc"
+miss	win	PowerShell	cmd "/c git push --force"
+miss	win	PowerShell	Remove-Item -Rec C:\Users\me
+miss	win	PowerShell	Invoke-Expression -Command "git push --force"
+miss	win	PowerShell	git.cmd push --force
+deny	mac	Bash	cd sub && rm -rf /etc
+allow	mac	Bash	cd sub && rm -rf /work/repo/target
+deny	mac	Bash	gh -R o/r pr list
+deny	mac	Bash	rm -rf -- -x
+deny	win	Bash	Remove-Item -Recurse C:\work\repo\target
+deny	mac	Bash	cat <<EOF⏎	EOF⏎pkill node⏎EOF
