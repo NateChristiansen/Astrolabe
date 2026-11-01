@@ -7,8 +7,12 @@ fn fixtures_round_trip_with_extensions() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol/fixtures");
     let mut count = 0;
     for file in fs::read_dir(dir).unwrap() {
-        let input: Value =
-            serde_json::from_slice(&fs::read(file.unwrap().path()).unwrap()).unwrap();
+        let path = file.unwrap().path();
+        // Subdirectories hold ACP recordings, not protocol envelopes.
+        if !path.is_file() {
+            continue;
+        }
+        let input: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let envelope: Envelope = serde_json::from_value(input.clone()).unwrap();
         assert_eq!(serde_json::to_value(envelope).unwrap(), input);
         count += 1;
