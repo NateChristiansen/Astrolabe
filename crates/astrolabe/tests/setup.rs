@@ -690,8 +690,10 @@ fn approval_is_an_exact_match_on_the_raw_input() {
 fn raw_input_comes_from_the_request_or_the_tool_call_it_names() {
     use astrolabe::acp::requested_input;
     let mut known = std::collections::HashMap::new();
-    known.insert("c1".to_owned(), json!({"command": "from update"}));
-    let ask = |call: Value| json!({"params": {"toolCall": call}});
+    known.insert("s1/c1".to_owned(), json!({"command": "from update"}));
+    let other = json!({"params": {"sessionId": "s2", "toolCall": {"toolCallId": "c1"}}});
+    assert_eq!(requested_input(&other, &known), None);
+    let ask = |call: Value| json!({"params": {"sessionId": "s1", "toolCall": call}});
     let own = ask(json!({"toolCallId": "c1", "title": "t", "rawInput": {"command": "own"}}));
     assert_eq!(
         requested_input(&own, &known),
@@ -719,6 +721,18 @@ fn removal_refuses_a_file_changed_during_the_prompt() {
     });
     assert!(said.is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+}
+
+#[test]
+fn a_look_alike_marker_line_above_the_block_survives_removal() {
+    let box_ = Sandbox::new();
+    let path = box_.homes().codex_config;
+    let text = "# BEGIN astrolabe before=old\nmodel = \"x\"\n";
+    std::fs::write(&path, text).unwrap();
+    trust::apply_codex(&path, &plan(), &mut |_| true).unwrap();
+    let said = trust::remove_codex(&path, &mut |_| true).unwrap();
+    assert!(said.contains("Byte-identical to before: true"), "{said}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
 
 #[test]

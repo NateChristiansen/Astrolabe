@@ -142,7 +142,7 @@ pub fn find_block(text: &str) -> Option<(usize, usize, String)> {
     for line in text.split_inclusive('\n') {
         let bare = line.trim_end_matches(['\r', '\n']);
         match (&found, bare.strip_prefix(BEGIN)) {
-            (None, Some(hash)) => found = Some((at, hash.to_owned())),
+            (_, Some(hash)) => found = Some((at, hash.to_owned())),
             (Some((begin, hash)), _) if bare == END => {
                 let start = begin - usize::from(text[..*begin].ends_with('\n'));
                 let start = start - usize::from(text[..start].ends_with('\r'));

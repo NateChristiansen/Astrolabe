@@ -117,8 +117,10 @@ pub fn adapter_entry(adapters_dir: &Path, package: &str) -> Result<PathBuf> {
 pub fn requested_input(message: &Value, known: &HashMap<String, Value>) -> Option<Value> {
     let call = message.pointer("/params/toolCall")?;
     let own = call.get("rawInput").filter(|raw| !raw.is_null());
-    let known = || known.get(call.get("toolCallId")?.as_str()?);
-    own.or_else(known).cloned()
+    let id = call.get("toolCallId").and_then(Value::as_str);
+    let key = message.pointer("/params/sessionId").and_then(Value::as_str);
+    own.or_else(|| known.get(&format!("{}/{}", key?, id?)))
+        .cloned()
 }
 
 /// What the owner of the client hears. Engine state is already updated.
@@ -835,11 +837,15 @@ impl<'e> AcpClient<'e> {
             (Some("session/update"), None) => {
                 let update = message.pointer("/params/update");
                 if let Some(call) = update
-                    && let (Some(id), Some(raw)) =
-                        (call["toolCallId"].as_str(), call.get("rawInput"))
+                    && let (Some(session), Some(id), Some(raw)) = (
+                        message.pointer("/params/sessionId").and_then(Value::as_str),
+                        call["toolCallId"].as_str(),
+                        call.get("rawInput"),
+                    )
                     && !raw.is_null()
                 {
-                    self.tool_inputs.insert(id.to_owned(), raw.clone());
+                    self.tool_inputs
+                        .insert(format!("{session}/{id}"), raw.clone());
                 }
                 let kind = update.and_then(|update| update.get("sessionUpdate"));
                 let mode = if kind.is_some_and(|kind| kind == "current_mode_update") {
