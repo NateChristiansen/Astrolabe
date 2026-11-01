@@ -252,6 +252,7 @@ fn codex_launch_and_resume_send_mcp_with_the_same_layer_config() {
         .join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX))
         .into();
     spec.args = vec!["--dump-open".into()];
+    spec.forbidden_mode = None;
     let mut client = AcpClient::launch(&h.engine, &spec, &h.dir.0).unwrap();
     opened(&mut client);
     let session = client.session_id();

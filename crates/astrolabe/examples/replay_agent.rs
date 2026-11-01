@@ -139,6 +139,14 @@ fn comparable(message: &Value) -> Value {
         if let Some(cwd) = params.get_mut("cwd") {
             *cwd = Value::Null;
         }
+        // The recordings predate this capability, and only children behave differently
+        // with it. Real child wire is checked by real runs, not here.
+        if let Some(capabilities) = params
+            .get_mut("clientCapabilities")
+            .and_then(Value::as_object_mut)
+        {
+            capabilities.remove("subagents");
+        }
         if let Some(info) = params.get_mut("clientInfo").and_then(Value::as_object_mut) {
             info.remove("version");
         }

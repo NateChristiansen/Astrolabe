@@ -3,7 +3,7 @@
 //! no core at all, and each fire is its own file, so they can be counted. Files stay
 //! until step 4 settles retention.
 use crate::host::{Clock, SystemClock};
-use crate::layer::{DATA_DIR_VAR, WORKTREE_VAR};
+use crate::layer::{DATA_DIR_VAR, HookEvent, WORKTREE_VAR};
 use crate::store::default_db_path;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
@@ -118,6 +118,25 @@ pub fn comparable(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Whether this client session reported its start at or after `since_ms`. Names first, so
+/// a long-lived folder of old reports costs a directory listing and no reads.
+pub fn session_start_since(dir: &Path, session_id: &str, since_ms: i64) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let suffix = format!("-{}.json", HookEvent::SessionStart.slug());
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str().and_then(|name| name.strip_suffix(&suffix)) else {
+            return false;
+        };
+        let at_ms = name.split('-').next().and_then(|ms| ms.parse::<i64>().ok());
+        at_ms.is_some_and(|at| at >= since_ms)
+            && read_report(&entry)
+                .is_some_and(|report| report.session_id.as_deref() == Some(session_id))
+    })
+}
+
 /// Oldest first. A missing folder or an unreadable file is no report. Only regular
 /// files, read to a limit: a pipe or a link to a device here must not hold up the core.
 pub fn read_reports(dir: &Path) -> Vec<Report> {
@@ -126,31 +145,7 @@ pub fn read_reports(dir: &Path) -> Vec<Report> {
     };
     let mut reports: Vec<_> = entries
         .flatten()
-        .filter_map(|entry| {
-            let file = entry.file_name().into_string().ok()?;
-            if !file.ends_with(".json") {
-                return None;
-            }
-            if !entry.file_type().ok()?.is_file() {
-                return None;
-            }
-            let mut bytes = Vec::new();
-            let mut opened = std::fs::File::open(entry.path())
-                .ok()?
-                .take(REPORT_LIMIT + 1);
-            opened.read_to_end(&mut bytes).ok()?;
-            if bytes.len() as u64 > REPORT_LIMIT {
-                return None;
-            }
-            let body: Value = serde_json::from_slice(&bytes).ok()?;
-            Some(Report {
-                file,
-                event: body["event"].as_str()?.to_owned(),
-                session_id: body["session_id"].as_str().map(str::to_owned),
-                cwd: body["cwd"].as_str()?.to_owned(),
-                at_ms: body["at_ms"].as_i64()?,
-            })
-        })
+        .filter_map(|entry| read_report(&entry))
         .collect();
     reports.sort_by(|a, b| (a.at_ms, &a.file).cmp(&(b.at_ms, &b.file)));
     reports
@@ -247,4 +242,30 @@ fn record_denial(bytes: &[u8], reason: &str) {
     if let Ok(mut log) = log {
         let _ = log.write_all(format!("{line}\n").as_bytes());
     }
+}
+
+fn read_report(entry: &std::fs::DirEntry) -> Option<Report> {
+    let file = entry.file_name().into_string().ok()?;
+    if !file.ends_with(".json") {
+        return None;
+    }
+    if !entry.file_type().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut opened = std::fs::File::open(entry.path())
+        .ok()?
+        .take(REPORT_LIMIT + 1);
+    opened.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > REPORT_LIMIT {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(&bytes).ok()?;
+    Some(Report {
+        file,
+        event: body["event"].as_str()?.to_owned(),
+        session_id: body["session_id"].as_str().map(str::to_owned),
+        cwd: body["cwd"].as_str()?.to_owned(),
+        at_ms: body["at_ms"].as_i64()?,
+    })
 }

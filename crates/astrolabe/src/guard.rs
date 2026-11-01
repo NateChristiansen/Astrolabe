@@ -834,9 +834,7 @@ fn gh(args: &[Word]) -> Option<String> {
         "api" => return gh_api(args, denied),
         _ => {}
     }
-    let Some(verb) = positional.get(1) else {
-        return None;
-    };
+    let verb = positional.get(1)?;
     let read = [
         "view", "list", "ls", "status", "diff", "checks", "watch", "download", "checkout", "clone",
         "get", "token", "verify",

@@ -1,0 +1,177 @@
+//! One git worktree per session, under the repo's convention: `<parent>/<repo>.worktrees/
+//! <name>` on a branch of the same name. Creating one can take seconds and gigabytes on a
+//! big repo, so it runs aside and says so while it runs. A dirty one is never removed.
+use crate::error::{Error, Result};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// How often a creation in progress reports while git is quiet.
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub repo: PathBuf,
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Progress {
+    Creating { elapsed: Duration },
+    Ready(Worktree),
+    Failed(String),
+}
+
+/// A creation under way. `poll` never waits longer than a tick, so a launch can show it.
+pub struct Creating {
+    started: Instant,
+    outcome: Receiver<std::result::Result<Worktree, String>>,
+    finished: bool,
+}
+
+impl Creating {
+    /// None after the last report.
+    pub fn poll(&mut self) -> Option<Progress> {
+        if self.finished {
+            return None;
+        }
+        match self.outcome.recv_timeout(PROGRESS_EVERY) {
+            Err(RecvTimeoutError::Timeout) => Some(Progress::Creating {
+                elapsed: self.started.elapsed(),
+            }),
+            Ok(Ok(worktree)) => {
+                self.finished = true;
+                Some(Progress::Ready(worktree))
+            }
+            Ok(Err(message)) => {
+                self.finished = true;
+                Some(Progress::Failed(message))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                self.finished = true;
+                Some(Progress::Failed("worktree creation stopped".to_owned()))
+            }
+        }
+    }
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.'])
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !name.contains("..")
+        && !name.ends_with(".lock")
+        && !name.ends_with('.')
+}
+
+/// Where a session of this name goes. Fails on a name that isn't safe as a folder and a
+/// branch, or a repo with no folder name.
+pub fn path_for(repo: &Path, name: &str) -> Result<PathBuf> {
+    if !valid_name(name) {
+        return Err(invalid(format!(
+            "session name {name:?} can't name a worktree"
+        )));
+    }
+    let repo = std::path::absolute(repo)?;
+    let (Some(parent), Some(folder)) = (repo.parent(), repo.file_name()) else {
+        return Err(invalid(format!("{} has no parent", repo.display())));
+    };
+    let mut holder = folder.to_owned();
+    holder.push(".worktrees");
+    Ok(parent.join(holder).join(name))
+}
+
+/// Starts `git worktree add` aside and returns at once.
+pub fn create(repo: &Path, name: &str) -> Result<Creating> {
+    let path = path_for(repo, name)?;
+    if path.exists() {
+        return Err(invalid(format!("{} already exists", path.display())));
+    }
+    let worktree = Worktree {
+        repo: repo.to_path_buf(),
+        path,
+        branch: name.to_owned(),
+    };
+    let (sender, outcome) = mpsc::channel();
+    thread::spawn(move || {
+        let added = git(
+            &worktree.repo,
+            &[
+                "worktree".as_ref(),
+                "add".as_ref(),
+                "--quiet".as_ref(),
+                "-b".as_ref(),
+                worktree.branch.as_ref(),
+                worktree.path.as_os_str(),
+            ],
+        );
+        let _ = sender.send(added.map(|_| worktree));
+    });
+    Ok(Creating {
+        started: Instant::now(),
+        outcome,
+        finished: false,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Closed {
+    Removed {
+        /// Kept if it holds commits nothing else has, so no work goes with the folder.
+        branch_kept: bool,
+    },
+    /// Left where it is. Says what is in it, for the owner.
+    KeptDirty(String),
+}
+
+/// Removes a clean worktree. Ignored files don't count as dirty, but untracked ones do.
+/// Removal has no `--force`, so git refuses too if the check here was overtaken.
+pub fn close(worktree: &Worktree) -> Result<Closed> {
+    let status =
+        git(&worktree.path, &["status".as_ref(), "--porcelain".as_ref()]).map_err(invalid)?;
+    if !status.trim().is_empty() {
+        return Ok(Closed::KeptDirty(status));
+    }
+    git(
+        &worktree.repo,
+        &[
+            "worktree".as_ref(),
+            "remove".as_ref(),
+            worktree.path.as_os_str(),
+        ],
+    )
+    .map_err(invalid)?;
+    let deleted = git(
+        &worktree.repo,
+        &["branch".as_ref(), "-d".as_ref(), worktree.branch.as_ref()],
+    );
+    Ok(Closed::Removed {
+        branch_kept: deleted.is_err(),
+    })
+}
+
+fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("git could not start: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+    }
+}
+
+fn invalid(message: String) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message,
+    ))
+}

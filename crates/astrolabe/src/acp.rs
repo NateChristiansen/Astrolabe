@@ -7,7 +7,9 @@
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::events::error_text;
+use crate::host::Clock;
 use crate::model::{Alert, Request, SessionId};
+pub use crate::protect::{Protection, ReceiptAt};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -40,6 +42,8 @@ const ANSWER_WAIT: Duration = Duration::from_millis(500);
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
 /// How long `shutdown` gives an active turn to end after `session/cancel`.
 const CANCEL_WAIT: Duration = Duration::from_secs(2);
+/// How often an awaited receipt is looked for.
+const RECEIPT_POLL: Duration = Duration::from_millis(100);
 const STDERR_TAIL: usize = 4096;
 /// How much of stderr a `LaunchFailed` message carries. `Exited` has all of the tail.
 const STDERR_SHOWN: usize = 500;
@@ -57,6 +61,11 @@ pub struct Launch {
     pub meta: Option<Value>,
     /// Sent as `mcpServers` on the same routes. Empty unless a driver fills it.
     pub mcp_servers: Vec<Value>,
+    /// The launch fails loudly unless the session's hooks prove they run. None only for
+    /// launches with no layer, such as a driver's own fixtures.
+    pub protection: Option<Protection>,
+    /// The launch fails loudly if the adapter reports this mode at any point.
+    pub forbidden_mode: Option<String>,
 }
 
 impl Launch {
@@ -194,6 +203,16 @@ pub struct AcpClient<'e> {
     exit_seen: Option<Instant>,
     reaped: Option<ExitStatus>,
     gone: bool,
+    protection: Option<Protection>,
+    forbidden_mode: Option<String>,
+    /// Hook reports older than this belong to an earlier process.
+    started_ms: i64,
+    /// Set while a receipt is awaited. Claude: before Ready. Codex: from the first prompt.
+    receipt_deadline: Option<Instant>,
+    receipt_checked: Option<Instant>,
+    receipt_done: bool,
+    /// Held for its drop: on Windows, closing it ends what the adapter started.
+    _job: Option<crate::job::Job>,
 }
 
 impl<'e> AcpClient<'e> {
@@ -243,8 +262,18 @@ impl<'e> AcpClient<'e> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(protection) = &launch.protection {
+            protection
+                .check_guard(launch, cwd)
+                .map_err(Error::GuardNotRunning)?;
+        }
+        if launch.protection.is_some() {
+            command.env(crate::layer::WORKTREE_VAR, cwd);
+        }
         detach_from_terminal(&mut command);
+        let started_ms = crate::host::SystemClock.now_ms();
         let mut child = command.spawn()?;
+        let job = crate::job::Job::assign(&child);
         let session = match register(child.id()) {
             Ok(session) => session,
             Err(error) => {
@@ -300,6 +329,13 @@ impl<'e> AcpClient<'e> {
             exit_seen: None,
             reaped: None,
             gone: false,
+            protection: launch.protection.clone(),
+            forbidden_mode: launch.forbidden_mode.clone(),
+            started_ms,
+            receipt_deadline: None,
+            receipt_checked: None,
+            receipt_done: false,
+            _job: job,
         })
     }
 
@@ -311,6 +347,9 @@ impl<'e> AcpClient<'e> {
                 "clientCapabilities": {
                     "fs": { "readTextFile": false, "writeTextFile": false },
                     "terminal": false,
+                    // So a child speaks under an id of its own. Without it Codex hides a
+                    // child's tools altogether and Claude reports them as the parent's.
+                    "subagents": {},
                 },
                 "clientInfo": { "name": "astrolabe", "version": env!("CARGO_PKG_VERSION") },
             }),
@@ -359,11 +398,79 @@ impl<'e> AcpClient<'e> {
             self.agent_session = id.to_owned();
             self.engine.set_agent_session(self.session, id)?;
         }
+        if let Some(message) = self.forbidden_mode_in(result.pointer("/modes/currentModeId")) {
+            return self.fail_launch(message);
+        }
+        if self
+            .protection
+            .as_ref()
+            .is_some_and(|p| p.at == ReceiptAt::BeforeReady)
+        {
+            self.start_receipt_wait();
+            return Ok(());
+        }
+        self.become_ready()
+    }
+
+    fn become_ready(&mut self) -> Result<()> {
         self.replaying = false;
         self.engine.session_ready(self.session)?;
         self.stage = Stage::Ready;
         self.events.push_back(ClientEvent::Ready);
         Ok(())
+    }
+
+    fn forbidden_mode_in(&self, mode: Option<&Value>) -> Option<String> {
+        let forbidden = self.forbidden_mode.as_deref()?;
+        match mode.and_then(Value::as_str) {
+            Some(mode) if mode == forbidden => Some(format!(
+                "the session landed in mode \"{mode}\", where approvals would be answered without reaching you; no safe mode is set for this platform or it was ignored"
+            )),
+            Some(_) => None,
+            None => Some(format!(
+                "the adapter did not report a mode, so a landing in \"{forbidden}\" can't be ruled out"
+            )),
+        }
+    }
+
+    fn start_receipt_wait(&mut self) {
+        if let Some(protection) = &self.protection
+            && !self.receipt_done
+            && self.receipt_deadline.is_none()
+        {
+            self.receipt_deadline = Some(Instant::now() + protection.wait);
+        }
+    }
+
+    /// At most a few times a second, and only while a receipt is awaited.
+    fn check_receipt(&mut self) -> Result<()> {
+        let (Some(deadline), Some(protection)) = (self.receipt_deadline, &self.protection) else {
+            return Ok(());
+        };
+        if self
+            .receipt_checked
+            .is_some_and(|at| at.elapsed() < RECEIPT_POLL)
+        {
+            return Ok(());
+        }
+        self.receipt_checked = Some(Instant::now());
+        if protection.receipt_arrived(&self.agent_session, self.started_ms) {
+            self.receipt_deadline = None;
+            self.receipt_done = true;
+            if self.stage != Stage::Ready {
+                return self.become_ready();
+            }
+            return Ok(());
+        }
+        if Instant::now() < deadline {
+            return Ok(());
+        }
+        self.receipt_deadline = None;
+        let message = protection.missing_message();
+        if self.stage == Stage::Ready && self.prompt_id.is_some() {
+            let _ = self.cancel();
+        }
+        self.fail_launch(message)
     }
 
     fn fail_launch(&mut self, message: String) -> Result<()> {
@@ -399,6 +506,13 @@ impl<'e> AcpClient<'e> {
         let id = self.take_id();
         self.engine.prompt_sent(self.session, &id)?;
         self.prompt_id = Some(id.clone());
+        if self
+            .protection
+            .as_ref()
+            .is_some_and(|p| p.at == ReceiptAt::AfterFirstPrompt)
+        {
+            self.start_receipt_wait();
+        }
         let sent = self.write(
             &json!({
                 "jsonrpc": "2.0",
@@ -616,6 +730,10 @@ impl<'e> AcpClient<'e> {
         if self.gone {
             return Ok(());
         }
+        self.check_receipt()?;
+        if self.gone {
+            return Ok(());
+        }
         if self.exit_seen.is_none() && self.exit_checked.elapsed() >= EXIT_CHECK {
             self.exit_checked = Instant::now();
             if self.has_exited()? {
@@ -663,6 +781,15 @@ impl<'e> AcpClient<'e> {
                 Ok(())
             }
             (Some("session/update"), None) => {
+                let update = message.pointer("/params/update");
+                if update
+                    .and_then(|update| update.get("sessionUpdate"))
+                    .is_some_and(|kind| kind == "current_mode_update")
+                    && let Some(mode) = update.and_then(|update| update.get("currentModeId"))
+                    && let Some(failure) = self.forbidden_mode_in(Some(mode))
+                {
+                    return self.fail_launch(failure);
+                }
                 if !self.replaying {
                     self.ingest(&message)?;
                 }
@@ -803,7 +930,7 @@ impl<'e> AcpClient<'e> {
         self.live.clear();
         self.engine.process_exited(self.session)?;
         let stderr = self.stderr_text();
-        if self.stage != Stage::Ready {
+        if self.stage != Stage::Ready || self.failure.is_some() {
             let reason = self.failure.take();
             let mut message =
                 reason.unwrap_or_else(|| "process ended before the session was ready".to_owned());

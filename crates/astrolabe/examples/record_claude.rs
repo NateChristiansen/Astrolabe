@@ -142,6 +142,7 @@ fn tapped(launch: &Launch, out: &Path) -> Launch {
         env_remove: launch.env_remove.clone(),
         meta: launch.meta.clone(),
         mcp_servers: launch.mcp_servers.clone(),
+        ..Launch::default()
     }
 }
 

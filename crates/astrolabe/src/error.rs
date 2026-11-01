@@ -40,6 +40,8 @@ pub enum Error {
     AdapterNotFound(String),
     /// The layer can't be delivered as written. The launch must not go ahead.
     InvalidLayer(String),
+    /// The guard didn't answer its self-test. A launch would have run unguarded.
+    GuardNotRunning(String),
 }
 
 impl fmt::Display for Error {
@@ -82,6 +84,9 @@ impl fmt::Display for Error {
             }
             Self::AdapterNotFound(detail) => write!(f, "adapter not found: {detail}"),
             Self::InvalidLayer(detail) => write!(f, "invalid layer: {detail}"),
+            Self::GuardNotRunning(detail) => {
+                write!(f, "the command guard is not running: {detail}")
+            }
         }
     }
 }

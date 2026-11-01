@@ -20,6 +20,12 @@ pub const DATA_DIR_VAR: &str = "ASTROLABE_DATA_DIR";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     SessionStart,
+    /// Before each tool use. Match-all on both clients: the guard decides inside, since a
+    /// `Bash` matcher misses Claude's `PowerShell` tool.
+    PreCommand,
+    /// A client's settings changed in a running session. Claude only; Codex has no such
+    /// event, and a driver for a client without one drops it.
+    ConfigChange,
 }
 
 impl HookEvent {
@@ -27,6 +33,8 @@ impl HookEvent {
     pub fn slug(self) -> &'static str {
         match self {
             Self::SessionStart => "session-start",
+            Self::PreCommand => "pre-command",
+            Self::ConfigChange => "config-change",
         }
     }
 }
@@ -80,6 +88,57 @@ impl Layer {
             memory_off: true,
         }
     }
+
+    /// The standard layer with the protective part: the guard's hook and its plain rules.
+    pub fn protected(instructions: &str) -> Self {
+        let mut layer = Self::standard(instructions, &[]);
+        layer.denies = guard_rules();
+        layer.hooks.extend([
+            Hook::astrolabe(HookEvent::PreCommand),
+            Hook::astrolabe(HookEvent::ConfigChange),
+        ]);
+        layer
+    }
+}
+
+/// Prefixes the guard denies wherever they stand. What depends on where a command runs
+/// (`rm -rf`, `checkout --`, `restore`) can't be a plain rule, so only the guard has it.
+const PLAIN_DENIES: [&str; 22] = [
+    "pkill",
+    "killall",
+    "git push --force",
+    "git push -f",
+    "git push --force-with-lease",
+    "git reset --hard",
+    "gh pr create",
+    "gh pr merge",
+    "gh pr comment",
+    "gh pr review",
+    "gh pr close",
+    "gh pr edit",
+    "gh issue create",
+    "gh issue comment",
+    "gh issue close",
+    "gh issue edit",
+    "gh issue delete",
+    "gh release create",
+    "gh release delete",
+    "gh repo delete",
+    "gh gist create",
+    "gh secret set",
+];
+
+/// The layer that survives a hook failure, on both of Claude's shell tools. Wrappers
+/// get past these; the guard is what sees them.
+pub fn guard_rules() -> Vec<String> {
+    let mut rules = Vec::with_capacity(PLAIN_DENIES.len() * 2 + 2);
+    for prefix in PLAIN_DENIES {
+        rules.push(format!("Bash({prefix}:*)"));
+        rules.push(format!("PowerShell({prefix} *)"));
+    }
+    rules.push("Bash(find * -delete*)".to_owned());
+    rules.push("PowerShell(find * -delete*)".to_owned());
+    rules
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,9 +1,12 @@
 //! Launches the pinned Claude adapter. Login is whatever the client already has.
-use crate::acp::{CLAUDE_ADAPTER, Launch, adapter_entry};
+use crate::acp::{CLAUDE_ADAPTER, Launch, ReceiptAt, adapter_entry};
 use crate::error::Result;
 use crate::layer::{Delivery, Hook, HookEvent};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
+
+/// SessionStart fires during the launch, before the session is ready, even with no prompt.
+pub const RECEIPT_AT: ReceiptAt = ReceiptAt::BeforeReady;
 
 /// Claude Code reads this; the adapter passes its environment on.
 const NO_UPDATES: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
@@ -141,6 +144,8 @@ fn hooks(hooks: &[Hook]) -> Value {
     for hook in hooks {
         let name = match hook.event {
             HookEvent::SessionStart => "SessionStart",
+            HookEvent::PreCommand => "PreToolUse",
+            HookEvent::ConfigChange => "ConfigChange",
         };
         let entry = json!({ "hooks": [{ "type": "command", "command": hook.command }] });
         let list = by_event.entry(name).or_insert_with(|| json!([]));

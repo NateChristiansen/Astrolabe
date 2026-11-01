@@ -76,6 +76,9 @@ fn main() {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
+                if flag("--dump-init") {
+                    std::fs::write("init.json", message.to_string()).unwrap();
+                }
                 if flag("--hang-initialize") {
                     continue;
                 }
@@ -112,7 +115,16 @@ fn main() {
                 let meta = message["params"]["_meta"].to_string();
                 std::fs::write("meta.txt", meta).unwrap();
                 std::fs::write("turns.txt", "0").unwrap();
-                send(&result(id, json!({ "sessionId": SESSION })));
+                if flag("--receipt-new") {
+                    report_start();
+                }
+                let mut opened = json!({ "sessionId": SESSION });
+                if flag("--mode-agent") {
+                    opened["modes"] = json!({ "currentModeId": "agent" });
+                } else if flag("--mode-safe") {
+                    opened["modes"] = json!({ "currentModeId": "workspace-write" });
+                }
+                send(&result(id, opened));
             }
             "session/resume" | "session/load" => {
                 assert_eq!(message["params"]["sessionId"], SESSION);
@@ -121,10 +133,38 @@ fn main() {
                 send(&tool_call(SESSION, "old-call", "in_progress"));
                 send(&result(id, json!({})));
             }
-            "session/prompt" => agent.turn(id, &message),
+            "session/prompt" => {
+                if flag("--hang-prompt") {
+                    continue;
+                }
+                if flag("--receipt-prompt") {
+                    report_start();
+                }
+                if flag("--switch-mode") {
+                    send(
+                        &json!({ "jsonrpc": "2.0", "method": "session/update", "params": {
+                            "sessionId": SESSION,
+                            "update": { "sessionUpdate": "current_mode_update", "currentModeId": "agent" },
+                        }}),
+                    );
+                }
+                agent.turn(id, &message);
+            }
             _ => {}
         }
     }
+}
+
+/// What the client's hook would leave.
+fn report_start() {
+    let dir = astrolabe::hook::reports_dir().unwrap();
+    astrolabe::hook::write_report(
+        &dir,
+        "session-start",
+        Some(SESSION),
+        &std::env::current_dir().unwrap(),
+    )
+    .unwrap();
 }
 
 /// What each open route was sent, one line per open, for a test to read.

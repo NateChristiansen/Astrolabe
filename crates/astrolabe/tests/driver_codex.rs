@@ -49,7 +49,8 @@ fn launches_node_directly_with_absolute_pinned_entry_and_cheap_defaults() {
             "check_for_update_on_startup": false
         })
     );
-    assert_eq!(launch.env.len(), 1);
+    let mode = usize::from(codex::platform_mode().is_some());
+    assert_eq!(launch.env.len(), 1 + mode);
     assert!(launch.meta.is_none());
 }
 

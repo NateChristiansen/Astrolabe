@@ -3,12 +3,42 @@
 //! avoids adding a long home path to Windows AF_UNIX socket names. An inherited
 //! custom home remains the caller's responsibility; future isolated homes must
 //! use a short root such as `%LOCALAPPDATA%\astrolabe\c\<id>`.
-use crate::acp::{CODEX_ADAPTER, Launch, adapter_entry};
+use crate::acp::{CODEX_ADAPTER, Launch, ReceiptAt, adapter_entry};
 use crate::layer::{Delivery, Hook, HookEvent, RepoInstructions};
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
-use std::io;
+use std::collections::HashMap;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// SessionStart fires only after the first prompt, so the deadline counts from there.
+pub const RECEIPT_AT: ReceiptAt = ReceiptAt::AfterFirstPrompt;
+/// The adapter's default. Its automatic reviewer answers approvals itself, so they never
+/// reach the client, and it has let a force push through against a client that rejects.
+pub const FORBIDDEN_MODE: &str = "agent";
+const MODE_VAR: &str = "INITIAL_AGENT_MODE";
+/// Overrides the platform's value.
+const MODE_OVERRIDE: &str = "ASTROLABE_CODEX_MODE";
+
+/// Per platform. In this mode requests reach the client. Windows is left open: with its
+/// sandbox setting a PC probe saw this mode unable to write the workspace, and the
+/// decision is pending. Until then a Windows launch ends in the forbidden-mode failure
+/// unless `ASTROLABE_CODEX_MODE` names one.
+pub fn platform_mode() -> Option<&'static str> {
+    (!cfg!(windows)).then_some("workspace-write")
+}
+
+/// Each event's hooks and their client names, for events this client has.
+fn event_name(event: HookEvent) -> Option<(&'static str, &'static str)> {
+    match event {
+        HookEvent::SessionStart => Some(("SessionStart", "session_start")),
+        HookEvent::PreCommand => Some(("PreToolUse", "pre_tool_use")),
+        HookEvent::ConfigChange => None,
+    }
+}
 
 /// A session-flags entry returned by this machine's app-server `hooks/list`.
 /// Keep the key verbatim: Windows and Unix use different synthetic paths.
@@ -112,11 +142,15 @@ pub fn deliver(delivery: &Delivery, session_flag_key: &[SessionFlagKey]) -> Resu
     if !delivery.hooks.is_empty() {
         let mut hooks = hook_declarations(&delivery.hooks);
         let mut state = Map::new();
-        for (index, hook) in delivery.hooks.iter().enumerate() {
-            let label = match hook.event {
-                HookEvent::SessionStart => "session_start",
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for hook in &delivery.hooks {
+            let Some((_, label)) = event_name(hook.event) else {
+                continue;
             };
+            // The client numbers a session hook within its event.
+            let index = counts.entry(label).or_default();
             let suffix = format!(":{label}:{index}:0");
+            *index += 1;
             let matches: Vec<_> = session_flag_key
                 .iter()
                 .filter(|key| {
@@ -174,8 +208,8 @@ pub fn deliver(delivery: &Delivery, session_flag_key: &[SessionFlagKey]) -> Resu
 pub fn hook_declarations(hooks: &[Hook]) -> Map<String, Value> {
     let mut config = Map::new();
     for hook in hooks {
-        let event = match hook.event {
-            HookEvent::SessionStart => "SessionStart",
+        let Some((event, _)) = event_name(hook.event) else {
+            continue;
         };
         config
             .entry(event)
@@ -189,6 +223,67 @@ pub fn hook_declarations(hooks: &[Hook]) -> Map<String, Value> {
 
 fn invalid_config(message: &str) -> Error {
     Error::Io(io::Error::new(io::ErrorKind::InvalidInput, message))
+}
+
+const DISCOVERY_WAIT: Duration = Duration::from_secs(20);
+
+/// Asks this machine's client for the keys and hashes of these exact hooks, read-only:
+/// no thread, no model request, no config write, no trust line.
+pub fn discover_keys(client: &Path, repo: &Path, hooks: &[Hook]) -> Result<Vec<SessionFlagKey>> {
+    let declarations = toml_inline(&Value::Object(hook_declarations(hooks)));
+    let mut child = Command::new(client)
+        .args(["app-server", "-c", &format!("hooks={declarations}")])
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let (found, answer) = mpsc::channel();
+    let repo_text = repo.to_string_lossy().into_owned();
+    std::thread::spawn(move || {
+        let mut send = |message: Value| writeln!(stdin, "{message}").and_then(|()| stdin.flush());
+        let _ = send(json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"clientInfo":{"name":"astrolabe","version":env!("CARGO_PKG_VERSION")}}}));
+        for line in BufReader::new(stdout)
+            .lines()
+            .map_while(std::result::Result::ok)
+        {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if message["id"] == 1 {
+                let _ = send(json!({"jsonrpc":"2.0","method":"initialized"}));
+                let _ = send(json!({"jsonrpc":"2.0","id":2,"method":"hooks/list",
+                    "params":{"cwds":[repo_text]}}));
+            } else if message["id"] == 2 {
+                let _ = found.send(message);
+                return;
+            }
+        }
+    });
+    let response = answer.recv_timeout(DISCOVERY_WAIT);
+    let _ = child.kill();
+    let _ = child.wait();
+    let response = response.map_err(|_| invalid_config("hooks/list did not answer"))?;
+    SessionFlagKey::from_hooks_list(&response)
+}
+
+fn toml_inline(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let entries: Vec<String> = (map.iter())
+                .map(|(key, value)| format!("{}={}", json!(key), toml_inline(value)))
+                .collect();
+            format!("{{{}}}", entries.join(","))
+        }
+        Value::Array(array) => {
+            let entries: Vec<String> = array.iter().map(toml_inline).collect();
+            format!("[{}]", entries.join(","))
+        }
+        other => other.to_string(),
+    }
 }
 
 /// Build a launch without starting a process or modifying user configuration.
@@ -219,6 +314,12 @@ pub fn launch(
     launch
         .env
         .push(("CODEX_CONFIG".into(), config.to_string().into()));
+    let mode = std::env::var(MODE_OVERRIDE).ok();
+    let mode = mode.as_deref().or(platform_mode());
+    if let Some(mode) = mode {
+        launch.env.push((MODE_VAR.into(), mode.into()));
+    }
+    launch.forbidden_mode = Some(FORBIDDEN_MODE.to_owned());
     if let Some(path) = client_path {
         launch.env.push(("CODEX_PATH".into(), path.into()));
     }
