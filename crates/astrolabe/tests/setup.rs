@@ -35,6 +35,12 @@ fn real_homes() -> &'static Vec<(&'static str, std::ffi::OsString)> {
             for name in ["HOME", "USERPROFILE", "XDG_CONFIG_HOME"] {
                 std::env::set_var(name, &home);
             }
+            let temp = std::env::temp_dir();
+            let ceiling = [temp.clone(), temp.canonicalize().unwrap_or(temp)];
+            std::env::set_var(
+                "GIT_CEILING_DIRECTORIES",
+                std::env::join_paths(ceiling).unwrap(),
+            );
             std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
             std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
             std::env::set_var("GIT_CONFIG_COUNT", "1");
