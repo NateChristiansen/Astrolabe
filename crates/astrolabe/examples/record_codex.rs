@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     write_record(
         &mut log,
         json!({"kind": "after", "config": after, "unchanged": unchanged,
-        "result": result.as_ref().map(|_| "ok").map_err(ToString::to_string)}),
+        "result": result.as_ref().err().map_or("ok".to_owned(), ToString::to_string)}),
     )?;
     if !unchanged {
         return Err("user configuration changed; stop, inspect the private recording".into());
