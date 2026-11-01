@@ -152,7 +152,7 @@ pub fn deliver(delivery: &Delivery, instructions_dir: &Path) -> ClaudeDelivery {
     }
 }
 
-fn hooks(hooks: &[Hook]) -> Value {
+pub(crate) fn hooks(hooks: &[Hook]) -> Value {
     let mut by_event: Map<String, Value> = Map::new();
     for hook in hooks {
         let name = match hook.event {

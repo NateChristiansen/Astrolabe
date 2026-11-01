@@ -227,12 +227,18 @@ fn invalid_config(message: &str) -> Error {
 }
 
 const DISCOVERY_WAIT: Duration = Duration::from_secs(20);
+/// Overrides `DISCOVERY_WAIT`, in milliseconds. Parallel launches have outrun it.
+pub const DISCOVERY_WAIT_VAR: &str = "ASTROLABE_HOOKS_LIST_WAIT_MS";
+
+pub fn list_in_home(client: &Path, repo: &Path, home: &Path) -> Result<Value> {
+    hooks_list(client, repo, &Value::Null, Some(home))
+}
 
 /// Asks this machine's client for the keys and hashes of these exact hooks, read-only:
 /// no thread, no model request, no config write, no trust line.
 pub fn discover_keys(client: &Path, repo: &Path, hooks: &[Hook]) -> Result<Vec<SessionFlagKey>> {
     let hooks = Value::Object(hook_declarations(hooks));
-    SessionFlagKey::from_hooks_list(&hooks_list(client, repo, &hooks)?)
+    SessionFlagKey::from_hooks_list(&hooks_list(client, repo, &hooks, None)?)
 }
 
 /// The client's own view of a session's hooks, with no model turn. A session that would run
@@ -247,7 +253,7 @@ fn check_hooks(
     let client = client
         .or(inherited.as_deref())
         .ok_or("no client path to ask, so its hooks can't be checked")?;
-    let response = hooks_list(client, repo, hooks).map_err(|error| error.to_string())?;
+    let response = hooks_list(client, repo, hooks, None).map_err(|error| error.to_string())?;
     match hooks_problem(&response) {
         Some(problem) => Err(problem),
         None => Ok(()),
@@ -289,8 +295,11 @@ pub fn hooks_problem(response: &Value) -> Option<String> {
 }
 
 /// Read-only: no thread, no model request, no config write, no trust line.
-fn hooks_list(client: &Path, repo: &Path, hooks: &Value) -> Result<Value> {
+fn hooks_list(client: &Path, repo: &Path, hooks: &Value, home: Option<&Path>) -> Result<Value> {
     let mut command = Command::new(client);
+    if let Some(home) = home {
+        command.env("CODEX_HOME", home);
+    }
     command.arg("app-server");
     if !hooks.is_null() {
         command.args(["-c", &format!("hooks={}", toml_inline(hooks))]);
@@ -327,10 +336,17 @@ fn hooks_list(client: &Path, repo: &Path, hooks: &Value) -> Result<Value> {
             }
         }
     });
-    let response = answer.recv_timeout(DISCOVERY_WAIT);
+    let wait = std::env::var(DISCOVERY_WAIT_VAR).ok();
+    let wait = wait.and_then(|ms| ms.parse().ok());
+    let wait = wait.map_or(DISCOVERY_WAIT, Duration::from_millis);
+    let response = answer.recv_timeout(wait);
     let _ = child.kill();
     let _ = child.wait();
-    response.map_err(|_| invalid_config("hooks/list did not answer"))
+    let seconds = wait.as_secs();
+    let late = format!(
+        "hooks/list did not answer within {seconds} s. This says nothing about trust: retry, or raise {DISCOVERY_WAIT_VAR}."
+    );
+    response.map_err(|_| Error::Setup(late))
 }
 
 fn toml_inline(value: &Value) -> String {

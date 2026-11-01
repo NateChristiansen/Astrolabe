@@ -1,0 +1,22 @@
+[features]
+hooks = true
+memories = false
+
+[memories]
+generate_memories = false
+use_memories = false
+
+[mcp_servers.astrolabe]
+command = "astrolabe"
+args = ["mcp"]
+default_tools_approval_mode = "approve"
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "astrolabe hook session-start"
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "astrolabe hook pre-command"

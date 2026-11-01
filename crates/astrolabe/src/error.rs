@@ -44,6 +44,8 @@ pub enum Error {
     GuardNotRunning(String),
     /// A session here would misbehave without saying so. Nothing was started.
     UnsafeSessionFolder(String),
+    /// Setup can't go on, for the reason given.
+    Setup(String),
 }
 
 impl fmt::Display for Error {
@@ -87,6 +89,7 @@ impl fmt::Display for Error {
             Self::AdapterNotFound(detail) => write!(f, "adapter not found: {detail}"),
             Self::InvalidLayer(detail) => write!(f, "invalid layer: {detail}"),
             Self::UnsafeSessionFolder(detail) => write!(f, "unsafe session folder: {detail}"),
+            Self::Setup(detail) => write!(f, "{detail}"),
             Self::GuardNotRunning(detail) => {
                 write!(f, "the command guard is not running: {detail}")
             }

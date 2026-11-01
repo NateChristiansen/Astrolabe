@@ -1,6 +1,9 @@
+use astrolabe::launch::Machine;
+use astrolabe::{Result, doctor, init};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|doctor|init|serve [--db <path>]|hook <event>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|hook <event>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -11,7 +14,11 @@ fn main() {
         .as_slice()
     {
         ["--version"] => println!("astrolabe {}", env!("CARGO_PKG_VERSION")),
-        ["doctor" | "init"] => println!("not implemented (phase 1a)"),
+        [verb @ ("init" | "doctor" | "repo"), rest @ ..] => {
+            if let Err(error) = setup(verb, rest) {
+                fail(&error.to_string());
+            }
+        }
         ["serve"] => match astrolabe::default_db_path() {
             Some(db) => serve(&db),
             None => fail("no app-data directory found; pass --db <path>"),
@@ -25,11 +32,52 @@ fn main() {
             }
         }
         [] | ["--help" | "-h"] => println!("{USAGE}"),
-        _ => {
-            eprintln!("{USAGE}");
-            std::process::exit(2);
-        }
+        _ => usage(),
     }
+}
+
+fn usage() -> ! {
+    eprintln!("{USAGE}");
+    std::process::exit(2);
+}
+
+/// Only a typed yes. Closed input is a no.
+fn ask(text: &str) -> bool {
+    println!("{text}\nType yes to go ahead, anything else to skip:");
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let read = std::io::stdin().lock().read_line(&mut answer);
+    read.is_ok() && answer.trim() == "yes"
+}
+
+fn setup(verb: &str, rest: &[&str]) -> Result<()> {
+    let machine = Machine::from_env()?;
+    let registry = &machine.registry;
+    let lines = match (verb, rest) {
+        ("init", []) => init::create(registry, Path::new("astrolabe-agent"))?,
+        ("init", ["--clone", url]) => init::clone(registry, url, None)?,
+        ("init", ["--clone", url, path]) => init::clone(registry, url, Some(path))?,
+        ("init", [path]) => init::create(registry, Path::new(path))?,
+        ("doctor", ["inspect"]) => doctor::inspect(&machine)?,
+        ("doctor", ["apply"]) => doctor::apply(&machine, &mut ask)?,
+        ("doctor", ["remove"]) => doctor::remove(&machine, &mut ask)?,
+        ("doctor", ["verify", repo @ ..]) if repo.len() < 2 => {
+            let say = &mut |line: String| println!("{line}");
+            if !doctor::verify(&machine, repo.first().copied(), say)? {
+                std::process::exit(1);
+            }
+            Vec::new()
+        }
+        ("repo", ["add", name, checkout]) => {
+            registry.add(name, Path::new(checkout))?;
+            vec![format!("{name} added")]
+        }
+        _ => usage(),
+    };
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 fn serve(db: &Path) {

@@ -1,0 +1,336 @@
+//! Inspect writes nothing, apply and remove go through `trust`, verify proves one working
+//! session per client from evidence on disk, never from what the model says.
+use crate::acp::{AcpClient, CLAUDE_ADAPTER, CODEX_ADAPTER, ClientEvent, adapter_entry};
+use crate::driver::codex;
+use crate::error::{Error, Result};
+use crate::hook::comparable;
+use crate::launch::{self, DEFAULT_DIALS, Machine, Prepared, Provider, Request, Say};
+use crate::model::Alert;
+use crate::registry::AGENT;
+use crate::trust::{self, Ask, CodexPlan};
+use crate::{Engine, OsProcessProbe, SystemClock};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
+
+pub const PIN_CODEX: &str = "0.166.0";
+pub const PIN_CLAUDE: &str = "2.1.314";
+const VERIFY_LIMIT: Duration = Duration::from_secs(300);
+
+fn stdout(command: &mut Command) -> String {
+    let output = command.stdin(Stdio::null()).stderr(Stdio::null()).output();
+    output.map_or(String::new(), |o| {
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    })
+}
+
+pub fn refuse(path: &Path) -> Result<()> {
+    let refused = crate::protect::refuse_unsafe_windows_folder(path);
+    refused.map_err(Error::UnsafeSessionFolder)
+}
+
+/// On every launch: a real command in this folder must see this folder, and its write must
+/// land. Host side only, as a model turn per launch is too dear; a session's proof is verify.
+pub fn folder_check(cwd: &Path) -> std::result::Result<(), String> {
+    crate::protect::refuse_unsafe_windows_folder(cwd)?;
+    let name = format!(".astrolabe-folder-{}", std::process::id());
+    let script = format!("require('fs').writeFileSync('{name}',process.cwd())");
+    stdout(Command::new("node").args(["-e", &script]).current_dir(cwd));
+    let wrote = std::fs::read_to_string(cwd.join(&name));
+    let _ = std::fs::remove_file(cwd.join(&name));
+    let shown = cwd.display();
+    let wrote = wrote.map_err(|_| format!("a command's write did not land in {shown}"))?;
+    if comparable(Path::new(&wrote)) != comparable(cwd) {
+        return Err(format!("a command started in {shown} ran in {wrote}"));
+    }
+    Ok(())
+}
+
+fn is_native(path: &Path) -> bool {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let script = path.extension().is_some_and(|e| e == "cmd" || e == "ps1");
+    !bytes.is_empty() && !bytes.starts_with(b"#!") && !script
+}
+
+/// Its variable if set, else the first on `PATH`. A shim isn't followed into its package:
+/// inspect reports it, and the owner sets the variable to the native binary.
+pub fn find_client(provider: Provider) -> Option<PathBuf> {
+    let (var, name) = match provider {
+        Provider::Codex => ("CODEX_PATH", "codex"),
+        Provider::Claude => ("CLAUDE_CODE_EXECUTABLE", "claude"),
+    };
+    if let Some(path) = std::env::var_os(var) {
+        return Some(PathBuf::from(path));
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &[".exe", ".cmd"]
+    } else {
+        &[""]
+    };
+    std::env::split_paths(&std::env::var_os("PATH")?).find_map(|dir| {
+        let mut files = names.iter().map(|s| dir.join(format!("{name}{s}")));
+        files.find(|file| file.is_file())
+    })
+}
+
+/// One can host a TUI at another version, its children outliving quit. Only reported.
+pub fn daemon_lines(processes: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in processes.lines().map(str::trim) {
+        let daemon = line.contains("app-server daemon") || line.contains("app-server-daemon");
+        if daemon && !line.contains("code-mode-host") {
+            let rest = line.split("releases").nth(1).unwrap_or("");
+            let rest = rest.trim_start_matches(['/', '\\']);
+            let version = rest.split('-').next().unwrap_or("");
+            lines.push(format!("codex daemon {version:?}, pin {PIN_CODEX}: {line}"));
+        }
+    }
+    lines
+}
+
+fn processes() -> String {
+    let list = "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }";
+    match cfg!(windows) {
+        true => stdout(Command::new("powershell").args(["-NoProfile", "-Command", list])),
+        false => stdout(Command::new("ps").args(["-axww", "-o", "command="])),
+    }
+}
+
+fn client_line(provider: Provider, machine: &Machine) -> String {
+    let (pin, package) = match provider {
+        Provider::Codex => (PIN_CODEX, CODEX_ADAPTER),
+        Provider::Claude => (PIN_CLAUDE, CLAUDE_ADAPTER),
+    };
+    let slug = provider.slug();
+    let adapter = adapter_entry(&machine.adapters, package);
+    let adapter = adapter
+        .err()
+        .map_or(String::new(), |e| format!(", PROBLEM {e}"));
+    let Some(path) = find_client(provider) else {
+        return format!("{slug}: PROBLEM no client{adapter}");
+    };
+    // Codex unpacks helpers under a home that exists, on any run. This one doesn't.
+    let mut ask = Command::new(&path);
+    let version = stdout(ask.arg("--version").env("CODEX_HOME", "no-such-home"));
+    let pinned = if version.contains(pin) {
+        ""
+    } else {
+        ", PROBLEM mismatch"
+    };
+    let shim = if is_native(&path) {
+        ""
+    } else {
+        ", PROBLEM not native; set its path variable"
+    };
+    let (path, version) = (path.display(), version.trim());
+    format!("{slug}: {path}, {version}, pin {pin}{pinned}{shim}{adapter}")
+}
+
+/// Writes nothing to a home. It can't say a hash is current: verify and launches check that.
+pub fn inspect(machine: &Machine) -> Result<Vec<String>> {
+    let mut lines: Vec<String> = Vec::new();
+    for provider in Provider::ALL {
+        let on = machine.registry.provider_on(provider.slug())?;
+        lines.push(format!("{} on: {on}", client_line(provider, machine)));
+    }
+    let exe = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let found = std::env::split_paths(&path).any(|dir| dir.join(&exe).is_file());
+    lines.push(format!(
+        "astrolabe on PATH, which plain clients' hooks need: {found}"
+    ));
+    lines.extend(daemon_lines(&processes()));
+    let (config, claude) = (&machine.homes.codex_config, &machine.homes.claude_json);
+    lines.push(format!(
+        "{}: {}",
+        config.display(),
+        trust::file_hash(config)
+    ));
+    let Some(agent) = machine.registry.agent_repo()? else {
+        lines.push("agent repo: none here; run astrolabe init".to_owned());
+        return Ok(lines);
+    };
+    let native = trust::native(&agent);
+    let text = std::fs::read_to_string(config).unwrap_or_default();
+    let (projects, hooks) = trust::scan(&text);
+    let (project, key) = trust::keys(&native, cfg!(windows));
+    let codex = projects.contains(&project);
+    let hooks = hooks.iter().filter(|(k, _)| k.starts_with(&native)).count();
+    let dialog = trust::claude_state(claude, &key);
+    let state = crate::init::layer_state(&agent);
+    lines.push(format!("agent repo {native}, layer real: {state:?}"));
+    lines.push(format!(
+        "  codex project line: {codex}, {hooks} hook lines, hashes unchecked"
+    ));
+    lines.push(format!("  claude entry: {dialog:?}"));
+    Ok(lines)
+}
+
+/// The two hooks, from `hooks/list` on a home holding only the project line.
+pub fn plan_from_list(response: &Value, project: &str) -> Result<CodexPlan> {
+    let mut hooks = Vec::new();
+    let groups = response["result"]["data"].as_array().into_iter().flatten();
+    for hook in groups.filter_map(|g| g["hooks"].as_array()).flatten() {
+        let key = hook["key"].as_str().unwrap_or("");
+        let command = hook["command"].as_str().unwrap_or("");
+        if command.starts_with("astrolabe hook ") && !key.contains("<session-flags>") {
+            let hash = hook["currentHash"].as_str().unwrap_or("");
+            hooks.push((key.to_owned(), hash.to_owned()));
+        }
+    }
+    if hooks.len() != 2 {
+        let read = hooks.len();
+        let text = format!(
+            "read {read} of the repo's 2 hooks on a temporary home: the project line didn't take, or the repo's layer isn't real"
+        );
+        return Err(Error::Setup(text));
+    }
+    let project = project.to_owned();
+    Ok(CodexPlan { project, hooks })
+}
+
+/// Keys and hashes from the client, on a temporary home beside the repo (one under the temp
+/// folder warns on Windows). Before anyone is asked, proves the lines work there.
+pub fn plan_codex(client: &Path, repo: &Path) -> Result<CodexPlan> {
+    let native = trust::native(repo);
+    let parent = Path::new(&native).parent().unwrap_or(Path::new("."));
+    let home = parent.join(format!(".astrolabe-doctor-{}", std::process::id()));
+    std::fs::create_dir(&home)?;
+    let config = home.join("config.toml");
+    let outcome = (|| {
+        let (project, _) = trust::keys(&native, cfg!(windows));
+        let hooks = Vec::new();
+        let project2 = project.clone();
+        let bare = CodexPlan {
+            project: project2,
+            hooks,
+        };
+        std::fs::write(&config, bare.lines().join("\n") + "\n")?;
+        let plan = plan_from_list(&codex::list_in_home(client, repo, &home)?, &project)?;
+        std::fs::write(&config, plan.lines().join("\n") + "\n")?;
+        match codex::hooks_problem(&codex::list_in_home(client, repo, &home)?) {
+            Some(why) => Err(Error::Setup(format!("on a temporary home: {why}"))),
+            None => Ok(plan),
+        }
+    })();
+    std::fs::remove_dir_all(&home)?;
+    outcome
+}
+
+/// `ask` is the only way in, and shows the write. Claude's trust is the owner's dialog.
+pub fn apply(machine: &Machine, ask: Ask) -> Result<Vec<String>> {
+    let repo = machine.registry.checkout(AGENT)?;
+    let client = find_client(Provider::Codex).ok_or(Error::Setup("no codex".to_owned()))?;
+    let plan = plan_codex(&client, &repo)?;
+    let written = trust::apply_codex(&machine.homes.codex_config, &plan, ask)?;
+    let dialog = format!("claude: run claude in {} and say yes", repo.display());
+    Ok(vec![written, dialog])
+}
+
+/// Claude's entry stays: this never writes that file, and running sessions rewrite it.
+pub fn remove(machine: &Machine, ask: Ask) -> Result<Vec<String>> {
+    let repo = trust::native(&machine.registry.checkout(AGENT)?);
+    let (_, key) = trust::keys(&repo, cfg!(windows));
+    let removed = trust::remove_codex(&machine.homes.codex_config, ask)?;
+    let state = trust::claude_state(&machine.homes.claude_json, &key);
+    let left = format!("claude: entry for {key} is {state:?}, and is not removed here");
+    Ok(vec![removed, left])
+}
+
+/// `None` is proof: a write of the real cwd landed, and a write through `sh` did.
+pub fn judge(direct: Option<&str>, shell_landed: bool, cwd: &Path) -> Option<String> {
+    let same = direct.is_some_and(|found| comparable(Path::new(found)) == comparable(cwd));
+    let shown = cwd.display();
+    let text = format!("wanted {shown}, cwd written: {direct:?}, write through sh: {shell_landed}");
+    (!same || !shell_landed).then_some(text)
+}
+
+/// One session to the end of its first turn. Allows only the commands bearing the token.
+fn run_session(engine: &Engine, ready: &Prepared, token: &str, say: Say) -> Result<()> {
+    let text = format!(
+        "Use your shell tool to run these two commands, each as its own call, unchanged, with no retries or workarounds, then reply DONE whatever happens.\n1. node -e \"require('fs').writeFileSync('{token}-direct',process.cwd())\"\n2. sh -c 'pwd > {token}-sh'"
+    );
+    let mut session = AcpClient::launch(engine, &ready.launch, &ready.cwd)?;
+    let deadline = Instant::now() + VERIFY_LIMIT;
+    while Instant::now() < deadline {
+        match session.next_event(Duration::from_millis(200))? {
+            Some(ClientEvent::Ready) => session.prompt(&text)?,
+            Some(ClientEvent::Alert(Alert::NeedsYou(request))) => {
+                let ours = request.title.contains(token);
+                let kind = if ours { "allow_once" } else { "reject_once" };
+                say(format!("  asked: {} -> {kind}", request.title));
+                let option = request.options.iter().find(|o| o.kind == kind);
+                let none = || Error::Setup(format!("{kind} was not offered"));
+                session.answer(&request.id, &option.ok_or_else(none)?.option_id)?;
+            }
+            Some(ClientEvent::TurnEnded { .. }) => return session.shutdown(),
+            Some(ClientEvent::LaunchFailed { message } | ClientEvent::PromptError { message }) => {
+                return Err(Error::Setup(message));
+            }
+            Some(ClientEvent::Exited { code, stderr }) => {
+                return Err(Error::Setup(format!("exited {code:?}: {stderr}")));
+            }
+            _ => {}
+        }
+    }
+    Err(Error::Setup("no end of turn in time".to_owned()))
+}
+
+fn verify_one(
+    machine: &Machine,
+    provider: Provider,
+    repo: &str,
+    say: Say,
+) -> Result<Option<String>> {
+    let client = &find_client(provider).ok_or(Error::Setup("no client".to_owned()))?;
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
+    let stamp = now.map_or(0, |time| time.as_millis());
+    let token = format!("astrolabe-verify-{stamp}");
+    let session = &format!("verify-{}-{stamp}", provider.slug());
+    let request = Request {
+        repo,
+        provider,
+        session,
+        dials: DEFAULT_DIALS,
+        client,
+    };
+    let mut ready = launch::prepare(machine, &request, say)?;
+    let env = &mut ready.launch.env;
+    env.push(("ANTHROPIC_MODEL".into(), "haiku".into()));
+    let engine = Engine::open(&machine.db(), SystemClock, OsProcessProbe)?;
+    let ran = run_session(&engine, &ready, &token, say);
+    let direct = ready.cwd.join(format!("{token}-direct"));
+    let shell = ready.cwd.join(format!("{token}-sh"));
+    let found = std::fs::read_to_string(&direct).ok();
+    let problem = judge(found.as_deref(), shell.is_file(), &ready.cwd);
+    let _ = std::fs::remove_file(&direct);
+    let _ = std::fs::remove_file(&shell);
+    if let Some(made) = &ready.worktree {
+        say(format!("  worktree {:?}", crate::worktree::close(made)?));
+    }
+    Ok(match ran {
+        Err(why) => Some(format!("{why}. On disk: {problem:?}")),
+        Ok(()) => problem,
+    })
+}
+
+pub fn verify(machine: &Machine, repo: Option<&str>, say: Say) -> Result<bool> {
+    let mut passed = true;
+    for provider in Provider::ALL {
+        let slug = provider.slug();
+        if !machine.registry.provider_on(slug)? {
+            say(format!("{slug}: off, not verified"));
+            continue;
+        }
+        let repo = repo.unwrap_or(AGENT);
+        let outcome = verify_one(machine, provider, repo, say);
+        let problem = outcome.unwrap_or_else(|error| Some(error.to_string()));
+        passed &= problem.is_none();
+        say(match problem {
+            None => format!("{slug}: PASS real cwd, both writes landed, receipt held"),
+            Some(problem) => format!("{slug}: FAIL {problem}"),
+        });
+    }
+    Ok(passed)
+}

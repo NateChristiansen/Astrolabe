@@ -1,5 +1,6 @@
 //! The Astrolabe core: live state for agent sessions, kept in one local database.
 pub mod acp;
+pub mod doctor;
 pub mod driver;
 mod engine;
 mod error;
@@ -7,14 +8,18 @@ pub mod events;
 pub mod guard;
 pub mod hook;
 mod host;
+pub mod init;
 mod job;
+pub mod launch;
 pub mod layer;
 pub mod mcp;
 pub mod model;
 pub mod protect;
+pub mod registry;
 mod serve;
 mod stall;
 mod store;
+pub mod trust;
 pub mod worktree;
 
 pub use engine::Engine;

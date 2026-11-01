@@ -155,10 +155,11 @@ pub fn close(worktree: &Worktree) -> Result<Closed> {
     })
 }
 
-fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> std::result::Result<String, String> {
+pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> std::result::Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("git could not start: {error}"))?;
