@@ -233,7 +233,11 @@ pub fn plan_codex(client: &Path, repo: &Path) -> Result<CodexPlan> {
             None => Ok(plan),
         }
     })();
-    std::fs::remove_dir_all(&home)?;
+    // Windows can hold the folder for seconds after the client exits; a leftover is no failure.
+    let _ = (0..100).find(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::fs::remove_dir_all(&home).is_ok()
+    });
     outcome
 }
 
