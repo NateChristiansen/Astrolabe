@@ -409,19 +409,21 @@ fn verify_one(machine: &Machine, provider: Provider, repo: &str, say: Say) -> Fa
     let problem = judge(found.as_deref(), printed.as_deref(), &ready.cwd);
     let _ = std::fs::remove_file(&direct);
     let _ = std::fs::remove_file(&shell);
-    if let Some(made) = &ready.worktree {
-        say(format!("  worktree {:?}", crate::worktree::close(made)?));
-    }
-    Ok(match ran {
-        Err(why) => Some(format!("{why}. On disk: {problem:?}")),
+    // Before the worktree goes: the delivery record names its canonical path.
+    let outcome = match ran {
+        Err(why) => Ok(Some(format!("{why}. On disk: {problem:?}"))),
         Ok(reply) if problem.is_none() => delivery_problem(
             machine,
             provider == Provider::Codex,
             (&ready.cwd, since),
             &reply,
-        )?,
-        Ok(_) => problem,
-    })
+        ),
+        Ok(_) => Ok(problem),
+    };
+    if let Some(made) = &ready.worktree {
+        say(format!("  worktree {:?}", crate::worktree::close(made)?));
+    }
+    outcome
 }
 
 pub fn verify(machine: &Machine, repo: Option<&str>, say: Say) -> Result<bool> {
