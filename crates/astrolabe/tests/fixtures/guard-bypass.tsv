@@ -310,5 +310,5 @@ deny	mac	Bash	gh -R o/r pr list
 deny	mac	Bash	rm -rf -- -x
 deny	win	Bash	Remove-Item -Recurse C:\work\repo\target
 deny	mac	Bash	cat <<EOF⏎	EOF⏎pkill node⏎EOF
-allow	mac	Bash	command -V pkill
+deny	mac	Bash	command -V pkill
 miss	mac	Bash	/usr/bin/time -o timing.txt git push --force
