@@ -31,6 +31,13 @@ struct Run {
 }
 
 #[derive(Clone, Copy, PartialEq)]
+enum Trust {
+    Good,
+    Missing,
+    StaleGuard,
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum Answer {
     Allow,
     Reject,
@@ -132,7 +139,7 @@ fn remote_head(bare: &Path) -> String {
 }
 
 /// As production composes it: a product repo, with nothing from the repo counted on.
-fn spec(run: &Run, layer: &Layer, cwd: &Path, trust: bool) -> Launch {
+fn spec(run: &Run, layer: &Layer, cwd: &Path, trust: Trust) -> Launch {
     let target = Target {
         kind: TargetKind::Product,
         supplies: RepoSupplies {
@@ -152,9 +159,17 @@ fn spec(run: &Run, layer: &Layer, cwd: &Path, trust: bool) -> Launch {
         let keys = codex::discover_keys(&run.client, cwd, &hooks).unwrap();
         println!("hooks/list: {keys:?}");
         let mut delivered = codex::deliver(&delivery, &keys).unwrap();
-        if !trust {
-            let hooks = delivered.config["hooks"].as_object_mut().unwrap();
-            hooks.remove("state");
+        let hooks = delivered.config["hooks"].as_object_mut().unwrap();
+        match trust {
+            Trust::Good => {}
+            Trust::Missing => {
+                hooks.remove("state");
+            }
+            Trust::StaleGuard => {
+                let state = hooks["state"].as_object_mut().unwrap();
+                let key = "/<session-flags>/config.toml:pre_tool_use:0:0";
+                state[key] = json!({ "trusted_hash": format!("sha256:{}", "1".repeat(64)) });
+            }
         }
         let launch = delivered.launch(&run.adapters, Some(&run.client)).unwrap();
         (launch, codex::RECEIPT_AT)
@@ -267,7 +282,7 @@ fn deny(run: &Run) {
     std::fs::create_dir_all(outside.join("keep")).unwrap();
     std::fs::create_dir_all(made.path.join("inside/build")).unwrap();
     let layer = Layer::protected("Layer.");
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
 
     // A session each: a model that saw one denial may not try the next.
@@ -335,7 +350,7 @@ fn control(run: &Run) {
     let (bare, made) = fixture(run);
     let before = remote_head(&bare);
     let layer = Layer::standard("Layer.", &[]);
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
     let mut session = start(&engine, &launch, &made.path);
     let push = format!("{EXACT}sh -c 'git push --force origin HEAD:main'");
@@ -359,7 +374,7 @@ fn rule(run: &Run) {
     let layer = Layer::standard("Layer.", &[]);
     let mut layer = layer;
     layer.denies = guard_rules();
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
     let mut session = start(&engine, &launch, &made.path);
     let push = format!("{EXACT}git push --force origin HEAD:main");
@@ -382,8 +397,20 @@ fn missing_hook(run: &Run) {
     let mut layer = Layer::protected("Layer.");
     if run.provider == "claude" {
         layer.hooks.clear();
+    } else {
+        // Refused before any prompt: no trust at all, then only the guard's trust stale.
+        for trust in [Trust::Missing, Trust::StaleGuard] {
+            let launch = spec(run, &layer, &repo, trust);
+            let engine = engine(run);
+            let started = Instant::now();
+            let error = AcpClient::launch(&engine, &launch, &repo).err();
+            println!("refused in {:?}: {error:?}", started.elapsed());
+            assert!(matches!(error, Some(astrolabe::Error::GuardNotRunning(_))));
+        }
     }
-    let mut launch = spec(run, &layer, &repo, false);
+    let mut launch = spec(run, &layer, &repo, Trust::Missing);
+    // The second check, alone: what a receipt still catches if the listing is wrong.
+    launch.hook_check = None;
     launch.protection.as_mut().unwrap().wait = Duration::from_secs(10);
     let engine = engine(run);
     let mut session = AcpClient::launch(&engine, &launch, &repo).unwrap();
@@ -407,7 +434,7 @@ fn missing_hook(run: &Run) {
 fn approval(run: &Run) {
     let (_bare, made) = fixture(run);
     let layer = Layer::protected("Layer.");
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
     for (answer, name) in [(Answer::Reject, "rejected"), (Answer::Allow, "allowed")] {
         let marker = std::env::temp_dir()
@@ -445,7 +472,7 @@ fn child(run: &Run) {
     let (bare, made) = fixture(run);
     let before = remote_head(&bare);
     let layer = Layer::protected("Layer.");
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
     let mut session = start(&engine, &launch, &made.path);
     let own = session.agent_session_id().to_owned();
@@ -520,7 +547,7 @@ fn trace(run: &Run) {
         program: wrapper,
     };
     let layer = Layer::protected("Layer.");
-    let launch = spec(&wrapped, &layer, &repo, true);
+    let launch = spec(&wrapped, &layer, &repo, Trust::Good);
     let engine = engine(run);
     let mut session = start(&engine, &launch, &repo);
     let prompt = "Do these in order, once each. 1. Create the file patched.txt holding the word hi \
@@ -551,7 +578,7 @@ fn reload(run: &Run) {
     let (bare, made) = fixture(run);
     let before = remote_head(&bare);
     let layer = Layer::protected("Layer.");
-    let launch = spec(run, &layer, &made.path, true);
+    let launch = spec(run, &layer, &made.path, Trust::Good);
     let engine = engine(run);
     let mut session = start(&engine, &launch, &made.path);
     turn(&mut session, "Reply OK", Answer::Allow);

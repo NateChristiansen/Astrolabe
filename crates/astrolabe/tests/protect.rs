@@ -170,14 +170,16 @@ fn a_guard_that_cannot_start_stops_the_launch() {
 }
 
 #[test]
-fn landing_in_the_forbidden_mode_fails_the_launch() {
+fn landing_in_any_other_mode_fails_the_launch() {
     for (flags, why) in [
         (&["--mode-agent"][..], "landed in mode"),
+        (&["--mode-full"][..], "agent-full-access"),
+        (&["--mode-config-agent"][..], "landed in mode"),
         (&[][..], "did not report a mode"),
     ] {
         let h = Harness::new();
         let mut launch = spec(&h, flags, ReceiptAt::AfterFirstPrompt);
-        launch.forbidden_mode = Some(codex::FORBIDDEN_MODE.to_owned());
+        launch.required_mode = Some(codex::MODE.to_owned());
         let mut client = AcpClient::launch(&h.engine, &launch, &h.dir.0).unwrap();
         let events = until(&mut client, ended);
         let message = failure(&events).expect("a launch failure");
@@ -186,19 +188,115 @@ fn landing_in_the_forbidden_mode_fails_the_launch() {
 }
 
 #[test]
-fn a_switch_to_the_forbidden_mode_ends_the_session() {
+fn a_switch_away_from_the_required_mode_ends_the_session() {
+    for flag in ["--switch-mode", "--switch-config"] {
+        let h = Harness::new();
+        let mut launch = spec(
+            &h,
+            &["--mode-safe", "--receipt-prompt", flag],
+            ReceiptAt::AfterFirstPrompt,
+        );
+        launch.required_mode = Some(codex::MODE.to_owned());
+        let mut client = AcpClient::launch(&h.engine, &launch, &h.dir.0).unwrap();
+        until(&mut client, ready);
+        client.prompt("hello").unwrap();
+        let events = until(&mut client, ended);
+        assert!(
+            failure(&events).unwrap().contains("landed in mode"),
+            "{flag}"
+        );
+    }
+}
+
+/// Stops: a protected layer started by a caller who forgot the checks.
+#[test]
+fn a_protected_delivery_refuses_to_start_unprotected() {
+    let delivery = compose(&product(), &Layer::protected("Layer")).unwrap();
     let h = Harness::new();
-    let mut launch = spec(
-        &h,
-        &["--mode-safe", "--receipt-prompt", "--switch-mode"],
-        ReceiptAt::AfterFirstPrompt,
+    let claude_dir = adapters(astrolabe::acp::CLAUDE_ADAPTER);
+    let delivered = claude::deliver(&delivery, Path::new("/x"));
+    let codex_dir = adapters(astrolabe::acp::CODEX_ADAPTER);
+    let mut with_text = delivery.clone();
+    with_text.instructions.as_mut().unwrap().repo = astrolabe::layer::RepoInstructions::None;
+    let keys = [
+        hook_key("session_start", "astrolabe hook session-start"),
+        hook_key("pre_tool_use", "astrolabe hook pre-command"),
+    ];
+    let launches = [
+        delivered.launch(&claude_dir.0, None).unwrap(),
+        claude::launch(&claude_dir.0, None, delivered.options.clone()).unwrap(),
+        codex::deliver(&with_text, &keys)
+            .unwrap()
+            .launch(&codex_dir.0, None)
+            .unwrap(),
+    ];
+    for launch in launches {
+        let error = AcpClient::launch(&h.engine, &launch, &h.dir.0).err();
+        assert!(matches!(error, Some(Error::InvalidLayer(_))), "{error:?}");
+    }
+    let plain = Layer::standard("Layer", &[]);
+    let delivery = compose(&product(), &plain).unwrap();
+    let open = claude::deliver(&delivery, Path::new("/x"));
+    assert!(
+        !open
+            .launch(&claude_dir.0, None)
+            .unwrap()
+            .protection_required
     );
-    launch.forbidden_mode = Some(codex::FORBIDDEN_MODE.to_owned());
-    let mut client = AcpClient::launch(&h.engine, &launch, &h.dir.0).unwrap();
-    until(&mut client, ready);
-    client.prompt("hello").unwrap();
-    let events = until(&mut client, ended);
-    assert!(failure(&events).unwrap().contains("landed in mode"));
+}
+
+fn hook_key(event: &str, command: &str) -> codex::SessionFlagKey {
+    codex::SessionFlagKey {
+        key: format!("/<session-flags>/config.toml:{event}:0:0"),
+        current_hash: format!("sha256:{}", "1".repeat(64)),
+        command: command.to_owned(),
+    }
+}
+
+/// Shapes from a real hooks/list on the pinned client.
+#[test]
+fn hooks_must_be_listed_trusted_enabled_and_match_all() {
+    let hook = |event: &str, command: &str, trust: &str| {
+        json!({ "eventName": event, "command": command, "trustStatus": trust,
+            "enabled": true, "matcher": null })
+    };
+    let start = hook("sessionStart", "astrolabe hook session-start", "trusted");
+    let guard = hook("preToolUse", "astrolabe hook pre-command", "trusted");
+    let list =
+        |hooks: Vec<serde_json::Value>| json!({ "result": { "data": [{ "hooks": hooks }] } });
+    assert_eq!(
+        codex::hooks_problem(&list(vec![start.clone(), guard.clone()])),
+        None
+    );
+    for (bad, why) in [
+        (list(vec![guard.clone()]), "session-start"),
+        (list(vec![start.clone()]), "not listed"),
+        (list(vec![]), "not listed"),
+        (json!({ "error": {} }), "not listed"),
+        (
+            list(vec![
+                start.clone(),
+                hook("preToolUse", "astrolabe hook pre-command", "modified"),
+            ]),
+            "modified",
+        ),
+        (
+            list(vec![
+                start.clone(),
+                hook("preToolUse", "astrolabe hook pre-command", "untrusted"),
+            ]),
+            "untrusted",
+        ),
+    ] {
+        let problem = codex::hooks_problem(&bad).expect(why);
+        assert!(problem.contains(why), "{problem}");
+    }
+    let mut narrow = guard.clone();
+    narrow["matcher"] = json!("Bash");
+    assert!(codex::hooks_problem(&list(vec![start.clone(), narrow])).is_some());
+    let mut off = guard;
+    off["enabled"] = json!(false);
+    assert!(codex::hooks_problem(&list(vec![start, off])).is_some());
 }
 
 #[test]
@@ -233,10 +331,10 @@ fn adapters(package: &str) -> TempDir {
 }
 
 #[test]
-fn the_codex_driver_sets_the_one_mode_forbids_agent_and_checks_the_folder() {
+fn the_codex_driver_requires_the_one_mode_and_checks_the_folder() {
     let dir = adapters(astrolabe::acp::CODEX_ADAPTER);
     let launch = codex::launch(&dir.0, None, &json!({})).unwrap();
-    assert_eq!(launch.forbidden_mode.as_deref(), Some("agent"));
+    assert_eq!(launch.required_mode.as_deref(), Some("workspace-write"));
     let mode = launch
         .env
         .iter()

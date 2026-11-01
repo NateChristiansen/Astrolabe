@@ -252,7 +252,7 @@ fn codex_launch_and_resume_send_mcp_with_the_same_layer_config() {
         .join(format!("fake_agent{}", std::env::consts::EXE_SUFFIX))
         .into();
     spec.args = vec!["--dump-open".into()];
-    spec.forbidden_mode = None;
+    spec.required_mode = None;
     // The fake runs in a temp folder, which Windows would rightly refuse.
     spec.folder_check = None;
     let mut client = AcpClient::launch(&h.engine, &spec, &h.dir.0).unwrap();

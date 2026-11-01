@@ -70,6 +70,8 @@ pub struct Layer {
     pub mcp: Vec<McpServer>,
     pub denies: Vec<String>,
     pub memory_off: bool,
+    /// A launch of this layer must run its protection checks, or it refuses to start.
+    pub protected: bool,
 }
 
 impl Layer {
@@ -86,6 +88,7 @@ impl Layer {
             }],
             denies: denies.iter().map(|deny| (*deny).to_owned()).collect(),
             memory_off: true,
+            protected: false,
         }
     }
 
@@ -93,6 +96,7 @@ impl Layer {
     pub fn protected(instructions: &str) -> Self {
         let mut layer = Self::standard(instructions, &[]);
         layer.denies = guard_rules();
+        layer.protected = true;
         layer.hooks.extend([
             Hook::astrolabe(HookEvent::PreCommand),
             Hook::astrolabe(HookEvent::ConfigChange),
@@ -204,6 +208,7 @@ pub struct Delivery {
     pub mcp: Vec<McpServer>,
     pub denies: Vec<String>,
     pub memory_off: bool,
+    pub protected: bool,
 }
 
 /// An identical repo hook is dropped only on Agent targets. Product keeps the layer
@@ -250,6 +255,7 @@ pub fn compose(target: &Target, layer: &Layer) -> Result<Delivery> {
             .cloned()
             .collect(),
         memory_off: layer.memory_off && wanted(supplies.memory_off),
+        protected: layer.protected,
     })
 }
 

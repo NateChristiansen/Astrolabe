@@ -30,6 +30,9 @@ struct SimpleCommand {
     words: Vec<Word>,
     /// Heredoc or here-string text, which a shell would run.
     stdin: Option<String>,
+    /// A `cd` here doesn't reach the commands after it, or may not have run: in a subshell
+    /// or substitution, or beside a pipe, `||` or `&`.
+    scoped: bool,
 }
 
 #[derive(Default)]
@@ -88,6 +91,8 @@ impl Parser {
         let mut expect = Expect::Word;
         let mut heredocs: Vec<Heredoc> = Vec::new();
         let mut parens = 0usize;
+        // After a pipe, `||` or `&`.
+        let mut after_split = false;
         while let Some(c) = self.peek(0) {
             match c {
                 '\'' => {
@@ -173,17 +178,22 @@ impl Parser {
                     if c == ')' && parens == 0 && in_substitution {
                         self.at += 1;
                         end_word(&mut word, &mut command, &mut expect, &mut heredocs);
+                        command.scoped = true;
                         self.finish(&mut command, &mut heredocs);
                         return;
                     }
+                    let doubled = matches!(c, '|' | '&') && self.peek(1) == Some(c);
+                    let single = matches!(c, '|' | '&') && !doubled;
+                    self.at += if doubled { 2 } else { 1 };
+                    end_word(&mut word, &mut command, &mut expect, &mut heredocs);
+                    command.scoped = parens > 0 || in_substitution || after_split || single;
+                    self.finish(&mut command, &mut heredocs);
+                    after_split = single || (doubled && c == '|');
                     match c {
                         '(' => parens += 1,
                         ')' => parens = parens.saturating_sub(1),
                         _ => {}
                     }
-                    self.at += 1;
-                    end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-                    self.finish(&mut command, &mut heredocs);
                     if c == '\n' {
                         self.read_heredocs(&mut heredocs);
                     }
@@ -195,6 +205,7 @@ impl Parser {
             }
         }
         end_word(&mut word, &mut command, &mut expect, &mut heredocs);
+        command.scoped = parens > 0 || in_substitution || after_split;
         self.finish(&mut command, &mut heredocs);
         if in_substitution {
             self.out.broken = true;
@@ -336,7 +347,11 @@ impl Parser {
                 '`' => {
                     let nested = parse(&inner, self.dialect, depth + 1);
                     self.out.broken |= nested.broken;
-                    self.out.commands.extend(nested.commands);
+                    let nested_commands = nested.commands.into_iter();
+                    self.out.commands.extend(nested_commands.map(|mut command| {
+                        command.scoped = true;
+                        command
+                    }));
                     return;
                 }
                 '\\' => {
@@ -398,12 +413,19 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     if tool.starts_with("mcp__") || tool == "apply_patch" {
         return None;
     }
-    let windows = scope.root.as_deref().is_some_and(has_drive);
+    let windows = (scope.root.as_deref()).is_some_and(|r| has_drive(r) || r.starts_with(r"\\"));
     let mut context = Context {
         root: scope.root.as_deref().map(|root| normal(root, windows)),
         cwd: scope.cwd.as_deref().map(|cwd| normal(cwd, windows)),
         windows,
     };
+    // A tool's own working directory, which the hook's `cwd` doesn't reflect.
+    if let Some(workdir) = ["workdir", "cwd", "working_directory"]
+        .iter()
+        .find_map(|key| input.get(*key)?.as_str())
+    {
+        context.cwd = resolve(workdir, &context);
+    }
     let dialect = if tool.eq_ignore_ascii_case("powershell") {
         Dialect::Ps
     } else {
@@ -459,11 +481,31 @@ fn script(text: &str, dialect: Dialect, context: &mut Context, depth: usize) -> 
     let parsed = parse(text, dialect, depth);
     for command in &parsed.commands {
         let stdin = command.stdin.as_deref();
-        if let Some(reason) = simple(&command.words, stdin, dialect, context, depth, false) {
-            return Some(reason);
+        let before = context.cwd.clone();
+        let reason = simple(&command.words, stdin, dialect, context, depth, false);
+        if reason.is_some() {
+            return reason;
+        }
+        // A `cd` that may not reach what follows: stop claiming to know where this is.
+        let branch = (command.words.first()).is_some_and(|w| KEYWORDS.contains(&w.text.as_str()));
+        if (command.scoped || branch) && context.cwd != before {
+            context.cwd = None;
         }
     }
     (parsed.broken && names_denied_program(text)).then(unparsed)
+}
+
+/// A shell of its own: what it does to its folder stays with it.
+fn child_script(
+    text: &str,
+    dialect: Dialect,
+    context: &mut Context,
+    depth: usize,
+) -> Option<String> {
+    let before = context.cwd.clone();
+    let reason = script(text, dialect, context, depth);
+    context.cwd = before;
+    reason
 }
 
 const KEYWORDS: [&str; 12] = [
@@ -517,6 +559,11 @@ fn after_options<'a>(mut args: &'a [Word], taking_value: &[&str]) -> &'a [Word] 
     args
 }
 
+/// Git and GNU tools accept a long option cut short.
+fn long_option(word: &str, option: &str) -> bool {
+    word.len() >= 3 && option.starts_with(word)
+}
+
 /// True if `word` abbreviates `option`, as PowerShell allows: `-enc`, `-Comm`.
 fn abbreviates(word: &str, option: &str) -> bool {
     let word = word.to_ascii_lowercase();
@@ -551,8 +598,27 @@ fn simple(
     let args = &words[1..];
     let depth = depth + 1;
     let wrapped = |rest: &[Word], context: &mut Context, piped: bool| {
-        simple(rest, None, dialect, context, depth, piped)
+        let before = context.cwd.clone();
+        let reason = simple(rest, stdin, dialect, context, depth, piped);
+        // `env cd x` moves nothing; `command cd x` does. Not worth telling apart.
+        if context.cwd != before {
+            context.cwd = None;
+        }
+        reason
     };
+    // `env -C dir` and `sudo -D dir`: the wrapped command runs somewhere it can't follow.
+    let moved = matches!(name.as_str(), "env" | "sudo" | "doas")
+        && args.iter().any(|a| {
+            a.text.starts_with("-C") || a.text.starts_with("-D") || a.text.starts_with("--chdir")
+        });
+    if moved {
+        let before = context.cwd.take();
+        // Wrappers' option parsing can't be trusted here, so read every tail as a command.
+        let reason = (0..args.len())
+            .find_map(|at| simple(&args[at..], stdin, dialect, context, depth, piped));
+        context.cwd = before;
+        return reason;
+    }
     match name.as_str() {
         "env" => {
             let mut rest = args;
@@ -568,7 +634,8 @@ fn simple(
                 .position(|a| a.text == "-S" || a.text == "--split-string")
                 && let Some(text) = args.get(at + 1)
             {
-                return script(&text.text, dialect, context, depth);
+                let joined = format!("{} {}", text.text, join(&args[at + 2..]));
+                return child_script(&joined, dialect, context, depth);
             }
             wrapped(rest, context, piped)
         }
@@ -599,7 +666,26 @@ fn simple(
         "sudo" | "doas" => wrapped(
             after_options(
                 args,
-                &["-u", "-g", "-h", "-p", "-C", "-T", "-U", "-r", "-t"],
+                &[
+                    "-u",
+                    "-g",
+                    "-h",
+                    "-p",
+                    "-C",
+                    "-T",
+                    "-U",
+                    "-r",
+                    "-t",
+                    "--user",
+                    "--group",
+                    "--host",
+                    "--prompt",
+                    "--close-from",
+                    "--command-timeout",
+                    "--other-user",
+                    "--role",
+                    "--type",
+                ],
             ),
             context,
             piped,
@@ -626,9 +712,9 @@ fn simple(
             });
             if let Some(at) = flag {
                 let inner = args.get(at + 1)?;
-                return script(&inner.text, Dialect::Sh, context, depth);
+                return child_script(&inner.text, Dialect::Sh, context, depth);
             }
-            stdin.and_then(|text| script(text, Dialect::Sh, context, depth))
+            stdin.and_then(|text| child_script(text, Dialect::Sh, context, depth))
         }
         "powershell" | "pwsh" => powershell(args, stdin, context, depth),
         "cmd" => {
@@ -645,13 +731,13 @@ fn simple(
             if inline {
                 joined = joined.trim_start_matches(['/', 'c', 'C']).to_owned();
             }
-            script(&joined, Dialect::Cmd, context, depth)
+            child_script(&joined, Dialect::Cmd, context, depth)
         }
         "cd" | "pushd" | "chdir" | "set-location" | "sl" => {
             let target = args.iter().find(|arg| !arg.text.starts_with('-'));
             context.cwd = match target {
                 Some(target) if !target.dynamic && !target.text.starts_with('~') => {
-                    resolve(target, context)
+                    resolve(path_text(target, context), context)
                 }
                 _ => None,
             };
@@ -696,11 +782,14 @@ fn powershell(
     while let Some(arg) = args.get(at) {
         let text = arg.text.as_str();
         if abbreviates(text, "-command") || text.eq_ignore_ascii_case("/c") {
-            return script(&join(&args[at + 1..]), Dialect::Ps, context, depth);
+            return child_script(&join(&args[at + 1..]), Dialect::Ps, context, depth);
         }
         // Encoded text and script files are known misses.
         if abbreviates(text, "-encodedcommand") || abbreviates(text, "-file") {
             return None;
+        }
+        if abbreviates(text, "-workingdirectory") {
+            context.cwd = None;
         }
         if ["-executionpolicy", "-windowstyle", "-workingdirectory"]
             .iter()
@@ -714,10 +803,10 @@ fn powershell(
             at += 1;
         } else {
             // A bare argument runs as a command, on Windows PowerShell.
-            return script(&join(&args[at..]), Dialect::Ps, context, depth);
+            return child_script(&join(&args[at..]), Dialect::Ps, context, depth);
         }
     }
-    stdin.and_then(|text| script(text, Dialect::Ps, context, depth))
+    stdin.and_then(|text| child_script(text, Dialect::Ps, context, depth))
 }
 
 const UNSCOPED_PATHS: [&str; 7] = [".", "./", "*", ":/", ":", "/", ":/*"];
@@ -759,7 +848,8 @@ fn git(args: &[Word], piped: bool) -> Option<String> {
             (args.iter().any(|arg| is_force_push_argument(&arg.text)))
                 .then(|| "force-push".to_owned())
         }
-        "reset" => (args.iter().any(|arg| arg.text == "--hard")).then(|| "reset --hard".to_owned()),
+        "reset" => (args.iter().any(|arg| long_option(&arg.text, "--hard")))
+            .then(|| "reset --hard".to_owned()),
         "checkout" => {
             let dashes = args.iter().position(|arg| arg.text == "--");
             let unscoped = match dashes {
@@ -796,11 +886,11 @@ fn git(args: &[Word], piped: bool) -> Option<String> {
 }
 
 fn is_force_push_argument(text: &str) -> bool {
-    if text.starts_with('+') || text == "--mirror" {
+    if text.starts_with('+') || long_option(text, "--mirror") {
         return true;
     }
     if let Some(long) = text.strip_prefix("--") {
-        return long == "force" || long.starts_with("force-");
+        return long_option(text, "--force") || long.starts_with("force-");
     }
     // `origin +main:main` is above; short flags may cluster, as in `-uf`.
     text.strip_prefix('-')
@@ -866,6 +956,7 @@ fn gh_api(args: &[Word], denied: impl Fn() -> Option<String>) -> Option<String> 
             || text.starts_with("--field=")
             || text.starts_with("--raw-field=")
             || text.starts_with("--input=")
+            || (!text.starts_with("--") && (text.starts_with("-f") || text.starts_with("-F")))
         {
             fields = true;
         }
@@ -884,19 +975,62 @@ fn gh_api(args: &[Word], denied: impl Fn() -> Option<String>) -> Option<String> 
     }
 }
 
+/// `find`'s tests that take a value, so a `-delete` there is only text.
+const FIND_VALUES: [&str; 28] = [
+    "-name",
+    "-iname",
+    "-path",
+    "-ipath",
+    "-wholename",
+    "-iwholename",
+    "-regex",
+    "-iregex",
+    "-lname",
+    "-ilname",
+    "-type",
+    "-xtype",
+    "-size",
+    "-perm",
+    "-user",
+    "-group",
+    "-uid",
+    "-gid",
+    "-mtime",
+    "-atime",
+    "-ctime",
+    "-mmin",
+    "-amin",
+    "-cmin",
+    "-links",
+    "-inum",
+    "-samefile",
+    "-printf",
+];
+
 fn find(args: &[Word], dialect: Dialect, context: &mut Context, depth: usize) -> Option<String> {
-    if args.iter().any(|arg| arg.text == "-delete") {
-        return Some("find -delete".to_owned());
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        let text = arg.text.as_str();
+        if text == "-delete" {
+            return Some("find -delete".to_owned());
+        }
+        if matches!(text, "-exec" | "-execdir" | "-ok" | "-okdir") {
+            let rest = &args[at + 1..];
+            let end = (rest.iter())
+                .position(|arg| arg.text == ";" || arg.text == "+")
+                .unwrap_or(rest.len());
+            let reason = simple(&rest[..end], None, dialect, context, depth, true);
+            if reason.is_some() {
+                return reason;
+            }
+            at += end + 2;
+        } else if FIND_VALUES.contains(&text) || text.starts_with("-newer") {
+            at += 2;
+        } else {
+            at += 1;
+        }
     }
-    let exec = args
-        .iter()
-        .position(|arg| matches!(arg.text.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))?;
-    let rest = &args[exec + 1..];
-    let end = rest
-        .iter()
-        .position(|arg| arg.text == ";" || arg.text == "+")
-        .unwrap_or(rest.len());
-    simple(&rest[..end], None, dialect, context, depth, true)
+    None
 }
 
 fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<String> {
@@ -905,7 +1039,7 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
         let text = lowered(arg);
         match name {
             "rm" => {
-                text == "--recursive"
+                long_option(&text, "--recursive")
                     || abbreviates(&text, "-recurse")
                     || (text.starts_with('-')
                         && !text.starts_with("--")
@@ -941,30 +1075,56 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
     if piped || paths.is_empty() {
         return Some("a recursive delete whose paths can't be read".to_owned());
     }
+    let unreadable = || Some("a recursive delete whose paths can't be read".to_owned());
     for path in paths {
         if path.dynamic || path.text.contains('%') || path.text.starts_with('~') {
-            return Some("a recursive delete whose paths can't be read".to_owned());
+            return unreadable();
         }
-        let Some(resolved) = resolve(path, context) else {
-            return outside();
-        };
-        let Some(root) = &context.root else {
-            return outside();
-        };
-        if !resolved.starts_with(&format!("{root}/")) {
-            return outside();
+        // PowerShell takes `a,b` as two paths and `@(...)` as a list.
+        for part in path_text(path, context)
+            .split(',')
+            .filter(|p| !p.is_empty())
+        {
+            if part.ends_with('@') || climbs_after_a_name(part) {
+                return unreadable();
+            }
+            let Some(resolved) = resolve(part, context) else {
+                return Some("a recursive delete from a folder it couldn't follow".to_owned());
+            };
+            let Some(root) = &context.root else {
+                return outside();
+            };
+            if !resolved.starts_with(&format!("{root}/")) {
+                return outside();
+            }
         }
     }
     None
 }
 
-/// Lexical: an existing link isn't followed, which is also what `rm -rf` does to one.
-fn resolve(path: &Word, context: &Context) -> Option<String> {
-    let text = if context.windows {
+/// `link/../x`: if `link` is a link, this leaves the tree while reading as inside it.
+fn climbs_after_a_name(path: &str) -> bool {
+    let mut named = false;
+    for part in path.split(['/', '\\']) {
+        match part {
+            ".." if named => return true,
+            "" | "." | ".." => {}
+            _ => named = true,
+        }
+    }
+    false
+}
+
+fn path_text<'a>(path: &'a Word, context: &Context) -> &'a str {
+    if context.windows {
         &path.raw
     } else {
         &path.text
-    };
+    }
+}
+
+/// Lexical: an existing link isn't resolved. See the misses in the table.
+fn resolve(text: &str, context: &Context) -> Option<String> {
     let absolute = text.starts_with('/') || (context.windows && (is_rooted_windows(text)));
     if absolute {
         Some(normal(text, context.windows))

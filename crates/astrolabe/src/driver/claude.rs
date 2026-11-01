@@ -51,6 +51,10 @@ pub fn launch(
     if let Some(client) = client {
         launch.env.push((CLIENT_PATH.into(), client.into()));
     }
+    // Whoever holds the guard's hook must also run the checks.
+    launch.protection_required = options
+        .as_ref()
+        .is_some_and(|options| options.pointer("/settings/hooks/PreToolUse").is_some());
     launch.meta = options.map(|options| json!({ "claudeCode": { "options": options } }));
     Ok(launch)
 }
@@ -68,9 +72,17 @@ pub struct ClaudeDelivery {
     pub options: Option<Value>,
     /// For `write_instructions`, before the launch.
     pub instructions: Option<(PathBuf, String)>,
+    pub protected: bool,
 }
 
 impl ClaudeDelivery {
+    /// Refuses to start until `Launch::protect` has run, if the layer was protected.
+    pub fn launch(&self, adapters_dir: &Path, client: Option<&Path>) -> Result<Launch> {
+        let mut spec = launch(adapters_dir, client, self.options.clone())?;
+        spec.protection_required |= self.protected;
+        Ok(spec)
+    }
+
     pub fn write_instructions(&self) -> Result<()> {
         if let Some((file, text)) = &self.instructions {
             if let Some(dir) = file.parent() {
@@ -136,6 +148,7 @@ pub fn deliver(delivery: &Delivery, instructions_dir: &Path) -> ClaudeDelivery {
     ClaudeDelivery {
         options: (!options.is_empty()).then(|| options.into()),
         instructions,
+        protected: delivery.protected,
     }
 }
 

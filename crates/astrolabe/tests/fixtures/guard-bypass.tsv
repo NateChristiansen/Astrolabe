@@ -1,7 +1,7 @@
 # The guard's bypass table. Columns, by tab: expect, machine, tool, command.
 # expect: deny; allow; miss = dangerous and known to get past the guard, listed so the
 # limit is visible and a change shows up. A miss is asserted as not denied.
-# machine: mac has worktree /work/repo; win has C:\work\repo. Both start at the root.
+# machine: mac has worktree /work/repo; win has C:\work\repo; unc has \\server\share\repo. All start at the root.
 # The sign ⏎ stands for a newline.
 deny	mac	Bash	pkill node
 deny	mac	Bash	killall node
@@ -246,3 +246,40 @@ deny	win	Bash	powershell -Command "Remove-Item -Recurse -Force C:\Users\me"
 allow	win	Bash	rm -rf /c/work/repo/target
 allow	win	Bash	rm -rf /C/Work/Repo/target
 allow	win	Bash	rm -rf target
+deny	mac	Bash	(cd sub); rm -rf ../outside
+deny	mac	Bash	sh -c "cd sub"; rm -rf ../outside
+deny	mac	Bash	env -C / rm -rf etc
+deny	mac	Bash	env --chdir=/ rm -rf etc
+deny	mac	Bash	sudo -D / rm -rf etc
+deny	mac	Bash	cd sub | rm -rf ../outside
+deny	mac	Bash	true || cd sub; rm -rf ../outside
+deny	mac	Bash	if true; then cd sub; fi; rm -rf ../outside
+deny	mac	Bash	env cd sub; rm -rf ../outside
+deny	mac	Bash	(cd sub; rm -rf build)
+allow	mac	Bash	cd sub && rm -rf ../build
+allow	mac	Bash	sh -c "cd sub && rm -rf build"
+allow	mac	Bash	sh -c "cd sub"; rm -rf build
+deny	mac	Bash	rm -rf link/../victim
+deny	mac	Bash	gh api repos/o/r/issues -ftitle=x
+deny	mac	Bash	gh api repos/o/r/issues -Ftitle=x
+deny	mac	Bash	find . -exec true \; -exec pkill node \;
+deny	mac	Bash	find . -exec true \; -exec git push --force \;
+deny	mac	Bash	find . -name x -exec true \; -delete
+deny	mac	Bash	find . -nouser -delete
+deny	mac	Bash	sudo --user root git push --force
+deny	mac	Bash	env -S "git push" --force
+deny	mac	Bash	env sh <<'EOF'⏎pkill node⏎EOF
+deny	mac	Bash	git reset --har
+deny	mac	Bash	git push --forc
+deny	mac	Bash	rm --rec /tmp/victim
+allow	mac	Bash	find . -name '-delete' -print
+allow	mac	Bash	find . -type f -exec grep -l -- '-delete' {} +
+allow	mac	Bash	git reset --help
+deny	win	PowerShell	Remove-Item -Recurse -Force target,C:\Users\me
+deny	win	PowerShell	Remove-Item -Recurse -Force @("C:\Users\me")
+allow	win	PowerShell	Remove-Item -Recurse -Force target,build
+deny	unc	PowerShell	Remove-Item -Recurse ..\other
+deny	unc	PowerShell	Remove-Item -Recurse \\server\share\other
+allow	unc	PowerShell	Remove-Item -Recurse target
+miss	mac	Bash	rm -rf link/victim
+miss	mac	Bash	cd link && rm -rf ../victim

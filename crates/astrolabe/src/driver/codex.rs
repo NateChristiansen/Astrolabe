@@ -3,7 +3,7 @@
 //! avoids adding a long home path to Windows AF_UNIX socket names. An inherited
 //! custom home remains the caller's responsibility; future isolated homes must
 //! use a short root such as `%LOCALAPPDATA%\astrolabe\c\<id>`.
-use crate::acp::{CODEX_ADAPTER, Launch, ReceiptAt, adapter_entry};
+use crate::acp::{CODEX_ADAPTER, HookCheck, Launch, ReceiptAt, adapter_entry};
 use crate::layer::{Delivery, Hook, HookEvent, RepoInstructions};
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
@@ -16,11 +16,10 @@ use std::time::Duration;
 
 /// SessionStart fires only after the first prompt, so the deadline counts from there.
 pub const RECEIPT_AT: ReceiptAt = ReceiptAt::AfterFirstPrompt;
-/// The adapter's default. Its automatic reviewer answers approvals itself, so they never
-/// reach the client, and it has let a force push through against a client that rejects.
-pub const FORBIDDEN_MODE: &str = "agent";
 const MODE_VAR: &str = "INITIAL_AGENT_MODE";
-/// On every platform. In this mode requests reach the client.
+/// On every platform, and the only mode a launch accepts. In this mode requests reach the
+/// client. The adapter's default answers approvals itself, and its full-access mode raises
+/// none, so neither ever reaches the owner.
 pub const MODE: &str = "workspace-write";
 
 /// Each event's hooks and their client names, for events this client has.
@@ -95,12 +94,21 @@ pub struct CodexDelivery {
     /// The layer's CODEX_CONFIG entries, before launch defaults.
     pub config: Value,
     pub mcp_servers: Vec<Value>,
+    pub protected: bool,
 }
 
 impl CodexDelivery {
     pub fn launch(&self, adapters_dir: &Path, client_path: Option<&Path>) -> Result<Launch> {
         let mut spec = launch(adapters_dir, client_path, &self.config)?;
         spec.mcp_servers.clone_from(&self.mcp_servers);
+        if self.protected {
+            spec.protection_required = true;
+            spec.hook_check = Some(HookCheck {
+                run: check_hooks,
+                client: client_path.map(Path::to_path_buf),
+                hooks: self.config.get("hooks").cloned().unwrap_or(Value::Null),
+            });
+        }
         Ok(spec)
     }
 }
@@ -193,6 +201,7 @@ pub fn deliver(delivery: &Delivery, session_flag_key: &[SessionFlagKey]) -> Resu
     Ok(CodexDelivery {
         config: config.into(),
         mcp_servers,
+        protected: delivery.protected,
     })
 }
 
@@ -222,9 +231,72 @@ const DISCOVERY_WAIT: Duration = Duration::from_secs(20);
 /// Asks this machine's client for the keys and hashes of these exact hooks, read-only:
 /// no thread, no model request, no config write, no trust line.
 pub fn discover_keys(client: &Path, repo: &Path, hooks: &[Hook]) -> Result<Vec<SessionFlagKey>> {
-    let declarations = toml_inline(&Value::Object(hook_declarations(hooks)));
-    let mut child = Command::new(client)
-        .args(["app-server", "-c", &format!("hooks={declarations}")])
+    let hooks = Value::Object(hook_declarations(hooks));
+    SessionFlagKey::from_hooks_list(&hooks_list(client, repo, &hooks)?)
+}
+
+/// The client's own view of a session's hooks, with no model turn. A session that would run
+/// without the guard is refused here, before any prompt. Hooks from a repo count too: on an
+/// agent repo the launch adds none.
+fn check_hooks(
+    client: Option<&Path>,
+    repo: &Path,
+    hooks: &Value,
+) -> std::result::Result<(), String> {
+    let inherited = std::env::var_os("CODEX_PATH").map(std::path::PathBuf::from);
+    let client = client
+        .or(inherited.as_deref())
+        .ok_or("no client path to ask, so its hooks can't be checked")?;
+    let response = hooks_list(client, repo, hooks).map_err(|error| error.to_string())?;
+    match hooks_problem(&response) {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+/// What stops both protective hooks being in force, read from a hooks/list response.
+pub fn hooks_problem(response: &Value) -> Option<String> {
+    let found: Vec<&Value> = response["result"]["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group["hooks"].as_array())
+        .flatten()
+        .collect();
+    let wanted = [
+        ("sessionStart", Hook::astrolabe(HookEvent::SessionStart)),
+        ("preToolUse", Hook::astrolabe(HookEvent::PreCommand)),
+    ];
+    wanted.iter().find_map(|(event, hook)| {
+        let mine: Vec<&&Value> = (found.iter())
+            .filter(|h| h["eventName"] == *event && h["command"] == hook.command.as_str())
+            .collect();
+        let good = |h: &&Value| {
+            h["trustStatus"] == "trusted" && h["enabled"] == true && h["matcher"].is_null()
+        };
+        if mine.iter().any(|h| good(h)) {
+            return None;
+        }
+        let states: Vec<String> = (mine.iter())
+            .map(|h| format!("{} enabled={} matcher={}", h["trustStatus"], h["enabled"], h["matcher"]))
+            .collect();
+        Some(format!(
+            "the client doesn't have \"{}\" in force for {event}: {}. A session would run without it, and the client wouldn't say.",
+            hook.command,
+            if states.is_empty() { "not listed".to_owned() } else { states.join(", ") }
+        ))
+    })
+}
+
+/// Read-only: no thread, no model request, no config write, no trust line.
+fn hooks_list(client: &Path, repo: &Path, hooks: &Value) -> Result<Value> {
+    let mut command = Command::new(client);
+    command.arg("app-server");
+    if !hooks.is_null() {
+        command.args(["-c", &format!("hooks={}", toml_inline(hooks))]);
+        command.args(["-c", "features.hooks=true"]);
+    }
+    let mut child = command
         .current_dir(repo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -258,8 +330,7 @@ pub fn discover_keys(client: &Path, repo: &Path, hooks: &[Hook]) -> Result<Vec<S
     let response = answer.recv_timeout(DISCOVERY_WAIT);
     let _ = child.kill();
     let _ = child.wait();
-    let response = response.map_err(|_| invalid_config("hooks/list did not answer"))?;
-    SessionFlagKey::from_hooks_list(&response)
+    response.map_err(|_| invalid_config("hooks/list did not answer"))
 }
 
 fn toml_inline(value: &Value) -> String {
@@ -307,7 +378,9 @@ pub fn launch(
         .env
         .push(("CODEX_CONFIG".into(), config.to_string().into()));
     launch.env.push((MODE_VAR.into(), MODE.into()));
-    launch.forbidden_mode = Some(FORBIDDEN_MODE.to_owned());
+    launch.required_mode = Some(MODE.to_owned());
+    launch.protection_required =
+        overrides.contains_key("hooks") && overrides["hooks"].get("PreToolUse").is_some();
     launch.folder_check = Some(crate::protect::refuse_unsafe_windows_folder);
     if let Some(path) = client_path {
         launch.env.push(("CODEX_PATH".into(), path.into()));

@@ -4,7 +4,7 @@
 use crate::acp::Launch;
 use crate::hook::{SELF_TEST_SESSION, session_start_since};
 use crate::layer::{DATA_DIR_VAR, PROGRAM, launch_env};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -63,6 +63,16 @@ pub fn unsafe_folder(cwd: &str, roots: &[(&str, String)]) -> Option<String> {
             )
         })
     })
+}
+
+/// Asks the client itself, before anything starts, whether the session's hooks are in force.
+/// Only Codex can answer without a model turn. Claude Code has no such listing over this
+/// route, so there a good session-start says nothing direct about the pre-command hook.
+#[derive(Debug, Clone)]
+pub struct HookCheck {
+    pub run: fn(Option<&Path>, &Path, &Value) -> Result<(), String>,
+    pub client: Option<PathBuf>,
+    pub hooks: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

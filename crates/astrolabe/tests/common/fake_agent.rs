@@ -121,6 +121,11 @@ fn main() {
                 let mut opened = json!({ "sessionId": SESSION });
                 if flag("--mode-agent") {
                     opened["modes"] = json!({ "currentModeId": "agent" });
+                } else if flag("--mode-full") {
+                    opened["modes"] = json!({ "currentModeId": "agent-full-access" });
+                } else if flag("--mode-config-agent") {
+                    opened["modes"] = json!({ "currentModeId": "workspace-write" });
+                    opened["configOptions"] = json!([{ "id": "mode", "currentValue": "agent" }]);
                 } else if flag("--mode-safe") {
                     opened["modes"] = json!({ "currentModeId": "workspace-write" });
                 }
@@ -139,6 +144,15 @@ fn main() {
                 }
                 if flag("--receipt-prompt") {
                     report_start();
+                }
+                if flag("--switch-config") {
+                    send(
+                        &json!({ "jsonrpc": "2.0", "method": "session/update", "params": {
+                            "sessionId": SESSION,
+                            "update": { "sessionUpdate": "config_option_update",
+                                "configOptions": [{ "id": "mode", "currentValue": "agent" }] },
+                        }}),
+                    );
                 }
                 if flag("--switch-mode") {
                     send(

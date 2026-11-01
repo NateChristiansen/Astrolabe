@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::events::error_text;
 use crate::host::Clock;
 use crate::model::{Alert, Request, SessionId};
-pub use crate::protect::{FolderCheck, Protection, ReceiptAt};
+pub use crate::protect::{FolderCheck, HookCheck, Protection, ReceiptAt};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -64,10 +64,14 @@ pub struct Launch {
     /// The launch fails loudly unless the session's hooks prove they run. None only for
     /// launches with no layer, such as a driver's own fixtures.
     pub protection: Option<Protection>,
-    /// The launch fails loudly if the adapter reports this mode at any point.
     /// Refuses a session folder before anything starts. The seam for a fuller check.
     pub folder_check: Option<FolderCheck>,
-    pub forbidden_mode: Option<String>,
+    /// Set by a driver given a protected layer: starting without `protection` is refused.
+    pub protection_required: bool,
+    /// Run with the other pre-launch checks when `protection` is on.
+    pub hook_check: Option<HookCheck>,
+    /// The launch fails loudly if the adapter reports any other mode, at any point.
+    pub required_mode: Option<String>,
 }
 
 impl Launch {
@@ -206,7 +210,7 @@ pub struct AcpClient<'e> {
     reaped: Option<ExitStatus>,
     gone: bool,
     protection: Option<Protection>,
-    forbidden_mode: Option<String>,
+    required_mode: Option<String>,
     /// Hook reports older than this belong to an earlier process.
     started_ms: i64,
     /// Set while a receipt is awaited. Claude: before Ready. Codex: from the first prompt.
@@ -214,7 +218,7 @@ pub struct AcpClient<'e> {
     receipt_checked: Option<Instant>,
     receipt_done: bool,
     /// Held for its drop: on Windows, closing it ends what the adapter started.
-    _job: Option<crate::job::Job>,
+    job: Option<crate::job::Job>,
 }
 
 impl<'e> AcpClient<'e> {
@@ -264,6 +268,11 @@ impl<'e> AcpClient<'e> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if launch.protection_required && launch.protection.is_none() {
+            return Err(Error::InvalidLayer(
+                "a protected layer must be launched through Launch::protect".to_owned(),
+            ));
+        }
         if let Some(check) = launch.folder_check {
             check(cwd).map_err(Error::UnsafeSessionFolder)?;
         }
@@ -271,6 +280,10 @@ impl<'e> AcpClient<'e> {
             protection
                 .check_guard(launch, cwd)
                 .map_err(Error::GuardNotRunning)?;
+            if let Some(check) = &launch.hook_check {
+                (check.run)(check.client.as_deref(), cwd, &check.hooks)
+                    .map_err(Error::GuardNotRunning)?;
+            }
         }
         if launch.protection.is_some() {
             command.env(crate::layer::WORKTREE_VAR, cwd);
@@ -335,12 +348,12 @@ impl<'e> AcpClient<'e> {
             reaped: None,
             gone: false,
             protection: launch.protection.clone(),
-            forbidden_mode: launch.forbidden_mode.clone(),
+            required_mode: launch.required_mode.clone(),
             started_ms,
             receipt_deadline: None,
             receipt_checked: None,
             receipt_done: false,
-            _job: job,
+            job,
         })
     }
 
@@ -403,7 +416,10 @@ impl<'e> AcpClient<'e> {
             self.agent_session = id.to_owned();
             self.engine.set_agent_session(self.session, id)?;
         }
-        if let Some(message) = self.forbidden_mode_in(result.pointer("/modes/currentModeId")) {
+        let config_mode = result.get("configOptions").and_then(config_mode);
+        if let Some(message) = (self.mode_problem(result.pointer("/modes/currentModeId")))
+            .or_else(|| config_mode.and_then(|mode| self.mode_problem(Some(mode))))
+        {
             return self.fail_launch(message);
         }
         if self
@@ -425,15 +441,15 @@ impl<'e> AcpClient<'e> {
         Ok(())
     }
 
-    fn forbidden_mode_in(&self, mode: Option<&Value>) -> Option<String> {
-        let forbidden = self.forbidden_mode.as_deref()?;
+    fn mode_problem(&self, mode: Option<&Value>) -> Option<String> {
+        let required = self.required_mode.as_deref()?;
         match mode.and_then(Value::as_str) {
-            Some(mode) if mode == forbidden => Some(format!(
-                "the session landed in mode \"{mode}\", where approvals would be answered without reaching you; no safe mode is set for this platform or it was ignored"
+            Some(mode) if mode == required => None,
+            Some(mode) => Some(format!(
+                "the session landed in mode \"{mode}\", not \"{required}\", so approvals might not reach you"
             )),
-            Some(_) => None,
             None => Some(format!(
-                "the adapter did not report a mode, so a landing in \"{forbidden}\" can't be ruled out"
+                "the adapter did not report a mode, so being in \"{required}\" can't be confirmed"
             )),
         }
     }
@@ -795,11 +811,16 @@ impl<'e> AcpClient<'e> {
             }
             (Some("session/update"), None) => {
                 let update = message.pointer("/params/update");
-                if update
-                    .and_then(|update| update.get("sessionUpdate"))
-                    .is_some_and(|kind| kind == "current_mode_update")
-                    && let Some(mode) = update.and_then(|update| update.get("currentModeId"))
-                    && let Some(failure) = self.forbidden_mode_in(Some(mode))
+                let kind = update.and_then(|update| update.get("sessionUpdate"));
+                let mode = if kind.is_some_and(|kind| kind == "current_mode_update") {
+                    update.and_then(|update| update.get("currentModeId"))
+                } else if kind.is_some_and(|kind| kind == "config_option_update") {
+                    update.and_then(|update| config_mode(update.get("configOptions")?))
+                } else {
+                    None
+                };
+                if mode.is_some()
+                    && let Some(failure) = self.mode_problem(mode)
                 {
                     return self.fail_launch(failure);
                 }
@@ -937,6 +958,8 @@ impl<'e> AcpClient<'e> {
     fn finish(&mut self) -> Result<()> {
         self.writes = None;
         let status = self.wait_or_kill()?;
+        // Exited means exited: on Windows this ends whatever the adapter left in its job.
+        self.job = None;
         self.reconcile_writes()?;
         self.unwritten.clear();
         self.gone = true;
@@ -1089,6 +1112,13 @@ fn detach_from_terminal(command: &mut Command) {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+}
+
+/// The mode among a session's config options, if they name one.
+fn config_mode(options: &Value) -> Option<&Value> {
+    let options = options.as_array()?;
+    let mode = options.iter().find(|option| option["id"] == "mode")?;
+    mode.get("currentValue")
 }
 
 fn resume_route(initialized: &Value) -> Option<&'static str> {

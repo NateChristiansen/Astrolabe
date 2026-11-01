@@ -17,10 +17,10 @@ fn the_bypass_table_holds() {
             panic!("bad row: {line}");
         };
         rows += 1;
-        let root = if machine == "win" {
-            r"C:\work\repo"
-        } else {
-            "/work/repo"
+        let root = match machine {
+            "win" => r"C:\work\repo",
+            "unc" => r"\\server\share\repo",
+            _ => "/work/repo",
         };
         let scope = Scope {
             root: Some(root.to_owned()),
@@ -46,6 +46,18 @@ fn a_command_given_as_a_list_is_read_too() {
     assert!(decide("shell", &input, &scope).is_some());
     let input = json!({ "command": ["ls", "-la"] });
     assert!(decide("shell", &input, &scope).is_none());
+}
+
+#[test]
+fn a_tools_own_working_directory_counts() {
+    let scope = Scope {
+        root: Some("/work/repo".to_owned()),
+        cwd: Some("/work/repo".to_owned()),
+    };
+    let outside = json!({ "cmd": "rm -rf target", "workdir": "/tmp" });
+    assert!(decide("exec_command", &outside, &scope).is_some());
+    let inside = json!({ "cmd": "rm -rf target", "workdir": "sub" });
+    assert!(decide("exec_command", &inside, &scope).is_none());
 }
 
 #[test]
