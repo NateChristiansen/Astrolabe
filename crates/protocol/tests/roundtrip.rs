@@ -9,7 +9,7 @@ fn fixtures_round_trip_with_extensions() {
     for file in fs::read_dir(dir).unwrap() {
         let path = file.unwrap().path();
         // Subdirectories hold ACP recordings, not protocol envelopes.
-        if !path.is_file() {
+        if path.is_dir() {
             continue;
         }
         let input: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
