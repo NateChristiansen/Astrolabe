@@ -182,6 +182,12 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
         return Err(Error::Setup(format!("{slug} is off on this machine")));
     }
     let repo = registry.checkout(request.repo)?;
+    if !repo.is_dir() {
+        let (name, shown) = (request.repo, repo.display());
+        return Err(Error::Setup(format!(
+            "repo {name} is registered at {shown}, and that folder isn't there"
+        )));
+    }
     let holder = registry.agent_repo()?;
     let is_repo = |a: &Path| comparable(a) == comparable(&repo);
     let agent = holder.as_deref().is_some_and(is_repo);

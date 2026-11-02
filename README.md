@@ -1,60 +1,60 @@
 # Astrolabe
 
-Astrolabe is an MIT-licensed desktop shell and Rust core for running agents
-through an adapter protocol (ACP), with owner notes and memory in a separate
-private agent repo.
+A desktop app that runs Claude Code and Codex sessions in your repos, each in its own git worktree, with the same safety layer on both. MIT licensed.
 
-Status: **phase 0**. This repository contains contracts, a CLI stub, a blank
-Tauri window showing the version, and a private agent-repo seed. It does not yet
-start agents, provide an MCP server, pair machines, or manage notes.
+You pick a repo and an agent, then chat in the window. Astrolabe talks to the clients through their ACP adapters. It doesn't replace them: you install the clients and they keep their own logins.
 
-See [the design overview](docs/overview.md), [decisions](docs/decisions.md),
-[version pins](docs/versions.md), and [protocol contract](crates/protocol/README.md).
+## What works today
 
-## Build
+- Sessions on either client from the window: chat, tool lines, Stop, Quit. A session keeps running with the window closed.
+- A git worktree per session on a product repo. It is removed at the end only if nothing in it would be lost.
+- A guard that blocks commands like `git push --force`, `git reset --hard` and `pkill` before they run. It catches accidents. It is not a sandbox.
+- A launch that fails loudly if the guard or the session-start hook isn't working.
+- Approval cards: Allow, Reject, or Reject and say what instead.
+- A "may be stuck" card when a tool runs past 10 minutes.
+- `astrolabe init`: a private agent repo for your own notes, whose owner and voice files reach each session.
+- A plain client started in that repo gets the same layer once you trust it, and shows in the app as a row.
 
-Install Rust 1.99.1 (rustfmt and clippy), Node 26.x, and pnpm 11.0.9.
-Install the [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/):
-Xcode tooling on macOS; MSVC C++ Build Tools and WebView2 on Windows.
-The commands below work in a terminal or native PowerShell, from the repo root:
+macOS and Windows. More in [the overview](docs/overview.md).
 
-```text
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo run -p protocol --bin export-schemas
+## Install
+
+There is no release yet, and builds are unsigned. Build from source, with Rust 1.99.1, Node 26, pnpm 11.0.9 and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Install and log in to Claude Code and Codex yourself; [the versions tested](docs/versions.md) are listed.
+
+macOS, from the repo root:
+
+```bash
 pnpm --dir app install --frozen-lockfile
-pnpm --dir app generate:protocol
-pnpm --dir app typecheck
-pnpm --dir app build
-cargo check --manifest-path app/src-tauri/Cargo.toml --locked
-cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
-node --test scripts/seed.test.cjs
+cargo build --release --locked -p astrolabe
+mkdir -p app/src-tauri/binaries
+cp target/release/astrolabe "app/src-tauri/binaries/astrolabe-$(rustc -vV | sed -n 's/^host: //p')"
+pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":["app"],"externalBin":["binaries/astrolabe"]}}'
 ```
 
-Re-exporting schemas and regenerating types must leave no diff. The desktop
-crate has a separate lockfile and is excluded from the core workspace so core
-checks do not require native GUI libraries. Build the web assets before checking
-the desktop crate. Run the blank desktop window with `pnpm --dir app tauri dev`.
-CLI examples: `cargo run -p astrolabe -- --version`, `cargo run -p astrolabe -- doctor`,
-and `cargo run -p astrolabe -- init`.
+Windows is the same with `.exe` on both file names and `"targets":["nsis"]`, run from Git Bash.
 
-The app version comes from `app/package.json`, also read by Tauri. Keep the root
-workspace version aligned when releasing. Generated TypeScript is checked in at
-`app/src/protocol/`; Rust types and exported JSON Schemas are the contract source.
+Then, using the `astrolabe` beside the app (on macOS, in `Astrolabe.app/Contents/MacOS`):
 
-## Private agent repo
+```bash
+astrolabe doctor adapters        # downloads the pinned adapters; asks first
+astrolabe doctor inspect         # what it found; writes nothing
+astrolabe repo add myrepo /path/to/repo
+```
 
-Copy `seed/` (including dotfiles) to a separate private repository and fill its
-placeholders there. Keep owner context, voice, and journals out of this public
-code repository. Seed MCP commands are deliberately placeholders;
-the seeded agent client server is disabled. `init` does not copy files yet.
+Open the app and start a session. To set up an agent repo, see `astrolabe init` and `astrolabe doctor apply`, which shows you the lines it adds to Codex's config and asks first. Claude's folder trust stays its own dialog.
 
-Development uses a dev clone through the client's `--plugin-dir` or equivalent
-override. Client-specific wiring and verification belong to phase 1a; phase 0
-does not install a plugin or modify client configuration.
+On Windows, run setup from a plain terminal tab, not from a shell inside a packaged app, which can write to a private copy of your app data.
 
-## Secrets
+## What's not done
 
-No secrets belong in this repository. Leak protection relies on the forge's
-built-in secret scanning and push protection, not on a scanner of our own.
+- Signed builds, installers you can trust at first sight, and updates.
+- Reaching work on another machine.
+- Tools for agents beyond a single layer check.
+- A dials control: every session gets the same defaults.
+- Owner and voice text in child sessions on Claude Code.
+
+## Develop
+
+`cargo test`, and [CI](.github/workflows/system.yml) has the full list of checks. [Test control](docs/test-control.md) drives a debug build from an agent. See also [size](docs/size.md), [decisions](docs/decisions.md) and [the protocol contract](crates/protocol/README.md).
+
+Your notes belong in your agent repo, never here. No secrets belong in this repo.

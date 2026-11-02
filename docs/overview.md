@@ -1,41 +1,36 @@
-# Astrolabe overview
+# Overview
 
-Astrolabe is a small coordination layer around agent client sessions. A Rust
-core owns shared contracts and will manage sessions through an adapter protocol
-(ACP). A Tauri desktop app presents the work.
-The clients and adapters remain external tools with their own authentication
-and execution environments.
+Three programs, one machine.
 
-An effort is a bounded piece of work: a question to resolve, a change to make,
-or an investigation to finish. Runs belong to efforts and refer to concrete
-revisions. Handoffs carry readable prose plus a small typed payload so software
-can connect a finding or question to the work that produced it. Software assigns
-identifiers, timestamps, and revisions; agents supply claims and evidence.
+- **The app** is a Tauri window. It lists sessions, shows a plain chat and raises cards. It holds no state of its own.
+- **The core** is `astrolabe serve`, a separate process that outlives the window. It owns the SQLite database and every running agent, and talks to windows over a local WebSocket with a secret made fresh at each start. If it dies a window restarts it, and sessions whose process went are marked interrupted. Quit stops everything within 30 seconds.
+- **The agents** are the real clients, each started through its pinned ACP adapter with stdin closed and update checks off.
 
-The agent repo is a separate private repository owned by the person using the
-tool. It holds owner context, voice preferences, and notes as plain Markdown.
-Effort notes describe bounded work, journals capture dated observations, and
-initiatives connect longer-running directions. These files remain readable and
-editable without Astrolabe. Private content does not belong in the public tool's
-source tree. The public seed contains placeholders only.
+## What a launch does
 
-A needs-you view will collect questions that require an owner decision. Each
-request asks one self-contained question, supplies context, recommends an action
-with a reason, and explains what waits. An answer refers to that request. Agents
-ask the next question only after receiving an answer. Review findings distinguish
-executed evidence from inference; optional confidence is an uncalibrated report,
-not an approval signal.
+1. Finds the repo and syncs it, carrying on from your local copy if that fails.
+2. Makes a worktree, unless this is your agent repo, which runs in place.
+3. Composes the layer: instructions, hooks, tool server, deny rules, native memory off. It adds nothing the repo already supplies.
+4. Asks the guard to deny a force push and pass a plain command. If it doesn't, nothing starts.
+5. Waits for the session-start hook's receipt, up to 30 seconds. With no receipt the session is ended and the window says why. Codex only fires that hook after the first prompt, so its first turn can run during the wait.
 
-Cross-machine pairing will let a desktop view work running on another machine.
-The core should keep session identity separate from the presentation layer, so a
-change in where a window runs does not change which effort or revision a handoff
-concerns. Pairing, transport, trust, and reconnection behavior remain future design
-work; phase 0 supplies no network listener or pairing implementation.
+## The guard
 
-Phase 0 establishes the workspace, versioned handoff contract, desktop shell,
-agent-repo seed, and basic public-content checks. `astrolabe serve` runs the core
-as its own process: it keeps live session state in one local database, watches for
-stalled sessions, and reconciles on restart. It has no agent transport yet, so it
-does not launch agents, route questions, or synchronize notes. Later phases can build those behaviors against
-named consumers and evaluation questions instead of expanding the contract
-speculatively.
+`astrolabe hook pre-command` reads each command before it runs and denies a fixed list of destructive ones, with one layer of wrapping seen through. Denials go in `guard-denials.log` in the data folder. It stops a careless command, not a determined one: the known limits are the rows in `crates/astrolabe/tests/fixtures/guard-bypass.tsv`.
+
+## The agent repo
+
+A private repo of your own, made by `astrolabe init`, holding plain Markdown: who you are, how you write, notes. The session-start hook reads the owner and voice files fresh for each session, so there's no copy to drift. A plain client in that repo gets the same layer from the repo's own config once you've trusted it. Nothing private goes in this public repo: the seed has placeholders only.
+
+## Where things live
+
+- Data folder: `astrolabe where`. `ASTROLABE_DATA_DIR` moves it.
+- Adapters: `adapters` in the data folder. `ASTROLABE_ADAPTERS` moves them.
+- User config is written in one place only: `doctor apply` adds a marked block to Codex's config, after showing it and asking. `doctor remove` takes it out again.
+
+## Limits today
+
+- One machine. Reaching work on another is future design.
+- A plain client doesn't show in the app until it has reported in, and only as a row: the app can't talk to it.
+- A row, card or quit is shown to windows that are connected. A window not reading at the moment of a quit can start a new core.
+- Stopping takes about 2 seconds per stuck session, so past about 14 stuck sessions the 30-second bound cuts the rest off and their worktrees stay.

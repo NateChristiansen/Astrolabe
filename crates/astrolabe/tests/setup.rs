@@ -593,6 +593,25 @@ fn a_product_launch_gets_a_worktree_the_whole_layer_and_its_profile() {
     assert!(error.to_string().contains("off"));
 }
 
+#[test]
+fn a_repo_whose_folder_has_gone_is_said_plainly() {
+    let box_ = Sandbox::new();
+    let machine = box_.machine();
+    let gone = box_.repo("gone");
+    machine.registry.add("gone", &gone).unwrap();
+    std::fs::remove_dir_all(&gone).unwrap();
+    let client = PathBuf::from("/nowhere/claude");
+    let request = Request {
+        repo: "gone",
+        provider: Provider::Claude,
+        session: "s1",
+        dials: DEFAULT_DIALS,
+        client: &client,
+    };
+    let error = launch::prepare(&machine, &request, &mut |_| {}).unwrap_err();
+    assert!(error.to_string().contains("isn't there"), "{error}");
+}
+
 /// Catches: a launched session running whichever `astrolabe` is first on PATH, seen on a PC.
 /// The hooks stay bare, as hook trust hashes their text.
 #[test]
