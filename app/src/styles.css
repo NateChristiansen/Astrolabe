@@ -72,7 +72,7 @@ ul { list-style: none; margin: 12px 0 0; padding: 0; }
 .banner.problem { color: var(--bad); cursor: pointer; }
 .empty { margin: auto; }
 .stopped { text-align: center; }
-.quit { margin-top: auto; }
+.quit { margin-top: 10px; }
 .ask { margin: 10px 14px; }
 .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .chat header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
