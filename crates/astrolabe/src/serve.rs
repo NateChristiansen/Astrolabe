@@ -1,13 +1,11 @@
 //! `astrolabe serve`: the long-lived core process, separate from any window.
-use crate::engine::Engine;
 use crate::error::{Error, Result};
-use crate::hook::reports_dir_in;
-use crate::host::{OsProcessProbe, SystemClock};
-use crate::model::Alert;
+use crate::host::{Clock, OsProcessProbe, SystemClock};
+use crate::shell::{Host, Prepare, real_prepare};
 use std::fs::{self, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::Path;
-use std::thread::sleep;
+use std::sync::mpsc;
 use std::time::Duration;
 
 const TICK: Duration = Duration::from_secs(15);
@@ -15,9 +13,19 @@ const TICK: Duration = Duration::from_secs(15);
 /// Runs until the process is stopped. Every state change is already committed,
 /// so stopping needs no shutdown step; the next start reconciles.
 pub fn serve(db: &Path) -> Result<()> {
-    if let Some(parent) = db.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let data_dir = db.parent().unwrap_or(Path::new(".")).to_path_buf();
+    serve_with(db, SystemClock, TICK, real_prepare(data_dir))
+}
+
+/// `serve`, with the launch, clock and tick given. The binary only ever calls `serve`.
+pub fn serve_with(
+    db: &Path,
+    clock: impl Clock + 'static,
+    tick: Duration,
+    prepare: Prepare,
+) -> Result<()> {
+    let data_dir = db.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(data_dir)?;
     // The OS drops this lock when the process dies, however it dies.
     let lock = OpenOptions::new()
         .create(true)
@@ -30,7 +38,7 @@ pub fn serve(db: &Path) -> Result<()> {
         Err(TryLockError::Error(error)) => return Err(error.into()),
     }
 
-    let engine = Engine::open(db, SystemClock, OsProcessProbe)?;
+    let engine = crate::Engine::open(db, clock, OsProcessProbe)?;
     let report = engine.reconcile()?;
     say(&format!(
         "serving {}: {} interrupted, {} cancelled, {} open requests, {} active cards",
@@ -40,24 +48,11 @@ pub fn serve(db: &Path) -> Result<()> {
         report.open_requests,
         report.active_cards,
     ));
-    let reports = db.parent().map(reports_dir_in);
-    loop {
-        if let Some(reports) = &reports {
-            for report in engine.ingest_reports(reports)? {
-                say(&format!("{} in {}", report.event, report.cwd));
-            }
-        }
-        for alert in engine.tick()? {
-            if let Alert::MayBeStuck(card) = alert {
-                say(&format!(
-                    "session {}: {}",
-                    card.session_id,
-                    card.summary(card.raised_ms)
-                ));
-            }
-        }
-        sleep(TICK);
-    }
+    let mut host = Host::new(&engine, db, prepare)?;
+    host.reconciled(&report);
+    let (inbound, requests) = mpsc::channel();
+    crate::bridge::start(data_dir, inbound)?;
+    host.run(&requests, tick)
 }
 
 /// A closed stdout must not take the core down with it.

@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|hook <event>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|where|hook <event>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -19,11 +19,15 @@ fn main() {
                 fail(&error.to_string());
             }
         }
-        ["serve"] => match astrolabe::default_db_path() {
-            Some(db) => serve(&db),
-            None => fail("no app-data directory found; pass --db <path>"),
+        ["serve"] => match Machine::from_env() {
+            Ok(machine) => serve(&machine.db()),
+            Err(error) => fail(&error.to_string()),
         },
         ["serve", "--db", db] => serve(&PathBuf::from(db)),
+        ["where"] => match Machine::from_env() {
+            Ok(machine) => println!("{}", machine.data_dir.display()),
+            Err(error) => fail(&error.to_string()),
+        },
         ["hook", "pre-command"] => astrolabe::hook::pre_command(),
         ["hook", event] => astrolabe::hook::run(event),
         ["mcp"] => {

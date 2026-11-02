@@ -46,7 +46,10 @@ impl Machine {
         let set = std::env::var_os(crate::layer::DATA_DIR_VAR).map(PathBuf::from);
         let default = || crate::default_db_path()?.parent().map(Path::to_path_buf);
         let none = || Error::Setup("no app-data folder found".to_owned());
-        let data_dir = set.or_else(default).ok_or_else(none)?;
+        Self::at(set.or_else(default).ok_or_else(none)?)
+    }
+
+    pub fn at(data_dir: PathBuf) -> Result<Self> {
         let adapters = std::env::var_os("ASTROLABE_ADAPTERS").map(PathBuf::from);
         let exe = std::env::current_exe()?;
         Ok(Self {

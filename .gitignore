@@ -8,3 +8,4 @@
 *.local
 .env
 .env.*
+app/src-tauri/binaries/

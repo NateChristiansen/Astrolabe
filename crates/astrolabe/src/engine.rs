@@ -484,6 +484,9 @@ fn display(session: &Session, run: &Run, has_open_request: bool) -> SessionDispl
         (Lifecycle::Closed, RunState::Failed) => SessionDisplay::Failed,
         (Lifecycle::Closed, _) => SessionDisplay::Ended,
         (Lifecycle::Open, RunState::Failed) => SessionDisplay::Failed,
+        (Lifecycle::Open, _) if session.ready && run.prompt_rpc_id.is_none() => {
+            SessionDisplay::YourTurn
+        }
         (Lifecycle::Open, state) if state.is_active() => SessionDisplay::Working,
         // The agent went idle. That is the owner's turn, never "done".
         (Lifecycle::Open, _) => SessionDisplay::YourTurn,

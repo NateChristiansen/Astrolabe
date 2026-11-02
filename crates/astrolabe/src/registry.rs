@@ -44,6 +44,13 @@ impl Registry {
         found.ok_or_else(|| Error::Setup(format!("no repo named {name} here")))
     }
 
+    pub fn repos(&self) -> Result<Vec<String>> {
+        let query = "SELECT substr(key, 6) FROM machine WHERE key LIKE 'repo.%' ORDER BY key";
+        let mut query = self.0.prepare(query)?;
+        let names = query.query_map([], |row| row.get(0))?;
+        Ok(names.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn agent_repo(&self) -> Result<Option<PathBuf>> {
         Ok(self.get(&format!("repo.{AGENT}"))?.map(PathBuf::from))
     }

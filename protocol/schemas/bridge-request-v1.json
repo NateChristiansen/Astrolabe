@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BridgeRequest",
+  "description": "One local WebSocket between the app and the core. Text frames, one JSON message each.\n`Auth` must be the first frame; nothing else is read or sent before it succeeds.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "secret": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "auth"
+        }
+      },
+      "required": [
+        "type",
+        "secret"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/BridgeProvider"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "start"
+        }
+      },
+      "required": [
+        "type",
+        "repo",
+        "provider"
+      ]
+    },
+    {
+      "description": "Asks for a session's transcript so far.",
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "const": "open"
+        }
+      },
+      "required": [
+        "type",
+        "session"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "prompt"
+        }
+      },
+      "required": [
+        "type",
+        "session",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "choice": {
+          "$ref": "#/$defs/BridgeChoice"
+        },
+        "request": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "answer"
+        }
+      },
+      "required": [
+        "type",
+        "request",
+        "choice"
+      ]
+    },
+    {
+      "description": "Closes a request no process can receive any more. Nothing reaches an agent.",
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "dismiss"
+        }
+      },
+      "required": [
+        "type",
+        "request"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "card": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "const": "keep_waiting"
+        }
+      },
+      "required": [
+        "type",
+        "card"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "const": "stop"
+        }
+      },
+      "required": [
+        "type",
+        "session"
+      ]
+    }
+  ],
+  "$defs": {
+    "BridgeChoice": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "allow"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reject"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Rejects, then sends the words as the next prompt once the turn has ended.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reject_and_say"
+            },
+            "words": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "words"
+          ]
+        }
+      ]
+    },
+    "BridgeProvider": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    }
+  }
+}

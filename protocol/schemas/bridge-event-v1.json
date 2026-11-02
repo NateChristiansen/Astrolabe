@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BridgeEvent",
+  "oneOf": [
+    {
+      "description": "Everything the window shows except transcripts. Sent whole on connect and on change.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/BridgeState"
+        },
+        "type": {
+          "type": "string",
+          "const": "state"
+        }
+      },
+      "required": [
+        "type",
+        "state"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TranscriptItem"
+          }
+        },
+        "session": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "const": "transcript"
+        }
+      },
+      "required": [
+        "type",
+        "session",
+        "items"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/TranscriptItem"
+        },
+        "session": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "const": "item"
+        }
+      },
+      "required": [
+        "type",
+        "session",
+        "item"
+      ]
+    },
+    {
+      "description": "The core's own words about something it could not do.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "problem"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ]
+    }
+  ],
+  "$defs": {
+    "ApprovalRow": {
+      "type": "object",
+      "properties": {
+        "asking": {
+          "type": "string"
+        },
+        "decided": {
+          "description": "When not live, what happened to the session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "description": "What it asks to run, as the adapter sent it. A title can differ.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "live": {
+          "description": "False when the process that asked has gone, so no answer can reach it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "asking",
+        "live"
+      ]
+    },
+    "BridgeProvider": {
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "BridgeState": {
+      "type": "object",
+      "properties": {
+        "plain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlainRow"
+          }
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BridgeProvider"
+          }
+        },
+        "repos": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "restart": {
+          "description": "What this core's restart decided, when it decided anything.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionRow"
+          }
+        }
+      },
+      "required": [
+        "repos",
+        "providers",
+        "sessions",
+        "plain"
+      ]
+    },
+    "PlainRow": {
+      "description": "A session outside the app whose hooks reported in.",
+      "type": "object",
+      "properties": {
+        "at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "folder": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "folder",
+        "at_ms"
+      ]
+    },
+    "SessionRow": {
+      "type": "object",
+      "properties": {
+        "can_prompt": {
+          "type": "boolean"
+        },
+        "can_stop": {
+          "type": "boolean"
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StallRow"
+          }
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "provider": {
+          "$ref": "#/$defs/BridgeProvider"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalRow"
+          }
+        },
+        "state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "why": {
+          "description": "Why it could not start or failed, in the core's own words.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "repo",
+        "provider",
+        "state",
+        "can_prompt",
+        "can_stop",
+        "requests",
+        "cards"
+      ]
+    },
+    "SessionState": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "could_not_start",
+        "working",
+        "needs_you",
+        "your_turn",
+        "ended",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "StallRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "summary"
+      ]
+    },
+    "TranscriptItem": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/TranscriptRole"
+        },
+        "seq": {
+          "description": "Rises through a session's transcript.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool": {
+          "description": "A tool's updates share this; the latest of each field stands.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "seq",
+        "role",
+        "text"
+      ]
+    },
+    "TranscriptRole": {
+      "type": "string",
+      "enum": [
+        "you",
+        "agent",
+        "tool",
+        "note"
+      ]
+    }
+  }
+}

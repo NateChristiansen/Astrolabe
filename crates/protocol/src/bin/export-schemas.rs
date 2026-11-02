@@ -1,4 +1,6 @@
-use protocol::{AskOwnerAnswer, AskOwnerRequest, Envelope, ReviewFinding};
+use protocol::{
+    AskOwnerAnswer, AskOwnerRequest, BridgeEvent, BridgeRequest, Envelope, ReviewFinding,
+};
 use schemars::{JsonSchema, schema_for};
 use std::{error::Error, fs, path::Path};
 
@@ -15,5 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write::<ReviewFinding>(&dir, "review-finding-v1")?;
     write::<AskOwnerRequest>(&dir, "ask-owner-request-v1")?;
     write::<AskOwnerAnswer>(&dir, "ask-owner-answer-v1")?;
+    write::<BridgeRequest>(&dir, "bridge-request-v1")?;
+    write::<BridgeEvent>(&dir, "bridge-event-v1")?;
     Ok(())
 }

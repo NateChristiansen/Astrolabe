@@ -1,5 +1,6 @@
 //! The Astrolabe core: live state for agent sessions, kept in one local database.
 pub mod acp;
+pub mod bridge;
 pub mod doctor;
 pub mod driver;
 mod engine;
@@ -17,6 +18,7 @@ pub mod model;
 pub mod protect;
 pub mod registry;
 mod serve;
+pub mod shell;
 mod stall;
 mod store;
 pub mod trust;
@@ -26,6 +28,6 @@ pub mod worktree;
 pub use engine::Engine;
 pub use error::{Error, Result};
 pub use host::{Clock, OsProcessProbe, ProcessProbe, SystemClock};
-pub use serve::serve;
+pub use serve::{serve, serve_with};
 pub use stall::{KEEP_WAITING_MS, STALL_AFTER_MS};
 pub use store::default_db_path;

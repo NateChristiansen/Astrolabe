@@ -41,3 +41,50 @@ jobs:
       - run: cargo check --manifest-path app/src-tauri/Cargo.toml --locked
       - run: node --test scripts/seed.test.cjs
       - run: node --test scripts/scrub-codex.test.cjs
+  package:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            targets: '["app"]'
+            bundle: app/src-tauri/target/release/bundle/macos
+          - os: windows-latest
+            targets: '["nsis"]'
+            bundle: app/src-tauri/target/release/bundle/nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.x
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.0.9
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            app/src-tauri -> target
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: cargo build --release --locked -p astrolabe
+      - name: Put the core where the bundler looks
+        shell: bash
+        run: |
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p app/src-tauri/binaries
+          cp "target/release/astrolabe$(rustc --print cfg | grep -q windows && echo .exe)" "app/src-tauri/binaries/astrolabe-$triple$(rustc --print cfg | grep -q windows && echo .exe)"
+      - name: Build unsigned
+        shell: bash
+        run: |
+          pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":${{ matrix.targets }},"externalBin":["binaries/astrolabe"]}}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: astrolabe-smoke-${{ matrix.os }}
+          path: |
+            ${{ matrix.bundle }}
+            adapters/package.json
+            adapters/pnpm-lock.yaml
