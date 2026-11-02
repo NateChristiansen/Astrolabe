@@ -128,8 +128,10 @@ pub fn daemon_lines(processes: &str) -> Vec<String> {
 
 pub fn processes() -> String {
     let list = "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }";
+    let mut shell = Command::new("powershell");
+    shell.env_remove("PSModulePath");
     match cfg!(windows) {
-        true => stdout(Command::new("powershell").args(["-NoProfile", "-Command", list])),
+        true => stdout(shell.args(["-NoProfile", "-Command", list])),
         false => stdout(Command::new("ps").args(["-axww", "-o", "command="])),
     }
 }
