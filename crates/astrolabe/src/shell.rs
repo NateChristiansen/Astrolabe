@@ -198,18 +198,18 @@ impl<'e> Host<'e> {
                 let note = format!(
                     "Astrolabe is quitting. If the worktree at {path} is there afterwards, it was kept: either the reason follows, or stopping ran out of time."
                 );
-                self.add(*id, item(TranscriptRole::Note, &note))?;
+                let _ = self.add(*id, item(TranscriptRole::Note, &note));
             }
         }
         for (session, _) in stopping {
             crate::bridge::tell_late(inbound, Instant::now());
             if let Err(why) = self.handle(BridgeRequest::Stop { session }) {
                 let note = format!("Trouble stopping this session: {why}");
-                self.add(session, item(TranscriptRole::Note, &note))?;
+                let _ = self.add(session, item(TranscriptRole::Note, &note));
             }
         }
-        let _ = std::fs::remove_file(file);
         crate::bridge::tell_late(inbound, Instant::now() + FAREWELL);
+        let _ = std::fs::remove_file(file);
         Ok(())
     }
 
