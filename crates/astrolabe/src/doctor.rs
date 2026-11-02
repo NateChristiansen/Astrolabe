@@ -17,6 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const PIN_CODEX: &str = "0.166.0";
 pub const PIN_CLAUDE: &str = "2.1.314";
+const ADAPTER_MANIFEST: &str = include_str!("../../../adapters/package.json");
+const ADAPTER_LOCK: &str = include_str!("../../../adapters/pnpm-lock.yaml");
+
 type Failure = Result<Option<String>>;
 const VERIFY_LIMIT: Duration = Duration::from_secs(300);
 
@@ -225,6 +228,45 @@ pub fn install(ask: Ask) -> Result<Vec<String>> {
     let mut said = vec![format!("{to}: written. To undo, delete it")];
     said.extend(daemon_state()?);
     Ok(said)
+}
+
+/// The pinned adapters, from the lockfile built into this program, into the data folder.
+pub fn adapters(data_dir: &Path, ask: Ask) -> Result<Vec<String>> {
+    let dir = data_dir.join("adapters");
+    let tool = |name: &str| {
+        let mut command = Command::new(if cfg!(windows) { "cmd" } else { name });
+        if cfg!(windows) {
+            command.args(["/C", name]);
+        }
+        command
+    };
+    for name in ["node", "pnpm"] {
+        let found = tool(name).arg("--version").output();
+        if !found.is_ok_and(|output| output.status.success()) {
+            return Err(Error::Setup(format!(
+                "{name} was not found. Install it, then run this again. Nothing was written."
+            )));
+        }
+    }
+    let text = format!(
+        "Write the pinned package list to {shown}\nand run: pnpm install --frozen-lockfile --ignore-scripts\nThis downloads the adapters and replaces any there now.",
+        shown = dir.display()
+    );
+    if !ask(&text) {
+        return Ok(vec!["adapters: nothing written".to_owned()]);
+    }
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("package.json"), ADAPTER_MANIFEST)?;
+    std::fs::write(dir.join("pnpm-lock.yaml"), ADAPTER_LOCK)?;
+    let mut install = tool("pnpm");
+    install.args(["install", "--frozen-lockfile", "--ignore-scripts"]);
+    let done = install.current_dir(&dir).stdin(Stdio::null()).output()?;
+    if !done.status.success() {
+        let why = String::from_utf8_lossy(&done.stderr);
+        let out = String::from_utf8_lossy(&done.stdout);
+        return Err(Error::Setup(format!("pnpm install failed: {why}{out}")));
+    }
+    Ok(vec![format!("adapters installed in {}", dir.display())])
 }
 
 /// Writes nothing to a home. It can't say a hash is current: verify and launches check that.
