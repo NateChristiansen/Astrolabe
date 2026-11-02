@@ -39,7 +39,6 @@ fn new_secret() -> Result<String> {
 }
 
 /// Port on the first line, secret on the second. Aside and renamed, so it appears whole.
-/// Owner-only from its creation, wherever the folder is.
 pub fn write_file(file: &Path, port: u16, secret: &str) -> std::io::Result<()> {
     let aside = file.with_extension(format!("{}.tmp", std::process::id()));
     gone(&aside)?;

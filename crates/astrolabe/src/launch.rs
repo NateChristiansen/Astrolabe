@@ -213,8 +213,7 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
     })
 }
 
-/// The core's own binary for the tool server of a session it launches. After `compose`, which
-/// compares a repo's copy by the bare name; hooks stay bare, as hook trust hashes their text.
+/// After `compose`, which compares a repo's copy by the bare name. Hooks stay bare: trust hashes them.
 pub fn own_tool_server(delivery: &mut crate::layer::Delivery, program_dir: &Path) {
     use crate::layer::PROGRAM;
     let own = program_dir.join(format!("{PROGRAM}{}", std::env::consts::EXE_SUFFIX));
