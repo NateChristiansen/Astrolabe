@@ -83,6 +83,15 @@ export function addItem(items: TranscriptItem[], item: TranscriptItem): Transcri
   return [...items, item];
 }
 
+export interface Problem {
+  message: string;
+  session?: number;
+}
+
+/** A problem names no session: it belongs to the one open when it arrived. */
+export const shownProblem = (problem: Problem | undefined, open: number | undefined) =>
+  problem && problem.session !== open ? undefined : problem?.message;
+
 export const stateWords: Record<string, string> = {
   starting: "Starting",
   could_not_start: "Couldn't start",

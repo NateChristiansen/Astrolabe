@@ -51,10 +51,12 @@ fn core_connection() -> Result<(u16, String), String> {
         } else if !std::mem::replace(&mut started, true) {
             let _ = lock.unlock();
             let mut serve = core_command()?;
+            let said =
+                fs::File::create(data.join("core-start.log")).map_or(Stdio::null(), Stdio::from);
             let quiet = serve.arg("serve").stdin(Stdio::null());
             quiet
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(said)
                 .spawn()
                 .map_err(text)?;
         } else {
@@ -62,7 +64,8 @@ fn core_connection() -> Result<(u16, String), String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err("the core did not start. Run astrolabe serve in a terminal to see why.".to_owned())
+    let said = fs::read_to_string(data.join("core-start.log")).unwrap_or_default();
+    Err(format!("the core did not start. {}", said.trim()))
 }
 
 fn main() {

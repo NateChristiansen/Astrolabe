@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { BridgeEvent, BridgeState, SessionRow, TranscriptItem } from "./protocol/bridge-event-v1";
 import type { BridgeProvider } from "./protocol/bridge-request-v1";
-import { addItem, connect, providerWords, stateWords, toolWords } from "./core";
-import type { Core, Link } from "./core";
+import { addItem, connect, providerWords, shownProblem, stateWords, toolWords } from "./core";
+import type { Core, Link, Problem } from "./core";
 
 function NewSession({ state, core }: { state: BridgeState; core: Core }) {
   const [repo, setRepo] = useState("");
@@ -27,18 +27,19 @@ function NewSession({ state, core }: { state: BridgeState; core: Core }) {
           <option key={name}>{name}</option>
         ))}
       </select>
-      <select
-        aria-label="Agent"
-        value={chosenProvider}
-        onChange={(e) => setProvider(e.target.value as BridgeProvider)}
-      >
-        {state.providers.map((name) => (
-          <option key={name} value={name}>
-            {providerWords[name]}
-          </option>
-        ))}
-      </select>
-      <button>New session</button>
+      {state.providers.length === 0 ? (
+        <p className="hint">No agents are turned on.</p>
+      ) : (
+        <div className="agents" role="radiogroup" aria-label="Agent">
+          {state.providers.map((name) => (
+            <label key={name} className={name === chosenProvider ? "on" : ""}>
+              <input type="radio" checked={name === chosenProvider} onChange={() => setProvider(name)} />
+              {providerWords[name]}
+            </label>
+          ))}
+        </div>
+      )}
+      <button disabled={!chosenProvider}>New {providerWords[chosenProvider]} session</button>
     </form>
   );
 }
@@ -128,6 +129,11 @@ function Chat({ row, items, core, up, loaded, draft, setDraft }: {
             <p key={item.tool} className="tool">
               {item.text || "A tool"} <span>{toolWords[item.status ?? ""] ?? item.status}</span>
             </p>
+          ) : item.role === "note" && item.text.startsWith("Not synced") ? (
+            <details key={item.seq} className="note">
+              <summary>{item.text.split("\n")[0]}</summary>
+              {item.text.split("\n").slice(1).join("\n")}
+            </details>
           ) : (
             <p key={item.seq} className={item.role}>
               {item.text}
@@ -181,7 +187,7 @@ export function App() {
   const [core, setCore] = useState<Core>();
   const [link, setLink] = useState<{ link: Link; why?: string }>({ link: "connecting" });
   const [state, setState] = useState<BridgeState>();
-  const [problem, setProblem] = useState<string>();
+  const [problem, setProblem] = useState<Problem>();
   const [open, setOpen] = useState<number>();
   const [transcripts, setTranscripts] = useState<Record<number, TranscriptItem[]>>({});
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
@@ -213,7 +219,7 @@ const opened = useRef<number | undefined>(undefined);
       if (event.type === "state") {
         setState(event.state);
       } else if (event.type === "problem") {
-        setProblem(event.message);
+        setProblem({ message: event.message, session: opened.current });
         release();
       } else if (event.type === "transcript") {
         const items = event.items.reduce(addItem, [] as TranscriptItem[]);
@@ -244,6 +250,7 @@ const opened = useRef<number | undefined>(undefined);
 
   const sessions = state?.sessions ?? [];
   const row = sessions.find((session) => session.id === open);
+  const showing = shownProblem(problem, open);
   return (
     <div className="app">
       <aside>
@@ -274,9 +281,9 @@ const opened = useRef<number | undefined>(undefined);
           <p className="banner">{link.why ?? "Connecting to the core…"}</p>
         )}
         {state?.restart && <p className="banner">{state.restart}</p>}
-        {problem && (
+        {showing && (
           <p className="banner problem" onClick={() => setProblem(undefined)}>
-            {problem}
+            {showing}
           </p>
         )}
         {row && core ? (

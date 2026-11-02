@@ -87,3 +87,9 @@ ul { list-style: none; margin: 12px 0 0; padding: 0; }
 .say input { flex: 1; padding: 4px 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
 .prompt { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
 .prompt textarea { flex: 1; resize: none; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.agents { display: flex; width: 100%; gap: 6px; }
+.agents label { flex: 1; text-align: center; padding: 4px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.agents label.on { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+.agents input { position: absolute; opacity: 0; }
+.agents label:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+details.note { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
