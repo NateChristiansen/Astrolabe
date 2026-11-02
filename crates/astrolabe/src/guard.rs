@@ -416,7 +416,7 @@ fn simple(
             (!args.iter().any(by_id)).then(|| "Stop-Process by name".to_owned())
         }
         "git" => git(args, piped),
-        "gh" => gh(args),
+        "gh" => gh(args, piped),
         "find" => find(args, dialect, context, depth),
         "rm" | "remove-item" | "ri" | "rmdir" | "rd" | "del" | "erase" => {
             remove(&name, args, context, piped)
@@ -478,7 +478,7 @@ fn is_force_push_argument(text: &str) -> bool {
 
 /// By operation, reads and a plain `gh run rerun` named: anything else on `gh` posts, changes
 /// or deletes something, or is new here, as a variable is: the same to a guard that can't tell.
-fn gh(args: &[Word]) -> Option<String> {
+fn gh(args: &[Word], piped: bool) -> Option<String> {
     const READS: [&str; 13] = [
         "view", "list", "ls", "status", "diff", "checks", "watch", "download", "checkout", "clone",
         "get", "token", "verify",
@@ -490,7 +490,7 @@ fn gh(args: &[Word]) -> Option<String> {
         "api" => gh_api_writes(args),
         _ => !READS.contains(&positional.next()?.text.as_str()),
     };
-    (denied && !r).then(|| "a gh call that posts or changes something".to_owned())
+    (denied && (piped || !r)).then(|| "a gh call that posts or changes something".to_owned())
 }
 
 /// All of `graphql` counts as a write: telling a query from a mutation isn't worth it.

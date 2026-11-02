@@ -351,3 +351,9 @@ deny	mac	Bash	gh $(echo run) rerun 5
 deny	mac	Bash	gh "run rerun" pr merge 3
 deny	mac	Bash	gh -R o/r run rerun 5
 deny	mac	Bash	gh run -R o/r rerun 5
+deny	mac	Bash	printf 'cancel\n' | xargs -I rerun gh run rerun 5
+deny	mac	Bash	gh run list | xargs gh run rerun
+deny	mac	Bash	find . -name x -exec gh run rerun 5 ;
+miss	mac	Bash	gh run rerun 5 && env -S 'gh pr merge 3'
+miss	mac	Bash	gh run rerun 5; sh <<'EOF'⏎gh pr merge 3⏎EOF
+miss	mac	Bash	printf 'cancel\n' | xargs -I rerun sh -c 'gh run rerun 5'
