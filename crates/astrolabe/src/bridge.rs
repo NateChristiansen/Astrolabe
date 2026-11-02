@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use protocol::BridgeRequest;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::mpsc::{self, Sender};
@@ -43,9 +43,7 @@ fn new_secret() -> Result<String> {
 pub fn write_file(file: &Path, port: u16, secret: &str) -> std::io::Result<()> {
     let aside = file.with_extension(format!("{}.tmp", std::process::id()));
     gone(&aside)?;
-    let mut out = crate::private_file::create(&aside)?;
-    writeln!(out, "{port}\n{secret}")?;
-    drop(out);
+    crate::private_file::write(&aside, &format!("{port}\n{secret}\n"))?;
     fs::rename(&aside, file)?;
     Ok(())
 }

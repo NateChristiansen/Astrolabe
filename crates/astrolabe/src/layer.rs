@@ -7,8 +7,8 @@ use crate::error::{Error, Result};
 use std::ffi::OsString;
 use std::path::Path;
 
-/// On `PATH` through `launch_env`. Never a full path in the layer: a repo's copy of a hook or
-/// server must be the same string, or a client loads both, and hook trust hashes this text.
+/// On `PATH` through `launch_env`. Never a full path: a repo's copy of a hook or server
+/// must be the same string, or a client loads both, and hook trust hashes this text.
 pub const PROGRAM: &str = "astrolabe";
 pub const MCP_NAME: &str = "astrolabe";
 pub const MCP_TOOLS: [&str; 1] = ["layer_check"];
