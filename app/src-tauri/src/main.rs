@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(feature = "test-control")]
+mod control;
 use std::fs::{self, OpenOptions, TryLockError};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -69,8 +71,10 @@ fn core_connection() -> Result<(u16, String), String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![core_connection])
+    let app = tauri::Builder::default();
+    #[cfg(feature = "test-control")]
+    let app = control::wire(app);
+    app.invoke_handler(tauri::generate_handler![core_connection])
         .run(tauri::generate_context!())
         .expect("failed to run Astrolabe");
 }

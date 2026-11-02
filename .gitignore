@@ -9,3 +9,4 @@
 .env
 .env.*
 app/src-tauri/binaries/
+control-shots/
