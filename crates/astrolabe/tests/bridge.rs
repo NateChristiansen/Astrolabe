@@ -337,7 +337,11 @@ fn allow_through_the_bridge_on_both_recordings() {
         let dir = TempDir::new();
         let _core = Core::recorded(&dir);
         let mut window = Window::open(&dir);
-        let row = window.start(recording, provider);
+        let repo = match provider {
+            BridgeProvider::Codex => staying(&dir, recording),
+            BridgeProvider::Claude => recording.to_owned(),
+        };
+        let row = window.start(&repo, provider);
         let text = recorded_prompt(recording, 0);
         window.send(BridgeRequest::Prompt {
             session: row.id,
@@ -345,6 +349,7 @@ fn allow_through_the_bridge_on_both_recordings() {
         });
         let asked = window.until_state(SessionState::NeedsYou);
         assert!(asked.requests[0].live);
+
         let request = asked.requests[0].id.clone();
         window.send(BridgeRequest::Answer {
             request: request.clone(),
@@ -430,7 +435,7 @@ fn a_session_survives_its_window_and_the_next_window_sees_all_of_it() {
     let dir = TempDir::new();
     let _core = Core::recorded(&dir);
     let mut first = Window::open(&dir);
-    let row = first.start(recording, BridgeProvider::Codex);
+    let row = first.start(&staying(&dir, recording), BridgeProvider::Codex);
     let text = recorded_prompt(recording, 0);
     first.send(BridgeRequest::Prompt {
         session: row.id,
@@ -639,6 +644,15 @@ fn edited(dir: &TempDir, recording: &str, edit: impl Fn(&str) -> String) -> Stri
     path.to_string_lossy().into_owned()
 }
 
+/// A Codex recording ends with its adapter leaving, a moment after the turn. A real adapter
+/// stays for the next prompt, so a test of the turn's end holds this one open the same way.
+fn staying(dir: &TempDir, recording: &str) -> String {
+    let wait = r#"{"process":0,"direction":"to_agent","message":{"never":"sent"}}"#;
+    edited(dir, recording, |text| {
+        format!("{}\n{wait}", text.trim_end())
+    })
+}
+
 fn to_needs_you(window: &mut Window, repo: &str) -> SessionRow {
     let row = window.start(repo, BridgeProvider::Codex);
     let text = "fixture prompt 1".to_owned();
@@ -840,6 +854,17 @@ fn a_process_that_survives_a_restart_is_shown_as_still_running() {
 
     let _core = Core::recorded(&dir);
     let mut window = Window::open(&dir);
+    if cfg!(windows) {
+        // The Job Object ends the adapter with the core, so the first state, from the
+        // reconcile at start, already has it gone. The agent would stay ten seconds if not.
+        let row = window.until("the first state", |window| window.session().cloned());
+        let decided = row.requests[0].decided.as_ref().unwrap();
+        assert!(decided.contains("marked interrupted"), "{decided}");
+        assert!(!row.requests[0].live);
+        let said = window.state.as_ref().unwrap().restart.as_ref().unwrap();
+        assert!(said.contains("1 session(s) marked interrupted"), "{said}");
+        return;
+    }
     let row = window.until_state(SessionState::StillRunning);
     assert!(
         row.why.as_ref().unwrap().contains("Still running"),
