@@ -83,6 +83,12 @@ jobs:
         shell: bash
         run: |
           pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":${{ matrix.targets }},"externalBin":["binaries/astrolabe"]}}'
+      - name: Installer and uninstaller leave the data folder alone
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Select-String -Path app/src-tauri/target/release/nsis/x64/installer.nsi -Pattern 'PRODUCTNAME "|LOCALAPPDATA|RmDir|RMDir'
+          ./scripts/check-installer.ps1 -Installer (Get-ChildItem "${{ matrix.bundle }}/*.exe")[0].FullName
       - name: Archive the Mac app, as an upload would lose its permissions
         if: runner.os == 'macOS'
         run: tar -czf "${{ matrix.bundle }}/Astrolabe-mac.tgz" -C "${{ matrix.bundle }}" Astrolabe.app
