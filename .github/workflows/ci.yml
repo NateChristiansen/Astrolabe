@@ -1,0 +1,19 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  mac:
+    uses: ./.github/workflows/system.yml
+    with:
+      os: macos-latest
+      targets: '["app"]'
+      bundle: app/src-tauri/target/release/bundle/macos
+      artifact: Astrolabe-mac.tgz
+  windows:
+    uses: ./.github/workflows/system.yml
+    with:
+      os: windows-latest
+      targets: '["nsis"]'
+      bundle: app/src-tauri/target/release/bundle/nsis
+      artifact: "*.exe"

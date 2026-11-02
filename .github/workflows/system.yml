@@ -1,14 +1,26 @@
-name: CI
-on: [push, pull_request]
+name: One system
+# The whole of CI for one system, called once per system by ci.yml, because `needs` works on a
+# whole matrix: this way packaging waits on its own system's check and control and no other.
+on:
+  workflow_call:
+    inputs:
+      os:
+        type: string
+        required: true
+      targets:
+        type: string
+        required: true
+      bundle:
+        type: string
+        required: true
+      artifact:
+        type: string
+        required: true
 permissions:
   contents: read
 jobs:
   check:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,11 +58,7 @@ jobs:
       - run: node --test app/scripts/control-tools.test.mjs
   control:
     needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -76,24 +84,12 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: control-shots-${{ matrix.os }}
+          name: control-shots-${{ inputs.os }}
           path: control-shots/
           if-no-files-found: warn
   package:
     needs: [check, control]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            targets: '["app"]'
-            bundle: app/src-tauri/target/release/bundle/macos
-            artifact: Astrolabe-mac.tgz
-          - os: windows-latest
-            targets: '["nsis"]'
-            bundle: app/src-tauri/target/release/bundle/nsis
-            artifact: "*.exe"
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -120,31 +116,31 @@ jobs:
       - name: Build unsigned
         shell: bash
         run: |
-          pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":${{ matrix.targets }},"externalBin":["binaries/astrolabe"]}}'
+          pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":${{ inputs.targets }},"externalBin":["binaries/astrolabe"]}}'
       - name: Installer and uninstaller leave the data folder alone
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Select-String -Path app/src-tauri/target/release/nsis/x64/installer.nsi -Pattern 'PRODUCTNAME "|LOCALAPPDATA|RmDir|RMDir'
-          ./scripts/check-installer.ps1 -Installer (Get-ChildItem "${{ matrix.bundle }}/*.exe")[0].FullName
+          ./scripts/check-installer.ps1 -Installer (Get-ChildItem "${{ inputs.bundle }}/*.exe")[0].FullName
       - name: Archive the Mac app, as an upload would lose its permissions
         if: runner.os == 'macOS'
-        run: tar -czf "${{ matrix.bundle }}/Astrolabe-mac.tgz" -C "${{ matrix.bundle }}" Astrolabe.app
+        run: tar -czf "${{ inputs.bundle }}/Astrolabe-mac.tgz" -C "${{ inputs.bundle }}" Astrolabe.app
       - name: No test control in what is packaged, Mac
         if: runner.os == 'macOS'
         run: |
-          mkdir unpacked && tar -xzf "${{ matrix.bundle }}/Astrolabe-mac.tgz" -C unpacked
+          mkdir unpacked && tar -xzf "${{ inputs.bundle }}/Astrolabe-mac.tgz" -C unpacked
           node scripts/test-control.mjs absent unpacked app/dist
       - name: No test control in what is packaged, Windows
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          7z x -y -ounpacked ${{ matrix.bundle }}/*.exe > /dev/null
+          7z x -y -ounpacked ${{ inputs.bundle }}/*.exe > /dev/null
           node scripts/test-control.mjs absent unpacked app/dist
       - uses: actions/upload-artifact@v7
         with:
-          name: astrolabe-smoke-${{ matrix.os }}
+          name: astrolabe-smoke-${{ inputs.os }}
           path: |
-            ${{ matrix.bundle }}/${{ matrix.artifact }}
+            ${{ inputs.bundle }}/${{ inputs.artifact }}
             adapters/package.json
             adapters/pnpm-lock.yaml
