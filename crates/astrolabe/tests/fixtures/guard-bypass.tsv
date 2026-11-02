@@ -312,3 +312,42 @@ deny	win	Bash	Remove-Item -Recurse C:\work\repo\target
 deny	mac	Bash	cat <<EOF⏎	EOF⏎pkill node⏎EOF
 deny	mac	Bash	command -V pkill
 miss	mac	Bash	/usr/bin/time -o timing.txt git push --force
+allow	mac	Bash	gh run rerun 5
+allow	mac	Bash	gh run rerun 5 --failed
+allow	mac	Bash	gh run rerun 5 --failed -R o/r
+allow	mac	Bash	gh run rerun -R o/r 5
+allow	mac	Bash	gh run rerun 5 --job 7 --debug
+allow	mac	Bash	gh run rerun "$RUN_ID" --failed
+allow	mac	Bash	sh -c 'gh run rerun 5 --failed'
+allow	mac	Bash	gh run rerun 5 && gh run view 5
+allow	win	PowerShell	gh run rerun 5 --failed -R o/r
+deny	mac	Bash	gh run cancel 5
+deny	mac	Bash	gh run delete 5
+deny	mac	Bash	gh pr rerun 3
+deny	mac	Bash	gh workflow rerun 3
+deny	mac	Bash	gh run $VERB 5
+deny	mac	Bash	gh run rerun 5 && gh run cancel 5
+deny	mac	Bash	gh run rerun 5; gh run delete 5
+deny	mac	Bash	gh run rerun 5 && gh pr merge 3
+deny	mac	Bash	gh run rerun 5; gh pr merge 3
+deny	mac	Bash	gh run rerun 5 && gh api -X POST repos/o/r/issues
+deny	mac	Bash	gh run rerun 5; gh api graphql -f query=x
+deny	mac	Bash	gh run rerun 5 && git push --force
+deny	mac	Bash	gh run rerun 5 || gh run cancel 5
+deny	mac	Bash	gh run rerun 5 | gh run delete 5
+deny	mac	Bash	gh run rerun 5⏎gh pr merge 3
+deny	mac	Bash	gh run rerun $(gh pr merge 3)
+deny	mac	Bash	sh -c 'gh run rerun 5 && gh pr merge 3'
+deny	mac	Bash	sh -c 'gh run cancel 5'
+deny	mac	Bash	env A=1 gh run delete 5
+deny	mac	Bash	eval gh run rerun 5 \&\& gh run cancel 5
+deny	win	PowerShell	gh run rerun 5; gh run cancel 5
+deny	win	Bash	cmd //c "gh run rerun 5 & gh pr merge 3"
+deny	win	Bash	powershell -Command "gh run rerun 5; gh pr merge 3"
+deny	mac	Bash	gh --repo run -R rerun pr merge 3
+deny	mac	Bash	gh $(echo pr merge 3 \#)run rerun
+deny	mac	Bash	gh run rerun$(echo x) 5
+deny	mac	Bash	gh $(echo run) rerun 5
+deny	mac	Bash	gh "run rerun" pr merge 3
+deny	mac	Bash	gh -R o/r run rerun 5
+deny	mac	Bash	gh run -R o/r rerun 5

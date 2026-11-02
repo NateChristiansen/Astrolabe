@@ -476,20 +476,21 @@ fn is_force_push_argument(text: &str) -> bool {
         || short_flags(text).is_some_and(|flags| flags.contains('f'))
 }
 
-/// By operation, reads named: anything else on `gh` posts, changes or deletes something,
-/// or is new to this list, as a variable is: the same to a guard that can't tell.
+/// By operation, reads and a plain `gh run rerun` named: anything else on `gh` posts, changes
+/// or deletes something, or is new here, as a variable is: the same to a guard that can't tell.
 fn gh(args: &[Word]) -> Option<String> {
     const READS: [&str; 13] = [
         "view", "list", "ls", "status", "diff", "checks", "watch", "download", "checkout", "clone",
         "get", "token", "verify",
     ];
+    let r = (args.get(..2)).is_some_and(|a| a.iter().all(|w| !w.dynamic) && join(a) == "run rerun");
     let mut positional = args.iter().filter(|arg| !arg.text.starts_with('-'));
     let denied = match positional.next()?.text.as_str() {
         "help" | "version" | "status" | "search" | "browse" | "completion" => false,
         "api" => gh_api_writes(args),
         _ => !READS.contains(&positional.next()?.text.as_str()),
     };
-    denied.then(|| "a gh call that posts or changes something".to_owned())
+    (denied && !r).then(|| "a gh call that posts or changes something".to_owned())
 }
 
 /// All of `graphql` counts as a write: telling a query from a mutation isn't worth it.
