@@ -463,6 +463,13 @@ fn run_session(engine: &Engine, ready: &Prepared, wanted: [String; 2], say: Say)
     Err(Error::Setup("no end of turn in time".to_owned()))
 }
 
+/// Models repeat a quoted list line without its Markdown. A line with no words matches nothing.
+pub fn repeats_line(reply: &str, line: &str) -> bool {
+    let line = line.trim_start_matches(['>', ' ', '\t']);
+    let words = line.strip_prefix("- ").unwrap_or(line).trim();
+    words.chars().any(char::is_alphanumeric) && reply.contains(words)
+}
+
 /// From the client's record of what it sent; a reply alone could come from reading the file.
 fn delivery_problem(
     machine: &Machine,
@@ -482,11 +489,13 @@ fn delivery_problem(
         .transpose()
         .map_err(Error::Setup)?
         .unwrap_or_default();
+    // No line at all means no agent repo, so there was nothing to repeat.
+    let last = wanted.lines().last();
     Ok(if voice::memory_on(codex, &record, &text) {
         Some(format!("native memory is on in {shown}"))
     } else if !voice::in_transcript(&text, &wanted) {
         Some(format!("owner and voice not whole in {shown}"))
-    } else if !reply.contains(wanted.lines().last().unwrap_or_default()) {
+    } else if last.is_some_and(|line| !repeats_line(reply, line)) {
         Some(format!(
             "the model did not repeat the voice line: {reply:?}"
         ))

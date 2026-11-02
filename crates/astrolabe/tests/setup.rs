@@ -426,6 +426,25 @@ fn verify_judges_from_the_disk() {
 }
 
 #[test]
+fn a_repeated_voice_line_may_lose_its_markdown_but_not_its_words() {
+    let line = "> - plum kites hum";
+    for reply in ["- plum kites hum", "plum kites hum", "> - plum kites hum"] {
+        assert!(doctor::repeats_line(reply, line), "{reply}");
+    }
+    assert!(doctor::repeats_line("plum kites", "plum kites"));
+    assert!(doctor::repeats_line("-5 plums", "-5 plums"));
+    for reply in ["", "plum kites", "- ", "> -"] {
+        assert!(!doctor::repeats_line(reply, line), "{reply}");
+    }
+    for nothing in ["", "  ", ">", "> > ", "-", "- ", "> - ", "> -"] {
+        assert!(
+            !doctor::repeats_line("any reply - > at all", nothing),
+            "{nothing:?}"
+        );
+    }
+}
+
+#[test]
 fn folder_check_catches_a_folder_that_cant_be_used() {
     let box_ = Sandbox::new();
     assert_eq!(doctor::folder_check(&box_.0), Ok(()));
