@@ -48,8 +48,32 @@ impl Core {
         Self::spawn(command, dir)
     }
 
-    fn spawn(mut command: Command, dir: &TempDir) -> Self {
+    fn spawn(command: Command, dir: &TempDir) -> Self {
         let _ = std::fs::remove_file(dir.0.join("bridge.txt"));
+        Self::spawn_waiting(command, dir)
+    }
+
+    /// For a stale file: ready once the port in it answers.
+    #[cfg(windows)]
+    fn real_keeping_the_file(dir: &TempDir) -> Self {
+        let mut command = Command::new(BIN);
+        command.args(["serve", "--db"]).arg(dir.db());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let core = Self(command.spawn().unwrap());
+        let deadline = Instant::now() + PATIENCE;
+        while std::fs::read_to_string(dir.0.join("bridge.txt"))
+            .map_or(true, |text| text.starts_with("stale"))
+        {
+            assert!(Instant::now() < deadline, "the stale file stayed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        core
+    }
+
+    fn spawn_waiting(mut command: Command, dir: &TempDir) -> Self {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1203,4 +1227,93 @@ fn stop_with_words_waiting_records_them_as_not_sent() {
         "{said}"
     );
     assert!(said.contains("You stopped"), "{said}");
+}
+
+/// Every entry on the file, inherited or not, as Windows itself reports it.
+#[cfg(windows)]
+fn windows_permissions(file: &Path) -> (Vec<String>, bool) {
+    let script = format!(
+        "$acl = Get-Acl -LiteralPath '{}'; \
+         $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
+         $sid = [Security.Principal.SecurityIdentifier]; \
+         $acl.AreAccessRulesProtected; \
+         $acl.GetAccessRules($true, $true, $sid) | ForEach-Object {{ \
+             \"$($_.IdentityReference.Value -eq $me) $($_.IsInherited) $($_.AccessControlType)\" }}",
+        file.display()
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{text}");
+    let mut lines = text.lines().map(str::trim).map(str::to_owned);
+    let protected = lines.next().unwrap() == "True";
+    (lines.collect(), protected)
+}
+
+/// Catches: `bridge.txt` taking the folder's entries, as seen on a real PC. Read back through
+/// PowerShell, not the code that set it. Run twice: the second start meets a stale file.
+#[cfg(windows)]
+#[test]
+fn on_windows_the_handover_file_has_one_entry_the_owner() {
+    let dir = TempDir::new();
+    for _ in 0..2 {
+        std::fs::write(dir.0.join("bridge.txt"), "stale, with the folder's entries").unwrap();
+        let core = Core::real_keeping_the_file(&dir);
+        let (entries, protected) = windows_permissions(&dir.0.join("bridge.txt"));
+        assert!(protected, "still inherits from the folder");
+        assert_eq!(
+            entries,
+            ["True False Allow"],
+            "any entry but the owner fails"
+        );
+        core.kill();
+    }
+}
+
+/// Catches: a leftover aside file keeping loose permissions into the real one. It was
+/// opened and written, so whoever could read it before can read the secret.
+#[test]
+fn a_leftover_aside_file_does_not_pass_on_its_permissions() {
+    let dir = TempDir::new();
+    let file = dir.0.join("bridge.txt");
+    let aside = file.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&aside, "left over").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&aside, PermissionsExt::from_mode(0o644)).unwrap();
+    }
+    astrolabe::bridge::write_file(&file, 1234, "secret").unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "1234\nsecret\n");
+    assert!(!aside.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    #[cfg(windows)]
+    assert_eq!(windows_permissions(&file).0, ["True False Allow"]);
+}
+
+/// Catches: a core serving, or failing mutely, when the old file can't be replaced.
+#[test]
+fn a_core_that_cannot_secure_the_file_does_not_serve_and_says_why() {
+    let dir = TempDir::new();
+    // A folder with something in it can't be removed as a file, on any system.
+    std::fs::create_dir_all(dir.0.join("bridge.txt/held")).unwrap();
+    let out = Command::new(BIN)
+        .args(["serve", "--db"])
+        .arg(dir.db())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "it served");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("will not serve") && said.contains("bridge.txt"),
+        "{said}"
+    );
 }

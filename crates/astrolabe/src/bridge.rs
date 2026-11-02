@@ -41,7 +41,7 @@ fn new_secret() -> Result<String> {
 /// Port on the first line, secret on the second. Aside and renamed, so it appears whole.
 /// On Unix owner-only from its creation. Windows has no mode to set: the file takes the
 /// folder's permissions, and `%LOCALAPPDATA%` is the user's own.
-fn write_file(file: &Path, port: u16, secret: &str) -> Result<()> {
+pub fn write_file(file: &Path, port: u16, secret: &str) -> Result<()> {
     let aside = file.with_extension(format!("{}.tmp", std::process::id()));
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
