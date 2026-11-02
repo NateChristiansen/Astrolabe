@@ -47,7 +47,8 @@ pub fn says_yes(line: &[u8]) -> bool {
         [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
         _ => String::from_utf8(line.to_vec()).ok(),
     };
-    text.is_some_and(|text| text.trim() == "yes")
+    // ASCII only: a wider space in UTF-16 can hold a newline byte, with more answer behind it.
+    text.is_some_and(|text| text.trim_ascii() == "yes")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

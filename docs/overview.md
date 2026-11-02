@@ -10,7 +10,7 @@ Three programs, one machine.
 
 1. Finds the repo and syncs it, carrying on from your local copy if that fails.
 2. Makes a worktree, unless this is your agent repo, which runs in place.
-3. Composes the layer: instructions, hooks, tool server, deny rules, native memory off. On your agent repo it adds nothing the repo already supplies.
+3. Composes the layer: instructions, hooks, tool server, deny rules, native memory off. On your agent repo, with its generated config unchanged, it adds nothing the repo already supplies.
 4. Asks the guard to deny a force push and pass a plain command. If it doesn't, nothing starts.
 5. Waits for the session-start hook's receipt, up to 30 seconds. With no receipt the session is ended and the window says why. Codex only fires that hook after the first prompt, so its first turn can run during the wait.
 

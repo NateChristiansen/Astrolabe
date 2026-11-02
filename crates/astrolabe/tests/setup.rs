@@ -340,6 +340,10 @@ fn a_yes_may_open_with_a_byte_order_mark_and_nothing_else_counts() {
     let read = trust::read_answer(&mut std::io::Cursor::new(&split)).unwrap();
     assert!(!trust::says_yes(&read), "{read:?}");
     assert!(!trust::says_yes(&split[..split.len() - 1]));
+    for split in [le("yes\u{200A}NO\r\n"), be("yes\u{200A}NO\r\n")] {
+        let read = trust::read_answer(&mut std::io::Cursor::new(&split)).unwrap();
+        assert!(!trust::says_yes(&read), "{read:?}");
+    }
     for no in [
         b"".to_vec(),
         b"\n".to_vec(),
