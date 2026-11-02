@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS shell_sessions (id INTEGER PRIMARY KEY, repo TEXT NOT
 CREATE TABLE IF NOT EXISTS transcript (seq INTEGER PRIMARY KEY, shell_session INTEGER NOT NULL,
     role TEXT NOT NULL, text TEXT NOT NULL, tool TEXT, status TEXT);
 CREATE INDEX IF NOT EXISTS transcript_by_session ON transcript(shell_session, seq);
+CREATE TABLE IF NOT EXISTS shell_worktrees (path TEXT PRIMARY KEY);
 ";
 
 enum Done {
@@ -239,6 +240,15 @@ impl<'e> Host<'e> {
     }
 
     fn launch(&mut self, id: i64, prepared: Result<Prepared>) -> Result<()> {
+        if let Some(made) = prepared
+            .as_ref()
+            .ok()
+            .and_then(|ready| ready.worktree.as_ref())
+        {
+            let query = "INSERT OR IGNORE INTO shell_worktrees (path) VALUES (?1)";
+            self.book
+                .execute(query, [crate::hook::comparable(&made.path)])?;
+        }
         let launched = prepared.and_then(|ready| {
             let client = AcpClient::launch(self.engine, &ready.launch, &ready.cwd);
             if let (Err(_), Some(made)) = (&client, &ready.worktree) {
@@ -533,7 +543,9 @@ impl<'e> Host<'e> {
              WHERE event = 'session-start' AND session_id IS NOT NULL AND session_id != ?1
              AND session_id NOT IN
                  (SELECT agent_session_id FROM sessions WHERE agent_session_id IS NOT NULL)
-             GROUP BY session_id ORDER BY 2 DESC LIMIT 20",
+             AND NOT EXISTS (SELECT 1 FROM shell_worktrees w WHERE cwd = w.path
+                 OR substr(cwd, 1, length(w.path) + 1) IN (w.path || '/', w.path || '\\'))
+             GROUP BY session_id ORDER BY 2 DESC",
         )?;
         let rows = query.query_map([crate::hook::SELF_TEST_SESSION], |row| {
             Ok(PlainRow {
@@ -541,7 +553,11 @@ impl<'e> Host<'e> {
                 at_ms: row.get(1)?,
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let here = |row: &rusqlite::Result<PlainRow>| !matches!(row, Ok(row) if !Path::new(&row.folder).is_dir());
+        Ok(rows
+            .filter(here)
+            .take(20)
+            .collect::<rusqlite::Result<_>>()?)
     }
 }
 

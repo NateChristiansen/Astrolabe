@@ -51,10 +51,8 @@ pub fn write_file(file: &Path, port: u16, secret: &str) -> std::io::Result<()> {
 }
 
 fn gone(path: &Path) -> std::io::Result<()> {
-    match fs::remove_file(path) {
-        Err(why) if why.kind() != ErrorKind::NotFound => Err(why),
-        _ => Ok(()),
-    }
+    let missing = |why: &std::io::Error| why.kind() == ErrorKind::NotFound;
+    fs::remove_file(path).or_else(|why| if missing(&why) { Ok(()) } else { Err(why) })
 }
 
 pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {
@@ -62,14 +60,15 @@ pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {
     let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
     let secret = new_secret()?;
     let port = listener.local_addr()?.port();
+    let at = file.display();
+    let refused = |why| {
+        Error::Setup(format!(
+            "the core will not serve: {at} can't be yours alone: {why}"
+        ))
+    };
     gone(&file)
         .and_then(|()| write_file(&file, port, &secret))
-        .map_err(|why| {
-            let at = file.display();
-            Error::Setup(format!(
-                "the core will not serve: it could not make {at} yours alone: {why}"
-            ))
-        })?;
+        .map_err(refused)?;
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (secret, inbound) = (secret.clone(), inbound.clone());

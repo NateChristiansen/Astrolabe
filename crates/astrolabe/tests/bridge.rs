@@ -64,8 +64,8 @@ impl Core {
             .stderr(Stdio::null());
         let core = Self(command.spawn().unwrap());
         let deadline = Instant::now() + PATIENCE;
-        while std::fs::read_to_string(dir.0.join("bridge.txt"))
-            .map_or(true, |text| text.starts_with("stale"))
+        while !std::fs::read_to_string(dir.0.join("bridge.txt"))
+            .is_ok_and(|text| !text.starts_with("stale"))
         {
             assert!(Instant::now() < deadline, "the stale file stayed");
             std::thread::sleep(Duration::from_millis(20));
@@ -479,7 +479,7 @@ fn a_session_survives_its_window_and_the_next_window_sees_all_of_it() {
         "the prompt is in the transcript too"
     );
     assert!(
-        second.items[0].text.contains("not synced"),
+        second.items[0].text.contains("Not synced"),
         "progress lines are kept"
     );
     assert_eq!(second.agent_text(), "FIRST", "each chunk once");
@@ -961,6 +961,7 @@ fn a_plain_shell_that_reported_in_is_a_row_and_a_launched_one_is_not() {
     let row = window.start("codex/full-turn", BridgeProvider::Codex);
     let reports = astrolabe::hook::reports_dir_in(&dir.0);
     let plain_folder = dir.0.join("plainrepo");
+    std::fs::create_dir_all(&plain_folder).unwrap();
     let launched = dir.0.join("launchedrepo");
     // A report file is named by its millisecond, event and process: these must not share one.
     let pause = || std::thread::sleep(Duration::from_millis(3));
@@ -1316,4 +1317,71 @@ fn a_core_that_cannot_secure_the_file_does_not_serve_and_says_why() {
         said.contains("will not serve") && said.contains("bridge.txt"),
         "{said}"
     );
+}
+
+/// Catches the false row seen on a PC: a second session-start report, with an id no session
+/// holds, from inside a session's worktree. Same shape as the report a hook writes. A real
+/// plain shell beside it still shows, so nothing passes by hiding every row.
+#[test]
+fn a_report_from_a_sessions_worktree_is_not_a_plain_shell() {
+    use astrolabe::hook::{reports_dir_in, write_report};
+    let dir = TempDir::new();
+    a_repo(&dir);
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.start("worktree:codex/cancel-tool", BridgeProvider::Codex);
+    let holder = dir.0.join("repo.worktrees");
+    let tree = std::fs::read_dir(&holder)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let inside = tree.join("src");
+    std::fs::create_dir_all(&inside).unwrap();
+    let real = dir.0.join("realshell");
+    std::fs::create_dir_all(&real).unwrap();
+    let reports = reports_dir_in(&dir.0);
+    let pause = || std::thread::sleep(Duration::from_millis(3));
+    write_report(&reports, "session-start", Some("hidden-1"), &tree).unwrap();
+    pause();
+    write_report(&reports, "session-start", Some("hidden-2"), &inside).unwrap();
+    pause();
+    write_report(&reports, "session-start", Some("real-1"), &real).unwrap();
+    window.until("the real shell's row", |window| {
+        let plain = &window.state.as_ref()?.plain;
+        plain
+            .iter()
+            .any(|row| row.folder.ends_with("realshell"))
+            .then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    window.pump();
+    let plain = &window.state.as_ref().unwrap().plain;
+    assert_eq!(plain.len(), 1, "{plain:?}");
+}
+
+/// Catches: a row outlasting its folder, seen on a PC after the worktree it named went.
+#[test]
+fn a_plain_row_goes_when_its_folder_goes() {
+    use astrolabe::hook::{reports_dir_in, write_report};
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let folder = dir.0.join("shortlived");
+    std::fs::create_dir_all(&folder).unwrap();
+    write_report(
+        &reports_dir_in(&dir.0),
+        "session-start",
+        Some("gone-1"),
+        &folder,
+    )
+    .unwrap();
+    window.until("the row", |window| {
+        (!window.state.as_ref()?.plain.is_empty()).then_some(())
+    });
+    std::fs::remove_dir_all(&folder).unwrap();
+    window.until("the row going", |window| {
+        window.state.as_ref()?.plain.is_empty().then_some(())
+    });
 }

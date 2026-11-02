@@ -517,7 +517,7 @@ fn a_product_launch_gets_a_worktree_the_whole_layer_and_its_profile() {
     let mut said = Vec::new();
     let ready = launch::prepare(&machine, &request, &mut |line| said.push(line)).unwrap();
     assert!(
-        said.iter().any(|line| line.contains("not synced")),
+        said.iter().any(|line| line.contains("Not synced")),
         "no remote: {said:?}"
     );
     assert_eq!(ready.cwd, box_.0.join("prod.worktrees").join("s1"));
@@ -537,6 +537,50 @@ fn a_product_launch_gets_a_worktree_the_whole_layer_and_its_profile() {
     machine.registry.set_provider("claude", false).unwrap();
     let error = launch::prepare(&machine, &request, &mut |_| {}).unwrap_err();
     assert!(error.to_string().contains("off"));
+}
+
+/// Catches: a launched session running whichever `astrolabe` is first on PATH, seen on a PC.
+/// The hooks stay bare, as hook trust hashes their text.
+#[test]
+fn a_launched_sessions_tool_server_is_the_cores_own_binary() {
+    use astrolabe::layer::{Layer, RepoInstructions, RepoSupplies, Target, TargetKind, compose};
+    let box_ = Sandbox::new();
+    box_.fake_adapter();
+    let machine = box_.machine();
+    let agent = box_.0.join("agent");
+    init::create(&machine.registry, &agent).unwrap();
+    machine.registry.add("prod", &box_.repo("prod")).unwrap();
+    let client = PathBuf::from("/nowhere/claude");
+    let request = Request {
+        repo: "prod",
+        provider: Provider::Claude,
+        session: "s1",
+        dials: DEFAULT_DIALS,
+        client: &client,
+    };
+    let ready = launch::prepare(&machine, &request, &mut |_| {}).unwrap();
+    let options = &ready.launch.meta.as_ref().unwrap()["claudeCode"]["options"];
+    let file = format!("astrolabe{}", std::env::consts::EXE_SUFFIX);
+    let own = machine.program_dir.join(file);
+    let server = &options["mcpServers"]["astrolabe"];
+    assert_eq!(server["command"], own.to_string_lossy().as_ref());
+    let hook = &options["settings"]["hooks"]["SessionStart"][0]["hooks"][0]["command"];
+    assert_eq!(hook, "astrolabe hook session-start");
+
+    let supplies = RepoSupplies {
+        instructions: RepoInstructions::None,
+        ..Default::default()
+    };
+    let kind = TargetKind::Product;
+    let target = Target { kind, supplies };
+    let mut delivery = compose(&target, &Layer::standard("x", &[])).unwrap();
+    delivery.hooks.clear();
+    launch::own_tool_server(&mut delivery, &machine.program_dir);
+    let codex = astrolabe::driver::codex::deliver(&delivery, &[]).unwrap();
+    assert_eq!(
+        codex.mcp_servers[0]["command"],
+        own.to_string_lossy().as_ref()
+    );
 }
 
 #[test]

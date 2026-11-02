@@ -34,7 +34,7 @@ fn main() {
     let (root, cwd) = (fixtures.clone(), db.parent().unwrap().join("agents"));
     std::fs::create_dir_all(&cwd).unwrap();
     let prepare: Prepare = Arc::new(move |repo, _, name, say| {
-        say("not synced, going on: recording".to_owned());
+        say("Not synced, so using your local copy.\nrecording".to_owned());
         if repo == "slow" {
             std::thread::sleep(Duration::from_secs(60));
         }

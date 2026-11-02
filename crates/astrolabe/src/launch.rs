@@ -144,7 +144,8 @@ fn build(
     layer: &Layer,
     cwd: &Path,
 ) -> Result<Launch> {
-    let delivery = compose(target, layer)?;
+    let mut delivery = compose(target, layer)?;
+    own_tool_server(&mut delivery, &machine.program_dir);
     let (adapters, client) = (&machine.adapters, Some(request.client));
     let (mut launch, at) = match request.provider {
         Provider::Claude => {
@@ -190,7 +191,7 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
     }
     say("syncing".to_owned());
     if let Err(why) = registry::sync(&repo) {
-        say(format!("not synced, going on: {why}"));
+        say(format!("Not synced, so using your local copy.\n{why}"));
     }
     let mut made = None;
     if !agent {
@@ -210,4 +211,14 @@ pub fn prepare(machine: &Machine, request: &Request, say: Say) -> Result<Prepare
         cwd,
         worktree,
     })
+}
+
+/// The core's own binary for the tool server of a session it launches. After `compose`, which
+/// compares a repo's copy by the bare name; hooks stay bare, as hook trust hashes their text.
+pub fn own_tool_server(delivery: &mut crate::layer::Delivery, program_dir: &Path) {
+    use crate::layer::PROGRAM;
+    let own = program_dir.join(format!("{PROGRAM}{}", std::env::consts::EXE_SUFFIX));
+    for server in delivery.mcp.iter_mut().filter(|s| s.command == PROGRAM) {
+        server.command = own.to_string_lossy().into_owned();
+    }
 }
