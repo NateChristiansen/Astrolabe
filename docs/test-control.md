@@ -47,7 +47,7 @@ node scripts/test-control.mjs run steps.json --repo throwaway=/path/to/a/repo
 
 ## What holds it apart
 
-- A test build won't start unless `ASTROLABE_DATA_DIR` names a full path apart from the default data folder, so it has its own core, lock, `bridge.txt` and database.
+- A test build won't start unless `ASTROLABE_DATA_DIR` names a full path apart from the default data folder, and no core is serving that folder. So it has its own core, lock, `bridge.txt`, database and, on Windows, web view data.
 - The channel listens on loopback only, and wants the fresh secret from an owner-only file in that folder. Each ask is a new connection with the secret first.
 - CI builds the packaged apps without the feature and fails if the marker string is in them. It also checks that the scan finds it in a test build.
 

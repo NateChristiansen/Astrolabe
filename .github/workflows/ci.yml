@@ -80,7 +80,7 @@ jobs:
           path: control-shots/
           if-no-files-found: warn
   package:
-    needs: check
+    needs: [check, control]
     strategy:
       fail-fast: false
       matrix:

@@ -1,7 +1,6 @@
-//! The test control, compiled only with the `test-control` feature. A private local channel into
-//! this window: read the page, click, type, take a picture. A control channel could click Allow
-//! on an approval, so no normal build has any of this, and a test build refuses to run on the
-//! default data folder. CI looks for `MARK` in the packaged app and fails if it is there.
+//! The test control, only with the `test-control` feature: a private local channel to read the
+//! page, click, type and take a picture. It could click Allow, so no normal build has it. CI looks
+//! for `MARK` in the packaged app. A test build refuses the default data folder.
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -39,8 +38,8 @@ fn apart_folder() -> Result<PathBuf, String> {
         return Err(format!("{DATA_VAR} must be a plain full path: {shown}."));
     }
     let default = default_folder().ok_or("it can't tell where the default data folder is.")?;
-    let lower = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
     let overlap = |one: &Path, two: &Path| {
+        let lower = |path: &Path| PathBuf::from(path.to_string_lossy().to_lowercase());
         let (one, two) = (lower(one), lower(two));
         one.starts_with(&two) || two.starts_with(&one)
     };
@@ -51,11 +50,13 @@ fn apart_folder() -> Result<PathBuf, String> {
     }
     fs::create_dir_all(&set).map_err(|why| why.to_string())?;
     let real = set.canonicalize().map_err(|why| why.to_string())?;
-    // Links are gone by now. The default may not exist, but its parent may be a link.
     let parent = default.parent().and_then(|up| up.canonicalize().ok());
-    let real_default = parent.map_or(default.clone(), |up| up.join("Astrolabe"));
-    if overlap(&real, &real_default) {
+    let parent = parent.map_or(default.clone(), |up| up.join("Astrolabe"));
+    if overlap(&real, &default.canonicalize().unwrap_or(parent)) {
         return Err(refuse);
+    }
+    if serving(&set)? {
+        return Err(format!("a core is already serving {}.", set.display()));
     }
     Ok(set)
 }
@@ -69,6 +70,8 @@ pub fn wire(app: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
     if std::env::args().any(|word| word == "--check-folder") {
         std::process::exit(0);
     }
+    // Its own web view data too: Windows would otherwise share the normal app's.
+    unsafe { std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", data.join("webview")) };
     app.setup(move |app| {
         let window = app.get_webview_window("main").ok_or("no window")?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
@@ -78,7 +81,8 @@ pub fn wire(app: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
         let file = data.join(format!("{MARK}.txt"));
         let _ = fs::remove_file(&file);
         let port = listener.local_addr()?.port();
-        private_file::write(&file, &format!("{port}\n{secret}\n"))?;
+        let line = format!("{port}\n{secret}\n{}\n", std::process::id());
+        private_file::write(&file, &line)?;
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let (window, secret, data) = (window.clone(), secret.clone(), data.clone());
@@ -89,8 +93,7 @@ pub fn wire(app: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
     })
 }
 
-/// The secret on the first line, one ask on the second, one answer back. Without the secret, the
-/// window hears nothing and the caller gets only the refusal.
+/// The secret on the first line, one ask on the second, one answer back, or just a refusal.
 fn one_ask(stream: TcpStream, secret: &str, window: &WebviewWindow, data: &Path) -> IoResult {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut lines = BufReader::new((&stream).take(1 << 20)).lines();
@@ -123,27 +126,27 @@ fn answer(ask: &str, window: &WebviewWindow, data: &Path) -> Result<String, Stri
         "screenshot" => window
             .with_webview(move |view| snapshot(view, tell))
             .map_err(text)?,
-        "core" => return core_state(data),
+        "core" => {
+            let core = ["stopped", "serving"][serving(data)? as usize];
+            return Ok(json!({"ok": true, "core": core}).to_string());
+        }
         "exit" => return Ok(json!({"ok": true}).to_string()),
         _ => return Err(format!("no such ask: {verb}")),
     }
     let answer = said.recv_timeout(Duration::from_secs(20));
-    // A script that threw comes back empty on one system and `null` on the other.
     answer
         .ok()
         .filter(|answer| answer.starts_with('{'))
         .ok_or("no answer from the page".to_owned())
 }
 
-/// The lock is what says a core is serving, as it is for the app.
-fn core_state(data: &Path) -> Result<String, String> {
+fn serving(data: &Path) -> Result<bool, String> {
     let mut lock = OpenOptions::new();
     let lock = lock.create(true).truncate(false).write(true);
     let lock = lock
         .open(data.join("astrolabe.lock"))
         .map_err(|why| why.to_string())?;
-    let serving = matches!(lock.try_lock(), Err(TryLockError::WouldBlock));
-    Ok(json!({"ok": true, "core": if serving { "serving" } else { "stopped" }}).to_string())
+    Ok(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)))
 }
 
 /// WebKit's own picture of the web view. It needs no system permission.
@@ -158,9 +161,8 @@ fn snapshot(view: tauri::webview::PlatformWebview, tell: Sender<String>) {
         let tiff: *mut AnyObject = msg_send![image, TIFFRepresentation];
         let bitmap: *mut AnyObject = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff];
         let options: *mut AnyObject = msg_send![class!(NSDictionary), dictionary];
-        // 4 is NSBitmapImageFileTypePNG.
         let png: *mut AnyObject =
-            msg_send![bitmap, representationUsingType: 4usize, properties: options];
+            msg_send![bitmap, representationUsingType: 4usize /* PNG */, properties: options];
         let text: *mut AnyObject = msg_send![png, base64EncodedStringWithOptions: 0usize];
         let utf8: *const std::ffi::c_char = msg_send![text, UTF8String];
         let png = std::ffi::CStr::from_ptr(utf8).to_string_lossy();
@@ -194,6 +196,5 @@ fn snapshot(view: tauri::webview::PlatformWebview, tell: Sender<String>) {
         let web_view = view.controller().CoreWebView2();
         web_view.and_then(|web_view| web_view.CallDevToolsProtocolMethod(method, nothing, &done))
     };
-    // Dropping `done` tells the caller no answer is coming. This goes in the run's stderr.
     let _ = asked.inspect_err(|why| eprintln!("no picture: {why}"));
 }

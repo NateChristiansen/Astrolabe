@@ -28,7 +28,12 @@ const repo = path.join(base, "repo");
 fs.mkdirSync(repo, { recursive: true });
 spawnSync("git", ["init", "-q", "-b", "main", repo]);
 spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]);
-after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 }));
+// A core that outlived a failure may hold files here. That must not hide the failure.
+after(() => {
+  try {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
+  } catch {}
+});
 
 /** A socket's whole answer to what is written on it. */
 const heard = (port, text) =>
@@ -61,6 +66,15 @@ test("the default data folder, or inside it, or by another spelling: refused", (
     fs.rmSync(standIn, { recursive: true });
   }
   assert.ok(!fs.existsSync(standIn), "a refused run made the default folder");
+  // The default itself a link: its target is the same data.
+  if (process.platform !== "win32") {
+    const elsewhere = path.join(base, "elsewhere");
+    fs.mkdirSync(elsewhere);
+    fs.mkdirSync(path.dirname(standIn), { recursive: true });
+    fs.symlinkSync(elsewhere, standIn);
+    assert.equal(refused({ ASTROLABE_DATA_DIR: elsewhere }).status, 3, "the default's target");
+    fs.rmSync(standIn);
+  }
 });
 
 test("start refuses a normal build, and a core already in the folder, launching nothing", async () => {
@@ -78,10 +92,11 @@ test("beside a live core: the window drives its own, and the live one is untouch
   delete liveEnv.ASTROLABE_DATA_DIR;
   const stand = spawn(CORE, ["serve"], { env: liveEnv, stdio: "ignore" });
   const bridge = path.join(standIn, "bridge.txt");
-  for (let i = 0; i < 300 && !fs.existsSync(bridge); i++) await new Promise((done) => setTimeout(done, 100));
-  const before = fs.readFileSync(bridge, "utf8");
   const control = new Control();
   try {
+    for (let i = 0; i < 300 && !fs.existsSync(bridge); i++) await new Promise((done) => setTimeout(done, 100));
+    const before = fs.readFileSync(bridge, "utf8");
+
     const data = path.join(base, "data");
     const started = await control.start({ data_folder: data, repos: { throwaway: repo }, env: homes });
     assert.equal(started.data_folder, data);
@@ -125,6 +140,8 @@ test("beside a live core: the window drives its own, and the live one is untouch
     assert.equal(steps.ok, true, JSON.stringify(steps));
     const repos = steps.results[2].controls.find((one) => one.name === "Repo");
     assert.deepEqual(repos.options, ["throwaway"]);
+    // A folder a core already serves, opened with no server in front: refused.
+    assert.match(refused({ ASTROLABE_DATA_DIR: data }).stderr, /already serving/);
     const picture = fs.readFileSync(steps.results[3].file);
     assert.equal(picture.subarray(1, 4).toString(), "PNG");
     assert.ok(picture.length > 1000);
@@ -137,6 +154,20 @@ test("beside a live core: the window drives its own, and the live one is untouch
     assert.equal(missing.results.length, 1);
     assert.match(missing.results[0].why, /nothing named/);
     assert.match((await control.type({ name: "Quit Astrolabe", text: "x" })).why, /takes no text/);
+    assert.deepEqual((await control.type({ name: "Repo", text: "throwaway" })).ok, true);
+    assert.match((await control.type({ name: "Repo", text: "nope" })).why, /no choice/);
+    // No adapters here, so this launch fails with no login needed, and its Send can't be pressed.
+    const failed = await control.runSteps({
+      steps: [
+        { do: "click", name: "New Claude session" },
+        { do: "wait_for", name: "throwaway", role: "button", timeout_ms: 60000 },
+        { do: "click", name: "throwaway", role: "button" },
+        { do: "wait_for", text: "Couldn't start", timeout_ms: 60000 },
+      ],
+    });
+    assert.equal(failed.ok, true, JSON.stringify(failed));
+    assert.match((await control.click({ name: "Send", role: "button" })).why, /disabled/);
+    if (process.platform === "win32") assert.ok(fs.existsSync(path.join(data, "webview")), "web view data is not its own");
     const late = await control.runSteps({ steps: [{ do: "wait_for", text: "never shown", timeout_ms: 300 }] });
     assert.ok(late.results[0].saw.includes("Quit Astrolabe"), "a timeout reports what it saw");
 
@@ -148,7 +179,7 @@ test("beside a live core: the window drives its own, and the live one is untouch
     assert.equal(fs.readFileSync(bridge, "utf8"), before, "the live core's file changed");
     assert.equal(stand.exitCode, null, "the live core stopped");
   } finally {
-    if (control.run) control.run.child.kill();
+    await control.stop().catch(() => control.run?.child.kill());
     stand.kill();
   }
 });

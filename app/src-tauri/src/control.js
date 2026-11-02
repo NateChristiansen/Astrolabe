@@ -1,6 +1,6 @@
 // The page side of the test control, sent in by the test build for each ask. It is in no
 // normal build and not in the page's own bundle. It finds real elements by what they show and
-// dispatches real events at them. It calls nothing of the app's. Mark: astrolabe-test-control
+// dispatches real events at them. It calls nothing of the app's.
 (ask) => {
   const shown = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
   const words = (text) => (text ?? "").replace(/\s+/g, " ").trim();
@@ -10,7 +10,8 @@
     el.getAttribute("role") ||
     { BUTTON: "button", SELECT: "combobox", TEXTAREA: "textbox", SUMMARY: "button", A: "link" }[el.tagName] ||
     (el.type === "radio" ? "radio" : el.type === "checkbox" ? "checkbox" : "textbox");
-  const enabled = (el) => !el.disabled && !el.readOnly && !el.closest("fieldset[disabled]");
+  const enabled = (el) =>
+    !el.disabled && !el.readOnly && !el.closest("fieldset[disabled]") && el.getAttribute("aria-disabled") !== "true";
   const controls = () =>
     [...document.querySelectorAll("button,input,select,textarea,summary,a[href],[role=button]")].filter(shown);
   const describe = (el) => ({
@@ -36,7 +37,7 @@
     const box = el.getBoundingClientRect();
     const [clientX, clientY] = [box.left + box.width / 2, box.top + box.height / 2];
     const hit = document.elementFromPoint(clientX, clientY);
-    if (!hit || !(el.contains(hit) || hit.contains(el))) {
+    if (!hit || !(el.contains(hit) || [...(el.labels ?? [])].some((label) => label.contains(hit)))) {
       throw new Error(`"${nameOf(el)}" is covered by ${hit?.tagName ?? "nothing"}`);
     }
     const at = { bubbles: true, cancelable: true, composed: true, clientX, clientY, button: 0, view: window };
@@ -64,7 +65,7 @@
     if (ask.do === "read") return { ok: true, text: document.body.innerText, controls: controls().map(describe) };
     if (ask.do === "click") return { ok: true, clicked: click(find(ask)) };
     if (ask.do === "type") return { ok: true, typed: type(find(ask), ask.text) };
-    return { ok: false, why: `no such ask: ${ask.do}` };
+    return { ok: false, why: `astrolabe-test-control has no ask: ${ask.do}` };
   } catch (why) {
     return { ok: false, why: String(why.message ?? why) };
   }

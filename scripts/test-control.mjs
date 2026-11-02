@@ -72,8 +72,13 @@ export class Control {
     return this.run;
   }
 
-  async start({ data_folder, repos = {}, app = APP, env = {}, wait_ms = 60000 } = {}) {
-    if (this.run) throw new Error("One is already started. Stop it first.");
+  start(options) {
+    if (this.run || this.starting) return Promise.reject(new Error("One is already started. Stop it first."));
+    this.starting = this.open(options).finally(() => (this.starting = null));
+    return this.starting;
+  }
+
+  async open({ data_folder, repos = {}, app = APP, env = {}, wait_ms = 60000 } = {}) {
     if (!fs.existsSync(app)) throw new Error(`No test build at ${app}. Nothing was built. Run: node scripts/test-control.mjs build`);
     if (!fs.readFileSync(app).includes(MARK)) throw new Error(`${app} has no test control, so it was not opened. It may be a normal build. Run: node scripts/test-control.mjs build`);
     const core = path.join(path.dirname(app), `astrolabe${EXE}`);
@@ -100,8 +105,13 @@ export class Control {
     child.on("error", (why) => ((run.said += why.message), (run.exited = true)));
     const deadline = Date.now() + wait_ms;
     while (!run.exited && Date.now() < deadline) {
-      const [port, secret] = (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").split("\n");
-      if (secret?.length === 64) {
+      // Not there yet, or still held open while it is written. Only this child's own will do.
+      let said = "";
+      try {
+        said = fs.readFileSync(file, "utf8");
+      } catch {}
+      const [port, secret, pid] = said.split("\n");
+      if (secret?.length === 64 && Number(pid) === child.pid) {
         Object.assign(run, { port: Number(port), secret });
         this.run = run;
         return { launched: app, pid: child.pid, data_folder: folder, made_folder: made };
@@ -242,7 +252,11 @@ function mcp() {
     } else send({ id, error: { code: -32601, message: `No such method: ${method}` } });
   });
   // The session that wanted it has gone: leave nothing of this server's running.
-  lines.on("close", () => control.stop().catch(() => {}).finally(() => process.exit(0)));
+  lines.on("close", async () => {
+    await control.starting?.catch(() => {});
+    await control.stop().catch(() => control.run?.child.kill());
+    process.exit(0);
+  });
 }
 
 function build() {
