@@ -107,10 +107,14 @@ function Chat({ row, items, core, up, problem }: {
       setSent(undefined);
     }
   }, [sent, yours]);
-  useEffect(() => setSent(undefined), [problem, up]);
+  useEffect(() => {
+    setSent(undefined);
+  }, [problem, up]);
   const can = row.can_prompt && up && !sent;
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [items.length, row.requests.length]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [items.length, row.requests.length]);
   return (
     <main className="chat">
       <header>

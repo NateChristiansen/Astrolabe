@@ -943,8 +943,10 @@ fn a_plain_shell_that_reported_in_is_a_row_and_a_launched_one_is_not() {
 /// Catches: Codex's filtered environment sending a tool server's reports to the real folder.
 #[test]
 fn a_tool_server_is_told_the_data_folder() {
-    let mut launch = astrolabe::acp::Launch::default();
-    launch.mcp_servers = vec![serde_json::json!({ "name": "astrolabe", "env": [] })];
+    let mut launch = astrolabe::acp::Launch {
+        mcp_servers: vec![serde_json::json!({ "name": "astrolabe", "env": [] })],
+        ..Default::default()
+    };
     let at = astrolabe::acp::ReceiptAt::AfterFirstPrompt;
     let data = Path::new("/somewhere/data");
     launch
