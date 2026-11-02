@@ -4,14 +4,14 @@ Measured on macOS at the end of phase 1a. Lines are every line in the file, from
 
 | What | Lines |
 | --- | --- |
-| Rust source, total, including phase 0 | 8,463 |
-| Core, `crates/astrolabe/src` | 7,841 |
+| Rust source, total, including phase 0 | 8,478 |
+| Core, `crates/astrolabe/src` | 7,856 |
 | Protocol, `crates/protocol/src` | 339 |
 | Desktop, `app/src-tauri`, of which 200 are the test control, in no normal build | 283 |
-| Rust tests and examples | 11,116 |
+| Rust tests and examples | 11,123 |
 | Page, styles and scripts | 1,555 |
 
-Largest modules in the core: `acp` 1,214, `shell` 637, `store` 636, `guard` 600, `doctor` 573, `engine` 494, `driver/codex` 411, `layer` 317, `hook` 278, `trust` 264, `model` 260, `worktree` 253, `launch` 229, `protect` 216, `bridge` 178, `driver/claude` 168. The first command below lists them all.
+Largest modules in the core: `acp` 1,214, `shell` 637, `store` 636, `guard` 600, `doctor` 573, `engine` 494, `driver/codex` 411, `layer` 317, `trust` 280, `hook` 278, `model` 260, `worktree` 253, `launch` 229, `protect` 216, `bridge` 178, `driver/claude` 168. The first command below lists them all.
 
 269 tests take about 34 seconds.
 
