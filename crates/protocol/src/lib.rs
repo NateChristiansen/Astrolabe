@@ -180,6 +180,10 @@ pub enum BridgeRequest {
     Stop {
         session: i64,
     },
+    /// Stops the core for good. If more than the `running` agreed to are running, does nothing.
+    Quit {
+        running: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -219,6 +223,8 @@ pub enum BridgeEvent {
     Problem {
         message: String,
     },
+    /// The core was told to quit and will go. Start no core until the owner says.
+    Quitting,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -227,6 +233,8 @@ pub struct BridgeState {
     pub providers: Vec<BridgeProvider>,
     pub sessions: Vec<SessionRow>,
     pub plain: Vec<PlainRow>,
+    /// Sessions a quit would stop: those with a live process and those still starting.
+    pub running: usize,
     /// What this core's restart decided, when it decided anything.
     pub restart: Option<String>,
 }

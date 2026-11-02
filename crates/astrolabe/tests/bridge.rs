@@ -173,6 +173,7 @@ impl Window {
                 BridgeEvent::Item { item, .. } if self.loaded => self.items.push(item),
                 BridgeEvent::Item { .. } => {}
                 BridgeEvent::Problem { message } => self.problems.push(message),
+                BridgeEvent::Quitting => {}
             },
             Ok(_) => {}
             Err(tungstenite::Error::Io(why))
@@ -1385,4 +1386,291 @@ fn a_plain_row_goes_when_its_folder_goes() {
     window.until("the row going", |window| {
         window.state.as_ref()?.plain.is_empty().then_some(())
     });
+}
+
+/// A core whose quit may take this long at most, whatever is stuck.
+fn core_with_bound(dir: &TempDir, bound_ms: u64) -> Core {
+    let mut command = Command::new(shell_core_path());
+    command
+        .arg(dir.db())
+        .arg(fixtures())
+        .arg(dir.0.join("clock"))
+        .env("SHELL_CORE_QUIT_MS", bound_ms.to_string());
+    Core::spawn(command, dir)
+}
+
+impl Core {
+    /// Waits for the process to end by itself: a core that had to be killed has not quit.
+    fn exits_within(&mut self, limit: Duration) -> Duration {
+        let began = Instant::now();
+        while self.0.try_wait().unwrap().is_none() {
+            assert!(began.elapsed() < limit, "the core is still up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        began.elapsed()
+    }
+}
+
+impl Window {
+    /// Reads to the socket's end and returns the events in order, stating what came first.
+    fn read_to_the_end(&mut self) -> Vec<String> {
+        let deadline = Instant::now() + PATIENCE;
+        let mut heard = Vec::new();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "the socket stayed open: {heard:?}"
+            );
+            match self.socket.read() {
+                Ok(Message::Text(text)) => {
+                    let event: Value = serde_json::from_str(text.as_str()).unwrap();
+                    heard.push(event["type"].as_str().unwrap().to_owned());
+                }
+                Ok(Message::Close(_)) => heard.push("closed".to_owned()),
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(why))
+                    if matches!(
+                        why.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => return heard,
+            }
+        }
+    }
+
+    fn until_ready(&mut self, count: usize) -> Vec<SessionRow> {
+        self.until("sessions ready", |window| {
+            let sessions = &window.state.as_ref()?.sessions;
+            let ready = sessions.iter().filter(|row| row.can_prompt).count();
+            (ready == count).then(|| sessions.clone())
+        })
+    }
+
+    fn running(&mut self) -> usize {
+        self.until("a state", |window| window.state.as_ref().map(|s| s.running))
+    }
+}
+
+fn free_lock(dir: &TempDir) -> bool {
+    let lock = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.db().with_extension("lock"))
+        .unwrap();
+    lock.try_lock().is_ok()
+}
+
+/// Catches: anyone who reaches the port stopping the core without the secret.
+#[test]
+fn an_unauthenticated_quit_is_refused_and_the_core_stays() {
+    let dir = TempDir::new();
+    let mut core = Core::recorded(&dir);
+    let (port, secret) = handover(&dir);
+    let quit = BridgeRequest::Quit { running: 0 };
+
+    let mut none = dial(port, Some(ORIGIN)).unwrap();
+    send_on(&mut none, &quit);
+    refused(&mut none);
+    let mut wrong = dial(port, Some(ORIGIN)).unwrap();
+    let auth = BridgeRequest::Auth {
+        secret: "0".repeat(secret.len()),
+    };
+    send_on(&mut wrong, &auth);
+    send_on(&mut wrong, &quit);
+    refused(&mut wrong);
+
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(core.0.try_wait().unwrap().is_none(), "the core went");
+    assert!(dir.0.join("bridge.txt").exists());
+    let mut window = Window::open(&dir);
+    window.until("a state", |window| window.state.clone());
+}
+
+/// Catches: a client that loses the socket with nothing said, which would restart the core;
+/// and a quit leaving the lock or the file behind, which would block or mislead the next one.
+#[test]
+fn every_client_hears_the_quit_before_its_socket_closes_and_a_new_core_can_start() {
+    let dir = TempDir::new();
+    let mut core = Core::recorded(&dir);
+    let mut first = Window::open(&dir);
+    let mut second = Window::open(&dir);
+    assert_eq!(first.running(), 0);
+    second.running();
+    first.send(BridgeRequest::Quit { running: 0 });
+    for window in [&mut first, &mut second] {
+        let heard = window.read_to_the_end();
+        let told = heard.iter().position(|event| event == "quitting");
+        assert!(told.is_some(), "{heard:?}");
+    }
+    core.exits_within(PATIENCE);
+    assert!(!dir.0.join("bridge.txt").exists(), "the file stayed");
+    assert!(free_lock(&dir), "the lock stayed");
+
+    let _next = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.until("a state", |window| window.state.clone());
+}
+
+/// Catches: a session started after the window asked being stopped without anyone's click.
+#[test]
+fn a_quit_that_agreed_to_fewer_sessions_than_are_running_stops_nothing() {
+    let dir = TempDir::new();
+    let mut core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.start("codex/full-turn", BridgeProvider::Codex);
+    assert_eq!(window.running(), 1);
+    window.send(BridgeRequest::Quit { running: 0 });
+    window.until("the refusal", |window| window.problems.first().cloned());
+    assert!(core.0.try_wait().unwrap().is_none(), "the core went");
+    window.until("it to be running still", |window| {
+        window
+            .session()
+            .filter(|shown| shown.id == row.id && shown.can_stop)
+            .cloned()
+    });
+}
+
+/// Catches: a quit that forgets the worktree rule, or that keeps one and doesn't say why.
+#[test]
+fn quit_stops_running_sessions_and_the_worktree_rule_holds() {
+    let dir = TempDir::new();
+    let repo = a_repo(&dir);
+    let mut core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    for count in 1..=2 {
+        window.send(BridgeRequest::Start {
+            repo: "worktree:codex/cancel-tool".to_owned(),
+            provider: BridgeProvider::Codex,
+        });
+        window.until_ready(count);
+    }
+    let rows = window.until_ready(2);
+    for row in &rows {
+        let text = "fixture prompt 1".to_owned();
+        window.send(BridgeRequest::Prompt {
+            session: row.id,
+            text,
+        });
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let list = git(&repo, &["worktree", "list", "--porcelain"]);
+    let trees: Vec<&str> = list
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .collect();
+    assert_eq!(trees.len(), 3, "{list}");
+    let used = PathBuf::from(trees[1]);
+    std::fs::write(used.join("work.txt"), "precious").unwrap();
+
+    assert_eq!(window.running(), 2);
+    window.send(BridgeRequest::Quit { running: 2 });
+    let heard = window.read_to_the_end();
+    assert!(heard.iter().any(|event| event == "quitting"), "{heard:?}");
+    core.exits_within(PATIENCE);
+
+    assert_eq!(
+        std::fs::read_to_string(used.join("work.txt")).unwrap(),
+        "precious"
+    );
+    let left = git(&repo, &["worktree", "list"]);
+    assert_eq!(left.lines().count(), 2, "only the used one stays: {left}");
+
+    let _next = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.until("the ended rows", |window| {
+        let rows = &window.state.as_ref()?.sessions;
+        (rows.len() == 2 && rows.iter().all(|row| row.state == SessionState::Ended)).then_some(())
+    });
+    let mut said = String::new();
+    for row in &rows {
+        reload(&mut window, row.id);
+        said.push_str(&notes(&window));
+    }
+    assert!(
+        said.contains("Kept the worktree at") && said.contains("work.txt"),
+        "{said}"
+    );
+}
+
+/// Catches: one session that won't stop holding the quit, so the core never goes.
+#[test]
+fn a_stuck_session_does_not_hold_the_quit_past_the_bound() {
+    let dir = TempDir::new();
+    let mut core = core_with_bound(&dir, 500);
+    let mut window = Window::open(&dir);
+    window.send(BridgeRequest::Start {
+        repo: "silent".to_owned(),
+        provider: BridgeProvider::Codex,
+    });
+    let row = window.until("the session", |window| {
+        window.session().filter(|row| row.can_stop).cloned()
+    });
+    assert_eq!(window.running(), 1);
+    window.send(BridgeRequest::Quit { running: 1 });
+    // This agent ignores its pipe closing, so stopping it takes two seconds on its own.
+    let took = core.exits_within(Duration::from_millis(1800));
+    assert!(took >= Duration::from_millis(300), "too soon: {took:?}");
+    assert!(!dir.0.join("bridge.txt").exists(), "the file stayed");
+    assert!(free_lock(&dir), "the lock stayed");
+    let heard = window.read_to_the_end();
+    assert!(heard.iter().any(|event| event == "quitting"), "{heard:?}");
+
+    // As a restart would mark it, and read as the stop that was asked for once it has gone.
+    let _next = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.until_state(SessionState::Ended);
+    assert_eq!(window.session().unwrap().id, row.id);
+}
+
+/// Catches: a window arriving during a quit getting no word, which would restart the core.
+#[test]
+fn a_window_that_connects_during_the_quit_hears_it_too() {
+    let dir = TempDir::new();
+    let mut core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    for count in 1..=2 {
+        window.send(BridgeRequest::Start {
+            repo: "silent".to_owned(),
+            provider: BridgeProvider::Codex,
+        });
+        window.until("the count", |window| {
+            let state = window.state.as_ref()?;
+            let live = state.sessions.iter().filter(|row| row.can_stop).count();
+            (live == count).then_some(())
+        });
+    }
+    window.send(BridgeRequest::Quit { running: 2 });
+    // Each of these takes two seconds to stop, so this arrives while the first one goes.
+    std::thread::sleep(Duration::from_millis(500));
+    let mut late = Window::open(&dir);
+    let heard = late.read_to_the_end();
+    assert!(heard.iter().any(|event| event == "quitting"), "{heard:?}");
+    core.exits_within(PATIENCE);
+}
+
+/// Catches: a launch still being prepared holding the quit, or vanishing unexplained.
+#[test]
+fn a_launch_being_prepared_does_not_hold_the_quit_and_says_so_after() {
+    let dir = TempDir::new();
+    let mut core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.send(BridgeRequest::Start {
+        repo: "slow".to_owned(),
+        provider: BridgeProvider::Codex,
+    });
+    window.until("the count", |window| {
+        window
+            .state
+            .as_ref()
+            .filter(|state| state.running == 1)
+            .cloned()
+    });
+    window.send(BridgeRequest::Quit { running: 1 });
+    core.exits_within(Duration::from_secs(5));
+    let _next = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.until("the row", |window| window.session().cloned());
+    assert_eq!(row.state, SessionState::CouldNotStart);
+    assert!(row.why.unwrap().contains("Nothing was launched"));
 }

@@ -9,15 +9,20 @@ declare global {
   }
 }
 
-export type Link = "connecting" | "connected" | "down";
+export type Link = "connecting" | "connected" | "down" | "stopping" | "stopped";
 
 export interface Core {
   /** False when the socket isn't open, so nothing went. */
   send(request: BridgeRequest): boolean;
+  /** After a quit, the owner's word: finds or starts a core again. */
+  start(): void;
   close(): void;
 }
 
 const RETRY_MS = 1000;
+
+/** A core that dies comes back, unless it said it was going or this window is. */
+export const retries = ({ told, closed }: { told: boolean; closed: boolean }) => !told && !closed;
 
 /** Finds or starts the core, and comes back on its own after a restart: new secret, new port. */
 export function connect(
@@ -26,6 +31,7 @@ export function connect(
 ): Core {
   let socket: WebSocket | undefined;
   let closed = false;
+  let told = false;
   const open = async () => {
     onLink("connecting");
     try {
@@ -38,14 +44,21 @@ export function connect(
         socket?.send(JSON.stringify({ type: "auth", secret }));
         onLink("connected");
       };
-      socket.onmessage = (message) => onEvent(JSON.parse(message.data as string));
+      socket.onmessage = (message) => {
+        const event: BridgeEvent = JSON.parse(message.data as string);
+        if (event.type === "quitting") {
+          told = true;
+          onLink("stopping");
+        }
+        onEvent(event);
+      };
       socket.onclose = () => {
-        onLink("down");
-        if (!closed) setTimeout(open, RETRY_MS);
+        onLink(told ? "stopped" : "down");
+        if (retries({ told, closed })) setTimeout(open, RETRY_MS);
       };
     } catch (why) {
       onLink("down", String(why));
-      if (!closed) setTimeout(open, RETRY_MS);
+      if (retries({ told, closed })) setTimeout(open, RETRY_MS);
     }
   };
   void open();
@@ -54,6 +67,10 @@ export function connect(
       if (socket?.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify(request));
       return true;
+    },
+    start: () => {
+      told = false;
+      void open();
     },
     close: () => {
       closed = true;

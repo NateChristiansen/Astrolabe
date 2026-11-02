@@ -47,6 +47,11 @@ export type BridgeRequest =
       session: number;
       type: "stop";
       [k: string]: unknown;
+    }
+  | {
+      running: number;
+      type: "quit";
+      [k: string]: unknown;
     };
 export type BridgeProvider = "claude" | "codex";
 export type BridgeChoice =

@@ -22,6 +22,10 @@ export type BridgeEvent =
       message: string;
       type: "problem";
       [k: string]: unknown;
+    }
+  | {
+      type: "quitting";
+      [k: string]: unknown;
     };
 export type BridgeProvider = "claude" | "codex";
 export type SessionState =
@@ -44,6 +48,10 @@ export interface BridgeState {
    * What this core's restart decided, when it decided anything.
    */
   restart?: string | null;
+  /**
+   * Sessions a quit would stop: those with a live process and those still starting.
+   */
+  running: number;
   sessions: SessionRow[];
   [k: string]: unknown;
 }

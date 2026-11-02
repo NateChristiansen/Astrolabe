@@ -9,12 +9,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 const TICK: Duration = Duration::from_secs(15);
+/// The longest a quit takes, whatever is stuck. A session takes about 4 s at worst, one by one.
+const QUIT_BOUND: Duration = Duration::from_secs(30);
 
-/// Runs until the process is stopped. Every state change is already committed,
+/// Runs until the process is stopped or told to quit. Every state change is already committed,
 /// so stopping needs no shutdown step; the next start reconciles.
 pub fn serve(db: &Path) -> Result<()> {
     let data_dir = db.parent().unwrap_or(Path::new(".")).to_path_buf();
-    serve_with(db, SystemClock, TICK, real_prepare(data_dir))
+    serve_with(db, SystemClock, TICK, QUIT_BOUND, real_prepare(data_dir))
 }
 
 /// `serve`, with the launch, clock and tick given. The binary only ever calls `serve`.
@@ -22,6 +24,7 @@ pub fn serve_with(
     db: &Path,
     clock: impl Clock + 'static,
     tick: Duration,
+    quit_bound: Duration,
     prepare: Prepare,
 ) -> Result<()> {
     let data_dir = db.parent().unwrap_or(Path::new("."));
@@ -52,7 +55,8 @@ pub fn serve_with(
     host.reconciled(&report);
     let (inbound, requests) = mpsc::channel();
     crate::bridge::start(data_dir, inbound)?;
-    host.run(&requests, tick)
+    host.run(&requests, tick)?;
+    host.quit(&requests, quit_bound)
 }
 
 /// A closed stdout must not take the core down with it.

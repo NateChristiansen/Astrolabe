@@ -80,6 +80,19 @@
         "type",
         "message"
       ]
+    },
+    {
+      "description": "The core was told to quit and will go. Start no core until the owner says.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "quitting"
+        }
+      },
+      "required": [
+        "type"
+      ]
     }
   ],
   "$defs": {
@@ -152,6 +165,12 @@
             "null"
           ]
         },
+        "running": {
+          "description": "Sessions a quit would stop: those with a live process and those still starting.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
         "sessions": {
           "type": "array",
           "items": {
@@ -163,7 +182,8 @@
         "repos",
         "providers",
         "sessions",
-        "plain"
+        "plain",
+        "running"
       ]
     },
     "PlainRow": {

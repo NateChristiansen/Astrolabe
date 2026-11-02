@@ -1,14 +1,14 @@
 //! The one local WebSocket to the app: loopback only, its own origins only, and a secret
 //! made fresh each start, handed over in an owner-only file and sent as the first frame.
 use crate::error::{Error, Result};
-use protocol::BridgeRequest;
+use protocol::{BridgeEvent, BridgeRequest};
 use std::fs;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::{Message, WebSocket};
 
@@ -50,6 +50,16 @@ pub fn write_file(file: &Path, port: u16, secret: &str) -> std::io::Result<()> {
 fn gone(path: &Path) -> std::io::Result<()> {
     let missing = |why: &std::io::Error| why.kind() == ErrorKind::NotFound;
     fs::remove_file(path).or_else(|why| if missing(&why) { Ok(()) } else { Err(why) })
+}
+
+/// During a quit: whoever connected hears at once, and what they ask is not looked at.
+pub fn tell_late(inbound: &Receiver<Inbound>, until: Instant) {
+    let told = serde_json::to_string(&BridgeEvent::Quitting).unwrap_or_default();
+    while let Ok(message) = inbound.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        if let Inbound::Connected(late) = message {
+            let _ = late.send(told.clone());
+        }
+    }
 }
 
 pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {

@@ -148,6 +148,25 @@
         "type",
         "session"
       ]
+    },
+    {
+      "description": "Stops the core for good. If more than the `running` agreed to are running, does nothing.",
+      "type": "object",
+      "properties": {
+        "running": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "quit"
+        }
+      },
+      "required": [
+        "type",
+        "running"
+      ]
     }
   ],
   "$defs": {

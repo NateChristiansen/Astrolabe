@@ -188,6 +188,7 @@ export function App() {
   const [link, setLink] = useState<{ link: Link; why?: string }>({ link: "connecting" });
   const [state, setState] = useState<BridgeState>();
   const [problem, setProblem] = useState<Problem>();
+  const [asking, setAsking] = useState(false);
   const [open, setOpen] = useState<number>();
   const [transcripts, setTranscripts] = useState<Record<number, TranscriptItem[]>>({});
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
@@ -218,6 +219,10 @@ const opened = useRef<number | undefined>(undefined);
     const onEvent = (event: BridgeEvent) => {
       if (event.type === "state") {
         setState(event.state);
+      } else if (event.type === "quitting") {
+        // What it showed is no longer true. Typed drafts stay, for when it starts again.
+        setState(undefined);
+        setAsking(false);
       } else if (event.type === "problem") {
         setProblem({ message: event.message, session: opened.current });
         release();
@@ -251,6 +256,12 @@ const opened = useRef<number | undefined>(undefined);
   const sessions = state?.sessions ?? [];
   const row = sessions.find((session) => session.id === open);
   const showing = shownProblem(problem, open);
+  const running = state?.running ?? 0;
+  const quit = () => {
+    setAsking(false);
+    core?.send({ type: "quit", running });
+  };
+  const gone = link.link === "stopping" || link.link === "stopped";
   return (
     <div className="app">
       <aside>
@@ -275,10 +286,30 @@ const opened = useRef<number | undefined>(undefined);
             </li>
           ))}
         </ul>
+        {state && link.link === "connected" && (
+          <button className="quit" onClick={() => (running > 0 ? setAsking(true) : quit())}>
+            Quit Astrolabe
+          </button>
+        )}
       </aside>
       <div className="main">
-        {link.link !== "connected" && (
+        {link.link !== "connected" && !gone && (
           <p className="banner">{link.why ?? "Connecting to the core…"}</p>
+        )}
+        {asking && (
+          <section className="card ask">
+            <h3>Quit Astrolabe?</h3>
+            <p>
+              {running === 1 ? "1 running session" : `${running} running sessions`} will stop. A
+              worktree closes only when nothing in it would be lost.
+            </p>
+            <div className="actions">
+              <button onClick={() => setAsking(false)}>Cancel</button>
+              <button className="go" onClick={quit}>
+                Stop and quit
+              </button>
+            </div>
+          </section>
         )}
         {state?.restart && <p className="banner">{state.restart}</p>}
         {showing && (
@@ -286,7 +317,12 @@ const opened = useRef<number | undefined>(undefined);
             {showing}
           </p>
         )}
-        {row && core ? (
+        {gone ? (
+          <div className="empty stopped">
+            <p>{link.link === "stopped" ? "Astrolabe has stopped" : "Astrolabe is stopping…"}</p>
+            {link.link === "stopped" && <button onClick={() => core?.start()}>Start</button>}
+          </div>
+        ) : row && core ? (
           <Chat
             row={row}
             items={transcripts[row.id] ?? []}

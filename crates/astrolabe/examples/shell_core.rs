@@ -86,7 +86,10 @@ fn main() {
         })
     });
     let tick = Duration::from_millis(100);
-    if let Err(why) = astrolabe::serve_with(db, FileClock(clock.clone()), tick, prepare) {
+    let quit_ms = std::env::var("SHELL_CORE_QUIT_MS").ok();
+    let quit_ms = quit_ms.and_then(|ms| ms.parse().ok()).unwrap_or(30_000);
+    let quit = Duration::from_millis(quit_ms);
+    if let Err(why) = astrolabe::serve_with(db, FileClock(clock.clone()), tick, quit, prepare) {
         eprintln!("{why}");
         std::process::exit(1);
     }

@@ -19,6 +19,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_millis(20);
+const FAREWELL: Duration = Duration::from_millis(300);
 const ENDED: &str = "That session has ended, so nothing can reach it.";
 /// Sessions and transcripts live in the core's one database, beside the rows they extend.
 const TABLES: &str = "
@@ -131,6 +132,14 @@ impl<'e> Host<'e> {
                     self.last_state.clear();
                     self.clients.push(client);
                 }
+                Ok(Inbound::Request(BridgeRequest::Quit { running })) => {
+                    if self.live.len() + self.preparing()? > running {
+                        let message = "Another session started just now, so nothing was stopped. Look again, then quit.".to_owned();
+                        self.broadcast(&BridgeEvent::Problem { message });
+                    } else {
+                        return Ok(());
+                    }
+                }
                 Ok(Inbound::Request(request)) => {
                     if let Err(why) = self.handle(request) {
                         self.broadcast(&BridgeEvent::Problem {
@@ -164,6 +173,46 @@ impl<'e> Host<'e> {
         }
     }
 
+    fn preparing(&self) -> Result<usize> {
+        let query = "SELECT COUNT(*) FROM shell_sessions WHERE session_id IS NULL AND why IS NULL";
+        let count: i64 = self.book.query_row(query, [], |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
+    /// Windows hear first, so none restarts a core meanwhile. Past the bound the process exits
+    /// wherever it has got to: the next start reconciles. The file goes before the lock does.
+    pub fn quit(&mut self, inbound: &Receiver<Inbound>, bound: Duration) -> Result<()> {
+        let file = self.reports.with_file_name("bridge.txt");
+        let at_the_bound = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(bound);
+            let _ = std::fs::remove_file(at_the_bound);
+            std::process::exit(0);
+        });
+        self.broadcast(&BridgeEvent::Quitting);
+        let path = |live: &Live| live.worktree.as_ref().map(|made| made.path.clone());
+        let stopping: Vec<_> = self.live.iter().map(|live| (live.id, path(live))).collect();
+        for (id, path) in &stopping {
+            if let Some(path) = path {
+                let path = path.display();
+                let note = format!(
+                    "Astrolabe is quitting. If the worktree at {path} is there afterwards, it was kept: either the reason follows, or stopping ran out of time."
+                );
+                self.add(*id, item(TranscriptRole::Note, &note))?;
+            }
+        }
+        for (session, _) in stopping {
+            crate::bridge::tell_late(inbound, Instant::now());
+            if let Err(why) = self.handle(BridgeRequest::Stop { session }) {
+                let note = format!("Trouble stopping this session: {why}");
+                self.add(session, item(TranscriptRole::Note, &note))?;
+            }
+        }
+        let _ = std::fs::remove_file(file);
+        crate::bridge::tell_late(inbound, Instant::now() + FAREWELL);
+        Ok(())
+    }
+
     fn broadcast(&mut self, event: &BridgeEvent) {
         let text = serde_json::to_string(event).unwrap_or_default();
         self.clients
@@ -177,7 +226,7 @@ impl<'e> Host<'e> {
 
     fn handle(&mut self, request: BridgeRequest) -> Result<()> {
         match request {
-            BridgeRequest::Auth { .. } => {}
+            BridgeRequest::Auth { .. } | BridgeRequest::Quit { .. } => {}
             BridgeRequest::Start { repo, provider } => {
                 let insert = "INSERT INTO shell_sessions (repo, provider) VALUES (?1, ?2)";
                 self.book
@@ -441,6 +490,7 @@ impl<'e> Host<'e> {
                 .collect(),
             sessions: self.rows()?,
             plain: self.plain()?,
+            running: self.live.len() + self.preparing()?,
             restart,
         })
     }
