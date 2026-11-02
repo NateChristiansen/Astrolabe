@@ -1696,3 +1696,35 @@ fn a_launch_being_prepared_does_not_hold_the_quit_and_says_so_after() {
     assert_eq!(row.state, SessionState::CouldNotStart);
     assert!(row.why.unwrap().contains("Nothing was launched"));
 }
+
+/// Catches: windows answering the close at once cutting short the time sessions get to stop.
+#[test]
+fn the_sessions_get_the_whole_bound_however_fast_the_windows_close() {
+    let dir = TempDir::new();
+    let mut core = core_with_bound(&dir, 4000);
+    let mut window = Window::open(&dir);
+    for count in 1..=3 {
+        window.send(BridgeRequest::Start {
+            repo: "silent".to_owned(),
+            provider: BridgeProvider::Codex,
+        });
+        window.until("the count", |window| {
+            let state = window.state.as_ref()?;
+            let live = state.sessions.iter().filter(|row| row.can_stop).count();
+            (live == count).then_some(())
+        });
+    }
+    let began = Instant::now();
+    window.send(BridgeRequest::Quit { running: 3 });
+    // Three of these need six seconds, so only the bound ends this. The sockets close at two.
+    let heard = window.read_to_the_end();
+    assert!(heard.iter().any(|event| event == "closed"), "{heard:?}");
+    std::thread::sleep(Duration::from_secs(3).saturating_sub(began.elapsed()));
+    assert!(core.0.try_wait().unwrap().is_none(), "cut short");
+    core.exits_within(Duration::from_secs(3));
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        began.elapsed()
+    );
+}

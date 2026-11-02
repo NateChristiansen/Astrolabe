@@ -186,9 +186,12 @@ impl<'e> Host<'e> {
         let file = self.reports.with_file_name("bridge.txt");
         let at_the_bound = file.clone();
         let farewell = FAREWELL.min(bound / 2);
+        let deadline = Instant::now() + bound;
         std::thread::spawn(move || {
             std::thread::sleep(bound - farewell);
             crate::bridge::close_all(&at_the_bound, farewell);
+            // Prompt windows don't cost the sessions still stopping the rest of their time.
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
             std::process::exit(0);
         });
         crate::bridge::tell_all();

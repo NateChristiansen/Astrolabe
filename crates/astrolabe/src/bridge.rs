@@ -153,12 +153,14 @@ fn client(stream: TcpStream, secret: &str, inbound: &Sender<Inbound>) -> Option<
                 if matches!(why.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(_) => return None,
         }
-        while let Ok(text) = outgoing.try_recv() {
-            socket.send(Message::text(text)).ok()?;
-        }
+        // First, so a queue of other frames can't hold it up.
         if QUITTING.load(SeqCst) && !told {
             told = true;
             let text = serde_json::to_string(&BridgeEvent::Quitting).ok()?;
+            socket.send(Message::text(text)).ok()?;
+        }
+        // Nothing can follow a close frame, and trying would end this before the reply.
+        while let (false, Ok(text)) = (closing, outgoing.try_recv()) {
             socket.send(Message::text(text)).ok()?;
         }
         if told && CLOSING.load(SeqCst) && !closing {
