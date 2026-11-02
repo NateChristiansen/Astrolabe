@@ -7,7 +7,7 @@ use crate::hook::comparable;
 use crate::launch::{self, DEFAULT_DIALS, Machine, Prepared, Provider, Request, Say};
 use crate::model::Alert;
 use crate::registry::AGENT;
-use crate::trust::{self, Ask, CodexPlan};
+use crate::trust::{self, Ask, CodexPlan, not_yes};
 use crate::voice;
 use crate::{Engine, OsProcessProbe, SystemClock};
 use serde_json::Value;
@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const PIN_CODEX: &str = "0.166.0";
-pub const PIN_CLAUDE: &str = "2.1.314";
+pub const PIN_CLAUDE: &str = "2.1.316";
 const ADAPTER_MANIFEST: &str = include_str!("../../../adapters/package.json");
 const ADAPTER_LOCK: &str = include_str!("../../../adapters/pnpm-lock.yaml");
 
@@ -222,7 +222,7 @@ pub fn install(ask: Ask) -> Result<Vec<String>> {
         return Ok(vec![format!("{to}: already this binary")]);
     }
     if !ask(&text) || trust::file_hash(&target) != old {
-        return Ok(vec![format!("{to}: nothing written")]);
+        return Err(not_yes(&format!("{to}: nothing written")));
     }
     std::fs::create_dir_all(&dir)?;
     let aside = dir.join(format!(".astrolabe-install-{}", std::process::id()));
@@ -254,7 +254,7 @@ pub fn adapters(dir: &Path, ask: Ask) -> Result<Vec<String>> {
         shown = dir.display()
     );
     if !ask(&text) {
-        return Ok(vec!["adapters: nothing written".to_owned()]);
+        return Err(not_yes("adapters: nothing written"));
     }
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("package.json"), ADAPTER_MANIFEST)?;

@@ -314,19 +314,54 @@ fn removal_is_byte_identical() {
 }
 
 #[test]
+fn a_yes_may_open_with_a_byte_order_mark_and_nothing_else_counts() {
+    let le = |text: &str| -> Vec<u8> {
+        let units = text.encode_utf16().flat_map(u16::to_le_bytes);
+        [0xFF, 0xFE].into_iter().chain(units).collect()
+    };
+    let be = |text: &str| -> Vec<u8> {
+        let units = text.encode_utf16().flat_map(u16::to_be_bytes);
+        [0xFE, 0xFF].into_iter().chain(units).collect()
+    };
+    for yes in [
+        b"yes\n".to_vec(),
+        b"yes\r\n".to_vec(),
+        b"yes".to_vec(),
+        b"\xEF\xBB\xBFyes\r\n".to_vec(),
+        le("yes\r\n"),
+        be("yes\r\n"),
+    ] {
+        assert!(trust::says_yes(&yes), "{yes:?}");
+    }
+    for no in [
+        b"".to_vec(),
+        b"\n".to_vec(),
+        b"no\n".to_vec(),
+        b"yes yes\n".to_vec(),
+        b"YES\n".to_vec(),
+        b"\xEF\xBB\xBFno\n".to_vec(),
+        b"\xFFyes\n".to_vec(),
+        b"\xEF\xBB\xBF\xEF\xBB\xBFyes\n".to_vec(),
+        le("no\r\n"),
+    ] {
+        assert!(!trust::says_yes(&no), "{no:?}");
+    }
+}
+
+#[test]
 fn a_no_writes_nothing_and_a_later_edit_is_reported() {
     let box_ = Sandbox::new();
     let path = box_.homes().codex_config;
     std::fs::write(&path, "model = \"x\"\n").unwrap();
-    let said = trust::apply_codex(&path, &plan(), &mut |_| false).unwrap();
-    assert!(said.contains("nothing written"));
+    let said = trust::apply_codex(&path, &plan(), &mut |_| false).unwrap_err();
+    assert!(said.to_string().contains("nothing written"));
     assert_eq!(std::fs::read(&path).unwrap(), b"model = \"x\"\n");
 
     trust::apply_codex(&path, &plan(), &mut |_| true).unwrap();
     let again = trust::apply_codex(&path, &plan(), &mut |_| panic!("nothing to ask")).unwrap();
     assert!(again.contains("already trusted"));
-    let said = trust::remove_codex(&path, &mut |_| false).unwrap();
-    assert!(said.contains("nothing removed"));
+    let said = trust::remove_codex(&path, &mut |_| false).unwrap_err();
+    assert!(said.to_string().contains("nothing removed"));
     assert!(trust::find_block(&std::fs::read_to_string(&path).unwrap()).is_some());
 
     let mut text = std::fs::read_to_string(&path).unwrap();
@@ -851,7 +886,8 @@ fn apply_refuses_any_trace_of_its_keys() {
         "[projects.'c:\\users\\me']\n",
     ] {
         std::fs::write(&path, unrelated).unwrap();
-        let said = trust::apply_codex(&path, &plan(), &mut |_| false).unwrap();
+        let said = trust::apply_codex(&path, &plan(), &mut |_| false).unwrap_err();
+        let said = said.to_string();
         assert!(said.contains("nothing written"), "{unrelated}: {said}");
     }
 }
@@ -1267,7 +1303,7 @@ fn install_shows_asks_and_only_a_yes_writes() {
         std::io::Write::write_all(&mut stdin, answer.as_bytes()).unwrap();
         drop(stdin);
         let output = child.wait_with_output().unwrap();
-        assert!(output.status.success());
+        assert_eq!(output.status.success(), answer != "no\n", "{answer}");
         String::from_utf8_lossy(&output.stdout).into_owned()
     };
     let no = run("no\n");

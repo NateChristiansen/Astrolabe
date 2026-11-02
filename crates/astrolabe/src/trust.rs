@@ -11,6 +11,29 @@ const END: &str = "# END astrolabe";
 
 pub type Ask<'a> = &'a mut dyn FnMut(&str) -> bool;
 
+/// What a no comes back as, so the program exits non-zero when it wrote nothing.
+pub fn not_yes(what: &str) -> Error {
+    Error::Setup(format!("{what}: the answer was not yes"))
+}
+
+/// One line of answer as raw bytes, as a pipe may not be UTF-8 and may open with a byte-order
+/// mark, which trimming keeps. UTF-8, or UTF-16 when its mark says so.
+pub fn says_yes(line: &[u8]) -> bool {
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let units = rest.as_chunks::<2>().0.iter().map(|c| unit(*c));
+        char::decode_utf16(units)
+            .collect::<std::result::Result<String, _>>()
+            .ok()
+    };
+    let text = match line {
+        [0xEF, 0xBB, 0xBF, rest @ ..] => String::from_utf8(rest.to_vec()).ok(),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8(line.to_vec()).ok(),
+    };
+    text.is_some_and(|text| text.trim() == "yes")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Homes {
     pub codex_config: PathBuf,
@@ -196,7 +219,7 @@ pub fn apply_codex(path: &Path, plan: &CodexPlan, ask: Ask) -> Result<String> {
     let hash = file_hash(path);
     let block = format!("{eol}{BEGIN}{hash}{eol}{body}{eol}{END}{eol}");
     if !ask(&format!("Append to {name}:\n{block}")) {
-        return Ok(format!("{name}: nothing written"));
+        return Err(not_yes(&format!("{name}: nothing written")));
     }
     if file_hash(path) != hash {
         return Err(Error::Setup(format!("{name} changed while asking")));
@@ -214,7 +237,7 @@ pub fn remove_codex(path: &Path, ask: Ask) -> Result<String> {
         return Ok(format!("{name}: no astrolabe block"));
     };
     if !ask(&format!("Remove from {name}:\n{}", &text[start..end])) {
-        return Ok(format!("{name}: nothing removed"));
+        return Err(not_yes(&format!("{name}: nothing removed")));
     }
     if read_text(path)? != text {
         return Err(Error::Setup(format!("{name} changed while asking")));

@@ -10,7 +10,7 @@
 | Tauri CLI | 2.12.4 | exact package dependency and pnpm lockfile |
 | @agentclientprotocol/claude-agent-acp | 0.99.1 | adapters/package.json and lockfile |
 | @agentclientprotocol/codex-acp | 2.5.0 | adapters/package.json and lockfile |
-| Claude Code | 2.1.314 | user-installed; doctor reports it (step 5) |
+| Claude Code | 2.1.316 | user-installed; doctor reports it (step 5) |
 | codex-cli | 0.166.0 | user-installed; doctor reports it (step 5) |
 
 Client update checks stay off in everything Astrolabe launches.

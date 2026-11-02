@@ -45,13 +45,19 @@ fn usage() -> ! {
     std::process::exit(2);
 }
 
-/// Only a typed yes. Closed input is a no.
+/// Only a yes. Closed input is a no. A no says what it read, as a pipe can add to the word.
 fn ask(text: &str) -> bool {
     println!("{text}\nType yes to go ahead, anything else to skip:");
     let _ = std::io::stdout().flush();
-    let mut answer = String::new();
-    let read = std::io::stdin().lock().read_line(&mut answer);
-    read.is_ok() && answer.trim() == "yes"
+    let mut answer = Vec::new();
+    let read = std::io::stdin().lock().read_until(b'\n', &mut answer);
+    let yes = read.is_ok() && astrolabe::trust::says_yes(&answer);
+    if !yes {
+        let shown = answer.iter().take(16).flat_map(|b| b.escape_ascii());
+        let shown: String = shown.map(char::from).collect();
+        eprintln!("astrolabe: read {} bytes: \"{shown}\"", answer.len());
+    }
+    yes
 }
 
 fn setup(verb: &str, rest: &[&str]) -> Result<()> {

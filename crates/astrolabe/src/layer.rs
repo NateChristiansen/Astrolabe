@@ -259,7 +259,7 @@ pub fn compose(target: &Target, layer: &Layer) -> Result<Delivery> {
     })
 }
 
-/// Refuses what Claude Code 2.1.314 would skip with no effect on the session: `Tool` or
+/// Refuses what Claude Code 2.1.316 would skip with no effect on the session: `Tool` or
 /// `Tool(content)` only. Stricter than the client where it costs nothing. A client's rule
 /// grammar can grow, so passing here does not prove a rule took effect.
 fn check_deny(rule: &str) -> Result<()> {
