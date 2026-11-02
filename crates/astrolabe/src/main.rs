@@ -65,7 +65,7 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
         ("doctor", ["inspect"]) => doctor::inspect(&machine)?,
         ("doctor", ["apply"]) => doctor::apply(&machine, &mut ask)?,
         ("doctor", ["install"]) => doctor::install(&mut ask)?,
-        ("doctor", ["adapters"]) => doctor::adapters(&machine.data_dir, &mut ask)?,
+        ("doctor", ["adapters"]) => doctor::adapters(&machine.adapters, &mut ask)?,
         ("doctor", ["remove"]) => doctor::remove(&machine, &mut ask)?,
         ("doctor", ["verify", repo @ ..]) if repo.len() < 2 => {
             let say = &mut |line: String| println!("{line}");

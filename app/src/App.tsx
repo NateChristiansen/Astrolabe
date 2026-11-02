@@ -94,23 +94,20 @@ function Approval({ row, core }: { row: SessionRow["requests"][number]; core: Co
   );
 }
 
-function Chat({ row, items, core, up, problem }: {
-  row: SessionRow; items: TranscriptItem[]; core: Core; up: boolean; problem?: string;
+/** One session's box: what is typed, and what went out and isn't yet in its transcript. */
+interface Draft {
+  text: string;
+  sent?: { text: string; seen: number };
+}
+
+const yourCount = (items: TranscriptItem[]) => items.filter((item) => item.role === "you").length;
+
+function Chat({ row, items, core, up, loaded, draft, setDraft }: {
+  row: SessionRow; items: TranscriptItem[]; core: Core; up: boolean; loaded: boolean;
+  draft: Draft; setDraft: (draft: Draft) => void;
 }) {
-  const [text, setText] = useState("");
-  // What went out and isn't yet in the transcript. The box keeps it until the core has it.
-  const [sent, setSent] = useState<{ text: string; seen: number }>();
-  const yours = items.filter((item) => item.role === "you").length;
-  useEffect(() => {
-    if (sent && yours > sent.seen) {
-      setText((now) => (now === sent.text ? "" : now));
-      setSent(undefined);
-    }
-  }, [sent, yours]);
-  useEffect(() => {
-    setSent(undefined);
-  }, [problem, up]);
-  const can = row.can_prompt && up && !sent;
+  const { text, sent } = draft;
+  const can = row.can_prompt && up && loaded && !sent;
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
@@ -157,7 +154,7 @@ function Chat({ row, items, core, up, problem }: {
         onSubmit={(event) => {
           event.preventDefault();
           if (text.trim() && can && core.send({ type: "prompt", session: row.id, text })) {
-            setSent({ text, seen: yours });
+            setDraft({ text, sent: { text, seen: yourCount(items) } });
           }
         }}
       >
@@ -166,8 +163,8 @@ function Chat({ row, items, core, up, problem }: {
           rows={2}
           value={text}
           placeholder={up ? "Say what to do when it's your turn" : "Not connected to the core"}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
+          onChange={(e) => setDraft({ ...draft, text: e.target.value })}
+onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               e.currentTarget.form?.requestSubmit();
@@ -187,7 +184,27 @@ export function App() {
   const [problem, setProblem] = useState<string>();
   const [open, setOpen] = useState<number>();
   const [transcripts, setTranscripts] = useState<Record<number, TranscriptItem[]>>({});
-  const opened = useRef<number | undefined>(undefined);
+  const [drafts, setDrafts] = useState<Record<number, Draft>>({});
+  // Nothing more will answer what went out: the text stays and Send comes back.
+  const release = () =>
+    setDrafts((all) =>
+      Object.fromEntries(Object.entries(all).map(([id, draft]) => [id, { text: draft.text }])),
+    );
+  useEffect(() => {
+    setDrafts((all) => {
+      let changed = false;
+      const next = { ...all };
+      for (const [id, draft] of Object.entries(all)) {
+        const items = transcripts[Number(id)];
+        if (draft.sent && items && yourCount(items) > draft.sent.seen) {
+          next[Number(id)] = { text: draft.text === draft.sent.text ? "" : draft.text };
+          changed = true;
+        }
+      }
+      return changed ? next : all;
+    });
+  }, [transcripts]);
+const opened = useRef<number | undefined>(undefined);
   const live = useRef<Core | undefined>(undefined);
   opened.current = open;
 
@@ -197,6 +214,7 @@ export function App() {
         setState(event.state);
       } else if (event.type === "problem") {
         setProblem(event.message);
+        release();
       } else if (event.type === "transcript") {
         const items = event.items.reduce(addItem, [] as TranscriptItem[]);
         setTranscripts((all) => ({ ...all, [event.session]: items }));
@@ -209,6 +227,7 @@ export function App() {
     };
     const made = connect(onEvent, (next, why) => {
       setLink({ link: next, why });
+      if (next !== "connected") release();
       // A new connection may have missed lines: read the open transcript again.
       if (next === "connected" && opened.current !== undefined) {
         live.current?.send({ type: "open", session: opened.current });
@@ -261,7 +280,16 @@ export function App() {
           </p>
         )}
         {row && core ? (
-          <Chat row={row} items={transcripts[row.id] ?? []} core={core} up={link.link === "connected"} problem={problem} />
+          <Chat
+            row={row}
+            items={transcripts[row.id] ?? []}
+            loaded={transcripts[row.id] !== undefined}
+            core={core}
+            up={link.link === "connected"}
+            draft={drafts[row.id] ?? { text: "" }}
+            setDraft={(draft) => setDrafts((all) => ({ ...all, [row.id]: draft }))}
+          />
+
         ) : (
           <p className="empty">Pick a session, or start a new one.</p>
         )}

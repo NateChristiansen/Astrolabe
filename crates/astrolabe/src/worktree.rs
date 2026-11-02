@@ -155,13 +155,25 @@ pub fn close(worktree: &Worktree) -> Result<Closed> {
     })
 }
 
-/// `close`, only when nothing would be lost: no changed, untracked or ignored file, and no
+/// `close`, only when nothing would be lost: no changed, untracked, ignored or hidden file, and no
 /// commit that another branch or a remote lacks. Any doubt keeps it. Never forces.
 pub fn close_if_nothing_lost(worktree: &Worktree) -> Result<Closed> {
     let ask = |args: &[&str]| {
         let args: Vec<&std::ffi::OsStr> = args.iter().map(std::convert::AsRef::as_ref).collect();
         git(&worktree.path, &args).map_err(invalid)
     };
+    // `status` can't see an edit under these flags, and git would then delete it.
+    let flags = ask(&["ls-files", "-v"])?;
+    let hidden = flags
+        .lines()
+        .filter(|line| line.starts_with(|tag: char| tag == 'S' || tag.is_lowercase()));
+    let hidden: Vec<&str> = hidden.collect();
+    if !hidden.is_empty() {
+        let hidden = hidden.join(", ");
+        return Ok(Closed::KeptDirty(format!(
+            "git is told not to watch: {hidden}"
+        )));
+    }
     let files = ask(&[
         "status",
         "--porcelain",

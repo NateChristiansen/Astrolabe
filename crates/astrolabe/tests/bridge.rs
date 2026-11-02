@@ -996,7 +996,15 @@ fn a_worktree(repo: &Path) -> astrolabe::worktree::Worktree {
 fn a_worktree_with_anything_in_it_is_kept() {
     use astrolabe::worktree::{Closed, close_if_nothing_lost};
     type Spoil = fn(&Path);
-    let cases: [(&str, Spoil); 8] = [
+    let cases: [(&str, Spoil); 10] = [
+        ("edited under assume-unchanged", |at| {
+            git(at, &["update-index", "--assume-unchanged", "tracked.txt"]);
+            std::fs::write(at.join("tracked.txt"), "hidden\n").unwrap();
+        }),
+        ("edited under skip-worktree", |at| {
+            git(at, &["update-index", "--skip-worktree", "tracked.txt"]);
+            std::fs::write(at.join("tracked.txt"), "hidden\n").unwrap();
+        }),
         ("changed", |at| {
             std::fs::write(at.join("tracked.txt"), "two\n").unwrap()
         }),
@@ -1106,4 +1114,68 @@ fn a_session_closes_its_worktree_only_when_that_loses_nothing() {
         said.contains("Kept the worktree at") && said.contains("work.txt"),
         "{said}"
     );
+}
+
+/// Catches: removing a clean-looking worktree when a detached tool may still be in it.
+#[test]
+fn an_agent_that_exits_by_itself_keeps_its_worktree_and_says_why() {
+    let dir = TempDir::new();
+    let repo = a_repo(&dir);
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.start("worktree:codex/full-turn", BridgeProvider::Codex);
+    let text = "fixture prompt 1".to_owned();
+    window.send(BridgeRequest::Prompt {
+        session: row.id,
+        text,
+    });
+    window.until("the session's end", |window| {
+        window.session().filter(|row| !row.can_stop).cloned()
+    });
+    reload(&mut window, row.id);
+    let said = notes(&window);
+    assert!(
+        said.contains("Kept the worktree at") && said.contains("by itself"),
+        "{said}"
+    );
+    let trees = git(&repo, &["worktree", "list"]);
+    assert_eq!(trees.lines().count(), 2, "{trees}");
+}
+
+/// Catches: words accepted with a reject vanishing because Stop came before the turn's end.
+#[test]
+fn stop_with_words_waiting_records_them_as_not_sent() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let repo = edited(&dir, "codex/approval-reject", |text| {
+        let lines: Vec<&str> = text.lines().collect();
+        let answer = lines
+            .iter()
+            .position(|line| line.contains(r#""outcome":"selected""#));
+        let cancel = r#"{"process":0,"direction":"to_agent","message":{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session-1"}}}"#;
+        let ended = r#"{"process":0,"direction":"from_agent","message":{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}}"#;
+        let mut kept = lines[..=answer.unwrap()].to_vec();
+        kept.extend([cancel, ended]);
+        kept.join("\n")
+    });
+    let asked = to_needs_you(&mut window, &repo);
+    window.send(say(asked.requests[0].id.clone(), "words in waiting"));
+    window.until("the answer", |window| {
+        window
+            .session()
+            .filter(|row| row.requests.is_empty())
+            .cloned()
+    });
+    window.send(BridgeRequest::Stop { session: asked.id });
+    window.until("the stop", |window| {
+        window.session().filter(|row| !row.can_stop).cloned()
+    });
+    reload(&mut window, asked.id);
+    let said = notes(&window);
+    assert!(
+        said.contains("Not sent") && said.contains("words in waiting"),
+        "{said}"
+    );
+    assert!(said.contains("You stopped"), "{said}");
 }

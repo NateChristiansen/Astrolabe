@@ -213,7 +213,8 @@ impl<'e> Host<'e> {
             BridgeRequest::KeepWaiting { card } => self.engine.keep_waiting(card).map(drop)?,
             BridgeRequest::Stop { session } => {
                 let index = self.live_where(|live| live.id == session)?;
-                let live = self.live.remove(index);
+                let mut live = self.live.remove(index);
+                let words = std::mem::take(&mut live.words).join("\n\n");
                 self.engine.request_stop(live.client.session_id())?;
                 let own = live.client.agent_session_id().to_owned();
                 for event in live.client.stop()? {
@@ -224,6 +225,10 @@ impl<'e> Host<'e> {
                     }
                 }
                 self.close_worktree(session, live.worktree.as_ref())?;
+                if !words.is_empty() {
+                    let note = format!("Not sent, as you stopped first: {words}");
+                    self.add(session, item(TranscriptRole::Note, &note))?;
+                }
                 self.add(
                     session,
                     item(TranscriptRole::Note, "You stopped this session."),
@@ -317,8 +322,15 @@ impl<'e> Host<'e> {
                 )?;
             }
             if gone {
-                let live = self.live.remove(index);
-                self.close_worktree(id, live.worktree.as_ref())?;
+                // Only the owner's Stop closes one: a tool that left the adapter's process group
+                // may still be working here, and nothing can tell.
+                if let Some(made) = self.live.remove(index).worktree {
+                    let path = made.path.display();
+                    let note = format!(
+                        "Kept the worktree at {path}: the agent process ended by itself, and a tool it started may still be using it."
+                    );
+                    self.add(id, item(TranscriptRole::Note, &note))?;
+                }
             }
         }
         Ok(())

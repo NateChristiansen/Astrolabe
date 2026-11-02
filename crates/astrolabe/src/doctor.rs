@@ -230,9 +230,8 @@ pub fn install(ask: Ask) -> Result<Vec<String>> {
     Ok(said)
 }
 
-/// The pinned adapters, from the lockfile built into this program, into the data folder.
-pub fn adapters(data_dir: &Path, ask: Ask) -> Result<Vec<String>> {
-    let dir = data_dir.join("adapters");
+/// The pinned adapters, from the lockfile built into this program, where launches look.
+pub fn adapters(dir: &Path, ask: Ask) -> Result<Vec<String>> {
     let tool = |name: &str| {
         let mut command = Command::new(if cfg!(windows) { "cmd" } else { name });
         if cfg!(windows) {
@@ -255,12 +254,12 @@ pub fn adapters(data_dir: &Path, ask: Ask) -> Result<Vec<String>> {
     if !ask(&text) {
         return Ok(vec!["adapters: nothing written".to_owned()]);
     }
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("package.json"), ADAPTER_MANIFEST)?;
     std::fs::write(dir.join("pnpm-lock.yaml"), ADAPTER_LOCK)?;
     let mut install = tool("pnpm");
     install.args(["install", "--frozen-lockfile", "--ignore-scripts"]);
-    let done = install.current_dir(&dir).stdin(Stdio::null()).output()?;
+    let done = install.current_dir(dir).stdin(Stdio::null()).output()?;
     if !done.status.success() {
         let why = String::from_utf8_lossy(&done.stderr);
         let out = String::from_utf8_lossy(&done.stdout);
