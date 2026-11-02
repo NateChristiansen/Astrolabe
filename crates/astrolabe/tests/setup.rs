@@ -1279,3 +1279,11 @@ fn install_shows_asks_and_only_a_yes_writes() {
     assert_ne!(trust::file_hash(&target), before);
     assert!(!box_.home().join(".zshrc").exists());
 }
+
+/// Catches: the listing coming back empty, which reads as no daemon running. A process always
+/// runs here, this one. PowerShell's errors are dropped on this route, so only this shows it.
+#[cfg(windows)]
+#[test]
+fn on_windows_the_process_list_is_not_empty() {
+    assert!(!doctor::processes().trim().is_empty());
+}

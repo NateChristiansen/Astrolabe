@@ -126,7 +126,7 @@ pub fn daemon_lines(processes: &str) -> Vec<String> {
     lines
 }
 
-fn processes() -> String {
+pub fn processes() -> String {
     let list = "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }";
     match cfg!(windows) {
         true => stdout(Command::new("powershell").args(["-NoProfile", "-Command", list])),
