@@ -19,7 +19,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_millis(20);
-const FAREWELL: Duration = Duration::from_millis(300);
+/// Of a quit's bound, what is kept to see the sockets close, at most.
+const FAREWELL: Duration = Duration::from_secs(5);
 const ENDED: &str = "That session has ended, so nothing can reach it.";
 /// Sessions and transcripts live in the core's one database, beside the rows they extend.
 const TABLES: &str = "
@@ -181,15 +182,16 @@ impl<'e> Host<'e> {
 
     /// Windows hear first, so none restarts a core meanwhile. Past the bound the process exits
     /// wherever it has got to: the next start reconciles. The file goes before the lock does.
-    pub fn quit(&mut self, inbound: &Receiver<Inbound>, bound: Duration) -> Result<()> {
+    pub fn quit(&mut self, bound: Duration) -> Result<()> {
         let file = self.reports.with_file_name("bridge.txt");
         let at_the_bound = file.clone();
+        let farewell = FAREWELL.min(bound / 2);
         std::thread::spawn(move || {
-            std::thread::sleep(bound);
-            let _ = std::fs::remove_file(at_the_bound);
+            std::thread::sleep(bound - farewell);
+            crate::bridge::close_all(&at_the_bound, farewell);
             std::process::exit(0);
         });
-        self.broadcast(&BridgeEvent::Quitting);
+        crate::bridge::tell_all();
         let path = |live: &Live| live.worktree.as_ref().map(|made| made.path.clone());
         let stopping: Vec<_> = self.live.iter().map(|live| (live.id, path(live))).collect();
         for (id, path) in &stopping {
@@ -202,14 +204,12 @@ impl<'e> Host<'e> {
             }
         }
         for (session, _) in stopping {
-            crate::bridge::tell_late(inbound, Instant::now());
             if let Err(why) = self.handle(BridgeRequest::Stop { session }) {
                 let note = format!("Trouble stopping this session: {why}");
                 let _ = self.add(session, item(TranscriptRole::Note, &note));
             }
         }
-        crate::bridge::tell_late(inbound, Instant::now() + FAREWELL);
-        let _ = std::fs::remove_file(file);
+        crate::bridge::close_all(&file, FAREWELL);
         Ok(())
     }
 

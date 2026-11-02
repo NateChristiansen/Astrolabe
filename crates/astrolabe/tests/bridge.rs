@@ -1433,7 +1433,10 @@ impl Window {
                         why.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) => {}
-                Err(_) => return heard,
+                Err(why) => {
+                    heard.push(format!("ended: {why}"));
+                    return heard;
+                }
             }
         }
     }
@@ -1498,12 +1501,28 @@ fn every_client_hears_the_quit_before_its_socket_closes_and_a_new_core_can_start
     assert_eq!(first.running(), 0);
     second.running();
     first.send(BridgeRequest::Quit { running: 0 });
-    for window in [&mut first, &mut second] {
-        let heard = window.read_to_the_end();
-        let told = heard.iter().position(|event| event == "quitting");
-        assert!(told.is_some(), "{heard:?}");
-    }
+    let heard = first.read_to_the_end();
+    assert_eq!(
+        heard.iter().filter(|e| *e == "quitting").count(),
+        1,
+        "{heard:?}"
+    );
+    assert!(heard.iter().any(|event| event == "closed"), "{heard:?}");
+    // The other is slow to read. The core waits for it: going now could lose it the frame.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(core.0.try_wait().unwrap().is_none(), "it did not wait");
+    let heard = second.read_to_the_end();
+    let (told, closed) = (
+        heard.iter().position(|event| event == "quitting"),
+        heard.iter().position(|event| event == "closed"),
+    );
+    assert!(told.is_some() && told < closed, "{heard:?}");
+    let began = Instant::now();
     core.exits_within(PATIENCE);
+    assert!(
+        began.elapsed() < Duration::from_secs(2),
+        "it waited on no one"
+    );
     assert!(!dir.0.join("bridge.txt").exists(), "the file stayed");
     assert!(free_lock(&dir), "the lock stayed");
 
@@ -1609,12 +1628,14 @@ fn a_stuck_session_does_not_hold_the_quit_past_the_bound() {
     assert_eq!(window.running(), 1);
     window.send(BridgeRequest::Quit { running: 1 });
     // This agent ignores its pipe closing, so stopping it takes two seconds on its own.
-    let took = core.exits_within(Duration::from_millis(1800));
-    assert!(took >= Duration::from_millis(300), "too soon: {took:?}");
-    assert!(!dir.0.join("bridge.txt").exists(), "the file stayed");
-    assert!(free_lock(&dir), "the lock stayed");
+    let began = Instant::now();
     let heard = window.read_to_the_end();
     assert!(heard.iter().any(|event| event == "quitting"), "{heard:?}");
+    core.exits_within(Duration::from_millis(1800));
+    let took = began.elapsed();
+    assert!(took < Duration::from_millis(1800), "held: {took:?}");
+    assert!(!dir.0.join("bridge.txt").exists(), "the file stayed");
+    assert!(free_lock(&dir), "the lock stayed");
 
     // As a restart would mark it, and read as the stop that was asked for once it has gone.
     let _next = Core::recorded(&dir);
@@ -1667,6 +1688,7 @@ fn a_launch_being_prepared_does_not_hold_the_quit_and_says_so_after() {
             .cloned()
     });
     window.send(BridgeRequest::Quit { running: 1 });
+    window.read_to_the_end();
     core.exits_within(Duration::from_secs(5));
     let _next = Core::recorded(&dir);
     let mut window = Window::open(&dir);

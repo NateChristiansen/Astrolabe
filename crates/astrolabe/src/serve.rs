@@ -56,7 +56,7 @@ pub fn serve_with(
     let (inbound, requests) = mpsc::channel();
     crate::bridge::start(data_dir, inbound)?;
     host.run(&requests, tick)?;
-    host.quit(&requests, quit_bound)
+    host.quit(quit_bound)
 }
 
 /// A closed stdout must not take the core down with it.

@@ -6,7 +6,8 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -16,6 +17,10 @@ use tungstenite::{Message, WebSocket};
 const APP_ORIGINS: [&str; 2] = ["tauri://localhost", "http://tauri.localhost"];
 const AUTH_WAIT: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(20);
+/// Read by each client's own thread, so a stuck session can't keep a window from hearing.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+static CLOSING: AtomicBool = AtomicBool::new(false);
+static CLIENTS: AtomicUsize = AtomicUsize::new(0);
 
 pub enum Inbound {
     /// A client passed both checks. Whatever the core has to say goes here.
@@ -52,14 +57,21 @@ fn gone(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path).or_else(|why| if missing(&why) { Ok(()) } else { Err(why) })
 }
 
-/// During a quit: whoever connected hears at once, and what they ask is not looked at.
-pub fn tell_late(inbound: &Receiver<Inbound>, until: Instant) {
-    let told = serde_json::to_string(&BridgeEvent::Quitting).unwrap_or_default();
-    while let Ok(message) = inbound.recv_timeout(until.saturating_duration_since(Instant::now())) {
-        if let Inbound::Connected(late) = message {
-            let _ = late.send(told.clone());
-        }
+/// Every client, and any that arrives from now on, hears the quit within `POLL`.
+pub fn tell_all() {
+    QUITTING.store(true, SeqCst);
+}
+
+/// Closes each socket by the WebSocket handshake and waits for it, up to `wait`. An exit with a
+/// frame unread can reset the socket, and on Windows a reset discards what was not yet read:
+/// that window would then restart a core. The peer's reply shows it read past the quit.
+pub fn close_all(file: &Path, wait: Duration) {
+    CLOSING.store(true, SeqCst);
+    let deadline = Instant::now() + wait;
+    while CLIENTS.load(SeqCst) > 0 && Instant::now() < deadline {
+        thread::sleep(POLL);
     }
+    let _ = gone(file);
 }
 
 pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {
@@ -79,8 +91,10 @@ pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (secret, inbound) = (secret.clone(), inbound.clone());
+            CLIENTS.fetch_add(1, SeqCst);
             thread::spawn(move || {
                 client(stream, &secret, &inbound);
+                CLIENTS.fetch_sub(1, SeqCst);
             });
         }
     });
@@ -125,6 +139,7 @@ fn client(stream: TcpStream, secret: &str, inbound: &Sender<Inbound>) -> Option<
     socket.get_ref().set_read_timeout(Some(POLL)).ok()?;
     let (out, outgoing) = mpsc::channel();
     let _ = inbound.send(Inbound::Connected(out));
+    let (mut told, mut closing) = (false, false);
     loop {
         match socket.read() {
             Ok(Message::Text(text)) => {
@@ -140,6 +155,15 @@ fn client(stream: TcpStream, secret: &str, inbound: &Sender<Inbound>) -> Option<
         }
         while let Ok(text) = outgoing.try_recv() {
             socket.send(Message::text(text)).ok()?;
+        }
+        if QUITTING.load(SeqCst) && !told {
+            told = true;
+            let text = serde_json::to_string(&BridgeEvent::Quitting).ok()?;
+            socket.send(Message::text(text)).ok()?;
+        }
+        if told && CLOSING.load(SeqCst) && !closing {
+            closing = true;
+            socket.close(None).ok()?;
         }
     }
 }
