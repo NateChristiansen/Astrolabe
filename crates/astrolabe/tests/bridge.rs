@@ -1234,12 +1234,12 @@ fn stop_with_words_waiting_records_them_as_not_sent() {
 #[cfg(windows)]
 fn windows_permissions(file: &Path) -> (Vec<String>, bool) {
     let script = format!(
-        "$acl = Get-Acl -LiteralPath '{}'; \
+        "$acl = [IO.File]::GetAccessControl('{}'); \
          $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; \
          $sid = [Security.Principal.SecurityIdentifier]; \
          $acl.AreAccessRulesProtected; \
-         $acl.GetAccessRules($true, $true, $sid) | ForEach-Object {{ \
-             \"$($_.IdentityReference.Value -eq $me) $($_.IsInherited) $($_.AccessControlType)\" }}",
+         foreach ($rule in $acl.GetAccessRules($true, $true, $sid)) {{ \
+             \"$($rule.IdentityReference.Value -eq $me) $($rule.IsInherited) $($rule.AccessControlType)\" }}",
         file.display()
     );
     let out = Command::new("powershell")
@@ -1247,7 +1247,8 @@ fn windows_permissions(file: &Path) -> (Vec<String>, bool) {
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success(), "{text}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text} {said}");
     let mut lines = text.lines().map(str::trim).map(str::to_owned);
     let protected = lines.next().unwrap() == "True";
     (lines.collect(), protected)
