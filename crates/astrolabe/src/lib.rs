@@ -15,6 +15,7 @@ pub mod launch;
 pub mod layer;
 pub mod mcp;
 pub mod model;
+mod private_file;
 pub mod protect;
 pub mod registry;
 mod serve;

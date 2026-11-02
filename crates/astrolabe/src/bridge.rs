@@ -39,27 +39,37 @@ fn new_secret() -> Result<String> {
 }
 
 /// Port on the first line, secret on the second. Aside and renamed, so it appears whole.
-/// On Unix owner-only from its creation. Windows has no mode to set: the file takes the
-/// folder's permissions, and `%LOCALAPPDATA%` is the user's own.
-pub fn write_file(file: &Path, port: u16, secret: &str) -> Result<()> {
+/// Owner-only from its creation, wherever the folder is.
+pub fn write_file(file: &Path, port: u16, secret: &str) -> std::io::Result<()> {
     let aside = file.with_extension(format!("{}.tmp", std::process::id()));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut out = options.open(&aside)?;
+    gone(&aside)?;
+    let mut out = crate::private_file::create(&aside)?;
     writeln!(out, "{port}\n{secret}")?;
     drop(out);
     fs::rename(&aside, file)?;
     Ok(())
 }
 
+fn gone(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(why) if why.kind() != ErrorKind::NotFound => Err(why),
+        _ => Ok(()),
+    }
+}
+
 pub fn start(data_dir: &Path, inbound: Sender<Inbound>) -> Result<()> {
     let file = data_dir.join("bridge.txt");
-    let _ = fs::remove_file(&file);
     let listener = bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
     let secret = new_secret()?;
-    write_file(&file, listener.local_addr()?.port(), &secret)?;
+    let port = listener.local_addr()?.port();
+    gone(&file)
+        .and_then(|()| write_file(&file, port, &secret))
+        .map_err(|why| {
+            let at = file.display();
+            Error::Setup(format!(
+                "the core will not serve: it could not make {at} yours alone: {why}"
+            ))
+        })?;
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (secret, inbound) = (secret.clone(), inbound.clone());
