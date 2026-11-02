@@ -176,11 +176,7 @@ impl Window {
                 BridgeEvent::Quitting => {}
             },
             Ok(_) => {}
-            Err(tungstenite::Error::Io(why))
-                if matches!(
-                    why.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
+            Err(tungstenite::Error::Io(why)) if astrolabe::bridge::quiet_read(&why) => {}
             Err(why) => panic!("the bridge dropped: {why}"),
         }
     }
@@ -1428,11 +1424,7 @@ impl Window {
                 }
                 Ok(Message::Close(_)) => heard.push("closed".to_owned()),
                 Ok(_) => {}
-                Err(tungstenite::Error::Io(why))
-                    if matches!(
-                        why.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
+                Err(tungstenite::Error::Io(why)) if astrolabe::bridge::quiet_read(&why) => {}
                 Err(why) => {
                     heard.push(format!("ended: {why}"));
                     return heard;
@@ -1727,4 +1719,16 @@ fn the_sessions_get_the_whole_bound_however_fast_the_windows_close() {
         "{:?}",
         began.elapsed()
     );
+}
+
+#[test]
+fn a_quiet_read_is_only_a_read_that_ran_out_of_time() {
+    use astrolabe::bridge::quiet_read;
+    use std::io::{Error, ErrorKind};
+    assert!(quiet_read(&Error::from(ErrorKind::WouldBlock)));
+    assert!(quiet_read(&Error::from(ErrorKind::TimedOut)));
+    assert!(quiet_read(&Error::from_raw_os_error(997)));
+    assert!(!quiet_read(&Error::from(ErrorKind::ConnectionReset)));
+    assert!(!quiet_read(&Error::from_raw_os_error(996)));
+    assert!(!quiet_read(&Error::other("997")));
 }

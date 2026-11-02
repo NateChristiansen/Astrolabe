@@ -120,6 +120,14 @@ fn authenticated(socket: &mut WebSocket<TcpStream>, secret: &str) -> bool {
     }
 }
 
+/// A read that only ran out of time. Windows CI once gave raw error 997, `WSA_IO_PENDING`, on a
+/// read with a timeout; Rust has no kind for it. No other system has that number.
+pub fn quiet_read(why: &std::io::Error) -> bool {
+    const WSA_IO_PENDING: i32 = 997;
+    matches!(why.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+        || why.raw_os_error() == Some(WSA_IO_PENDING)
+}
+
 #[allow(clippy::result_large_err)] // tungstenite's own callback type
 fn client(stream: TcpStream, secret: &str, inbound: &Sender<Inbound>) -> Option<()> {
     stream.set_read_timeout(Some(AUTH_WAIT)).ok()?;
@@ -149,8 +157,7 @@ fn client(stream: TcpStream, secret: &str, inbound: &Sender<Inbound>) -> Option<
             }
             Ok(Message::Close(_)) => return None,
             Ok(_) => {}
-            Err(tungstenite::Error::Io(why))
-                if matches!(why.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(tungstenite::Error::Io(why)) if quiet_read(&why) => {}
             Err(_) => return None,
         }
         // First, so a queue of other frames can't hold it up.
