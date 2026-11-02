@@ -16,12 +16,28 @@ pub fn not_yes(what: &str) -> Error {
     Error::Setup(format!("{what}: the answer was not yes"))
 }
 
+/// A line of answer. Little-endian UTF-16 has one more byte after the newline's, and a byte 10
+/// there may be half of another character, so that byte is read too.
+pub fn read_answer(input: &mut impl std::io::BufRead) -> std::io::Result<Vec<u8>> {
+    let mut answer = Vec::new();
+    input.read_until(b'\n', &mut answer)?;
+    if answer.starts_with(&[0xFF, 0xFE]) && answer.ends_with(b"\n") {
+        let mut next = [0];
+        let read = input.read(&mut next)?;
+        answer.extend_from_slice(&next[..read]);
+    }
+    Ok(answer)
+}
+
 /// One line of answer as raw bytes, as a pipe may not be UTF-8 and may open with a byte-order
 /// mark, which trimming keeps. UTF-8, or UTF-16 when its mark says so.
 pub fn says_yes(line: &[u8]) -> bool {
     let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
-        let units = rest.as_chunks::<2>().0.iter().map(|c| unit(*c));
-        char::decode_utf16(units)
+        let (units, odd) = rest.as_chunks::<2>();
+        if !odd.is_empty() {
+            return None;
+        }
+        char::decode_utf16(units.iter().map(|c| unit(*c)))
             .collect::<std::result::Result<String, _>>()
             .ok()
     };

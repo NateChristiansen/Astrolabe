@@ -9,7 +9,7 @@ You pick a repo and an agent, then chat in the window. Astrolabe talks to the cl
 - Sessions on either client from the window: chat, tool lines, Stop, Quit. A session keeps running with the window closed.
 - A git worktree per session on a product repo. It is removed at the end only if nothing in it would be lost.
 - A guard that blocks commands like `git push --force`, `git reset --hard` and `pkill` before they run. It catches accidents. It is not a sandbox.
-- A launch that fails loudly if the guard or the session-start hook isn't working.
+- A launch that fails loudly if the guard fails its self-test or the session-start hook doesn't report. On Claude Code that doesn't prove the pre-command hook is in force.
 - Approval cards: Allow, Reject, or Reject and say what instead.
 - A "may be stuck" card when a tool runs past 10 minutes.
 - `astrolabe init`: a private agent repo for your own notes, whose owner and voice files reach each session.
@@ -41,7 +41,9 @@ astrolabe doctor inspect         # what it found; writes nothing
 astrolabe repo add myrepo /path/to/repo
 ```
 
-Open the app and start a session. To set up an agent repo, see `astrolabe init` and `astrolabe doctor apply`, which shows you the lines it adds to Codex's config and asks first. Claude's folder trust stays its own dialog.
+Open the app and start a session.
+
+For an agent repo, run `astrolabe init`, then `astrolabe doctor install`, which copies `astrolabe` to `.local/bin` in your home. That folder has to be on your clients' PATH, as the repo's hooks call `astrolabe` by name. Then `astrolabe doctor apply` shows you the lines it adds to Codex's config and asks first. Claude's folder trust stays its own dialog.
 
 On Windows, run setup from a plain terminal tab, not from a shell inside a packaged app, which can write to a private copy of your app data.
 

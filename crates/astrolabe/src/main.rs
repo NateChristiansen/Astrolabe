@@ -1,6 +1,6 @@
 use astrolabe::launch::Machine;
 use astrolabe::{Result, doctor, init};
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|where|hook <event>|mcp>";
@@ -49,9 +49,8 @@ fn usage() -> ! {
 fn ask(text: &str) -> bool {
     println!("{text}\nType yes to go ahead, anything else to skip:");
     let _ = std::io::stdout().flush();
-    let mut answer = Vec::new();
-    let read = std::io::stdin().lock().read_until(b'\n', &mut answer);
-    let yes = read.is_ok() && astrolabe::trust::says_yes(&answer);
+    let answer = astrolabe::trust::read_answer(&mut std::io::stdin().lock()).unwrap_or_default();
+    let yes = astrolabe::trust::says_yes(&answer);
     if !yes {
         let shown = answer.iter().take(16).flat_map(|b| b.escape_ascii());
         let shown: String = shown.map(char::from).collect();

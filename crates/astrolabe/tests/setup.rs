@@ -332,7 +332,14 @@ fn a_yes_may_open_with_a_byte_order_mark_and_nothing_else_counts() {
         be("yes\r\n"),
     ] {
         assert!(trust::says_yes(&yes), "{yes:?}");
+        let read = trust::read_answer(&mut std::io::Cursor::new(&yes)).unwrap();
+        assert_eq!(read, yes);
     }
+    // U+010A holds a newline byte, so a reader stopping there would see yes.
+    let split = le("yes\u{10A}NO\r\n");
+    let read = trust::read_answer(&mut std::io::Cursor::new(&split)).unwrap();
+    assert!(!trust::says_yes(&read), "{read:?}");
+    assert!(!trust::says_yes(&split[..split.len() - 1]));
     for no in [
         b"".to_vec(),
         b"\n".to_vec(),
