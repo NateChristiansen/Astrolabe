@@ -440,9 +440,18 @@ fn a_session_survives_its_window_and_the_next_window_sees_all_of_it() {
     let mut second = Window::open(&dir);
     second.until_state(SessionState::YourTurn);
     second.says("FIRST", row.id);
+    let first_you = second
+        .items
+        .iter()
+        .find(|item| item.role == TranscriptRole::You);
     assert_eq!(
-        second.items[0].text, text,
+        first_you.unwrap().text,
+        text,
         "the prompt is in the transcript too"
+    );
+    assert!(
+        second.items[0].text.contains("not synced"),
+        "progress lines are kept"
     );
     assert_eq!(second.agent_text(), "FIRST", "each chunk once");
     no_mismatch(&dir);
@@ -620,4 +629,479 @@ fn a_bare_serve_uses_the_data_folder_it_is_given() {
         .env(astrolabe::layer::DATA_DIR_VAR, &dir.0);
     let _core = Core::spawn(command, &dir);
     assert!(dir.db().exists());
+}
+
+/// A recording changed for one test, named as a repo the test core can open.
+fn edited(dir: &TempDir, recording: &str, edit: impl Fn(&str) -> String) -> String {
+    let text = std::fs::read_to_string(fixtures().join(format!("{recording}.jsonl"))).unwrap();
+    let path = dir.0.join("edited");
+    std::fs::write(path.with_extension("jsonl"), edit(&text)).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn to_needs_you(window: &mut Window, repo: &str) -> SessionRow {
+    let row = window.start(repo, BridgeProvider::Codex);
+    let text = "fixture prompt 1".to_owned();
+    window.send(BridgeRequest::Prompt {
+        session: row.id,
+        text,
+    });
+    window.until_state(SessionState::NeedsYou)
+}
+
+fn say(request: String, words: &str) -> BridgeRequest {
+    let choice = BridgeChoice::RejectAndSay {
+        words: words.to_owned(),
+    };
+    BridgeRequest::Answer { request, choice }
+}
+
+fn notes(window: &Window) -> String {
+    let notes = window
+        .items
+        .iter()
+        .filter(|item| item.role == TranscriptRole::Note);
+    notes
+        .map(|item| item.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn reload(window: &mut Window, session: i64) {
+    window.loaded = false;
+    window.send(BridgeRequest::Open { session });
+    window.until("the transcript", |window| window.loaded.then_some(()));
+}
+
+/// Catches: an internally sent prompt failing and taking every session down with it.
+#[test]
+fn a_failed_replacement_prompt_stays_on_its_session_and_keeps_the_words() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let asked = to_needs_you(&mut window, "codex/approval-reject");
+    // The engine now refuses the next prompt, whatever the pipe says.
+    let db = rusqlite::Connection::open(dir.db()).unwrap();
+    db.execute("UPDATE sessions SET lifecycle = 'closed'", [])
+        .unwrap();
+    let request = asked.requests[0].id.clone();
+    window.send(say(request, "the words to keep"));
+    window.until("the words shown as not sent", |window| {
+        window.send(BridgeRequest::Open { session: asked.id });
+        std::thread::sleep(Duration::from_millis(100));
+        notes(window)
+            .contains("Not sent: the words to keep")
+            .then_some(())
+    });
+    // Still serving: a request is still answered.
+    window.problems.clear();
+    let start = BridgeRequest::Start {
+        repo: "codex/full-turn".to_owned(),
+        provider: BridgeProvider::Codex,
+    };
+    window.send(start);
+    window.until("a new session", |window| {
+        window.session().filter(|row| row.id != asked.id).cloned()
+    });
+}
+
+/// Catches: one click becoming a standing rule because of the order options came in.
+#[test]
+fn reject_picks_reject_once_and_says_so_when_it_is_not_offered() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    // An always-reject listed first. The recording then checks which id came back.
+    let repo = edited(&dir, "codex/approval-reject", |text| {
+        text.replace(r#""kind":"allow_always""#, r#""kind":"reject_always""#)
+    });
+    let asked = to_needs_you(&mut window, &repo);
+    let request = asked.requests[0].id.clone();
+    window.send(BridgeRequest::Answer {
+        request,
+        choice: BridgeChoice::Reject,
+    });
+    window.until_state(SessionState::YourTurn);
+    no_mismatch(&dir);
+
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let repo = edited(&dir, "codex/approval-reject", |text| {
+        text.replace(r#""kind":"reject_once""#, r#""kind":"reject_always""#)
+    });
+    let asked = to_needs_you(&mut window, &repo);
+    let request = asked.requests[0].id.clone();
+    window.send(BridgeRequest::Answer {
+        request,
+        choice: BridgeChoice::Reject,
+    });
+    let said = window.until("the refusal", |window| window.problems.first().cloned());
+    assert!(said.contains("did not offer"), "{said}");
+    assert_eq!(window.session().unwrap().requests.len(), 1, "still open");
+}
+
+/// Catches: words deleted by an error that has nothing to do with them.
+#[test]
+fn an_unrelated_error_leaves_queued_words_alone() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let repo = edited(&dir, "codex/approval-reject", |text| {
+        let stray = r#"{"process":0,"direction":"from_agent","message":{"jsonrpc":"2.0","id":99,"error":{"message":"unrelated"}}}"#;
+        let ended = text
+            .lines()
+            .position(|line| line.contains("cancelled"))
+            .unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines.insert(ended, stray);
+        lines.join("\n")
+    });
+    let asked = to_needs_you(&mut window, &repo);
+    window.send(say(asked.requests[0].id.clone(), "fixture prompt 2"));
+    window.says("REPLACEMENT", asked.id);
+    no_mismatch(&dir);
+}
+
+/// Catches: the second of two instructions replacing the first.
+#[test]
+fn two_rejections_with_words_both_go() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let repo = edited(&dir, "codex/approval-reject", |text| {
+        let lines: Vec<&str> = text.lines().collect();
+        let ask = lines
+            .iter()
+            .position(|line| line.contains("request_permission"))
+            .unwrap();
+        let answer = ask + 1;
+        let again = |line: &str| line.replace(r#""id":0"#, r#""id":50"#);
+        let mut out: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+        out.insert(answer + 1, again(lines[answer]));
+        out.insert(answer, again(lines[ask]));
+        out.join("\n")
+            .replace("fixture prompt 2", "first\\n\\nsecond")
+    });
+    let asked = to_needs_you(&mut window, &repo);
+    let both = window.until("both requests", |window| {
+        window
+            .session()
+            .filter(|row| row.requests.len() == 2)
+            .cloned()
+    });
+    assert_eq!(asked.id, both.id);
+    window.send(say(both.requests[0].id.clone(), "first"));
+    window.send(say(both.requests[1].id.clone(), "second"));
+    window.says("REPLACEMENT", both.id);
+    no_mismatch(&dir);
+}
+
+/// Catches: a launch whose preparing thread died showing Starting for ever.
+#[test]
+fn an_unfinished_launch_at_startup_is_marked_with_a_plain_reason() {
+    let dir = TempDir::new();
+    let core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.send(BridgeRequest::Start {
+        repo: "slow".to_owned(),
+        provider: BridgeProvider::Codex,
+    });
+    window.until_state(SessionState::Starting);
+    drop(window);
+    core.kill();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.until_state(SessionState::CouldNotStart);
+    assert!(row.why.unwrap().contains("core stopped before"));
+}
+
+/// Catches: a process still alive being described as gone, or being offered a Stop.
+#[test]
+fn a_process_that_survives_a_restart_is_shown_as_still_running() {
+    let dir = TempDir::new();
+    let core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    window.send(BridgeRequest::Start {
+        repo: "silent".to_owned(),
+        provider: BridgeProvider::Codex,
+    });
+    window.until("the session", |window| {
+        window.session().filter(|row| row.can_stop).cloned()
+    });
+    drop(window);
+    core.kill();
+    // A request from before: what it says must match what is true.
+    let engine =
+        astrolabe::Engine::open(&dir.db(), astrolabe::SystemClock, astrolabe::OsProcessProbe);
+    let message = serde_json::json!({ "id": 7, "method": "session/request_permission",
+        "params": { "toolCall": { "title": "asked earlier" }, "options": [] } });
+    engine.unwrap().ingest(1, &message).unwrap();
+
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.until_state(SessionState::StillRunning);
+    assert!(
+        row.why.as_ref().unwrap().contains("Still running"),
+        "{:?}",
+        row.why
+    );
+    assert!(!row.can_stop && !row.can_prompt);
+    let decided = row.requests[0].decided.as_ref().unwrap();
+    assert!(decided.contains("still running"), "{decided}");
+    assert!(!row.requests[0].live);
+    assert!(
+        window.state.as_ref().unwrap().restart.is_none(),
+        "nothing is gone yet"
+    );
+}
+
+/// Catches: the owner's Stop on an idle session reading as a failure.
+#[test]
+fn stop_with_no_prompt_out_reads_as_ended_not_failed() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.start("codex/full-turn", BridgeProvider::Codex);
+    window.send(BridgeRequest::Stop { session: row.id });
+    window.until_state(SessionState::Ended);
+}
+
+/// Catches: what an agent said on its way out vanishing from the transcript.
+#[test]
+fn what_arrives_during_stop_stays_in_the_transcript() {
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let repo = edited(&dir, "codex/cancel-tool", |text| {
+        let last = r#"{"process":0,"direction":"from_agent","message":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"LAST WORDS"}}}}}"#;
+        let at = text
+            .lines()
+            .position(|line| line.contains("session/cancel"))
+            .unwrap();
+        let mut lines: Vec<&str> = text.lines().collect();
+        lines.insert(at + 1, last);
+        lines.join("\n")
+    });
+    let row = window.start(&repo, BridgeProvider::Codex);
+    let text = "fixture prompt 1".to_owned();
+    window.send(BridgeRequest::Prompt {
+        session: row.id,
+        text,
+    });
+    window.until("the tool", |window| {
+        window
+            .items
+            .iter()
+            .any(|item| item.role == TranscriptRole::You);
+        window.session().filter(|row| !row.can_prompt).cloned()
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    window.send(BridgeRequest::Stop { session: row.id });
+    window.until_state(SessionState::Ended);
+    window.says("LAST WORDS", row.id);
+}
+
+/// Catches: F9 going missing, a launched session counted twice, and the guard's self-test.
+#[test]
+fn a_plain_shell_that_reported_in_is_a_row_and_a_launched_one_is_not() {
+    use astrolabe::hook::{SELF_TEST_SESSION, write_report};
+    let dir = TempDir::new();
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let row = window.start("codex/full-turn", BridgeProvider::Codex);
+    let reports = astrolabe::hook::reports_dir_in(&dir.0);
+    let plain_folder = dir.0.join("plainrepo");
+    let launched = dir.0.join("launchedrepo");
+    // A report file is named by its millisecond, event and process: these must not share one.
+    let pause = || std::thread::sleep(Duration::from_millis(3));
+    write_report(&reports, "session-start", Some("plain-1"), &plain_folder).unwrap();
+    pause();
+    write_report(&reports, "session-start", Some("session-1"), &launched).unwrap();
+    pause();
+    write_report(
+        &reports,
+        "session-start",
+        Some(SELF_TEST_SESSION),
+        &launched,
+    )
+    .unwrap();
+    write_report(&reports, "mcp-start", None, &launched).unwrap();
+    let plain = window.until("the plain row", |window| {
+        let plain = &window.state.as_ref()?.plain;
+        (!plain.is_empty()).then(|| plain.clone())
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    window.pump();
+    let plain_now = &window.state.as_ref().unwrap().plain;
+    assert_eq!(plain_now.len(), 1, "{plain:?}");
+    assert!(plain_now[0].folder.ends_with("plainrepo"), "{plain_now:?}");
+    assert_eq!(window.state.as_ref().unwrap().sessions.len(), 1);
+    assert_eq!(window.session().unwrap().id, row.id);
+}
+
+/// Catches: Codex's filtered environment sending a tool server's reports to the real folder.
+#[test]
+fn a_tool_server_is_told_the_data_folder() {
+    let mut launch = astrolabe::acp::Launch::default();
+    launch.mcp_servers = vec![serde_json::json!({ "name": "astrolabe", "env": [] })];
+    let at = astrolabe::acp::ReceiptAt::AfterFirstPrompt;
+    let data = Path::new("/somewhere/data");
+    launch
+        .protect(at, Path::new("/somewhere/bin"), data, None)
+        .unwrap();
+    let env = &launch.mcp_servers[0]["env"][0];
+    assert_eq!(env["name"], astrolabe::layer::DATA_DIR_VAR);
+    assert_eq!(env["value"], data.to_string_lossy().as_ref());
+}
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn a_repo(dir: &TempDir) -> PathBuf {
+    let repo = dir.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+    std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "first"]);
+    repo
+}
+
+fn a_worktree(repo: &Path) -> astrolabe::worktree::Worktree {
+    use astrolabe::worktree::{Progress, create};
+    let mut creating = create(repo, "session").unwrap();
+    loop {
+        match creating.poll() {
+            Some(Progress::Ready(made)) => return made,
+            Some(Progress::Creating { .. }) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// The failure to test hardest: a worktree removed with anything in it.
+#[test]
+fn a_worktree_with_anything_in_it_is_kept() {
+    use astrolabe::worktree::{Closed, close_if_nothing_lost};
+    type Spoil = fn(&Path);
+    let cases: [(&str, Spoil); 8] = [
+        ("changed", |at| {
+            std::fs::write(at.join("tracked.txt"), "two\n").unwrap()
+        }),
+        ("deleted", |at| {
+            std::fs::remove_file(at.join("tracked.txt")).unwrap()
+        }),
+        ("untracked", |at| {
+            std::fs::write(at.join("new.txt"), "x").unwrap()
+        }),
+        ("untracked in a folder", |at| {
+            std::fs::create_dir(at.join("sub")).unwrap();
+            std::fs::write(at.join("sub/new.txt"), "x").unwrap();
+        }),
+        ("ignored", |at| {
+            std::fs::write(at.join("ignored.txt"), "x").unwrap()
+        }),
+        ("staged", |at| {
+            std::fs::write(at.join("new.txt"), "x").unwrap();
+            git(at, &["add", "new.txt"]);
+        }),
+        ("committed only here", |at| {
+            git(at, &["commit", "-q", "--allow-empty", "-m", "only here"]);
+        }),
+        ("committed on a detached head", |at| {
+            git(at, &["checkout", "-q", "--detach"]);
+            git(at, &["commit", "-q", "--allow-empty", "-m", "only here"]);
+        }),
+    ];
+    for (what, spoil) in cases {
+        let dir = TempDir::new();
+        let made = a_worktree(&a_repo(&dir));
+        spoil(&made.path);
+        let closed = close_if_nothing_lost(&made).unwrap();
+        assert!(matches!(closed, Closed::KeptDirty(_)), "{what}: {closed:?}");
+        assert!(made.path.join(".git").exists(), "{what}: removed");
+    }
+}
+
+#[test]
+fn a_worktree_with_nothing_to_lose_goes_and_a_commit_held_elsewhere_counts() {
+    use astrolabe::worktree::{Closed, close_if_nothing_lost};
+    let dir = TempDir::new();
+    let made = a_worktree(&a_repo(&dir));
+    let closed = close_if_nothing_lost(&made).unwrap();
+    assert!(matches!(closed, Closed::Removed { .. }), "{closed:?}");
+    assert!(!made.path.exists());
+
+    let dir = TempDir::new();
+    let repo = a_repo(&dir);
+    let made = a_worktree(&repo);
+    git(
+        &made.path,
+        &["commit", "-q", "--allow-empty", "-m", "kept elsewhere"],
+    );
+    git(&repo, &["branch", "holder", "session"]);
+    let closed = close_if_nothing_lost(&made).unwrap();
+    assert!(matches!(closed, Closed::Removed { .. }), "{closed:?}");
+    assert!(git(&repo, &["log", "holder", "--format=%s"]).contains("kept elsewhere"));
+}
+
+/// Through the host: a clean session's worktree goes; a used one stays and says why.
+#[test]
+fn a_session_closes_its_worktree_only_when_that_loses_nothing() {
+    let dir = TempDir::new();
+    let repo = a_repo(&dir);
+    let _core = Core::recorded(&dir);
+    let mut window = Window::open(&dir);
+    let tree = |repo: &Path| {
+        let list = git(repo, &["worktree", "list", "--porcelain"]);
+        let trees: Vec<PathBuf> = list
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .map(PathBuf::from)
+            .collect();
+        trees
+    };
+    let row = window.start("worktree:codex/cancel-tool", BridgeProvider::Codex);
+    let text = "fixture prompt 1".to_owned();
+    window.send(BridgeRequest::Prompt {
+        session: row.id,
+        text,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(tree(&repo).len(), 2);
+    window.send(BridgeRequest::Stop { session: row.id });
+    window.until_state(SessionState::Ended);
+    assert_eq!(tree(&repo).len(), 1, "a clean one goes");
+
+    let row = window.start("worktree:codex/cancel-tool", BridgeProvider::Codex);
+    let text = "fixture prompt 1".to_owned();
+    window.send(BridgeRequest::Prompt {
+        session: row.id,
+        text,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let path = tree(&repo)[1].clone();
+    std::fs::write(path.join("work.txt"), "precious").unwrap();
+    window.send(BridgeRequest::Stop { session: row.id });
+    window.until_state(SessionState::Ended);
+    reload(&mut window, row.id);
+    assert_eq!(
+        std::fs::read_to_string(path.join("work.txt")).unwrap(),
+        "precious"
+    );
+    let said = notes(&window);
+    assert!(
+        said.contains("Kept the worktree at") && said.contains("work.txt"),
+        "{said}"
+    );
 }

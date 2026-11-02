@@ -25,7 +25,15 @@ export type BridgeEvent =
     };
 export type BridgeProvider = "claude" | "codex";
 export type SessionState =
-  "starting" | "could_not_start" | "working" | "needs_you" | "your_turn" | "ended" | "failed" | "interrupted";
+  | "starting"
+  | "could_not_start"
+  | "working"
+  | "needs_you"
+  | "your_turn"
+  | "ended"
+  | "failed"
+  | "interrupted"
+  | "still_running";
 export type TranscriptRole = "you" | "agent" | "tool" | "note";
 
 export interface BridgeState {

@@ -9,6 +9,7 @@ use crate::host::Clock;
 use crate::launch::{DEFAULT_DIALS, Machine, Prepared, Provider, Say};
 use crate::model::{Lifecycle, ReconcileReport, SessionDisplay};
 use crate::registry::Registry;
+use crate::worktree::{self, Closed, Worktree};
 use protocol::*;
 use rusqlite::{Connection, params};
 use serde_json::{Value, from_value, to_value};
@@ -28,7 +29,11 @@ CREATE TABLE IF NOT EXISTS transcript (seq INTEGER PRIMARY KEY, shell_session IN
 CREATE INDEX IF NOT EXISTS transcript_by_session ON transcript(shell_session, seq);
 ";
 
-type Ready = (i64, Result<Prepared>);
+enum Done {
+    Prepared(i64, Box<Result<Prepared>>),
+    Said(i64, String),
+}
+
 pub type Prepare = Arc<dyn Fn(&str, Provider, &str, Say) -> Result<Prepared> + Send + Sync>;
 
 /// The real launch contract. Tests use `serve_with` to put a recording in its place; the
@@ -54,8 +59,9 @@ pub fn real_prepare(data_dir: PathBuf) -> Prepare {
 struct Live<'e> {
     client: AcpClient<'e>,
     id: i64,
-    /// Said with a reject: goes as the next prompt once the turn has ended.
-    words: Option<String>,
+    worktree: Option<Worktree>,
+    /// Said with rejects: all go as the next prompt once the turn has ended.
+    words: Vec<String>,
 }
 
 pub struct Host<'e> {
@@ -64,7 +70,7 @@ pub struct Host<'e> {
     book: Connection,
     reports: PathBuf,
     prepare: Prepare,
-    prepared: (Sender<Ready>, Receiver<Ready>),
+    prepared: (Sender<Done>, Receiver<Done>),
     clients: Vec<Sender<String>>,
     live: Vec<Live<'e>>,
     last_state: String,
@@ -93,6 +99,11 @@ impl<'e> Host<'e> {
     pub fn new(engine: &'e Engine, db: &Path, prepare: Prepare) -> Result<Self> {
         let book = Connection::open(db)?;
         book.execute_batch(TABLES)?;
+        // Its preparing thread died with the last core, so nothing will ever finish it.
+        book.execute(
+            "UPDATE shell_sessions SET why = ?1 WHERE session_id IS NULL AND why IS NULL",
+            ["The core stopped before this session finished starting. Nothing was launched."],
+        )?;
         Ok(Self {
             engine,
             registry: Registry::open(db)?,
@@ -129,8 +140,11 @@ impl<'e> Host<'e> {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
             }
-            while let Ok((id, prepared)) = self.prepared.1.try_recv() {
-                self.launch(id, prepared)?;
+            while let Ok(done) = self.prepared.1.try_recv() {
+                match done {
+                    Done::Prepared(id, prepared) => self.launch(id, *prepared)?,
+                    Done::Said(id, line) => self.add(id, item(TranscriptRole::Note, &line))?,
+                }
             }
             self.read_agents()?;
             if ticked.is_none_or(|at| at.elapsed() >= tick) {
@@ -177,8 +191,10 @@ impl<'e> Host<'e> {
                 };
                 let (prepare, done) = (self.prepare.clone(), self.prepared.0.clone());
                 std::thread::spawn(move || {
-                    let prepared = prepare(&repo, provider, &name, &mut drop);
-                    let _ = done.send((id, prepared));
+                    let said = done.clone();
+                    let mut say = |line| drop(said.send(Done::Said(id, line)));
+                    let prepared = prepare(&repo, provider, &name, &mut say);
+                    let _ = done.send(Done::Prepared(id, Box::new(prepared)));
                 });
             }
             BridgeRequest::Open { session } => {
@@ -199,7 +215,15 @@ impl<'e> Host<'e> {
                 let index = self.live_where(|live| live.id == session)?;
                 let live = self.live.remove(index);
                 self.engine.request_stop(live.client.session_id())?;
-                live.client.shutdown()?;
+                let own = live.client.agent_session_id().to_owned();
+                for event in live.client.stop()? {
+                    if let ClientEvent::Update(update) = event
+                        && let Some(new) = item_from(&update, &own)
+                    {
+                        self.add(session, new)?;
+                    }
+                }
+                self.close_worktree(session, live.worktree.as_ref())?;
                 self.add(
                     session,
                     item(TranscriptRole::Note, "You stopped this session."),
@@ -213,18 +237,19 @@ impl<'e> Host<'e> {
         let launched = prepared.and_then(|ready| {
             let client = AcpClient::launch(self.engine, &ready.launch, &ready.cwd);
             if let (Err(_), Some(made)) = (&client, &ready.worktree) {
-                let _ = crate::worktree::close(made);
+                let _ = worktree::close_if_nothing_lost(made);
             }
-            client
+            Ok((client?, ready.worktree))
         });
         match launched {
-            Ok(client) => {
+            Ok((client, worktree)) => {
                 let query = "UPDATE shell_sessions SET session_id = ?2 WHERE id = ?1";
                 self.book.execute(query, params![id, client.session_id()])?;
                 self.live.push(Live {
                     client,
                     id,
-                    words: None,
+                    worktree,
+                    words: Vec::new(),
                 });
                 Ok(())
             }
@@ -260,14 +285,17 @@ impl<'e> Host<'e> {
                 let once = request.options.iter().find(|o| o.kind == "allow_once");
                 once.map(|option| option.option_id.as_str())
             }
-            _ => request.reject_option(),
+            _ => {
+                let once = request.options.iter().find(|o| o.kind == "reject_once");
+                once.map(|option| option.option_id.as_str())
+            }
         };
         let none = || Error::Setup("the agent did not offer that answer".to_owned());
         let answered = self.live[index]
             .client
             .answer(request_id, option.ok_or_else(none)?)?;
         if let (true, BridgeChoice::RejectAndSay { words }) = (answered, choice) {
-            self.live[index].words = Some(words);
+            self.live[index].words.push(words);
         }
         Ok(())
     }
@@ -280,9 +308,17 @@ impl<'e> Host<'e> {
                 continue;
             };
             let gone = matches!(event, ClientEvent::Exited { .. });
-            self.on_event(index, event)?;
+            let id = self.live[index].id;
+            // One session's trouble is that session's: every other one stays up.
+            if let Err(why) = self.on_event(index, event) {
+                self.add(
+                    id,
+                    item(TranscriptRole::Note, &format!("Trouble here: {why}")),
+                )?;
+            }
             if gone {
-                self.live.remove(index);
+                let live = self.live.remove(index);
+                self.close_worktree(id, live.worktree.as_ref())?;
             }
         }
         Ok(())
@@ -296,9 +332,16 @@ impl<'e> Host<'e> {
                 return item_from(&update, own).map_or(Ok(()), |new| self.add(id, new));
             }
             ClientEvent::TurnEnded { .. } => {
-                return match self.live[index].words.take() {
-                    Some(words) => self.send_prompt(index, &words),
-                    None => Ok(()),
+                let words = std::mem::take(&mut self.live[index].words).join("\n\n");
+                if words.is_empty() {
+                    return Ok(());
+                }
+                return match self.send_prompt(index, &words) {
+                    Ok(()) => Ok(()),
+                    Err(why) => {
+                        let note = format!("Could not send: {why}. Not sent: {words}");
+                        self.add(id, item(TranscriptRole::Note, &note))
+                    }
                 };
             }
             ClientEvent::LaunchFailed { message } => return self.fail(id, &message),
@@ -309,9 +352,24 @@ impl<'e> Host<'e> {
             }
             _ => return Ok(()),
         };
-        let lost = self.live[index].words.take().filter(|_| words_lost);
-        let lost = lost.map_or(String::new(), |words| format!(" Not sent: {words}"));
+        let mut lost = String::new();
+        if words_lost && !self.live[index].words.is_empty() {
+            let words = std::mem::take(&mut self.live[index].words).join("\n\n");
+            lost = format!(" Not sent: {words}");
+        }
         self.add(id, item(TranscriptRole::Note, &format!("{note}{lost}")))
+    }
+
+    /// Closes it only when that loses nothing. Otherwise the transcript says where and why.
+    fn close_worktree(&mut self, id: i64, made: Option<&Worktree>) -> Result<()> {
+        let Some(made) = made else { return Ok(()) };
+        let why = match worktree::close_if_nothing_lost(made) {
+            Ok(Closed::KeptDirty(why)) => why,
+            Ok(Closed::Removed { .. }) => return Ok(()),
+            Err(why) => why.to_string(),
+        };
+        let note = format!("Kept the worktree at {}: {why}", made.path.display());
+        self.add(id, item(TranscriptRole::Note, &note))
     }
 
     fn add(&mut self, session: i64, mut item: TranscriptItem) -> Result<()> {
@@ -390,10 +448,11 @@ impl<'e> Host<'e> {
         let mut rows = Vec::new();
         for found in mapped {
             let (mut row, session) = found?;
+            let failed = row.why.is_some();
             if let Some(session) = session {
                 self.fill(&mut row, session)?;
             }
-            if row.why.is_some() {
+            if failed {
                 row.state = SessionState::CouldNotStart;
             }
             rows.push(row);
@@ -416,11 +475,21 @@ impl<'e> Host<'e> {
         row.can_stop = live.is_some();
         row.can_prompt = live.is_some() && view.display == SessionDisplay::YourTurn;
         let closed = "This session's process ended. No answer can reach it.";
-        let lost = "The core restarted without this session's process, so it is marked interrupted. No answer can reach it.";
+        let lost = "The core restarted and this session's process had gone, so it is marked interrupted. No answer can reach it.";
+        let still = "This session is still running from before the core restarted, and the core has no line to it. No answer can reach it.";
         let decided = match (view.session.lifecycle, live) {
             (Lifecycle::Open, Some(_)) => None,
             (Lifecycle::Closed, _) => Some(closed),
-            _ => Some(lost),
+            (Lifecycle::Interrupted, _) => Some(lost),
+            (Lifecycle::Open, None) => {
+                // A recorded pid can pass to another program, so this core stops nothing.
+                row.state = SessionState::StillRunning;
+                row.why = Some(format!(
+                    "Still running from before the core restarted. This app can't talk to it or stop it. To end it, check that process {} is its node adapter, then end that process. The row updates when it has gone.",
+                    view.session.pid
+                ));
+                Some(still)
+            }
         };
         let detail = |rpc_id: &str| {
             let asked = live?.client.requested_input(rpc_id)?;

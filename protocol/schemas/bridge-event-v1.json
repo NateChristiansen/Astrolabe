@@ -252,7 +252,8 @@
         "your_turn",
         "ended",
         "failed",
-        "interrupted"
+        "interrupted",
+        "still_running"
       ]
     },
     "StallRow": {

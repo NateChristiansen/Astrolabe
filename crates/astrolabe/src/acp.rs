@@ -660,6 +660,16 @@ impl<'e> AcpClient<'e> {
     /// comes first because a tool can leave the adapter's process group, where only
     /// the adapter can stop it. A crash gets no such chance.
     pub fn shutdown(mut self) -> Result<()> {
+        self.close()
+    }
+
+    /// `shutdown`, handing back what came in meanwhile and was not read.
+    pub fn stop(mut self) -> Result<VecDeque<ClientEvent>> {
+        self.close()?;
+        Ok(std::mem::take(&mut self.events))
+    }
+
+    fn close(&mut self) -> Result<()> {
         let deadline = Instant::now() + CANCEL_WAIT;
         if self.prompt_id.is_some() && !self.cancelling && !self.gone {
             match self.cancel() {

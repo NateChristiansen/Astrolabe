@@ -242,6 +242,7 @@ pub enum SessionState {
     Ended,
     Failed,
     Interrupted,
+    StillRunning,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

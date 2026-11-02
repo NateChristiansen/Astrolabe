@@ -94,8 +94,21 @@ function Approval({ row, core }: { row: SessionRow["requests"][number]; core: Co
   );
 }
 
-function Chat({ row, items, core }: { row: SessionRow; items: TranscriptItem[]; core: Core }) {
+function Chat({ row, items, core, up, problem }: {
+  row: SessionRow; items: TranscriptItem[]; core: Core; up: boolean; problem?: string;
+}) {
   const [text, setText] = useState("");
+  // What went out and isn't yet in the transcript. The box keeps it until the core has it.
+  const [sent, setSent] = useState<{ text: string; seen: number }>();
+  const yours = items.filter((item) => item.role === "you").length;
+  useEffect(() => {
+    if (sent && yours > sent.seen) {
+      setText((now) => (now === sent.text ? "" : now));
+      setSent(undefined);
+    }
+  }, [sent, yours]);
+  useEffect(() => setSent(undefined), [problem, up]);
+  const can = row.can_prompt && up && !sent;
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => end.current?.scrollIntoView({ block: "end" }), [items.length, row.requests.length]);
   return (
@@ -139,9 +152,8 @@ function Chat({ row, items, core }: { row: SessionRow; items: TranscriptItem[]; 
         className="prompt"
         onSubmit={(event) => {
           event.preventDefault();
-          if (text.trim() && row.can_prompt) {
-            core.send({ type: "prompt", session: row.id, text });
-            setText("");
+          if (text.trim() && can && core.send({ type: "prompt", session: row.id, text })) {
+            setSent({ text, seen: yours });
           }
         }}
       >
@@ -149,7 +161,7 @@ function Chat({ row, items, core }: { row: SessionRow; items: TranscriptItem[]; 
           aria-label="Message"
           rows={2}
           value={text}
-          placeholder={row.can_prompt ? "Say what to do" : "You can type when it's your turn"}
+          placeholder={up ? "Say what to do when it's your turn" : "Not connected to the core"}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -158,7 +170,7 @@ function Chat({ row, items, core }: { row: SessionRow; items: TranscriptItem[]; 
             }
           }}
         />
-        <button disabled={!row.can_prompt || !text.trim()}>Send</button>
+        <button disabled={!can || !text.trim()}>{up ? "Send" : "Not connected"}</button>
       </form>
     </main>
   );
@@ -245,7 +257,7 @@ export function App() {
           </p>
         )}
         {row && core ? (
-          <Chat row={row} items={transcripts[row.id] ?? []} core={core} />
+          <Chat row={row} items={transcripts[row.id] ?? []} core={core} up={link.link === "connected"} problem={problem} />
         ) : (
           <p className="empty">Pick a session, or start a new one.</p>
         )}

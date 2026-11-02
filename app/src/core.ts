@@ -12,7 +12,8 @@ declare global {
 export type Link = "connecting" | "connected" | "down";
 
 export interface Core {
-  send(request: BridgeRequest): void;
+  /** False when the socket isn't open, so nothing went. */
+  send(request: BridgeRequest): boolean;
   close(): void;
 }
 
@@ -49,7 +50,11 @@ export function connect(
   };
   void open();
   return {
-    send: (request) => socket?.send(JSON.stringify(request)),
+    send: (request) => {
+      if (socket?.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify(request));
+      return true;
+    },
     close: () => {
       closed = true;
       socket?.close();
@@ -87,6 +92,7 @@ export const stateWords: Record<string, string> = {
   ended: "Ended",
   failed: "Failed",
   interrupted: "Interrupted",
+  still_running: "Still running",
 };
 
 export const providerWords: Record<string, string> = { claude: "Claude", codex: "Codex" };

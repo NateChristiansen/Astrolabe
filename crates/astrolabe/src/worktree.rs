@@ -155,6 +155,43 @@ pub fn close(worktree: &Worktree) -> Result<Closed> {
     })
 }
 
+/// `close`, only when nothing would be lost: no changed, untracked or ignored file, and no
+/// commit that another branch or a remote lacks. Any doubt keeps it. Never forces.
+pub fn close_if_nothing_lost(worktree: &Worktree) -> Result<Closed> {
+    let ask = |args: &[&str]| {
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(std::convert::AsRef::as_ref).collect();
+        git(&worktree.path, &args).map_err(invalid)
+    };
+    let files = ask(&[
+        "status",
+        "--porcelain",
+        "--ignored",
+        "--untracked-files=all",
+    ])?;
+    if !files.trim().is_empty() {
+        return Ok(Closed::KeptDirty(format!(
+            "it has files not committed: {}",
+            files.trim()
+        )));
+    }
+    let others = format!("--exclude={}", worktree.branch);
+    let unique = ask(&[
+        "rev-list",
+        "HEAD",
+        &worktree.branch,
+        "--not",
+        &others,
+        "--branches",
+        "--remotes",
+    ])?;
+    if !unique.trim().is_empty() {
+        return Ok(Closed::KeptDirty(
+            "it has commits no other branch or remote has".to_owned(),
+        ));
+    }
+    close(worktree)
+}
+
 pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
     run_git(Command::new("git").args(args), cwd)
 }

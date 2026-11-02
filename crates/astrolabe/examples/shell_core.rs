@@ -4,6 +4,7 @@
 use astrolabe::acp::Launch;
 use astrolabe::launch::Prepared;
 use astrolabe::shell::Prepare;
+use astrolabe::worktree::{self, Progress};
 use astrolabe::{Clock, Error, SystemClock};
 use serde_json::json;
 use std::path::PathBuf;
@@ -32,8 +33,26 @@ fn main() {
     };
     let (root, cwd) = (fixtures.clone(), db.parent().unwrap().join("agents"));
     std::fs::create_dir_all(&cwd).unwrap();
-    let prepare: Prepare = Arc::new(move |repo, _, _, say| {
-        say("preparing".to_owned());
+    let prepare: Prepare = Arc::new(move |repo, _, name, say| {
+        say("not synced, going on: recording".to_owned());
+        if repo == "slow" {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+        // "worktree:<recording>" runs it in a real worktree of the git repo beside the agents.
+        let (made, repo) = match repo.strip_prefix("worktree:") {
+            Some(recording) => {
+                let mut creating = worktree::create(&cwd.join("../repo"), name)?;
+                let made = loop {
+                    match creating.poll() {
+                        Some(Progress::Ready(made)) => break made,
+                        Some(Progress::Creating { .. }) => {}
+                        other => panic!("{other:?}"),
+                    }
+                };
+                (Some(made), recording)
+            }
+            None => (None, repo),
+        };
         let (command, args) = match repo {
             "refused-before-launch" => {
                 return Err(Error::Setup(
@@ -57,10 +76,13 @@ fn main() {
             meta,
             ..Launch::default()
         };
+        let cwd = made
+            .as_ref()
+            .map_or_else(|| cwd.clone(), |made| made.path.clone());
         Ok(Prepared {
             launch,
-            cwd: cwd.clone(),
-            worktree: None,
+            cwd,
+            worktree: made,
         })
     });
     let tick = Duration::from_millis(100);

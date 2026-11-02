@@ -205,6 +205,11 @@ impl Launch {
         self.env.retain(|(name, _)| name != DATA_DIR_VAR);
         self.env
             .extend(launch_env(program_dir, data_dir, inherited_path)?);
+        // Codex starts a tool server with a filtered environment, without this.
+        for server in &mut self.mcp_servers {
+            let value = data_dir.to_string_lossy();
+            server["env"] = serde_json::json!([{ "name": DATA_DIR_VAR, "value": value }]);
+        }
         self.protection = Some(Protection::new(at, data_dir));
         Ok(())
     }
