@@ -91,7 +91,13 @@ impl Fixture {
             &dir.0.join("plugin/.claude-plugin/plugin.json"),
             "manifest v1",
         );
-        Self { dir, demo, other }
+        let f = Self { dir, demo, other };
+        assert!(f.machine("on").contains("on for this machine"));
+        f
+    }
+
+    fn machine(&self, verb: &str) -> String {
+        self.run(&self.demo, &[verb], "", &[]).0
     }
 
     fn state(&self) -> PathBuf {
@@ -202,10 +208,79 @@ impl Fixture {
 }
 
 #[test]
-fn an_off_session_is_silent_and_unguarded() {
+fn off_for_the_machine_nothing_runs_and_on_needs_no_step() {
     let f = Fixture::new();
+    assert!(f.machine("off").contains("off for this machine"));
+    assert!(f.machine("status").contains("off for this machine"));
     assert!(!f.denies("s1", "pkill -f anything"));
     assert_eq!(f.session_start("s1", &f.demo, &[]), None);
+    assert_eq!(f.session_start("w1", &f.demo, &[(EFFORT_VAR, "70")]), None);
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    assert_eq!(f.hook(input), None, "not taken, so it runs bare");
+    let (text, ok) = f.run(&f.demo, &["activate", "--effort", "70"], "", &[]);
+    assert!(!ok && text.contains("astrolabe on"), "{text}");
+    assert!(f.machine("on").contains("on for this machine"));
+    // On: a fresh session in a repo with no active effort gets owner, voice and the guard.
+    let text = f.session_start("s2", &f.other, &[]).unwrap();
+    assert!(
+        text.contains("OWNER-TEXT") && text.contains("VOICE-TEXT") && text.contains("guard runs"),
+        "{text}"
+    );
+    assert!(
+        text.contains("no active effort names this repo (other)") && !text.contains("EFFORT-72"),
+        "{text}"
+    );
+    assert!(f.denies("s2", "pkill -f anything") && !f.denies("s2", "git status"));
+    assert!(
+        f.denies("s9", "pkill -f anything"),
+        "every session, even one never started here"
+    );
+    // The machine switch is the owner's, from a terminal.
+    for verb in ["off", "on"] {
+        let (why, ok) = f.bash("s2", &f.demo, &format!("astrolabe {verb}"));
+        assert!(!ok && why.contains("owner's"), "{why}");
+    }
+    assert!(f.machine("status").contains("on for this machine"));
+}
+
+#[test]
+fn a_repos_one_active_effort_is_picked_and_several_are_never_guessed() {
+    let f = Fixture::new();
+    assert!(!f.state().join("s1.json").exists());
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(
+        text.starts_with("Effort 70 was picked automatically") && text.contains("EFFORT-70"),
+        "{text}"
+    );
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("effort 70")
+    );
+    let also = "---\nstatus: active\nrepo: [other, demo]\ninvolvement: autonomous\nauthority: read\n---\n# 0077\n\n## Current state\n\nEFFORT-77\n";
+    write(&f.dir.0.join("notes/efforts/0077-also.md"), also);
+    let text = f.session_start("s2", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("several active efforts name this repo (70, 77)")
+            && text.contains("Don't guess"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("EFFORT-7") && text.contains("OWNER-TEXT"),
+        "{text}"
+    );
+    assert!(!f.state().join("s2.json").exists() && f.denies("s2", "pkill x"));
+    // Until the owner names one.
+    assert!(f.bash("s2", &f.demo, "astrolabe activate --effort 77").1);
+    // A folder in no registered repo: no effort, guard on.
+    let loose = f.dir.0.join("loose");
+    std::fs::create_dir_all(&loose).unwrap();
+    git(&loose, &["init", "-q"]);
+    let text = f.session_start("s3", &loose, &[]).unwrap();
+    assert!(
+        text.contains("isn't registered") && f.denies("s3", "pkill x"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -230,14 +305,14 @@ fn switching_on_binds_the_hooks_session_and_only_that_one() {
     assert!(!text.contains("NOT-DELIVERED") && !text.contains("REPO-OTHER"));
     assert!(f.denies("s1", "pkill -f anything"));
     assert!(
-        !f.denies("s2", "pkill -f anything"),
-        "another session stays off"
+        !f.state().join("s2.json").exists(),
+        "another session has no effort"
     );
     assert!(!f.denies("s1", "git status"), "an allowed command runs");
-    assert_eq!(
-        f.session_start("s2", &f.demo, &[]),
-        None,
-        "a fresh session inherits nothing"
+    let text = f.session_start("s2", &f.other, &[]).unwrap();
+    assert!(
+        !text.contains("EFFORT-70"),
+        "a fresh session inherits nothing: {text}"
     );
 }
 
@@ -284,7 +359,7 @@ fn a_missing_or_bad_field_or_another_repo_is_refused_and_keeps_what_was_on() {
         !ok && text.contains("no `authority` property") && text.contains("stays off"),
         "{text}"
     );
-    assert!(!f.denies("s1", "pkill x"), "no protection claimed or given");
+    assert!(!f.state().join("s1.json").exists(), "no effort set");
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
     for (effort, why) in [
         ("74", "involvement \"whenever\" isn't one of"),
@@ -330,10 +405,8 @@ fn the_guard_is_proven_only_by_a_hook_denial_of_this_activations_probe() {
     let probe = f.probe(&text);
     let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
     assert!(status().contains("not proven yet"));
-    assert!(
-        !f.denies("s2", &probe),
-        "an off session's run proves nothing"
-    );
+    assert!(f.denies("s2", &probe), "another session's denial");
+    // ... doesn't prove this one's guard.
     assert!(status().contains("not proven yet"));
     assert!(f.denies("s1", &probe));
     assert!(status().contains("Guard proven"), "{}", status());
@@ -395,12 +468,12 @@ fn resume_reloads_fresh_context_and_a_failed_reload_keeps_the_guard_and_blocks()
     std::fs::write(&machines, "MACHINE-TEXT").unwrap();
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
     assert!(!f.denies("s1", "git status") && f.denies("s1", "pkill x"));
-    // Or switched off: unblocked and unguarded, as asked.
+    // Or the effort dropped: unblocked, and still guarded while the machine is on.
     std::fs::remove_file(&machines).unwrap();
     f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(f.denies("s1", "git status"));
     assert!(f.bash("s1", &f.demo, "astrolabe activate --off").1);
-    assert!(!f.denies("s1", "git status"));
+    assert!(!f.denies("s1", "git status") && f.denies("s1", "pkill x"));
 }
 
 #[test]
@@ -414,7 +487,7 @@ fn a_launch_switches_on_by_env_bound_to_its_own_session() {
         "{text}"
     );
     assert!(f.denies("w1", "pkill x"));
-    assert!(!f.denies("w2", "pkill x"));
+    assert!(!f.state().join("w2.json").exists());
     let text = f
         .session_start("w3", &f.demo, &[(EFFORT_VAR, "71")])
         .unwrap();
@@ -422,17 +495,16 @@ fn a_launch_switches_on_by_env_bound_to_its_own_session() {
         text.contains("NOT switched on") && text.contains(EFFORT_VAR),
         "{text}"
     );
-    assert!(!f.denies("w3", "pkill x"));
+    assert!(!f.state().join("w3.json").exists() && f.denies("w3", "pkill x"));
 }
 
 #[test]
 fn a_subagent_inherits_the_guard_only_and_cant_switch() {
     let f = Fixture::new();
     let child = |session: &str, command: &str| json!({"session_id": session, "agent_id": "a1", "agent_type": "general-purpose", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": command}});
-    assert_eq!(
-        f.hook(child("s1", "pkill x")),
-        None,
-        "an off parent's child stays off"
+    assert!(
+        f.hook(child("s1", "pkill x")).is_some(),
+        "guarded while the machine is on, effort or not"
     );
     let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     let answer = f.hook(child("s1", "astrolabe activate --off")).unwrap();
@@ -451,10 +523,15 @@ fn a_subagent_inherits_the_guard_only_and_cant_switch() {
     let answer = f.hook(child("s1", "pkill x")).unwrap();
     assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(f.hook(child("s1", "git status")), None);
-    assert_eq!(
-        f.hook(child("s2", "pkill x")),
-        None,
-        "an unrelated parent's child stays off"
+    assert!(
+        f.hook(child("s2", "pkill x")).is_some(),
+        "any session's child"
+    );
+    assert!(
+        f.bash("s2", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("no effort set"),
+        "a child switched nothing"
     );
     // The denial keeps the child's identity, and doesn't prove the parent's guard.
     let log = std::fs::read_to_string(f.dir.0.join("data/guard-denials.log")).unwrap();
@@ -470,6 +547,12 @@ fn a_subagent_inherits_the_guard_only_and_cant_switch() {
         f.bash("s1", &f.demo, "astrolabe activate --status")
             .0
             .contains("Guard proven")
+    );
+    f.machine("off");
+    assert_eq!(
+        f.hook(child("s1", "pkill x")),
+        None,
+        "off for the machine: children too"
     );
 }
 
@@ -548,16 +631,20 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         name
     );
     let skill = std::fs::read_to_string(root.join("astrolabe/skills/effort/SKILL.md")).unwrap();
-    assert!(
-        skill.contains("disable-model-invocation: true")
-            && skill.contains("astrolabe activate --effort <n>")
-    );
+    // Plain words name an effort, so the model may use the skill, but only on the owner's number.
+    for wanted in [
+        "pick up 70",
+        "work on effort 70",
+        "/astrolabe:effort 70",
+        "never on a guess",
+        "astrolabe activate --effort <n>",
+    ] {
+        assert!(skill.contains(wanted), "{wanted}");
+    }
+    assert!(!skill.contains("disable-model-invocation"));
     let codex =
         std::fs::read_to_string(root.join("astrolabe/skills/effort/agents/openai.yaml")).unwrap();
-    assert!(
-        codex.contains("allow_implicit_invocation: false"),
-        "never by automatic discovery"
-    );
+    assert!(codex.contains("allow_implicit_invocation: true"));
 }
 
 #[test]

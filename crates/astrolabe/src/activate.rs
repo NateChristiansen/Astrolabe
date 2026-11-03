@@ -49,7 +49,41 @@ const AUTHORITY: [(&str, &str); 3] = [
     ),
 ];
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
-const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+/// The machine switch's file in the state folder. Present means on.
+const SWITCH: &str = "on";
+
+/// Whether Astrolabe is on for this machine. Off, the hooks do nothing.
+pub fn machine_on(dir: &Path) -> bool {
+    dir.join(SWITCH).is_file()
+}
+
+/// `astrolabe on | off | status`, for the machine. The owner's, from a terminal: the hook refuses
+/// it inside a session.
+pub fn machine(verb: &str) -> (String, bool) {
+    let Some(dir) = state_dir() else {
+        return (
+            "Astrolabe has no home folder for its state.".to_owned(),
+            false,
+        );
+    };
+    let path = dir.join(SWITCH);
+    let done = match verb {
+        "on" => write_json(&path, &json!({"at_ms": now_ms()})),
+        "off" => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("{}: {e}", path.display()))
+            }
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    };
+    match (done, machine_on(&dir)) {
+        (Err(why), _) => (format!("Astrolabe couldn't switch {verb}: {why}"), false),
+        (Ok(()), true) => ("Astrolabe is on for this machine: every new session gets the owner and voice notes and the guard, and an effort when its repo has exactly one active.".to_owned(), true),
+        (Ok(()), false) => ("Astrolabe is off for this machine: its hooks do nothing.".to_owned(), true),
+    }
+}
 
 pub fn state_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(STATE_VAR) {
@@ -474,7 +508,7 @@ pub fn switch_on(
         - In this build these settings are context, not enforced, apart from the guard. Switching on wrote only Astrolabe's own state file; that isn't leave to edit project files.\n\n\
         {GUARD_SCOPE}\n\n\
         Prove the guard for this session: run exactly this, alone: {probe}\n\
-        The hook must deny it. Then run `astrolabe activate --status`, and report the effort and what it says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To switch off: `astrolabe activate --off`.",
+        The hook must deny it. Then run `astrolabe activate --status`, and report the effort and what it says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.",
         n = effort.number,
         title = effort.title,
         file = effort.file,
@@ -490,7 +524,7 @@ pub fn switch_on(
 /// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
 pub fn status(dir: &Path, session: &str) -> String {
     let state = match read_state(dir, session) {
-        Ok(None) => return "Astrolabe is off in this session.".to_owned(),
+        Ok(None) => return "Astrolabe has no effort set in this session. While it's on for this machine the guard runs here, but there's no proof for this session until an effort is set.".to_owned(),
         Err(why) => {
             return format!(
                 "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off`, then switch on again."
@@ -591,12 +625,12 @@ fn act(
     match args {
         ["--status"] => (status(dir, session), true, Change::Keep, String::new()),
         ["--off"] => match previous {
-            Ok(None) => ("Astrolabe was already off in this session.".to_owned(), true, Change::Keep, String::new()),
+            Ok(None) => ("This session has no effort set.".to_owned(), true, Change::Keep, String::new()),
             _ => (
-                "Astrolabe is off in this session; its guard no longer runs here.".to_owned(),
+                "This session has no effort now. The guard stays while Astrolabe is on for this machine.".to_owned(),
                 true,
                 Change::Remove,
-                "Astrolabe could NOT switch off, so it stays on here, guard included".to_owned(),
+                "Astrolabe could NOT drop this session's effort, so it stays as it was".to_owned(),
             ),
         },
         ["--effort", effort] => {
@@ -633,9 +667,14 @@ pub fn gate(event: &str) {
     let bytes = hook::read_bytes();
     let input: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let session = input["session_id"].as_str().filter(|s| !s.is_empty());
-    // A child agent shares its parent's session id. It inherits a switched-on parent's guard,
-    // but no context or authority, can't switch, and doesn't count toward the parent's proof.
+    // A child agent shares its parent's session id. It gets the guard, as every session does
+    // while the machine is on, but no context or authority, can't switch, and doesn't count
+    // toward the parent's proof.
     let child = input["agent_id"].as_str().is_some_and(|a| !a.is_empty());
+    // Off for the machine: nothing at all, as if the plugin weren't there.
+    if !state_dir().is_some_and(|dir| machine_on(&dir)) {
+        return;
+    }
     match event {
         "pre-command" => {
             let answer = std::panic::catch_unwind(|| switch_command(&input, session, child));
@@ -643,10 +682,10 @@ pub fn gate(event: &str) {
                 return hook::say(&answer);
             }
             let (Some(session), Some(dir)) = (session, state_dir()) else {
-                return;
+                return hook::guard(&bytes);
             };
             match read_state(&dir, session) {
-                Ok(None) => {}
+                Ok(None) => hook::guard(&bytes),
                 Ok(Some(state)) => match block_reason(&dir, &state, session) {
                     Some(why) => hook::say(&hook::deny(&blocked(
                         state["effort"].as_str().unwrap_or_default(),
@@ -689,6 +728,11 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
     };
     let command = tool_input[key].as_str()?.trim();
     let words: Vec<&str> = command.split_whitespace().collect();
+    if matches!(words.as_slice(), ["astrolabe", "on" | "off", ..]) {
+        return Some(hook::deny(
+            "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
+        ));
+    }
     if words.get(..2) != Some(&["astrolabe", "activate"]) {
         return None;
     }
@@ -770,6 +814,115 @@ fn block_reason(dir: &Path, state: &Value, session: &str) -> Option<String> {
         .then(|| body["why"].as_str().unwrap_or("unknown").to_owned())
 }
 
+/// A fresh session while the machine is on: the effort if its repo has exactly one active,
+/// else the owner and voice notes and the guard, and why there's no effort.
+fn fresh(dir: &Path, session: &str, provider: &str, cwd: &Path) -> String {
+    let (registry, notes) = match notes_and_registry() {
+        Ok(found) => found,
+        Err(why) => {
+            return format!(
+                "Astrolabe is on for this machine and the guard runs here, but owner and voice weren't delivered: {why}. Tell the owner.\n\n{GUARD_SCOPE}"
+            );
+        }
+    };
+    let why_none = match active_efforts(&notes, &registry, cwd) {
+        Ok((_, efforts)) if efforts.len() == 1 => {
+            let picked = &efforts[0];
+            match switch_on(dir, picked, session, provider, cwd, None) {
+                Ok(activation) => {
+                    match commit(dir, session, &Change::Write(activation.state.clone())) {
+                        Ok(()) => {
+                            let why = format!(
+                                "Effort {picked} was picked automatically: it's the only active effort for this repo. Say so to the owner in your first reply.\n\n"
+                            );
+                            return why + &activation.fitted();
+                        }
+                        Err(why) => {
+                            format!("its one active effort, {picked}, couldn't be saved: {why}")
+                        }
+                    }
+                }
+                Err(why) => format!("its one active effort, {picked}, can't be used: {why}"),
+            }
+        }
+        Ok((repos, efforts)) if efforts.is_empty() => {
+            format!("no active effort names this repo ({})", repos.join(", "))
+        }
+        Ok((_, efforts)) => format!(
+            "several active efforts name this repo ({}), and picking one is the owner's call",
+            efforts.join(", ")
+        ),
+        Err(why) => why,
+    };
+    let base = format!(
+        "Astrolabe is on for this machine, so the guard runs in this session. No effort is set: {why_none}. Don't guess one. When the owner names an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}"
+    );
+    match crate::voice::read(&notes) {
+        Ok(voice) => format!("{base}\n\n--- owner and voice\n\n{voice}"),
+        Err(why) => format!("{base}\n\nOwner and voice NOT delivered: {why}. Tell the owner."),
+    }
+}
+
+/// The repo names this folder is registered under, and the active efforts naming one of them.
+fn active_efforts(
+    notes: &Path,
+    registry: &Registry,
+    cwd: &Path,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let here = common_dir(cwd).ok_or_else(|| {
+        format!(
+            "this session's folder {} isn't in a git repo",
+            cwd.display()
+        )
+    })?;
+    let names = registry
+        .repos()
+        .map_err(|e| format!("this machine's repos: {e}"))?;
+    let repos: Vec<String> = (names.into_iter())
+        .filter(|name| name != crate::registry::AGENT)
+        .filter(|name| {
+            registry
+                .checkout(name)
+                .ok()
+                .and_then(|c| common_dir(&c))
+                .as_ref()
+                == Some(&here)
+        })
+        .collect();
+    if repos.is_empty() {
+        return Err("this session's repo isn't registered on this machine (`astrolabe repo add <name> <checkout>`)".to_owned());
+    }
+    let dir = notes.join("efforts");
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut efforts: Vec<String> = Vec::new();
+    for name in entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+    {
+        let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() || !name.ends_with(".md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(dir.join(&name))
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
+        let props = frontmatter(&text);
+        let get = |key: &str| {
+            props
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        let names_here =
+            get("repo").is_some_and(|r| r.split(',').any(|r| repos.contains(&r.trim().to_owned())));
+        if get("status") == Some("active") && names_here {
+            efforts.push(digits.trim_start_matches('0').to_owned());
+        }
+    }
+    efforts.sort();
+    Ok((repos, efforts))
+}
+
 fn blocked(effort: &str, why: &str) -> String {
     format!(
         "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or switch off with `astrolabe activate --off`."
@@ -821,7 +974,9 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             )
         }
         Ok(None) => {
-            let effort = launched?;
+            let Some(effort) = launched else {
+                return Some(fresh(&dir, session, provider(input), &cwd));
+            };
             Some(
                 match switch_on(&dir, &effort, session, provider(input), &cwd, None) {
                     Ok(activation) => {
