@@ -568,11 +568,12 @@ fn proof(session: &str, token: &str, since_ms: i64) -> String {
 }
 
 pub fn status(dir: &Path, session: &str) -> String {
+    // Proof counts only from the latest switch-on: off and on again starts it over.
+    let on = std::fs::read(dir.join(SWITCH)).ok();
+    let on = on.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let since = on.and_then(|on| on["at_ms"].as_i64()).unwrap_or(i64::MAX);
     let state = match read_state(dir, session) {
         Ok(None) => {
-            let on = std::fs::read(dir.join(SWITCH)).ok();
-            let on = on.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-            let since = on.and_then(|on| on["at_ms"].as_i64()).unwrap_or(i64::MAX);
             return format!(
                 "No effort is set in this session. {}",
                 proof(session, &session_token(session), since)
@@ -599,7 +600,11 @@ pub fn status(dir: &Path, session: &str) -> String {
     }
     format!(
         "{on} {}",
-        proof(session, token, state["at_ms"].as_i64().unwrap_or(i64::MAX))
+        proof(
+            session,
+            token,
+            state["at_ms"].as_i64().unwrap_or(i64::MAX).max(since)
+        )
     )
 }
 

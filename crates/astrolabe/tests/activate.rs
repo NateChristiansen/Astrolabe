@@ -922,3 +922,23 @@ fn a_failed_reload_that_cant_be_saved_still_blocks_or_says_it_doesnt() {
     lock(0o755);
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
+
+#[test]
+fn a_loaded_effort_proves_again_after_the_switch_goes_off_and_on() {
+    let f = Fixture::new();
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    let probe = f.probe(&text);
+    let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"));
+    f.machine("off");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.machine("on");
+    assert!(
+        status().contains("effort 70") && status().contains("not proven yet"),
+        "{}",
+        status()
+    );
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"));
+}
