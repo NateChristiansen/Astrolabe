@@ -1233,3 +1233,47 @@ fn a_repo_add_the_plugin_cant_record_says_so_and_rerunning_fixes_it() {
     );
     assert!(ok && repos.join("late.json").exists());
 }
+
+#[test]
+fn a_bad_repo_name_is_refused_before_anything_is_written() {
+    let f = Fixture::new();
+    let (_, ok) = f.run(
+        &f.demo,
+        &["repo", "add", "../x", f.other.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(!ok);
+    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
+    assert!(
+        registry.checkout("../x").is_err(),
+        "not in the database either"
+    );
+    assert!(!f.state().join("x.json").exists() && !f.state().join("repos/../x.json").exists());
+}
+
+#[test]
+fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_shells() {
+    let f = Fixture::new();
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    let probe_dir = if cfg!(windows) {
+        f.state().join("probe")
+    } else {
+        std::env::temp_dir().join("astrolabe-probe")
+    };
+    assert!(
+        f.probe(&text).contains(&probe_dir.display().to_string()),
+        "{text}"
+    );
+    assert!(probe_dir.is_dir(), "made, so the shell's touch works");
+    // Claude on Windows may use Bash or PowerShell, so session start offers both.
+    let both = text.contains("For PowerShell:") && text.contains("For the POSIX shell");
+    assert_eq!(both, cfg!(windows), "{text}");
+    f.control(&text);
+    assert!(f.denies("s1", &f.probe(&text)));
+    let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(
+        status.contains("Guard proven") && status.contains("POSIX"),
+        "{status}"
+    );
+}

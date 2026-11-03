@@ -107,6 +107,13 @@ impl Repos {
 /// reads. This record is the plugin's authority.
 pub fn add_repo(name: &str, checkout: &Path) -> Result<(), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
+    check_repo_name(name)?;
+    let record = json!({"name": name, "checkout": checkout.display().to_string()});
+    write_json(&dir.join(REPOS).join(format!("{name}.json")), &record)
+}
+
+/// A repo name is a file name in the plugin's records, so checked before anything is written.
+pub fn check_repo_name(name: &str) -> Result<(), String> {
     let named = !name.starts_with('.')
         && name
             .chars()
@@ -116,8 +123,7 @@ pub fn add_repo(name: &str, checkout: &Path) -> Result<(), String> {
             "repo name {name:?} must be letters, digits, '-', '_' or '.'"
         ));
     }
-    let record = json!({"name": name, "checkout": checkout.display().to_string()});
-    write_json(&dir.join(REPOS).join(format!("{name}.json")), &record)
+    Ok(())
 }
 
 /// The notes checkout as the plugin's own records name it, checked to be a git checkout.
@@ -433,15 +439,29 @@ impl Activation {
 
 /// The marker goes in the temp folder, which a sandboxed shell can still write, so a probe that
 /// got past the hook leaves a trace.
+/// Where probe and control markers go, somewhere a sandboxed shell can write. On Windows the
+/// layer's state folder, since Codex's writes to the temp folder under AppData fail there.
+/// Elsewhere the temp folder, since Codex's sandbox on a Mac can write that but not the state
+/// folder. Made here, so a shell's `touch` finds it.
+pub fn probe_dir() -> PathBuf {
+    let dir = if cfg!(windows) {
+        state_dir().unwrap_or_else(std::env::temp_dir).join("probe")
+    } else {
+        std::env::temp_dir().join("astrolabe-probe")
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 fn marker(token: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("astrolabe-probe-{token}"))
+    probe_dir().join(token)
 }
 
 /// Made by an allowed command in the same shell, so a missing probe marker means the deny
 /// held, not that the shell couldn't write there. One per shell.
 fn control_marker(token: &str, powershell: bool) -> PathBuf {
     let shell = if powershell { "powershell" } else { "posix" };
-    std::env::temp_dir().join(format!("astrolabe-probe-{token}-control-{shell}"))
+    probe_dir().join(format!("{token}-control-{shell}"))
 }
 
 fn make_file(path: &Path, powershell: bool) -> String {
@@ -463,12 +483,35 @@ pub fn shell_of(input: &Value) -> &'static str {
 }
 
 /// What the session runs to prove its guard, in its own shell.
-fn proof_steps(token: &str, powershell: bool) -> String {
+fn proof_steps(token: &str, shells: &[bool]) -> String {
+    let steps = |powershell: bool| {
+        format!(
+            "First an allowed control, which must run: {}\nThen the probe, which the hook must deny: {}\n",
+            make_file(&control_marker(token, powershell), powershell),
+            probe(token, powershell)
+        )
+    };
+    let body = match shells {
+        [one] => steps(*one),
+        _ => format!(
+            "In the shell you use. For the POSIX shell (Bash, zsh):\n{}For PowerShell:\n{}",
+            steps(false),
+            steps(true)
+        ),
+    };
     format!(
-        "Prove the guard for this session, each command alone and exactly as written. First an allowed control, which must run: {}\nThen the probe, which the hook must deny: {}\nThen run `astrolabe activate --status`.",
-        make_file(&control_marker(token, powershell), powershell),
-        probe(token, powershell)
+        "Prove the guard for this session, each command alone and exactly as written. {body}Then run `astrolabe activate --status`."
     )
+}
+
+/// The shells a session may use, for proof steps given at session start, before any tool
+/// runs: Claude on Windows has both Bash and PowerShell tools.
+fn session_shells(provider: &str) -> Vec<bool> {
+    if cfg!(windows) && provider == "claude" {
+        vec![false, true]
+    } else {
+        vec![in_powershell(provider, &Value::Null)]
+    }
 }
 
 /// In the session's shell, so that a probe the hook missed would leave its marker.
@@ -572,7 +615,7 @@ pub fn switch_on(
     provider: &str,
     cwd: &Path,
     previous: Option<&Value>,
-    powershell: bool,
+    shells: &[bool],
 ) -> Result<Activation, String> {
     let (registry, notes) = notes_and_repos()?;
     let effort = read_effort(&notes, effort)?;
@@ -636,7 +679,7 @@ pub fn switch_on(
         inv_m = meaning(&INVOLVEMENT, &effort.involvement),
         auth = effort.authority,
         auth_m = meaning(&AUTHORITY, &effort.authority),
-        proof = proof_steps(&token, powershell),
+        proof = proof_steps(&token, shells),
     );
     Ok(Activation { state, head, parts })
 }
@@ -700,7 +743,7 @@ fn proof(session: &str, token: &str, since_ms: i64, powershell: bool) -> String 
     };
     format!(
         "Guard not proven yet:{half} Proof needs, in this session's own shell, by this build of the program and this version of the plugin's hooks, since it was set up: {}\nUntil then claim no protection.",
-        proof_steps(token, powershell)
+        proof_steps(token, &[powershell])
     )
 }
 
@@ -806,7 +849,7 @@ fn act(
         },
         ["--effort", effort] => {
             let previous = previous.ok().flatten();
-            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), powershell) {
+            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]) {
                 Ok(activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
                     (activation.text(), true, Change::Write(activation.state), failed)
@@ -1047,10 +1090,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
     };
     let mut head = format!(
         "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\n{}\nUntil it says proven, claim no protection.",
-        proof_steps(
-            &session_token(session),
-            in_powershell(provider, &Value::Null)
-        )
+        proof_steps(&session_token(session), &session_shells(provider))
     );
     let parts = match owner_voice(&notes) {
         Ok(part) => vec![part],
@@ -1165,7 +1205,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             let effort = state["effort"].as_str().unwrap_or_default().to_owned();
             let provider = state["provider"].as_str().unwrap_or("claude").to_owned();
             // No tool at session start: the provider's usual shell.
-            let powershell = in_powershell(&provider, &Value::Null);
+            let shells = session_shells(&provider);
             Some(
                 match switch_on(
                     &dir,
@@ -1174,7 +1214,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
                     &provider,
                     &cwd,
                     Some(&state),
-                    powershell,
+                    &shells,
                 ) {
                     Ok(activation) => {
                         match commit(&dir, session, &Change::Write(activation.state.clone())) {
@@ -1207,17 +1247,9 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             let Some(effort) = launched else {
                 return Some(fresh(session, &cwd, provider(input)));
             };
-            let powershell = in_powershell(provider(input), &Value::Null);
+            let shells = session_shells(provider(input));
             Some(
-                match switch_on(
-                    &dir,
-                    &effort,
-                    session,
-                    provider(input),
-                    &cwd,
-                    None,
-                    powershell,
-                ) {
+                match switch_on(&dir, &effort, session, provider(input), &cwd, None, &shells) {
                     Ok(activation) => {
                         match write_json(&state_path(&dir, session), &activation.state) {
                             Ok(()) => activation.fitted(),

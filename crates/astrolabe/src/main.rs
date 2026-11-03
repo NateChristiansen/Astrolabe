@@ -95,6 +95,7 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
             Vec::new()
         }
         ("repo", ["add", name, checkout]) => {
+            astrolabe::activate::check_repo_name(name).map_err(astrolabe::Error::Setup)?;
             registry.add(name, Path::new(checkout))?;
             // The plugin reads only its own record, so the database alone isn't a registration.
             astrolabe::activate::add_repo(name, &registry.checkout(name)?).map_err(|why| {
