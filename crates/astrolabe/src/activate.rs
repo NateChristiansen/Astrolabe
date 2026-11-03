@@ -49,7 +49,9 @@ const AUTHORITY: [(&str, &str); 3] = [
     ),
 ];
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
-const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+/// What a refusal leaves running: it only ever comes from a hook, so the machine is on.
+const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
 /// The machine switch's file in the state folder. Present means on.
 const SWITCH: &str = "on";
 
@@ -581,7 +583,7 @@ pub fn status(dir: &Path, session: &str) -> String {
         }
         Err(why) => {
             return format!(
-                "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off`, then switch on again."
+                "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
             );
         }
         Ok(Some(state)) => state,
@@ -612,12 +614,8 @@ pub fn status(dir: &Path, session: &str) -> String {
 /// it worked. Anything else reaching here is a command no hook took.
 pub fn command(args: &[&str]) -> (String, bool) {
     match (args, state_dir()) {
-        (["--show", ticket], Some(dir)) => show(&dir, ticket).unwrap_or_else(|why| {
-            (
-                format!("Astrolabe NOT switched on: {why}. {NO_TICKET}"),
-                false,
-            )
-        }),
+        (["--show", ticket], Some(dir)) => show(&dir, ticket)
+            .unwrap_or_else(|why| (format!("No effort loaded: {why}. {NO_TICKET}"), false)),
         _ => (NO_TICKET.to_owned(), false),
     }
 }
@@ -681,14 +679,12 @@ fn act(
 fn refused(effort: &str, why: &str, previous: Option<&Value>) -> String {
     let kept = match previous {
         Some(p) => format!(
-            "Effort {} stays on as it was.",
+            "Effort {} stays loaded as it was.",
             p["effort"].as_str().unwrap_or_default()
         ),
-        None => "This session stays off.".to_owned(),
+        None => "No effort is loaded in this session.".to_owned(),
     };
-    format!(
-        "Astrolabe NOT switched on for effort {effort}: {why}. {kept} No new protection is claimed."
-    )
+    format!("Effort {effort} NOT loaded: {why}. {kept} {STILL_ON}")
 }
 
 /// `astrolabe hook <event> --if-active`. Silent in a session that's off, except for its own
@@ -726,7 +722,7 @@ pub fn gate(event: &str) {
                     None => hook::guard(&bytes),
                 },
                 Err(why) => hook::say(&hook::deny(&format!(
-                    "Astrolabe is on for this session but can't read its state ({why}), so it can't judge this command. Repair: run `astrolabe activate --off`, then switch on again."
+                    "Astrolabe is on for this session but can't read its state ({why}), so it can't judge this command. Repair: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
                 ))),
             }
         }
@@ -999,7 +995,7 @@ fn active_efforts(
 
 fn blocked(effort: &str, why: &str) -> String {
     format!(
-        "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or switch off with `astrolabe activate --off`."
+        "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or drop the effort with `astrolabe activate --off` (the guard keeps running)."
     )
 }
 
@@ -1040,7 +1036,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
                         }) {
                             Ok(()) => blocked(&effort, &why),
                             Err(e) => format!(
-                                "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({e}), so only the guard is on and other commands are NOT blocked. Treat this session's effort context as missing: tell the owner, repair it and run `astrolabe activate --effort {effort}`, or switch off with `astrolabe activate --off`."
+                                "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({e}), so only the guard is on and other commands are NOT blocked. Treat this session's effort context as missing: tell the owner, repair it and run `astrolabe activate --effort {effort}`, or drop the effort with `astrolabe activate --off` (the guard keeps running)."
                             ),
                         }
                     }
@@ -1068,7 +1064,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             )
         }
         Err(why) => Some(format!(
-            "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off`, then switch on again."
+            "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
         )),
     }
 }

@@ -411,7 +411,9 @@ fn the_hook_does_the_work_and_the_command_only_prints_it() {
     assert!(!ok && text.contains("only from its hook"), "{text}");
     let (text, ok) = f.run(&f.demo, &["activate", "--effort", "70"], "", &[]);
     assert!(
-        !ok && text.contains("NOT switched on") && text.contains("/hooks"),
+        !ok && text.contains("No effort loaded")
+            && text.contains("/hooks")
+            && text.contains("claim no protection"),
         "{text}"
     );
     let made_up = ["activate", "--show", "0123456789abcdef0123456789abcdef"];
@@ -444,7 +446,9 @@ fn a_missing_or_bad_field_or_another_repo_is_refused_and_keeps_what_was_on() {
     let f = Fixture::new();
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 71");
     assert!(
-        !ok && text.contains("no `authority` property") && text.contains("stays off"),
+        !ok && text.contains("no `authority` property")
+            && text.contains("No effort is loaded")
+            && text.contains("the guard still runs"),
         "{text}"
     );
     assert!(!f.state().join("s1.json").exists(), "no effort set");
@@ -460,7 +464,7 @@ fn a_missing_or_bad_field_or_another_repo_is_refused_and_keeps_what_was_on() {
             &format!("astrolabe activate --effort {effort}"),
         );
         assert!(
-            !ok && text.contains(why) && text.contains("Effort 70 stays on"),
+            !ok && text.contains(why) && text.contains("Effort 70 stays loaded"),
             "{text}"
         );
     }
@@ -480,7 +484,8 @@ fn unreadable_notes_refuse_with_the_file_named() {
     std::fs::remove_file(f.dir.0.join("notes/knowledge/machines.md")).unwrap();
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     assert!(
-        !ok && text.contains("knowledge/machines.md") && text.contains("No new protection"),
+        !ok && text.contains("knowledge/machines.md")
+            && text.contains("Only this effort's context and settings are missing"),
         "{text}"
     );
     assert!(!f.state().join("s1.json").exists());
@@ -580,7 +585,9 @@ fn a_launch_switches_on_by_env_bound_to_its_own_session() {
         .session_start("w3", &f.demo, &[(EFFORT_VAR, "71")])
         .unwrap();
     assert!(
-        text.contains("NOT switched on") && text.contains(EFFORT_VAR),
+        text.contains("NOT loaded")
+            && text.contains(EFFORT_VAR)
+            && text.contains("the guard still runs"),
         "{text}"
     );
     assert!(!f.state().join("w3.json").exists() && f.denies("w3", "pkill x"));
@@ -941,4 +948,26 @@ fn a_loaded_effort_proves_again_after_the_switch_goes_off_and_on() {
     );
     assert!(f.denies("s1", &probe));
     assert!(status().contains("Guard proven"));
+}
+
+#[test]
+fn a_refused_load_says_the_guard_still_runs_and_it_does() {
+    let f = Fixture::new();
+    let loose = f.dir.0.join("loose");
+    std::fs::create_dir_all(&loose).unwrap();
+    git(&loose, &["init", "-q"]);
+    let (text, ok) = f.bash("s1", &loose, "astrolabe activate --effort 70");
+    assert!(!ok && text.contains("NOT loaded"), "{text}");
+    assert!(
+        text.contains("the guard still runs")
+            && text.contains("owner and voice notes")
+            && text.contains("Only this effort's context and settings are missing"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("stays off") && !text.contains("No new protection"),
+        "{text}"
+    );
+    let input = json!({"session_id": "s1", "cwd": loose, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
+    assert!(f.hook(input).is_some(), "and it does");
 }
