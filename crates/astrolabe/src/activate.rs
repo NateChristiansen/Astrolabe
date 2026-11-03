@@ -307,9 +307,14 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     })
 }
 
+/// What some Windows editors put before a file's text.
+const BOM: char = '\u{feff}';
+
 /// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
 /// `[a, b]` or `- a` lines, joined with commas. Nested YAML isn't read.
 fn frontmatter(text: &str) -> Vec<(String, String)> {
+    // A byte-order mark, as some Windows editors save, isn't part of the first line.
+    let text = text.strip_prefix(BOM).unwrap_or(text);
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
         return Vec::new();
@@ -348,19 +353,31 @@ fn common_dir(dir: &Path) -> Option<String> {
     Some(comparable(Path::new(out.trim())))
 }
 
-/// A git remote in one form for comparing: no scheme or `user@`, `host:path` as `host/path`,
-/// no trailing `.git` or `/`, the host lowercased and the path's case kept. So the ssh and
-/// https forms of one repo match. None for a local path, which names a folder on one machine
-/// only, and for anything else that isn't a remote URL.
+/// A git remote in one form for comparing, so the scp, ssh and https forms of one hosted repo
+/// match: no scheme or `user@`, `host:path` as `host/path`, no trailing `.git` or `/`, the
+/// host lowercased and the path's case kept. An scp path from the root (`host:/srv/game`)
+/// stays apart from one from the home folder (`host:srv/game`), as an ssh server can serve
+/// different repos at the two. None for anything that isn't a network remote: a local path
+/// or a `file:` URL names a folder on one machine only, so that repo is registered instead.
 fn normalize_remote(url: &str) -> Option<String> {
+    const SCHEMES: [&str; 6] = ["ssh", "git", "http", "https", "git+ssh", "ssh+git"];
     let url = url.trim();
     if url.is_empty() || url.contains(char::is_whitespace) || url.contains('\\') {
         return None;
     }
-    let (host, path) = match url.split_once("://") {
-        Some((_, rest)) => rest.split_once('/')?,
+    let (host, path, rooted) = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            if !SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
+                return None;
+            }
+            let (host, path) = rest.split_once('/')?;
+            (host, path, false)
+        }
         // `host:path`, unless the part before the colon is a folder or a Windows drive.
-        None => url.split_once(':').filter(|(h, _)| !h.contains('/'))?,
+        None => {
+            let (host, path) = url.split_once(':').filter(|(h, _)| !h.contains('/'))?;
+            (host, path, path.starts_with('/'))
+        }
     };
     let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
     let drive = host.len() == 1 && host.chars().all(|c| c.is_ascii_alphabetic());
@@ -372,25 +389,28 @@ fn normalize_remote(url: &str) -> Option<String> {
     if host.is_empty() || drive || path.is_empty() {
         return None;
     }
-    Some(format!("{}/{path}", host.to_ascii_lowercase()))
+    let host = host.to_ascii_lowercase();
+    Some(if rooted {
+        format!("{host}:/{path}")
+    } else {
+        format!("{host}/{path}")
+    })
 }
 
-/// The fetch URLs of this folder's remotes, as git lists them. A worktree shares its
-/// checkout's config, so it has the same ones.
+/// The fetch URLs of this folder's remotes, by name: `git remote -v` adds a partial clone's
+/// filter after its URL, so its lines aren't read. A worktree shares its checkout's config,
+/// so it has the same ones.
 fn folder_remotes(dir: &Path) -> Result<Vec<String>, String> {
-    let args = ["remote", "-v"].map(AsRef::as_ref);
-    let out = crate::worktree::git(dir, &args)
-        .map_err(|why| format!("the remotes of {} can't be read: {why}", dir.display()))?;
+    let fail = |why: String| format!("the remotes of {} can't be read: {why}", dir.display());
+    let names = crate::worktree::git(dir, &["remote".as_ref()]).map_err(fail)?;
     let mut urls: Vec<String> = Vec::new();
-    for line in out.lines() {
-        let Some(url) = line
-            .split_once('\t')
-            .and_then(|(_, rest)| rest.strip_suffix(" (fetch)"))
-        else {
-            continue;
-        };
-        if !urls.iter().any(|u| u == url) {
-            urls.push(url.to_owned());
+    for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
+        let args = ["remote", "get-url", "--all", name].map(AsRef::as_ref);
+        let out = crate::worktree::git(dir, &args).map_err(fail)?;
+        for url in out.lines().map(str::trim).filter(|u| !u.is_empty()) {
+            if !urls.iter().any(|u| u == url) {
+                urls.push(url.to_owned());
+            }
         }
     }
     Ok(urls)
@@ -543,7 +563,9 @@ fn chosen_remote(dir: &Path) -> Result<Option<String>, String> {
 /// `remotes` as the note's `remote:` property, put in place of the one it has, or added.
 fn with_remotes(text: &str, remotes: &[String]) -> String {
     let crlf = text.contains("\r\n");
-    let text = text.replace("\r\n", "\n");
+    // Kept, and the properties after it found as `frontmatter` finds them.
+    let bom = text.starts_with(BOM);
+    let text = text.trim_start_matches(BOM).replace("\r\n", "\n");
     let block = match remotes {
         [one] => format!("remote: {one}\n"),
         _ => format!(
@@ -583,6 +605,7 @@ fn with_remotes(text: &str, remotes: &[String]) -> String {
             lines.concat()
         }
     };
+    let out = if bom { format!("{BOM}{out}") } else { out };
     if crlf { out.replace('\n', "\r\n") } else { out }
 }
 

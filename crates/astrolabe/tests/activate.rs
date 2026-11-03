@@ -1570,3 +1570,105 @@ fn a_repo_notes_remote_that_cant_be_read_refuses_naming_the_file() {
         assert!(!ok && !out.contains("Added"), "{out}");
     }
 }
+
+#[test]
+fn an_scp_path_from_the_root_is_another_repo_than_one_from_home() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    f.game_note("---\nremote: git@example.com:/team/game.git\n---\n");
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(text.contains("has no note in the notes"), "{text}");
+    // The same rooted path, in any spelling of it, still matches.
+    let rooted = f.remote_repo("rooted", "git@example.com:/team/game.git/");
+    assert!(
+        f.session_start("s2", &rooted, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    // scp from home, ssh:// and https of a hosted repo are one repo.
+    f.game_note(
+        "---\nremote: [ssh://git@example.com/team/game.git, https://example.com/team/game]\n---\n",
+    );
+    assert!(
+        f.session_start("s3", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+}
+
+#[test]
+fn a_partial_clone_is_matched_by_its_remote() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    // `git remote -v` prints a filter after a partial clone's URL.
+    git(&game, &["config", "remote.origin.promisor", "true"]);
+    git(
+        &game,
+        &["config", "remote.origin.partialclonefilter", "blob:none"],
+    );
+    f.game_note("---\nremote: git@example.com:team/game.git\n---\n");
+    assert!(
+        f.session_start("s1", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+}
+
+#[test]
+fn a_file_url_or_unknown_scheme_isnt_a_portable_remote() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "file://localhost/srv/game.git");
+    write(
+        &f.notes().join("knowledge/repos/web.md"),
+        "---\nremote: https://localhost/srv/game.git\n---\n",
+    );
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(
+        text.contains("no remote another machine could match") && !text.contains("pick up 80"),
+        "{text}"
+    );
+    // So `repo add` registers it on this machine instead of writing a note.
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(ok && out.contains("registered on this machine"), "{out}");
+    assert!(!f.notes().join("knowledge/repos/game.md").exists());
+    // A note naming one refuses, as it could never match.
+    let hosted = f.remote_repo("hosted", "git@example.com:team/x.git");
+    for bad in ["file:///srv/game.git", "ftp://example.com/team/game.git"] {
+        f.game_note(&format!("---\nremote: {bad}\n---\n"));
+        let text = f.session_start("s2", &hosted, &[]).unwrap();
+        let named = format!("knowledge/repos/game.md: remote \"{bad}\" isn't a git remote URL");
+        assert!(text.contains(&named), "{text}");
+    }
+}
+
+#[test]
+fn a_byte_order_mark_keeps_a_notes_properties() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    write(
+        &f.notes().join("efforts/0080-game.md"),
+        &format!("\u{feff}{}", GAME.replace('\n', "\r\n")),
+    );
+    f.game_note("\u{feff}---\r\nremote: git@example.com:team/old.git\r\ntitle: Game\r\n---\r\n\r\nREPO-GAME-TEXT\r\n");
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(
+        ok && out.contains("which listed git@example.com:team/old.git"),
+        "{out}"
+    );
+    let text = std::fs::read_to_string(f.notes().join("knowledge/repos/game.md")).unwrap();
+    assert_eq!(
+        text,
+        "\u{feff}---\r\nremote:\r\n  - git@example.com:team/old.git\r\n  - git@example.com:team/game.git\r\ntitle: Game\r\n---\r\n\r\nREPO-GAME-TEXT\r\n"
+    );
+    // The effort's properties are read past the mark too.
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(
+        text.contains("one active effort is 80, \"0080 Game\""),
+        "{text}"
+    );
+    let (text, ok) = f.bash("s1", &game, "astrolabe activate --effort 80");
+    assert!(
+        ok && text.contains("involvement: autonomous") && text.contains("EFFORT-80"),
+        "{text}"
+    );
+}
