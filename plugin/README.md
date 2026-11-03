@@ -13,7 +13,7 @@ The skill runs `astrolabe activate --effort <n>` as a plain shell command. The p
 1. The program at `~/.local/bin/astrolabe-trial`, which the hooks call by that path for the trial so the build in use elsewhere stays as it is. `ASTROLABE_TRIAL_BIN` overrides it, for tests.
 2. The notes checkout: `astrolabe repo add agent <notes checkout>`.
 3. Each target repo, under the name its note has in `knowledge/repos/<name>.md`: `astrolabe repo add <name> <checkout>`.
-4. Each effort note says, on a line under its title: `repo: <name> · involvement: <autonomous | check in at plan | each step> · authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
+4. Each effort note has, in its properties (YAML frontmatter, as Obsidian shows them): `repo: <name>` (or a list), `involvement: <autonomous | check in at plan | each step>` and `authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
 
 ## Install
 

@@ -112,8 +112,8 @@ pub struct Effort {
     pub current: String,
 }
 
-/// `efforts/<nnnn>-*.md`, its properties on the lines under the title as `key: value`, split
-/// by `·`, and its `## Current state` section. Every failure names what's missing.
+/// `efforts/<nnnn>-*.md`, its properties (YAML frontmatter, as Obsidian keeps them) and its
+/// `## Current state` section. Every failure names what's missing.
 pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     let n: u32 =
         (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
@@ -136,21 +136,19 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     let file = format!("efforts/{name}");
     let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
     let text = text.replace("\r\n", "\n");
-    let head = text.split("\n## ").next().unwrap_or_default();
-    let title = head.lines().find_map(|line| line.strip_prefix("# "));
-    let props: Vec<(String, String)> = (head.lines())
-        .filter(|line| !line.starts_with('#'))
-        .flat_map(|line| line.split('·'))
-        .filter_map(|part| part.split_once(':'))
-        .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        .collect();
+    let props = frontmatter(&text);
+    let title = (props
+        .iter()
+        .find(|(k, _)| k == "title")
+        .map(|(_, v)| v.as_str()))
+    .or_else(|| text.lines().find_map(|line| line.strip_prefix("# ")));
     let get = |key: &str| {
         let found = props
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str());
         found.filter(|v| !v.is_empty()).ok_or_else(|| {
-            format!("{file} has no `{key}` property; the owner sets it on the line under the title, as in `repo: <name> · involvement: check in at plan · authority: edit`")
+            format!("{file} has no `{key}` property; the owner sets it in the note's properties at the top, as in `repo: <name>`, `involvement: check in at plan`, `authority: edit`")
         })
     };
     let one_of = |key: &str, allowed: &[(&str, &str)]| {
@@ -189,6 +187,41 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             .ok_or_else(|| format!("{file} has no `## Current state` section"))?,
         file,
     })
+}
+
+/// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
+/// `[a, b]` or `- a` lines, joined with commas. Nested YAML isn't read.
+fn frontmatter(text: &str) -> Vec<(String, String)> {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return Vec::new();
+    }
+    let unquote = |v: &str| {
+        v.trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_owned()
+    };
+    let mut props: Vec<(String, String)> = Vec::new();
+    for line in lines.take_while(|line| line.trim_end() != "---") {
+        if let (Some(item), Some((_, value))) =
+            (line.trim_start().strip_prefix("- "), props.last_mut())
+        {
+            if !value.is_empty() {
+                value.push_str(", ");
+            }
+            value.push_str(&unquote(item));
+        } else if let Some((key, value)) = line.split_once(':').filter(|_| !line.starts_with(' ')) {
+            let value = value.trim();
+            let value = match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+                Some(list) => list.split(',').map(unquote).collect::<Vec<_>>().join(", "),
+                None => unquote(value),
+            };
+            props.push((key.trim().to_ascii_lowercase(), value));
+        }
+    }
+    props
 }
 
 fn common_dir(dir: &Path) -> Option<String> {
@@ -471,10 +504,10 @@ pub fn status(dir: &Path, session: &str) -> String {
         state["effort"].as_str().unwrap_or_default(),
         state["repo"].as_str().unwrap_or_default()
     );
-    if let Some(why) = state["reload_failed"].as_str() {
+    if let Some(why) = block_reason(dir, &state, session) {
         return format!(
             "{on} {}",
-            blocked(state["effort"].as_str().unwrap_or_default(), why)
+            blocked(state["effort"].as_str().unwrap_or_default(), &why)
         );
     }
     if marker(token).exists() {
@@ -533,6 +566,9 @@ enum Change {
 
 fn commit(dir: &Path, session: &str, change: &Change) -> Result<(), String> {
     let path = state_path(dir, session);
+    if !matches!(change, Change::Keep) {
+        let _ = std::fs::remove_file(fallback_block(dir, session));
+    }
     match change {
         Change::Keep => Ok(()),
         Change::Write(state) => write_json(&path, state),
@@ -611,10 +647,10 @@ pub fn gate(event: &str) {
             };
             match read_state(&dir, session) {
                 Ok(None) => {}
-                Ok(Some(state)) => match state["reload_failed"].as_str() {
+                Ok(Some(state)) => match block_reason(&dir, &state, session) {
                     Some(why) => hook::say(&hook::deny(&blocked(
                         state["effort"].as_str().unwrap_or_default(),
-                        why,
+                        &why,
                     ))),
                     None => hook::guard(&bytes),
                 },
@@ -713,6 +749,27 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
     })
 }
 
+/// Where a failed reload's block goes when the state file can't take it: the temp folder.
+/// Named for the state folder too, as another folder's sessions are another switch.
+fn fallback_block(dir: &Path, session: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let folder = Sha256::digest(dir.display().to_string());
+    let folder: String = folder.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let name = state_path(Path::new(""), session);
+    std::env::temp_dir().join(format!("astrolabe-blocked-{folder}-{}", name.display()))
+}
+
+/// Why this session's shell commands are blocked, if a reload failed.
+fn block_reason(dir: &Path, state: &Value, session: &str) -> Option<String> {
+    if let Some(why) = state["reload_failed"].as_str() {
+        return Some(why.to_owned());
+    }
+    let bytes = std::fs::read(fallback_block(dir, session)).ok()?;
+    let body: Value = serde_json::from_slice(&bytes).ok()?;
+    (body["effort"] == state["effort"])
+        .then(|| body["why"].as_str().unwrap_or("unknown").to_owned())
+}
+
 fn blocked(effort: &str, why: &str) -> String {
     format!(
         "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or switch off with `astrolabe activate --off`."
@@ -737,7 +794,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             Some(
                 match switch_on(&dir, &effort, session, &provider, &cwd, Some(&state)) {
                     Ok(activation) => {
-                        match write_json(&state_path(&dir, session), &activation.state) {
+                        match commit(&dir, session, &Change::Write(activation.state.clone())) {
                             Ok(()) => activation.fitted(),
                             Err(why) => format!(
                                 "Astrolabe stays on for effort {effort}, guard included, but couldn't save its reload: {why}. Tell the owner."
@@ -748,8 +805,17 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
                         // Context failed, protection mustn't: stay on, and block until repaired.
                         let mut state = state.clone();
                         state["reload_failed"] = why.clone().into();
-                        let _ = write_json(&state_path(&dir, session), &state);
-                        blocked(&effort, &why)
+                        let saved = write_json(&state_path(&dir, session), &state);
+                        let body = json!({"effort": effort, "why": why, "at_ms": now_ms()});
+                        match saved.or_else(|e| {
+                            write_json(&fallback_block(&dir, session), &body)
+                                .map_err(|f| format!("{e}; {f}"))
+                        }) {
+                            Ok(()) => blocked(&effort, &why),
+                            Err(e) => format!(
+                                "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({e}), so only the guard is on and other commands are NOT blocked. Treat this session's effort context as missing: tell the owner, repair it and run `astrolabe activate --effort {effort}`, or switch off with `astrolabe activate --off`."
+                            ),
+                        }
                     }
                 },
             )

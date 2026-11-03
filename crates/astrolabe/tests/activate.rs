@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const EFFORT: &str = "# 0070 Demo\n\nstate: active · repo: demo · involvement: check in at plan · authority: edit\n\n## Current state\n\nEFFORT-70 goal.\n\n**Next step:** NEXT-70.\n\n## History\n\nNOT-DELIVERED\n";
+const EFFORT: &str = "---\ntitle: 0070 Demo\nstatus: active\ninitiative: \"[[testing]]\"\nrepo: demo\ninvolvement: check in at plan\nauthority: edit\nnext: NEXT-70.\n---\n\n# 0070 Demo\n\nrepo: other · authority: push\n\n## Current state\n\nEFFORT-70 goal.\n\n**Next step:** NEXT-70.\n\n## History\n\nNOT-DELIVERED\n";
 
 struct Fixture {
     dir: TempDir,
@@ -59,19 +59,19 @@ impl Fixture {
             ("efforts/0070-demo.md", EFFORT),
             (
                 "efforts/0071-nofield.md",
-                "# 0071\n\nrepo: demo · involvement: autonomous\n\n## Current state\n\nx\n",
+                "---\nrepo: demo\ninvolvement: autonomous\n---\n# 0071\n\n## Current state\n\nx\n",
             ),
             (
                 "efforts/0072-other.md",
-                "# 0072\n\nrepo: other · involvement: each step · authority: read\n\n## Current state\n\nEFFORT-72\n",
+                "---\nrepo: [other]\ninvolvement: each step\nauthority: read\n---\n# 0072\n\n## Current state\n\nEFFORT-72\n",
             ),
             (
                 "efforts/0075-also.md",
-                "# 0075\n\nrepo: demo · involvement: autonomous · authority: read\n\n## Current state\n\nEFFORT-75\n",
+                "---\nrepo:\n  - demo\ninvolvement: \x27autonomous\x27\nauthority: read\n---\n# 0075\n\n## Current state\n\nEFFORT-75\n",
             ),
             (
                 "efforts/0074-bad.md",
-                "# 0074\n\nrepo: demo · involvement: whenever · authority: edit\n\n## Current state\n\nx\n",
+                "---\nrepo: demo\ninvolvement: whenever\nauthority: edit\n---\n# 0074\n\n## Current state\n\nx\n",
             ),
         ] {
             write(&notes.join(file), text);
@@ -618,7 +618,7 @@ fn a_large_effort_points_at_current_state_only() {
     let f = Fixture::new();
     let current = "Current words. ".repeat(800);
     let effort = format!(
-        "# 0070 Demo\n\nrepo: demo · involvement: check in at plan · authority: edit\n\n## Current state\n\nBIG-CURRENT {current}\n\n## History\n\nSUPERSEDED: push straight to main without review.\n"
+        "---\nrepo: demo\ninvolvement: check in at plan\nauthority: edit\n---\n# 0070 Demo\n\n## Current state\n\nBIG-CURRENT {current}\n\n## History\n\nSUPERSEDED: push straight to main without review.\n"
     );
     write(&f.dir.0.join("notes/efforts/0070-demo.md"), &effort);
     let text = f
@@ -646,4 +646,103 @@ fn a_large_effort_points_at_current_state_only() {
     );
     let (full, ok) = f.bash("w1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok && full.contains("BIG-CURRENT") && !full.contains("SUPERSEDED"));
+}
+
+#[test]
+fn properties_come_from_frontmatter_only() {
+    let f = Fixture::new();
+    let line_only = "# 0076\n\nrepo: demo · involvement: autonomous · authority: edit\n\n## Current state\n\nx\n";
+    write(&f.dir.0.join("notes/efforts/0076-line.md"), line_only);
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 76");
+    assert!(
+        !ok && text.contains("no `repo` property") && text.contains("properties at the top"),
+        "{text}"
+    );
+    // Effort 70's body holds a decoy line naming another repo and push; the properties win.
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(
+        ok && text.contains("authority: edit") && text.contains("\"0070 Demo\""),
+        "{text}"
+    );
+    // A YAML list and quoted values read too.
+    assert!(f.bash("s2", &f.demo, "astrolabe activate --effort 75").1);
+    assert!(f.bash("s3", &f.other, "astrolabe activate --effort 72").1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_reload_that_cant_be_saved_still_blocks_or_says_it_doesnt() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    std::fs::remove_file(f.dir.0.join("notes/knowledge/machines.md")).unwrap();
+    let lock =
+        |mode| std::fs::set_permissions(f.state(), std::fs::Permissions::from_mode(mode)).unwrap();
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "resume"}).to_string();
+    let command = |cmd: &str| {
+        json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": cmd}}).to_string()
+    };
+    // State folder read-only: the block goes to the temp folder and still holds.
+    lock(0o555);
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &input,
+        &[],
+    );
+    assert!(
+        out.contains("blocked until") && !out.contains("NOT blocked"),
+        "{out}"
+    );
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &command("git status"),
+        &[],
+    );
+    assert!(
+        out.contains("\"deny\"") && out.contains("couldn't be reloaded"),
+        "{out}"
+    );
+    lock(0o755);
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --off").1,
+        "off clears it"
+    );
+    assert!(!f.denies("s1", "git status"));
+    // Neither can be written: said plainly, and the guard alone stays on.
+    write(&f.dir.0.join("notes/knowledge/machines.md"), "M");
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    std::fs::remove_file(f.dir.0.join("notes/knowledge/machines.md")).unwrap();
+    let tmp = f.dir.0.join("locked-tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let env = [("TMPDIR", tmp.to_str().unwrap())];
+    lock(0o555);
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &input,
+        &env,
+    );
+    assert!(
+        out.contains("NOT blocked") && out.contains("only the guard is on"),
+        "{out}"
+    );
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &command("git status"),
+        &env,
+    );
+    assert!(out.trim().is_empty(), "as said, not blocked: {out}");
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &command("pkill x"),
+        &env,
+    );
+    assert!(out.contains("\"deny\""), "the guard stays: {out}");
+    lock(0o755);
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
