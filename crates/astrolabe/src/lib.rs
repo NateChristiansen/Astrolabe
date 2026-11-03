@@ -1,5 +1,6 @@
 //! The Astrolabe core: live state for agent sessions, kept in one local database.
 pub mod acp;
+pub mod activate;
 pub mod bridge;
 pub mod doctor;
 pub mod driver;

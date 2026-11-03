@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|where|hook <event>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|where|hook <event> [--if-active]|activate <--effort <n>|--status|--off>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,6 +28,14 @@ fn main() {
             Ok(machine) => println!("{}", machine.data_dir.display()),
             Err(error) => fail(&error.to_string()),
         },
+        ["hook", event, "--if-active"] => astrolabe::activate::gate(event),
+        ["activate", rest @ ..] => {
+            let (text, ok) = astrolabe::activate::command(rest);
+            println!("{text}");
+            if !ok {
+                std::process::exit(1);
+            }
+        }
         ["hook", "pre-command"] => astrolabe::hook::pre_command(),
         ["hook", event] => astrolabe::hook::run(event),
         ["mcp"] => {

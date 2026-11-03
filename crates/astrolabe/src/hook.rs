@@ -33,12 +33,16 @@ pub fn reports_dir_in(data_dir: &Path) -> PathBuf {
     data_dir.join("reports")
 }
 
+/// What the launch named, else the OS app-data folder. None if neither can be named.
+pub fn data_dir() -> Option<PathBuf> {
+    std::env::var_os(DATA_DIR_VAR)
+        .map(PathBuf::from)
+        .or_else(|| default_db_path()?.parent().map(Path::to_path_buf))
+}
+
 /// None only if no data folder can be named. A hook then has nowhere to report.
 pub fn reports_dir() -> Option<PathBuf> {
-    let data = std::env::var_os(DATA_DIR_VAR)
-        .map(PathBuf::from)
-        .or_else(|| default_db_path()?.parent().map(Path::to_path_buf))?;
-    Some(reports_dir_in(&data))
+    Some(reports_dir_in(&data_dir()?))
 }
 
 /// Always returns: whatever goes wrong here must not reach the agent. A missing receipt
@@ -71,7 +75,7 @@ fn read_input() -> Value {
 }
 
 /// What arrived, whole or not.
-fn read_bytes() -> Vec<u8> {
+pub(crate) fn read_bytes() -> Vec<u8> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut stdin = io::stdin().take(STDIN_LIMIT);
@@ -174,19 +178,32 @@ const LOGGED_COMMAND: usize = 2000;
 /// hook's command line on Claude. No network, core or database.
 pub fn pre_command() {
     std::panic::set_hook(Box::new(|_| {}));
-    let bytes = read_bytes();
-    let reason = std::panic::catch_unwind(|| judge(&bytes)).unwrap_or_else(|_| {
-        crate::guard::names_denied_program(&String::from_utf8_lossy(&bytes))
+    guard(&read_bytes());
+}
+
+/// The guard's answer to one hook input, as `pre_command` gives it.
+pub(crate) fn guard(bytes: &[u8]) {
+    let reason = std::panic::catch_unwind(|| judge(bytes)).unwrap_or_else(|_| {
+        crate::guard::names_denied_program(&String::from_utf8_lossy(bytes))
             .then(|| "a command the guard could not read".to_owned())
     });
     let Some(reason) = reason else { return };
-    let _ = std::panic::catch_unwind(|| record_denial(&bytes, &reason));
-    let answer = json!({ "hookSpecificOutput": {
+    let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason));
+    say(&deny(&format!(
+        "Astrolabe denied {reason}. Ask the owner if this is really needed."
+    )));
+}
+
+pub(crate) fn deny(reason: &str) -> Value {
+    json!({ "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason":
-            format!("Astrolabe denied {reason}. Ask the owner if this is really needed."),
-    }});
+        "permissionDecisionReason": reason,
+    }})
+}
+
+/// One answer on stdout. Never panics, as stdout may be closed.
+pub(crate) fn say(answer: &Value) {
     let mut stdout = io::stdout();
     let _ = writeln!(stdout, "{answer}");
     let _ = stdout.flush();
@@ -240,6 +257,7 @@ fn record_denial(bytes: &[u8], reason: &str) {
         "tool": input["tool_name"],
         "reason": reason,
         "command": command.chars().take(LOGGED_COMMAND).collect::<String>(),
+        "program": crate::activate::program_id(),
     });
     let Some(data) = dir.parent() else { return };
     let log = std::fs::OpenOptions::new()
