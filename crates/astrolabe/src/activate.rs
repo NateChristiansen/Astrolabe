@@ -49,7 +49,7 @@ const AUTHORITY: [(&str, &str); 3] = [
     ),
 ];
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
-const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
 /// The machine switch's file in the state folder. Present means on.
 const SWITCH: &str = "on";
 
@@ -80,7 +80,7 @@ pub fn machine(verb: &str) -> (String, bool) {
     };
     match (done, machine_on(&dir)) {
         (Err(why), _) => (format!("Astrolabe couldn't switch {verb}: {why}"), false),
-        (Ok(()), true) => ("Astrolabe is on for this machine: every new session gets the owner and voice notes and the guard, and an effort when its repo has exactly one active. That's the switch, not proof an app runs the hooks: in a session, `astrolabe activate --status` says.".to_owned(), true),
+        (Ok(()), true) => ("Astrolabe is on for this machine: every new session gets the owner and voice notes and the guard, and is told its repo's active efforts; none is loaded until the owner names one. That's the switch, not proof an app runs the hooks: in a session, `astrolabe activate --status` says.".to_owned(), true),
         (Ok(()), false) => ("Astrolabe is off for this machine: its hooks do nothing.".to_owned(), true),
     }
 }
@@ -302,6 +302,21 @@ pub struct Activation {
     parts: Vec<Part>,
 }
 
+fn owner_voice(notes: &Path) -> Result<Part, String> {
+    Ok(Part {
+        title: "owner and voice".to_owned(),
+        body: crate::voice::read(notes)?,
+        files: ["owner", "voice"]
+            .map(|f| {
+                notes
+                    .join(format!("knowledge/{f}.md"))
+                    .display()
+                    .to_string()
+            })
+            .to_vec(),
+    })
+}
+
 impl Activation {
     /// Everything, for a command's output.
     pub fn text(&self) -> String {
@@ -454,18 +469,7 @@ pub fn switch_on(
             title: file,
         })
     };
-    let owner_voice = Part {
-        title: "owner and voice".to_owned(),
-        body: crate::voice::read(&notes)?,
-        files: ["owner", "voice"]
-            .map(|f| {
-                notes
-                    .join(format!("knowledge/{f}.md"))
-                    .display()
-                    .to_string()
-            })
-            .to_vec(),
-    };
+    let owner_voice = owner_voice(&notes)?;
     let current = Part {
         title: format!("{}, Current state", effort.file),
         body: effort.current.clone(),
@@ -522,9 +526,58 @@ pub fn switch_on(
 }
 
 /// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
+/// A session with no effort still has a probe: named for the session, proven from the
+/// machine switch's time.
+fn session_token(session: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(format!("astrolabe probe {session}"));
+    hash.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether this session's own hook (not a child's), of this build and plugin, denied the
+/// probe since `since_ms`, and the probe didn't run.
+fn proof(session: &str, token: &str, since_ms: i64) -> String {
+    if marker(token).exists() {
+        return "Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner.".to_owned();
+    }
+    let probe = probe(token);
+    let log = hook::data_dir().map(|data| data.join(hook::DENIAL_LOG));
+    let log = log
+        .and_then(|log| std::fs::read_to_string(log).ok())
+        .unwrap_or_default();
+    let program = hook_id();
+    let denied = (log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
+    .any(|l| {
+        l["session_id"] == session
+            && l["agent_id"].is_null()
+            && l["command"] == probe.as_str()
+            && l["hook"] == program.as_str()
+            && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
+    });
+    if denied {
+        format!(
+            "Guard proven for this session: the hook denied the probe, and its marker file wasn't made. {GUARD_SCOPE}"
+        )
+    } else {
+        format!(
+            "Guard not proven yet: no hook denial of this session's probe since it was set up, by this build of the program and this version of the plugin's hooks. Run exactly this, alone: {probe}\nthen `astrolabe activate --status` again. Until then claim no protection."
+        )
+    }
+}
+
 pub fn status(dir: &Path, session: &str) -> String {
     let state = match read_state(dir, session) {
-        Ok(None) => return "Astrolabe has no effort set in this session. While it's on for this machine the guard runs here, but there's no proof for this session until an effort is set.".to_owned(),
+        Ok(None) => {
+            let on = std::fs::read(dir.join(SWITCH)).ok();
+            let on = on.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+            let since = on.and_then(|on| on["at_ms"].as_i64()).unwrap_or(i64::MAX);
+            return format!(
+                "No effort is set in this session. {}",
+                proof(session, &session_token(session), since)
+            );
+        }
         Err(why) => {
             return format!(
                 "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off`, then switch on again."
@@ -544,37 +597,10 @@ pub fn status(dir: &Path, session: &str) -> String {
             blocked(state["effort"].as_str().unwrap_or_default(), &why)
         );
     }
-    if marker(token).exists() {
-        return format!(
-            "{on} Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner."
-        );
-    }
-    let probe = probe(token);
-    let log = hook::data_dir().map(|data| data.join(hook::DENIAL_LOG));
-    let log = log
-        .and_then(|log| std::fs::read_to_string(log).ok())
-        .unwrap_or_default();
-    let since = state["at_ms"].as_i64().unwrap_or(i64::MAX);
-    let program = hook_id();
-    let denied = (log
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
-    .any(|l| {
-        l["session_id"] == session
-            && l["agent_id"].is_null()
-            && l["command"] == probe.as_str()
-            && l["hook"] == program.as_str()
-            && l["at_ms"].as_i64().is_some_and(|at| at >= since)
-    });
-    if denied {
-        format!(
-            "{on} Guard proven for this session and effort: the hook denied the probe, and its marker file wasn't made. {GUARD_SCOPE}"
-        )
-    } else {
-        format!(
-            "{on} Guard not proven yet: no hook denial of this session's probe since switch-on, by this build of the program and this version of the plugin's hooks. Run exactly this, alone: {probe}\nthen `astrolabe activate --status` again. Until then claim no protection."
-        )
-    }
+    format!(
+        "{on} {}",
+        proof(session, token, state["at_ms"].as_i64().unwrap_or(i64::MAX))
+    )
 }
 
 /// `astrolabe activate --show <ticket>`, as the hook rewrote it: what to print, and whether
@@ -671,8 +697,9 @@ pub fn gate(event: &str) {
     // while the machine is on, but no context or authority, can't switch, and doesn't count
     // toward the parent's proof.
     let child = input["agent_id"].as_str().is_some_and(|a| !a.is_empty());
-    // Off for the machine: nothing at all, as if the plugin weren't there.
-    if !state_dir().is_some_and(|dir| machine_on(&dir)) {
+    // Off for the machine: nothing at all, as if the plugin weren't there. In the notes
+    // checkout its own layer runs, so the plugin stays out there too (a trial exception).
+    if !state_dir().is_some_and(|dir| machine_on(&dir)) || in_notes(&input) {
         return;
     }
     match event {
@@ -707,6 +734,22 @@ pub fn gate(event: &str) {
         }
         _ => {}
     }
+}
+
+/// Whether this hook fired in the registered notes checkout or one of its worktrees, by the
+/// registry and git's common directory.
+fn in_notes(input: &Value) -> bool {
+    let cwd = input["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let Some(here) = cwd.as_deref().and_then(common_dir) else {
+        return false;
+    };
+    let notes = notes_and_registry().ok().map(|(_, notes)| notes);
+    notes
+        .and_then(|notes| common_dir(&notes))
+        .is_some_and(|notes| notes == here)
 }
 
 fn provider(input: &Value) -> &'static str {
@@ -816,7 +859,7 @@ fn block_reason(dir: &Path, state: &Value, session: &str) -> Option<String> {
 
 /// A fresh session while the machine is on: the effort if its repo has exactly one active,
 /// else the owner and voice notes and the guard, and why there's no effort.
-fn fresh(dir: &Path, session: &str, provider: &str, cwd: &Path) -> String {
+fn fresh(session: &str, cwd: &Path) -> String {
     let (registry, notes) = match notes_and_registry() {
         Ok(found) => found,
         Err(why) => {
@@ -825,50 +868,60 @@ fn fresh(dir: &Path, session: &str, provider: &str, cwd: &Path) -> String {
             );
         }
     };
-    let why_none = match active_efforts(&notes, &registry, cwd) {
+    // Never loaded on its own: the owner may be here for something else (owner, 2026-11-03).
+    let say = |n: &str| format!("say \"pick up {n}\" to load it");
+    let offer = match active_efforts(&notes, &registry, cwd) {
         Ok((_, efforts)) if efforts.len() == 1 => {
-            let picked = &efforts[0];
-            match switch_on(dir, picked, session, provider, cwd, None) {
-                Ok(activation) => {
-                    match commit(dir, session, &Change::Write(activation.state.clone())) {
-                        Ok(()) => {
-                            let why = format!(
-                                "Effort {picked} was picked automatically: it's the only active effort for this repo. Say so to the owner in your first reply.\n\n"
-                            );
-                            return why + &activation.fitted();
-                        }
-                        Err(why) => {
-                            format!("its one active effort, {picked}, couldn't be saved: {why}")
-                        }
-                    }
-                }
-                Err(why) => format!("its one active effort, {picked}, can't be used: {why}"),
-            }
+            let (n, title) = &efforts[0];
+            format!(
+                "This repo's one active effort is {n}, \"{title}\"; {}.",
+                say(n)
+            )
         }
         Ok((repos, efforts)) if efforts.is_empty() => {
-            format!("no active effort names this repo ({})", repos.join(", "))
+            format!("No active effort names this repo ({}).", repos.join(", "))
         }
-        Ok((_, efforts)) => format!(
-            "several active efforts name this repo ({}), and picking one is the owner's call",
-            efforts.join(", ")
-        ),
-        Err(why) => why,
+        Ok((_, efforts)) => {
+            let list: Vec<String> = efforts
+                .iter()
+                .map(|(n, t)| format!("{n}, \"{t}\""))
+                .collect();
+            format!(
+                "This repo's active efforts are {}; {}.",
+                list.join("; "),
+                say("<n>").replace("load it", "load one")
+            )
+        }
+        Err(why) => format!("Can't list efforts: {why}."),
     };
-    let base = format!(
-        "Astrolabe is on for this machine, so the guard runs in this session. No effort is set: {why_none}. Don't guess one. When the owner names an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}"
+    let mut head = format!(
+        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\nProve the guard for this session: run exactly this, alone: {}\nThe hook must deny it. Then run `astrolabe activate --status`. Until it says proven, claim no protection.",
+        probe(&session_token(session))
     );
-    match crate::voice::read(&notes) {
-        Ok(voice) => format!("{base}\n\n--- owner and voice\n\n{voice}"),
-        Err(why) => format!("{base}\n\nOwner and voice NOT delivered: {why}. Tell the owner."),
+    let parts = match owner_voice(&notes) {
+        Ok(part) => vec![part],
+        Err(why) => {
+            head += &format!("\n\nOwner and voice NOT delivered: {why}. Tell the owner.");
+            Vec::new()
+        }
+    };
+    Activation {
+        state: Value::Null,
+        head,
+        parts,
     }
+    .fitted()
 }
+
+/// An effort to suggest: its number and title.
+type Offer = (String, String);
 
 /// The repo names this folder is registered under, and the active efforts naming one of them.
 fn active_efforts(
     notes: &Path,
     registry: &Registry,
     cwd: &Path,
-) -> Result<(Vec<String>, Vec<String>), String> {
+) -> Result<(Vec<String>, Vec<Offer>), String> {
     let here = common_dir(cwd).ok_or_else(|| {
         format!(
             "this session's folder {} isn't in a git repo",
@@ -894,17 +947,24 @@ fn active_efforts(
     }
     let dir = notes.join("efforts");
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut efforts: Vec<String> = Vec::new();
-    for name in entries
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-    {
+    let mut efforts: Vec<Offer> = Vec::new();
+    let unreadable = |what: String| {
+        format!("the efforts for this repo can't all be read ({what}), so none is listed")
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| unreadable(format!("{}: {e}", dir.display())))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            return Err(unreadable(format!(
+                "a name in {} that isn't text",
+                dir.display()
+            )));
+        };
         let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
         if digits.is_empty() || !name.ends_with(".md") {
             continue;
         }
         let text = std::fs::read_to_string(dir.join(&name))
-            .unwrap_or_default()
+            .map_err(|e| unreadable(format!("efforts/{name}: {e}")))?
             .replace("\r\n", "\n");
         let props = frontmatter(&text);
         let get = |key: &str| {
@@ -916,10 +976,19 @@ fn active_efforts(
         let names_here =
             get("repo").is_some_and(|r| r.split(',').any(|r| repos.contains(&r.trim().to_owned())));
         if get("status") == Some("active") && names_here {
-            efforts.push(digits.trim_start_matches('0').to_owned());
+            let title = get("title").map(str::to_owned);
+            let title = title.or_else(|| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix("# "))
+                    .map(|t| t.trim().to_owned())
+            });
+            efforts.push((
+                digits.trim_start_matches('0').to_owned(),
+                title.unwrap_or_else(|| name.clone()),
+            ));
         }
     }
-    efforts.sort();
+    efforts.sort_by_key(|(n, _)| n.parse::<u32>().unwrap_or(u32::MAX));
     Ok((repos, efforts))
 }
 
@@ -975,7 +1044,7 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
         }
         Ok(None) => {
             let Some(effort) = launched else {
-                return Some(fresh(&dir, session, provider(input), &cwd));
+                return Some(fresh(session, &cwd));
             };
             Some(
                 match switch_on(&dir, &effort, session, provider(input), &cwd, None) {

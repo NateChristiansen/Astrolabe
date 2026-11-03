@@ -1,6 +1,6 @@
 # Astrolabe plugin
 
-One plugin folder for Claude Code and Codex, in Claude's layout, with one marketplace file per app. A machine switch, `astrolabe on` and `astrolabe off`, run by the owner in a terminal, decides whether it does anything. Off, its hooks do nothing. On, every session and its subagents get the guard on shell commands, and every session gets the owner and voice notes. A session's effort is picked for it when its repo has exactly one active effort; otherwise the owner names one in plain words ("pick up 70", "work on effort 70", or `/astrolabe:effort 70`), and `ASTROLABE_EFFORT=70` at launch sets it for a worker. With an effort, that session also gets the effort's settings and current state, the repo note and the machine notes.
+One plugin folder for Claude Code and Codex, in Claude's layout, with one marketplace file per app. A machine switch, `astrolabe on` and `astrolabe off`, run by the owner in a terminal, decides whether it does anything. Off, its hooks do nothing. On, every session and its subagents get the guard on shell commands, and every session gets the owner and voice notes, plus its repo's active efforts as a suggestion. No effort is loaded until the owner asks for one in plain words ("pick up 70", "work on effort 70", or `/astrolabe:effort 70`), and `ASTROLABE_EFFORT=70` at launch sets it for a worker. With an effort, that session also gets the effort's settings and current state, the repo note and the machine notes.
 
 Everything personal is read from the notes checkout at run time; nothing here holds it.
 
@@ -14,7 +14,11 @@ The skill runs `astrolabe activate --effort <n>` as a plain shell command. The p
 2. The notes checkout: `astrolabe repo add agent <notes checkout>`.
 3. Each target repo, under the name its note has in `knowledge/repos/<name>.md`: `astrolabe repo add <name> <checkout>`.
 4. `astrolabe-trial on`.
-5. Each effort note has, in its properties (YAML frontmatter, as Obsidian shows them): `status: active` to be picked automatically, `repo: <name>` (or a list), `involvement: <autonomous | check in at plan | each step>` and `authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
+5. Each effort note has, in its properties (YAML frontmatter, as Obsidian shows them): `status: active` to be suggested, `repo: <name>` (or a list), `involvement: <autonomous | check in at plan | each step>` and `authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
+
+## In the notes checkout
+
+With the switch on, the plugin stays out of the registered notes checkout (`agent` in the registry) and its worktrees, found by git's common directory, because that repo runs its own layer. A trial exception to global coverage.
 
 ## Install
 

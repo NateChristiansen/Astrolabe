@@ -227,7 +227,7 @@ fn off_for_the_machine_nothing_runs_and_on_needs_no_step() {
         "{text}"
     );
     assert!(
-        text.contains("no active effort names this repo (other)") && !text.contains("EFFORT-72"),
+        text.contains("No active effort names this repo (other)") && !text.contains("EFFORT-72"),
         "{text}"
     );
     assert!(f.denies("s2", "pkill -f anything") && !f.denies("s2", "git status"));
@@ -244,34 +244,44 @@ fn off_for_the_machine_nothing_runs_and_on_needs_no_step() {
 }
 
 #[test]
-fn a_repos_one_active_effort_is_picked_and_several_are_never_guessed() {
+fn a_repos_active_efforts_are_suggested_and_never_loaded_unasked() {
     let f = Fixture::new();
-    assert!(!f.state().join("s1.json").exists());
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(
-        text.starts_with("Effort 70 was picked automatically") && text.contains("EFFORT-70"),
+        text.contains("one active effort is 70, \"0070 Demo\"; say \"pick up 70\" to load it"),
         "{text}"
     );
     assert!(
-        f.bash("s1", &f.demo, "astrolabe activate --status")
-            .0
-            .contains("effort 70")
+        text.contains("No effort is loaded")
+            && !text.contains("EFFORT-70")
+            && !text.contains("check in at plan"),
+        "{text}"
     );
-    let also = "---\nstatus: active\nrepo: [other, demo]\ninvolvement: autonomous\nauthority: read\n---\n# 0077\n\n## Current state\n\nEFFORT-77\n";
-    write(&f.dir.0.join("notes/efforts/0077-also.md"), also);
+    assert!(text.contains("OWNER-TEXT") && !f.state().join("s1.json").exists());
+    assert!(f.denies("s1", "pkill x"), "the guard all the same");
+    let also = "---\nstatus: active\nrepo: [other, demo]\ninvolvement: autonomous\nauthority: read\n---\n# 0077 Also\n\n## Current state\n\nEFFORT-77\n";
+    let also_path = f.dir.0.join("notes/efforts/0077-also.md");
+    write(&also_path, also);
     let text = f.session_start("s2", &f.demo, &[]).unwrap();
-    assert!(
-        text.contains("several active efforts name this repo (70, 77)")
-            && text.contains("Don't guess"),
-        "{text}"
-    );
-    assert!(
-        !text.contains("EFFORT-7") && text.contains("OWNER-TEXT"),
-        "{text}"
-    );
-    assert!(!f.state().join("s2.json").exists() && f.denies("s2", "pkill x"));
+    assert!(text.contains("active efforts are 70, \"0070 Demo\"; 77, \"0077 Also\"; say \"pick up <n>\" to load one"), "{text}");
+    assert!(!f.state().join("s2.json").exists());
     // Until the owner names one.
     assert!(f.bash("s2", &f.demo, "astrolabe activate --effort 77").1);
+    // A candidate that can't be read: nothing listed as if the set were known.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&also_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let text = f.session_start("s4", &f.demo, &[]).unwrap();
+        assert!(
+            text.contains("Can't list efforts")
+                && text.contains("0077-also.md")
+                && !text.contains("say \"pick up 70\" to load it"),
+            "{text}"
+        );
+        assert!(f.denies("s4", "pkill x"));
+        std::fs::set_permissions(&also_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
     // A folder in no registered repo: no effort, guard on.
     let loose = f.dir.0.join("loose");
     std::fs::create_dir_all(&loose).unwrap();
@@ -281,6 +291,84 @@ fn a_repos_one_active_effort_is_picked_and_several_are_never_guessed() {
         text.contains("isn't registered") && f.denies("s3", "pkill x"),
         "{text}"
     );
+}
+
+#[test]
+fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
+    let f = Fixture::new();
+    let big = "word ".repeat(940);
+    write(&f.dir.0.join("notes/knowledge/owner.md"), &big);
+    write(&f.dir.0.join("notes/knowledge/voice.md"), &big);
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(text.len() <= 9800, "{}", text.len());
+    assert!(
+        text.contains("Read these now")
+            && text.contains("knowledge/owner.md")
+            && text.contains("knowledge/voice.md"),
+        "{text}"
+    );
+    assert!(text.contains("pick up 70") && text.contains("guard runs"));
+}
+
+#[test]
+fn a_session_with_no_effort_proves_its_own_guard() {
+    let f = Fixture::new();
+    let text = f.session_start("s1", &f.other, &[]).unwrap();
+    let probe = f.probe(&text);
+    let status = || f.bash("s1", &f.other, "astrolabe activate --status").0;
+    assert!(
+        status().contains("No effort is set") && status().contains("not proven yet"),
+        "{}",
+        status()
+    );
+    let child = json!({"session_id": "s1", "agent_id": "a1", "cwd": f.other, "tool_name": "Bash", "tool_input": {"command": probe}});
+    assert!(f.hook(child).is_some());
+    assert!(f.denies("s2", &probe));
+    assert!(
+        status().contains("not proven yet"),
+        "a child's or another session's denial doesn't count"
+    );
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"), "{}", status());
+    // Switched off and on again: proof starts over.
+    f.machine("off");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.machine("on");
+    assert!(status().contains("not proven yet"));
+}
+
+#[test]
+fn the_notes_checkout_and_its_worktrees_get_nothing_from_the_plugin() {
+    let f = Fixture::new();
+    let notes = f.dir.0.join("notes");
+    let tree = f.dir.0.join("notes-tree");
+    git(&notes, &["worktree", "add", "-q", tree.to_str().unwrap()]);
+    for cwd in [&notes, &tree] {
+        assert_eq!(
+            f.session_start("n1", cwd, &[]),
+            None,
+            "its own layer delivers there"
+        );
+        let input = json!({"session_id": "n1", "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
+        assert_eq!(f.hook(input), None, "its own layer guards there");
+    }
+    // A product repo still gets the plugin.
+    assert!(
+        f.session_start("n2", &f.demo, &[])
+            .unwrap()
+            .contains("OWNER-TEXT")
+    );
+    assert!(f.denies("n2", "pkill x"));
+}
+
+#[test]
+fn the_machine_switch_reaches_running_sessions_at_once() {
+    let f = Fixture::new();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    f.machine("off");
+    assert!(!f.denies("s1", "pkill x"));
+    f.machine("on");
+    assert!(f.denies("s1", "pkill x"));
 }
 
 #[test]
@@ -530,7 +618,7 @@ fn a_subagent_inherits_the_guard_only_and_cant_switch() {
     assert!(
         f.bash("s2", &f.demo, "astrolabe activate --status")
             .0
-            .contains("no effort set"),
+            .contains("No effort is set"),
         "a child switched nothing"
     );
     // The denial keeps the child's identity, and doesn't prove the parent's guard.
@@ -636,7 +724,8 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         "pick up 70",
         "work on effort 70",
         "/astrolabe:effort 70",
-        "never on a guess",
+        "Not for a number that only comes up in discussion",
+        "proves which session this is, not what the owner meant",
         "astrolabe activate --effort <n>",
     ] {
         assert!(skill.contains(wanted), "{wanted}");
