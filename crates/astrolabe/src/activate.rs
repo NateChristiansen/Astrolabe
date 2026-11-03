@@ -348,19 +348,169 @@ fn common_dir(dir: &Path) -> Option<String> {
     Some(comparable(Path::new(out.trim())))
 }
 
+/// A git remote in one form for comparing: no scheme or `user@`, `host:path` as `host/path`,
+/// no trailing `.git` or `/`, the host lowercased and the path's case kept. So the ssh and
+/// https forms of one repo match. None for a local path, which names a folder on one machine
+/// only, and for anything else that isn't a remote URL.
+fn normalize_remote(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() || url.contains(char::is_whitespace) || url.contains('\\') {
+        return None;
+    }
+    let (host, path) = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?,
+        // `host:path`, unless the part before the colon is a folder or a Windows drive.
+        None => url.split_once(':').filter(|(h, _)| !h.contains('/'))?,
+    };
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let drive = host.len() == 1 && host.chars().all(|c| c.is_ascii_alphabetic());
+    let path = path.trim_matches('/');
+    let path = path
+        .strip_suffix(".git")
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    if host.is_empty() || drive || path.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{path}", host.to_ascii_lowercase()))
+}
+
+/// The fetch URLs of this folder's remotes, as git lists them. A worktree shares its
+/// checkout's config, so it has the same ones.
+fn folder_remotes(dir: &Path) -> Result<Vec<String>, String> {
+    let args = ["remote", "-v"].map(AsRef::as_ref);
+    let out = crate::worktree::git(dir, &args)
+        .map_err(|why| format!("the remotes of {} can't be read: {why}", dir.display()))?;
+    let mut urls: Vec<String> = Vec::new();
+    for line in out.lines() {
+        let Some(url) = line
+            .split_once('\t')
+            .and_then(|(_, rest)| rest.strip_suffix(" (fetch)"))
+        else {
+            continue;
+        };
+        if !urls.iter().any(|u| u == url) {
+            urls.push(url.to_owned());
+        }
+    }
+    Ok(urls)
+}
+
+/// The remotes a repo note lists under `remote:`, as written. One that can't be read refuses,
+/// naming the file, because skipping it could match a folder to the wrong repo or to none.
+fn parse_remotes(file: &str, text: &str) -> Result<Vec<String>, String> {
+    let text = text.replace("\r\n", "\n");
+    let props = frontmatter(&text);
+    let Some((_, value)) = props.iter().find(|(k, _)| k == "remote") else {
+        return Ok(Vec::new());
+    };
+    let bad = |what: String| {
+        format!(
+            "{file}: {what}; the owner fixes it in the note's properties, as in `remote: git@example.com:team/game.git` or a list of them, because a remote that can't be read could match this repo to the wrong folder or to none"
+        )
+    };
+    if value.is_empty() {
+        return Err(bad("`remote` has no URL".to_owned()));
+    }
+    let urls: Vec<String> = value.split(',').map(|u| u.trim().to_owned()).collect();
+    match urls.iter().find(|u| normalize_remote(u).is_none()) {
+        Some(url) => Err(bad(format!("remote {url:?} isn't a git remote URL"))),
+        None => Ok(urls),
+    }
+}
+
+/// `knowledge/repos/<name>.md`'s remotes. No note is no remotes.
+fn note_remotes(notes: &Path, name: &str) -> Result<Vec<String>, String> {
+    let file = format!("knowledge/repos/{name}.md");
+    match std::fs::read_to_string(notes.join(&file)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!("{file}: {e}")),
+        Ok(text) => parse_remotes(&file, &text),
+    }
+}
+
+/// Every repo note that lists a remote: its name (the file's stem) and its remotes, normalized.
+fn remote_notes(notes: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
+    let dir = notes.join("knowledge/repos");
+    let entries = match std::fs::read_dir(&dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+        Ok(entries) => entries,
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        let (Some(stem), Some("md")) = (
+            path.file_stem().and_then(|s| s.to_str()),
+            path.extension().and_then(|e| e.to_str()),
+        ) else {
+            continue;
+        };
+        let file = format!("knowledge/repos/{stem}.md");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
+        let remotes = parse_remotes(&file, &text)?;
+        if remotes.is_empty() {
+            continue;
+        }
+        check_repo_name(stem).map_err(|why| {
+            format!("{file} lists a `remote:`, but its file name is the repo's name and {why}, so effort notes couldn't name it in `repo:`; the owner renames the note")
+        })?;
+        let remotes = remotes.iter().filter_map(|r| normalize_remote(r)).collect();
+        found.push((stem.to_owned(), remotes));
+    }
+    Ok(found)
+}
+
+/// The repo names this folder is, as a checkout or a worktree: those registered on this
+/// machine for its git repo (`here`, its common directory), and those whose repo note lists
+/// one of its remotes. A name can be both, even for different folders; this folder is every
+/// name it matches.
+fn repo_names(
+    notes: &Path,
+    registry: &Repos,
+    cwd: &Path,
+    here: &str,
+) -> Result<Vec<String>, String> {
+    let mut names: Vec<String> = (registry.0.keys())
+        .filter(|name| {
+            let checkout = registry.checkout(name);
+            checkout.and_then(|c| common_dir(&c)).as_deref() == Some(here)
+        })
+        .cloned()
+        .collect();
+    let remotes: Vec<String> = (folder_remotes(cwd)?.iter())
+        .filter_map(|r| normalize_remote(r))
+        .collect();
+    if !remotes.is_empty() {
+        for (name, theirs) in remote_notes(notes)? {
+            if theirs.iter().any(|r| remotes.contains(r)) {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 /// The effort's repo this session's folder is in, as a checkout or a worktree of it.
-fn session_repo(registry: &Repos, repos: &[String], cwd: &Path) -> Result<String, String> {
+fn session_repo(
+    notes: &Path,
+    registry: &Repos,
+    repos: &[String],
+    cwd: &Path,
+) -> Result<String, String> {
     let here = common_dir(cwd).ok_or_else(|| {
         format!("this session's folder {} isn't in a git repo, so it can't be matched to the effort's repo", cwd.display())
     })?;
+    let names = repo_names(notes, registry, cwd, &here)?;
+    if let Some(name) = repos.iter().find(|r| names.contains(r)) {
+        return Ok(name.clone());
+    }
     let mut unknown = Vec::new();
     for name in repos {
-        match registry.checkout(name) {
-            Some(checkout) if common_dir(&checkout).as_ref() == Some(&here) => {
-                return Ok(name.clone());
-            }
-            Some(_) => {}
-            None => unknown.push(format!("`astrolabe repo add {name} <checkout>`")),
+        if registry.checkout(name).is_none() && note_remotes(notes, name)?.is_empty() {
+            unknown.push(format!("`astrolabe repo add {name}`"));
         }
     }
     let mut why = format!(
@@ -368,9 +518,155 @@ fn session_repo(registry: &Repos, repos: &[String], cwd: &Path) -> Result<String
         repos.join(", ")
     );
     if !unknown.is_empty() {
-        why += &format!(". Not registered on this machine: {}", unknown.join(", "));
+        why += &format!(
+            ". Neither registered on this machine nor given a `remote:` in its repo note, so no folder can match it: {}, run from a folder of that repo, adds it",
+            unknown.join(", ")
+        );
     }
     Err(why)
+}
+
+/// Where a remote goes when `repo add` writes it: `origin` if the folder has one, else the
+/// first it lists. Only remotes another machine could match.
+fn chosen_remote(dir: &Path) -> Result<Option<String>, String> {
+    let args = ["remote", "get-url", "origin"].map(AsRef::as_ref);
+    let origin = crate::worktree::git(dir, &args).ok();
+    let origin = origin.map(|o| o.trim().to_owned());
+    let mut remotes = folder_remotes(dir)?;
+    remotes.retain(|r| normalize_remote(r).is_some());
+    Ok(match origin.filter(|o| remotes.contains(o)) {
+        Some(origin) => Some(origin),
+        None => remotes.into_iter().next(),
+    })
+}
+
+/// `remotes` as the note's `remote:` property, put in place of the one it has, or added.
+fn with_remotes(text: &str, remotes: &[String]) -> String {
+    let crlf = text.contains("\r\n");
+    let text = text.replace("\r\n", "\n");
+    let block = match remotes {
+        [one] => format!("remote: {one}\n"),
+        _ => format!(
+            "remote:\n{}",
+            remotes
+                .iter()
+                .map(|r| format!("  - {r}\n"))
+                .collect::<String>()
+        ),
+    };
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    let end = (lines.first().map(|l| l.trim_end()) == Some("---"))
+        .then(|| lines.iter().skip(1).position(|l| l.trim_end() == "---"))
+        .flatten()
+        .map(|i| i + 1);
+    let out = match end {
+        None => format!("---\n{block}---\n\n{text}"),
+        Some(end) => {
+            let key = (1..end).find(|&i| {
+                let line = &lines[i];
+                !line.starts_with(' ')
+                    && line
+                        .split_once(':')
+                        .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("remote"))
+            });
+            let (from, to) = match key {
+                Some(i) => {
+                    let items = lines[i + 1..end]
+                        .iter()
+                        .take_while(|l| l.trim_start().starts_with("- "))
+                        .count();
+                    (i, i + 1 + items)
+                }
+                None => (end, end),
+            };
+            lines.splice(from..to, [block]);
+            lines.concat()
+        }
+    };
+    if crlf { out.replace('\n', "\r\n") } else { out }
+}
+
+/// `astrolabe repo add <name> [<checkout>]` by remote: when `folder` has a remote another
+/// machine could match, writes it into `knowledge/repos/<name>.md` in the notes checkout,
+/// making a stub note if there's none, and says what it wrote. None when the folder has no
+/// such remote, so the caller registers it on this machine instead. Never commits.
+pub fn add_repo_note(name: &str, folder: &Path) -> Result<Option<Vec<String>>, String> {
+    check_repo_name(name)?;
+    common_dir(folder).ok_or_else(|| format!("{} isn't in a git repo", folder.display()))?;
+    let Some(remote) = chosen_remote(folder)? else {
+        return Ok(None);
+    };
+    let notes = notes_checked().map_err(|why| {
+        format!("{why}. It's needed because a repo with a remote is added as a note in the notes checkout, which every machine shares")
+    })?;
+    let file = format!("knowledge/repos/{name}.md");
+    let path = notes.join(&file);
+    let unsaved = "Not committed or pushed: the notes checkout is the owner's to commit.";
+    let fail = |e: std::io::Error| format!("{}: {e}", path.display());
+    let text = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(fail(e)),
+        Ok(text) => Some(text),
+    };
+    let Some(text) = text else {
+        let stub = format!(
+            "---\nremote: {remote}\n---\n\n# {name}\n\nCreated by `astrolabe repo add`, so sessions in this repo match it by its remote on every machine.\n"
+        );
+        std::fs::create_dir_all(path.parent().unwrap_or(&notes)).map_err(fail)?;
+        std::fs::write(&path, stub).map_err(fail)?;
+        return Ok(Some(vec![
+            format!(
+                "Wrote {}, a new note for repo {name} with remote {remote}: a session in a checkout or worktree with that remote is {name} on any machine.",
+                path.display()
+            ),
+            unsaved.to_owned(),
+        ]));
+    };
+    let mut listed = parse_remotes(&file, &text)?;
+    let ours: Vec<String> = (folder_remotes(folder)?.iter())
+        .filter_map(|r| normalize_remote(r))
+        .collect();
+    if let Some(known) =
+        (listed.iter()).find(|r| normalize_remote(r).is_some_and(|r| ours.contains(&r)))
+    {
+        return Ok(Some(vec![format!(
+            "{} already lists {known}, a remote of this folder, so nothing was written.",
+            path.display()
+        )]));
+    }
+    let before = listed.join(", ");
+    listed.push(remote.clone());
+    std::fs::write(&path, with_remotes(&text, &listed)).map_err(fail)?;
+    let said = if before.is_empty() {
+        format!(
+            "Added remote {remote} to {}, which listed none: a session with that remote is {name} on any machine.",
+            path.display()
+        )
+    } else {
+        format!(
+            "Added remote {remote} to {}, which listed {before} and still does: a session with any of them is {name}.",
+            path.display()
+        )
+    };
+    Ok(Some(vec![said, unsaved.to_owned()]))
+}
+
+/// A checkout's main folder from any folder in it or its worktrees, for a registry record
+/// that outlives a worktree.
+pub fn main_checkout(folder: &Path) -> Result<PathBuf, String> {
+    let args = ["rev-parse", "--path-format=absolute", "--git-common-dir"].map(AsRef::as_ref);
+    let common = crate::worktree::git(folder, &args)
+        .map_err(|why| format!("{} isn't in a git repo: {why}", folder.display()))?;
+    let common = PathBuf::from(common.trim());
+    if common.file_name().is_some_and(|n| n == ".git")
+        && let Some(parent) = common.parent()
+    {
+        return Ok(parent.to_path_buf());
+    }
+    let args = ["rev-parse", "--show-toplevel"].map(AsRef::as_ref);
+    let top = crate::worktree::git(folder, &args)
+        .map_err(|why| format!("{} has no checkout folder: {why}", folder.display()))?;
+    Ok(PathBuf::from(top.trim()))
 }
 
 /// One piece of the context, and what to read instead when it can't go inline.
@@ -614,7 +910,7 @@ pub fn switch_on(
 ) -> Result<Activation, String> {
     let (registry, notes) = notes_and_repos()?;
     let effort = read_effort(&notes, effort)?;
-    let repo = session_repo(&registry, &effort.repos, cwd)?;
+    let repo = session_repo(&notes, &registry, &effort.repos, cwd)?;
     let read = |file: String| {
         let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"));
         Ok::<_, String>(Part {
@@ -1060,6 +1356,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
     // Never loaded on its own: the owner may be here for something else (owner, 2026-11-03).
     let say = |n: &str| format!("say \"pick up {n}\" to load it");
     let offer = match active_efforts(&notes, &registry, cwd) {
+        Ok((repos, _)) if repos.is_empty() => no_note(cwd),
         Ok((_, efforts)) if efforts.len() == 1 => {
             let (n, title) = &efforts[0];
             format!(
@@ -1102,10 +1399,28 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
     .fitted()
 }
 
+/// Why a folder no repo matches gets no suggestion, and what would match it, offered only for
+/// the owner to ask for, as the notes are theirs.
+fn no_note(cwd: &Path) -> String {
+    let remotes = folder_remotes(cwd).unwrap_or_default();
+    let remotes: Vec<&String> = (remotes.iter())
+        .filter(|r| normalize_remote(r).is_some())
+        .collect();
+    if remotes.is_empty() {
+        return "This repo has no remote another machine could match and isn't registered on this machine, so it has no note in the notes and no effort can be suggested here. Only if the owner asks: `astrolabe repo add <name>`, run from this folder, registers it on this machine, `<name>` being what effort notes call it in `repo:`.".to_owned();
+    }
+    let remotes: Vec<&str> = remotes.iter().map(|r| r.as_str()).collect();
+    format!(
+        "This repo has no note in the notes: no `knowledge/repos/<name>.md` lists its remote ({}) under `remote:`, and it isn't registered on this machine, so no effort can be suggested here. Only if the owner asks: `astrolabe repo add <name>`, run from this folder, writes that note with this remote, `<name>` being what effort notes call it in `repo:`; it doesn't commit the notes.",
+        remotes.join(", ")
+    )
+}
+
 /// An effort to suggest: its number and title.
 type Offer = (String, String);
 
-/// The repo names this folder is registered under, and the active efforts naming one of them.
+/// The repo names this folder is, by registry or by remote, and the active efforts naming one
+/// of them. No names is no efforts.
 fn active_efforts(
     notes: &Path,
     registry: &Repos,
@@ -1117,19 +1432,10 @@ fn active_efforts(
             cwd.display()
         )
     })?;
-    let repos: Vec<String> = (registry.0.keys())
-        .filter(|name| *name != AGENT)
-        .filter(|name| {
-            registry
-                .checkout(name)
-                .and_then(|c| common_dir(&c))
-                .as_ref()
-                == Some(&here)
-        })
-        .cloned()
-        .collect();
+    let mut repos = repo_names(notes, registry, cwd, &here)?;
+    repos.retain(|name| name != AGENT);
     if repos.is_empty() {
-        return Err("this session's repo isn't registered on this machine (`astrolabe repo add <name> <checkout>`)".to_owned());
+        return Ok((repos, Vec::new()));
     }
     let dir = notes.join("efforts");
     let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;

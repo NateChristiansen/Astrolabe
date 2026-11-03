@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> <checkout>|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -94,16 +94,53 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
             }
             Vec::new()
         }
-        ("repo", ["add", name, checkout]) => {
-            astrolabe::activate::check_repo_name(name).map_err(astrolabe::Error::Setup)?;
-            registry.add(name, Path::new(checkout))?;
-            // The plugin reads only its own record, so the database alone isn't a registration.
-            astrolabe::activate::add_repo(name, &registry.checkout(name)?).map_err(|why| {
-                astrolabe::Error::Setup(format!(
-                    "{name} is in the database the notes layer reads, but the plugin's record couldn't be written ({why}), so the plugin doesn't have it. Fix that and run this again; rerunning is safe"
-                ))
-            })?;
-            vec![format!("{name} added")]
+        ("repo", ["add", name, checkout @ ..]) if checkout.len() < 2 => {
+            use astrolabe::Error::Setup;
+            astrolabe::activate::check_repo_name(name).map_err(Setup)?;
+            let given = checkout.first().map(PathBuf::from);
+            let folder = match &given {
+                Some(checkout) => checkout.clone(),
+                None => std::env::current_dir()?,
+            };
+            // The notes checkout is always a record on this machine: the plugin finds the
+            // notes by it, so it can't be a note in them.
+            let noted = match *name {
+                astrolabe::registry::AGENT => None,
+                _ => astrolabe::activate::add_repo_note(name, &folder).map_err(Setup)?,
+            };
+            if let Some(mut lines) = noted {
+                // A checkout named on purpose also goes in the database the notes layer reads,
+                // as it always has; a worktree a session happens to be in doesn't.
+                if let Some(checkout) = &given {
+                    registry.add(name, checkout)?;
+                    let at = registry.checkout(name)?;
+                    lines.push(format!("Also recorded {name} at {} in this machine's database, which the notes layer reads.", at.display()));
+                }
+                lines
+            } else {
+                let checkout = match given {
+                    Some(checkout) => checkout,
+                    None => astrolabe::activate::main_checkout(&folder).map_err(Setup)?,
+                };
+                registry.add(name, &checkout)?;
+                let at = registry.checkout(name)?;
+                // The plugin reads only its own record, so the database alone isn't a registration.
+                astrolabe::activate::add_repo(name, &at).map_err(|why| {
+                    Setup(format!(
+                        "{name} is in the database the notes layer reads, but the plugin's record couldn't be written ({why}), so the plugin doesn't have it. Fix that and run this again; rerunning is safe"
+                    ))
+                })?;
+                let why = match *name {
+                    astrolabe::registry::AGENT => "the notes checkout is found by this record",
+                    _ => {
+                        "it has no remote another machine could match, so it's matched by this folder here"
+                    }
+                };
+                vec![format!(
+                    "{name} added: registered on this machine at {}, as {why}.",
+                    at.display()
+                )]
+            }
         }
         _ => usage(),
     };

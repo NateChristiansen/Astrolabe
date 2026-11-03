@@ -1273,3 +1273,300 @@ fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_sh
         "{status}"
     );
 }
+
+const GAME: &str = "---\nstatus: active\nrepo: game\ninvolvement: autonomous\nauthority: read\n---\n# 0080 Game\n\n## Current state\n\nEFFORT-80\n";
+
+impl Fixture {
+    /// A repo no registry names, with `remote` as its origin, and an active effort for `game`.
+    fn remote_repo(&self, folder: &str, remote: &str) -> PathBuf {
+        let repo = self.dir.0.join(folder);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(&repo, &["remote", "add", "origin", remote]);
+        write(&self.notes().join("efforts/0080-game.md"), GAME);
+        repo
+    }
+
+    fn notes(&self) -> PathBuf {
+        self.dir.0.join("notes")
+    }
+
+    fn game_note(&self, text: &str) {
+        write(&self.notes().join("knowledge/repos/game.md"), text);
+    }
+}
+
+#[test]
+fn a_repo_note_matches_its_repo_by_remote_in_ssh_or_https_form_and_in_worktrees() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    f.game_note("---\nremote: https://Example.com/team/game/\n---\n\nREPO-GAME-TEXT\n");
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(
+        text.contains("one active effort is 80, \"0080 Game\"; say \"pick up 80\""),
+        "{text}"
+    );
+    assert!(
+        !f.state().join("repos/game.json").exists(),
+        "no registry entry"
+    );
+    // A worktree shares its checkout's remotes, so it's the same repo.
+    let tree = f.dir.0.join("game.worktrees/wt");
+    git(
+        &game,
+        &["worktree", "add", "-q", "-b", "wt", tree.to_str().unwrap()],
+    );
+    let text = f.session_start("s2", &tree, &[]).unwrap();
+    assert!(text.contains("say \"pick up 80\""), "{text}");
+    let (text, ok) = f.bash("s2", &tree, "astrolabe activate --effort 80");
+    assert!(
+        ok && text.contains("repo game") && text.contains("REPO-GAME-TEXT"),
+        "{text}"
+    );
+    // Path case is kept: another owner's repo of the same name is another repo.
+    let upper = f.remote_repo("upper", "git@example.com:Team/game.git");
+    let text = f.session_start("s3", &upper, &[]).unwrap();
+    assert!(text.contains("has no note in the notes"), "{text}");
+}
+
+#[test]
+fn a_repo_note_may_list_several_remotes() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "ssh://git@example.com/team/game.git");
+    f.game_note("---\nremote:\n  - git@example.com:team/old.git\n  - https://example.com/team/game\n---\n\nREPO-GAME-TEXT\n");
+    assert!(
+        f.session_start("s1", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    f.game_note(
+        "---\nremote: [\"git@example.com:team/old.git\", git@example.com:team/game.git]\n---\n",
+    );
+    assert!(
+        f.session_start("s2", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    f.game_note("---\nremote: git@example.com:team/old.git\n---\n");
+    assert!(
+        !f.session_start("s3", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+}
+
+#[test]
+fn a_repo_with_no_note_says_so_and_how_the_owner_adds_one() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(
+        text.contains("This repo has no note in the notes: no `knowledge/repos/<name>.md` lists its remote (git@example.com:team/game.git)")
+            && text.contains("Only if the owner asks: `astrolabe repo add <name>`, run from this folder, writes that note")
+            && !text.contains("pick up 80"),
+        "{text}"
+    );
+    assert!(f.denies("s1", "pkill x"), "the guard all the same");
+    // No remote another machine could match: registering here is what's offered.
+    let loose = f.dir.0.join("loose");
+    std::fs::create_dir_all(&loose).unwrap();
+    git(&loose, &["init", "-q"]);
+    git(&loose, &["remote", "add", "origin", "/srv/local/game.git"]);
+    let text = f.session_start("s2", &loose, &[]).unwrap();
+    assert!(
+        text.contains("no remote another machine could match and isn't registered")
+            && text.contains("registers it on this machine"),
+        "{text}"
+    );
+    // Loading an effort whose repo nothing locates says how to add it.
+    let (text, ok) = f.bash("s1", &game, "astrolabe activate --effort 80");
+    assert!(
+        !ok && text.contains("isn't the effort's (game)")
+            && text.contains("`astrolabe repo add game`, run from a folder of that repo, adds it")
+            && !text.contains("<checkout>"),
+        "{text}"
+    );
+}
+
+#[test]
+fn repo_add_from_a_folder_with_a_remote_writes_a_note_and_no_record() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    git(
+        &game,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            "https://example.com/up/game.git",
+        ],
+    );
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(ok, "{out}");
+    let note = f.notes().join("knowledge/repos/game.md");
+    assert!(
+        out.starts_with("Wrote ")
+            && out.contains("game.md, a new note for repo game")
+            && out.contains("with remote git@example.com:team/game.git")
+            && out.contains("Not committed or pushed"),
+        "{out}"
+    );
+    let text = std::fs::read_to_string(&note).unwrap();
+    assert!(
+        text.starts_with("---\nremote: git@example.com:team/game.git\n---\n\n# game\n\nCreated by `astrolabe repo add`"),
+        "origin, not upstream: {text}"
+    );
+    assert!(
+        !f.state().join("repos/game.json").exists(),
+        "no registry entry"
+    );
+    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
+    assert!(
+        registry.checkout("game").is_err(),
+        "nor in the database, from a bare folder"
+    );
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(f.notes())
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).contains("knowledge/"),
+        "left uncommitted"
+    );
+    assert!(
+        f.session_start("s1", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    // Named with its checkout: still the note, and the database as before.
+    let (out, ok) = f.run(
+        &f.demo,
+        &["repo", "add", "game", game.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(
+        ok && out.contains("already lists git@example.com:team/game.git")
+            && out.contains("nothing was written")
+            && out.contains("Also recorded game"),
+        "{out}"
+    );
+    assert!(!f.state().join("repos/game.json").exists());
+    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
+    assert!(registry.checkout("game").is_ok());
+}
+
+#[test]
+fn repo_add_adds_its_remote_to_a_note_that_lists_another() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "https://example.com/team/game.git");
+    f.game_note("---\ntitle: Game\nremote: git@example.com:team/old.git\nstatus: x\n---\n\nREPO-GAME-TEXT\n");
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(
+        ok && out.contains("Added remote https://example.com/team/game.git")
+            && out.contains("which listed git@example.com:team/old.git and still does"),
+        "{out}"
+    );
+    let text = std::fs::read_to_string(f.notes().join("knowledge/repos/game.md")).unwrap();
+    assert_eq!(
+        text,
+        "---\ntitle: Game\nremote:\n  - git@example.com:team/old.git\n  - https://example.com/team/game.git\nstatus: x\n---\n\nREPO-GAME-TEXT\n"
+    );
+    assert!(
+        f.session_start("s1", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    // Again: already there, nothing written.
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(ok && out.contains("nothing was written"), "{out}");
+    // A note with no properties gets them, its text kept.
+    f.game_note("REPO-GAME-TEXT\r\n");
+    let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+    assert!(ok && out.contains("which listed none"), "{out}");
+    let text = std::fs::read_to_string(f.notes().join("knowledge/repos/game.md")).unwrap();
+    assert_eq!(
+        text,
+        "---\r\nremote: https://example.com/team/game.git\r\n---\r\n\r\nREPO-GAME-TEXT\r\n"
+    );
+}
+
+#[test]
+fn the_registry_still_matches_and_unions_with_remote_matches() {
+    let f = Fixture::new();
+    // A note's remote that isn't this folder's doesn't undo its registry entry.
+    write(
+        &f.notes().join("knowledge/repos/demo.md"),
+        "---\nremote: git@example.com:team/elsewhere.git\n---\n\nREPO-DEMO-TEXT\n",
+    );
+    assert!(
+        f.session_start("s1", &f.demo, &[])
+            .unwrap()
+            .contains("pick up 70")
+    );
+    // A registered folder whose remote a note lists is both names.
+    git(
+        &f.demo,
+        &["remote", "add", "origin", "git@example.com:team/game.git"],
+    );
+    write(&f.notes().join("efforts/0080-game.md"), GAME);
+    f.game_note("---\nremote: git@example.com:team/game.git\n---\n\nREPO-GAME-TEXT\n");
+    let text = f.session_start("s2", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("active efforts are 70, \"0070 Demo\"; 80, \"0080 Game\""),
+        "{text}"
+    );
+    assert!(f.bash("s2", &f.demo, "astrolabe activate --effort 70").1);
+    // A repo without a remote is added to the registry, from its own folder.
+    let local = f.dir.0.join("local");
+    std::fs::create_dir_all(local.join("sub")).unwrap();
+    git(&local, &["init", "-q"]);
+    let (out, ok) = f.run(&local.join("sub"), &["repo", "add", "local"], "", &[]);
+    assert!(
+        ok && out.contains("has no remote another machine could match"),
+        "{out}"
+    );
+    assert!(f.state().join("repos/local.json").exists());
+    assert!(!f.notes().join("knowledge/repos/local.md").exists());
+    // The notes checkout stays a record even with a remote: the plugin finds the notes by it.
+    git(
+        &f.notes(),
+        &["remote", "add", "origin", "git@example.com:team/notes.git"],
+    );
+    std::fs::remove_file(f.state().join("repos/agent.json")).unwrap();
+    let notes = f.notes();
+    let (out, ok) = f.run(
+        &notes,
+        &["repo", "add", "agent", notes.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(ok, "{out}");
+    assert!(f.state().join("repos/agent.json").exists());
+    assert!(!f.notes().join("knowledge/repos/agent.md").exists());
+}
+
+#[test]
+fn a_repo_notes_remote_that_cant_be_read_refuses_naming_the_file() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    for bad in [
+        "remote: not a url",
+        "remote:",
+        "remote: [git@example.com:team/game.git, C:/x]",
+    ] {
+        f.game_note(&format!("---\n{bad}\n---\n"));
+        let text = f.session_start("s1", &game, &[]).unwrap();
+        assert!(
+            text.contains("Can't list efforts: knowledge/repos/game.md: ")
+                && text.contains("the owner fixes it in the note's properties"),
+            "{bad}: {text}"
+        );
+        let (text, ok) = f.bash("s1", &game, "astrolabe activate --effort 80");
+        assert!(!ok && text.contains("knowledge/repos/game.md: "), "{text}");
+        let (out, ok) = f.run(&game, &["repo", "add", "game"], "", &[]);
+        assert!(!ok && !out.contains("Added"), "{out}");
+    }
+}
