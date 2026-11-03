@@ -1,0 +1,10 @@
+{
+  "name": "astrolabe",
+  "plugins": [
+    {
+      "name": "astrolabe",
+      "source": { "source": "local", "path": "./astrolabe" },
+      "policy": { "installation": "AVAILABLE" }
+    }
+  ]
+}

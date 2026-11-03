@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "astrolabe hook session-start --if-active" } ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "astrolabe hook pre-command --if-active" } ] }
+    ]
+  }
+}

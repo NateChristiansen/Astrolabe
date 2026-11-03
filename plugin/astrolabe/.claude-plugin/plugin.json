@@ -1,0 +1,5 @@
+{
+  "name": "astrolabe",
+  "version": "0.1.0",
+  "description": "Idle until a session switches on for an effort: then the owner's notes and the guard, for that session only"
+}

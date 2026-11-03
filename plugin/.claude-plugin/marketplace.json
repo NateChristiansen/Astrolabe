@@ -1,0 +1,11 @@
+{
+  "name": "astrolabe",
+  "owner": { "name": "Astrolabe" },
+  "plugins": [
+    {
+      "name": "astrolabe",
+      "source": "./astrolabe",
+      "description": "Idle until a session switches on for an effort"
+    }
+  ]
+}
