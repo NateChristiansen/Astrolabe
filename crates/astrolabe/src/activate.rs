@@ -80,7 +80,7 @@ pub fn machine(verb: &str) -> (String, bool) {
     };
     match (done, machine_on(&dir)) {
         (Err(why), _) => (format!("Astrolabe couldn't switch {verb}: {why}"), false),
-        (Ok(()), true) => ("Astrolabe is on for this machine: every new session gets the owner and voice notes and the guard, and an effort when its repo has exactly one active.".to_owned(), true),
+        (Ok(()), true) => ("Astrolabe is on for this machine: every new session gets the owner and voice notes and the guard, and an effort when its repo has exactly one active. That's the switch, not proof an app runs the hooks: in a session, `astrolabe activate --status` says.".to_owned(), true),
         (Ok(()), false) => ("Astrolabe is off for this machine: its hooks do nothing.".to_owned(), true),
     }
 }
