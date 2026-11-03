@@ -397,20 +397,25 @@ fn normalize_remote(url: &str) -> Option<String> {
     })
 }
 
-/// The fetch URLs of this folder's remotes, by name: `git remote -v` adds a partial clone's
-/// filter after its URL, so its lines aren't read. A worktree shares its checkout's config,
-/// so it has the same ones.
+/// The URL each of this folder's remotes fetches from, by name: `git remote -v` adds a
+/// partial clone's filter after its URL, so its lines aren't read. Only the first
+/// `remote.<name>.url`, as git fetches from that one alone and pushes to the rest, so a
+/// push-only URL can't make this folder another repo. A remote with no fetch URL (only a
+/// `pushurl`) is skipped, as there's nothing it fetches; some git versions then give the
+/// remote's own name, which never reads as a remote URL. A worktree shares its checkout's
+/// config, so it has the same ones.
 fn folder_remotes(dir: &Path) -> Result<Vec<String>, String> {
     let fail = |why: String| format!("the remotes of {} can't be read: {why}", dir.display());
     let names = crate::worktree::git(dir, &["remote".as_ref()]).map_err(fail)?;
     let mut urls: Vec<String> = Vec::new();
     for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
-        let args = ["remote", "get-url", "--all", name].map(AsRef::as_ref);
-        let out = crate::worktree::git(dir, &args).map_err(fail)?;
-        for url in out.lines().map(str::trim).filter(|u| !u.is_empty()) {
-            if !urls.iter().any(|u| u == url) {
-                urls.push(url.to_owned());
-            }
+        let args = ["remote", "get-url", name].map(AsRef::as_ref);
+        let Ok(out) = crate::worktree::git(dir, &args) else {
+            continue;
+        };
+        let url = out.trim();
+        if !url.is_empty() && !urls.iter().any(|u| u == url) {
+            urls.push(url.to_owned());
         }
     }
     Ok(urls)

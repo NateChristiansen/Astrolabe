@@ -1672,3 +1672,60 @@ fn a_byte_order_mark_keeps_a_notes_properties() {
         "{text}"
     );
 }
+
+#[test]
+fn only_the_url_a_remote_fetches_from_matches() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    // A second `url` is push-only: git fetches from the first alone.
+    git(
+        &game,
+        &[
+            "config",
+            "--add",
+            "remote.origin.url",
+            "git@example.com:team/other.git",
+        ],
+    );
+    f.game_note("---\nremote: git@example.com:team/other.git\n---\n");
+    let text = f.session_start("s1", &game, &[]).unwrap();
+    assert!(
+        text.contains("has no note in the notes") && !text.contains("pick up 80"),
+        "{text}"
+    );
+    let (text, ok) = f.bash("s1", &game, "astrolabe activate --effort 80");
+    assert!(!ok && text.contains("isn't the effort's (game)"), "{text}");
+    f.game_note("---\nremote: git@example.com:team/game.git\n---\n");
+    assert!(
+        f.session_start("s2", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+}
+
+#[test]
+fn a_remote_with_only_a_push_url_is_skipped_and_the_rest_still_match() {
+    let f = Fixture::new();
+    let game = f.remote_repo("game", "git@example.com:team/game.git");
+    git(
+        &game,
+        &[
+            "config",
+            "remote.mirror.pushurl",
+            "git@example.com:team/mirror.git",
+        ],
+    );
+    f.game_note("---\nremote: git@example.com:team/game.git\n---\n");
+    assert!(
+        f.session_start("s1", &game, &[])
+            .unwrap()
+            .contains("pick up 80")
+    );
+    // Its push URL is nothing this folder fetches, so it matches no note.
+    f.game_note("---\nremote: git@example.com:team/mirror.git\n---\n");
+    let text = f.session_start("s2", &game, &[]).unwrap();
+    assert!(
+        text.contains("has no note in the notes") && !text.contains("pick up 80"),
+        "{text}"
+    );
+}
