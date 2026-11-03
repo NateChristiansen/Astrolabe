@@ -797,10 +797,10 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         ("PreToolUse", "pre-command"),
     ] {
         let command = &hooks["hooks"][event][0]["hooks"][0]["command"];
-        // Bare: Codex on Windows runs hooks in PowerShell, Claude in Git Bash or sh, and a
-        // name on PATH is the one form all of them read the same.
-        let wanted = format!("astrolabe-trial hook {slug} --if-active");
-        assert_eq!(command, &wanted, "the trial build, by name");
+        // Unquoted from `~`: Codex on Windows runs hooks in PowerShell, Claude in Git Bash or
+        // sh, and all of them expand it, with no PATH, which a Mac app from the Dock may lack.
+        let wanted = format!("~/.local/bin/astrolabe-trial hook {slug} --if-active");
+        assert_eq!(command, &wanted, "the trial build, by its home path");
         assert!(
             hooks["hooks"][event][0].get("matcher").is_none(),
             "every tool, as the guard decides"
