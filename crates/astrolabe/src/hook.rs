@@ -257,7 +257,7 @@ fn record_denial(bytes: &[u8], reason: &str) {
         "tool": input["tool_name"],
         "reason": reason,
         "command": command.chars().take(LOGGED_COMMAND).collect::<String>(),
-        "program": crate::activate::program_id(),
+        "hook": crate::activate::hook_id(),
     });
     let Some(data) = dir.parent() else { return };
     let log = std::fs::OpenOptions::new()

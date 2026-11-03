@@ -86,6 +86,11 @@ impl Fixture {
         registry.add("agent", &notes).unwrap();
         registry.add("demo", &demo).unwrap();
         registry.add("other", &other).unwrap();
+        write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
+        write(
+            &dir.0.join("plugin/.claude-plugin/plugin.json"),
+            "manifest v1",
+        );
         Self { dir, demo, other }
     }
 
@@ -100,6 +105,7 @@ impl Fixture {
             .current_dir(cwd)
             .env(DATA_DIR_VAR, self.dir.0.join("data"))
             .env(STATE_VAR, self.state())
+            .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
             .env_remove(EFFORT_VAR)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -352,20 +358,49 @@ fn the_guard_is_proven_only_by_a_hook_denial_of_this_activations_probe() {
 }
 
 #[test]
-fn resume_reloads_fresh_context_and_a_failed_reload_switches_off() {
+fn resume_reloads_fresh_context_and_a_failed_reload_keeps_the_guard_and_blocks() {
     let f = Fixture::new();
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
     let effort = f.dir.0.join("notes/efforts/0070-demo.md");
     std::fs::write(&effort, EFFORT.replace("EFFORT-70", "EFFORT-70-NEWER")).unwrap();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(text.contains("EFFORT-70-NEWER"), "{text}");
-    std::fs::write(&effort, EFFORT.replace(" · authority: edit", "")).unwrap();
-    let text = f.session_start("s1", &f.demo, &[]).unwrap();
-    assert!(
-        text.contains("couldn't be reloaded") && text.contains("off now"),
-        "{text}"
+    let machines = f.dir.0.join("notes/knowledge/machines.md");
+    std::fs::remove_file(&machines).unwrap();
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "compact"});
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &input.to_string(),
+        &[],
     );
-    assert!(!f.denies("s1", "pkill x"));
+    assert!(
+        out.contains("stays on for effort 70")
+            && out.contains("machines.md")
+            && out.contains("blocked"),
+        "{out}"
+    );
+    assert!(
+        f.denies("s1", "pkill -0 astrolabe-guard-probe"),
+        "the guard stays"
+    );
+    let (why, ok) = f.bash("s1", &f.demo, "git status");
+    assert!(!ok && why.contains("--off"), "{why}");
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("couldn't be reloaded")
+    );
+    // Repaired and switched on again: unblocked.
+    std::fs::write(&machines, "MACHINE-TEXT").unwrap();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    assert!(!f.denies("s1", "git status") && f.denies("s1", "pkill x"));
+    // Or switched off: unblocked and unguarded, as asked.
+    std::fs::remove_file(&machines).unwrap();
+    f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(f.denies("s1", "git status"));
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --off").1);
+    assert!(!f.denies("s1", "git status"));
 }
 
 #[test]
@@ -426,7 +461,7 @@ fn a_hook_gets_what_fits_and_the_files_to_read_for_the_rest() {
         .session_start("w1", &f.demo, &[(EFFORT_VAR, "70")])
         .unwrap();
     assert!(text.len() <= 9800, "{}", text.len());
-    assert!(text.contains("EFFORT-70") && text.contains("Read these files in full now"));
+    assert!(text.contains("EFFORT-70") && text.contains("Read these now"));
     assert!(text.contains("knowledge/repos/demo.md") && text.contains("knowledge/machines.md"));
     let (full, ok) = f.bash("w1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok && full.len() > 9800, "a command's output carries it all");
@@ -457,7 +492,10 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         ("PreToolUse", "pre-command"),
     ] {
         let command = &hooks["hooks"][event][0]["hooks"][0]["command"];
-        assert_eq!(command, &format!("astrolabe hook {slug} --if-active"));
+        let wanted = format!(
+            "\"${{ASTROLABE_TRIAL_BIN:-$HOME/.local/bin/astrolabe-trial}}\" hook {slug} --if-active"
+        );
+        assert_eq!(command, &wanted, "the trial build, by path");
         assert!(
             hooks["hooks"][event][0].get("matcher").is_none(),
             "every tool, as the guard decides"
@@ -483,4 +521,92 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         codex.contains("allow_implicit_invocation: false"),
         "never by automatic discovery"
     );
+}
+
+#[test]
+fn a_switch_whose_result_cant_be_left_isnt_made() {
+    let f = Fixture::new();
+    let shown = f.state().join("shown");
+    std::fs::create_dir_all(f.state()).unwrap();
+    std::fs::write(&shown, "a file where the folder goes").unwrap();
+    let (why, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(!ok && why.contains("couldn't finish"), "{why}");
+    assert!(
+        !f.state().join("s1.json").exists(),
+        "first switch-on not made"
+    );
+    std::fs::remove_file(&shown).unwrap();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    std::fs::remove_dir_all(&shown).unwrap();
+    std::fs::write(&shown, "").unwrap();
+    assert!(!f.bash("s1", &f.demo, "astrolabe activate --effort 75").1);
+    assert!(!f.bash("s1", &f.demo, "astrolabe activate --off").1);
+    std::fs::remove_file(&shown).unwrap();
+    let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(
+        status.contains("effort 70"),
+        "effort switch not made: {status}"
+    );
+    assert!(f.denies("s1", "pkill x"), "off not made");
+}
+
+#[test]
+fn a_switch_that_cant_be_saved_shows_that_instead() {
+    let f = Fixture::new();
+    // A folder where the session's state file goes: the result is left, the write fails.
+    std::fs::create_dir_all(f.state().join("s1.json")).unwrap();
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(!ok && text.contains("couldn't be written"), "{text}");
+}
+
+#[test]
+fn a_changed_hook_needs_its_own_proof() {
+    let f = Fixture::new();
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    let probe = f.probe(&text);
+    let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"));
+    write(&f.dir.0.join("plugin/hooks/hooks.json"), "hooks v2");
+    assert!(status().contains("not proven yet"), "{}", status());
+    // Resumed under the new hook: same switch, still unproven until its own denial.
+    f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(status().contains("not proven yet"));
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"));
+}
+
+#[test]
+fn a_large_effort_points_at_current_state_only() {
+    let f = Fixture::new();
+    let current = "Current words. ".repeat(800);
+    let effort = format!(
+        "# 0070 Demo\n\nrepo: demo · involvement: check in at plan · authority: edit\n\n## Current state\n\nBIG-CURRENT {current}\n\n## History\n\nSUPERSEDED: push straight to main without review.\n"
+    );
+    write(&f.dir.0.join("notes/efforts/0070-demo.md"), &effort);
+    let text = f
+        .session_start("w1", &f.demo, &[(EFFORT_VAR, "70")])
+        .unwrap();
+    assert!(text.len() <= 9800, "{}", text.len());
+    assert!(!text.contains("SUPERSEDED"), "{text}");
+    assert!(
+        text.contains("only its `## Current state` section"),
+        "{text}"
+    );
+    let path = f
+        .dir
+        .0
+        .join("notes/efforts/0070-demo.md")
+        .display()
+        .to_string();
+    assert!(
+        !text.contains(&format!("- {path}\n")) && !text.ends_with(&format!("- {path}")),
+        "never the whole file"
+    );
+    assert!(
+        text.contains("knowledge/owner.md"),
+        "whole files for the rest"
+    );
+    let (full, ok) = f.bash("w1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok && full.contains("BIG-CURRENT") && !full.contains("SUPERSEDED"));
 }

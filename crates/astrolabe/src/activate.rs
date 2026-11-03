@@ -59,16 +59,32 @@ pub fn state_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/astrolabe-layer"))
 }
 
-/// Names this build of the program, so a guard proof from one doesn't certify another.
-pub fn program_id() -> String {
+/// Names this build of the program and the plugin whose hook runs it, so a guard proof from
+/// one doesn't certify another: the program's version and file time, the plugin's folder, and
+/// a hash of its hooks and manifest. Both clients tell a plugin's hook its folder.
+pub fn hook_id() -> String {
+    use sha2::{Digest, Sha256};
     let exe = std::env::current_exe().ok();
     let modified = exe.and_then(|exe| exe.metadata().ok()?.modified().ok());
     let ms = modified.and_then(|at| at.duration_since(UNIX_EPOCH).ok());
-    format!(
-        "{} {}",
-        env!("CARGO_PKG_VERSION"),
-        ms.map_or(0, |d| d.as_millis())
-    )
+    let root = std::env::var_os("CLAUDE_PLUGIN_ROOT").map(PathBuf::from);
+    let mut hash = Sha256::new();
+    for file in ["hooks/hooks.json", ".claude-plugin/plugin.json"] {
+        let bytes = root
+            .as_ref()
+            .and_then(|root| std::fs::read(root.join(file)).ok());
+        hash.update(bytes.unwrap_or_default());
+        hash.update([0]);
+    }
+    let hash: String = hash
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let root = root.map_or("no plugin".to_owned(), |r| r.display().to_string());
+    let ms = ms.map_or(0, |d| d.as_millis());
+    format!("{} {ms} {root} {hash}", env!("CARGO_PKG_VERSION"))
 }
 
 fn now_ms() -> i64 {
@@ -206,11 +222,11 @@ fn session_repo(registry: &Registry, repos: &[String], cwd: &Path) -> Result<Str
     Err(why)
 }
 
-/// One piece of the context, and the files it came from, for when it can't go inline.
+/// One piece of the context, and what to read instead when it can't go inline.
 struct Part {
     title: String,
     body: String,
-    files: Vec<PathBuf>,
+    files: Vec<String>,
 }
 
 pub struct Activation {
@@ -236,7 +252,7 @@ impl Activation {
             return text;
         }
         let (mut inline, mut later) = (self.head.clone(), Vec::new());
-        let note = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these files in full now, before anything else:";
+        let note = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
         let reserve = note.len()
             + self
                 .parts
@@ -248,7 +264,7 @@ impl Activation {
             if later.is_empty() && inline.len() + piece.len() + reserve <= HOOK_LIMIT {
                 inline += &piece;
             } else {
-                later.extend(part.files.iter().map(|f| format!("\n- {}", f.display())));
+                later.extend(part.files.iter().map(|f| format!("\n- {f}")));
             }
         }
         inline + note + &later.concat()
@@ -350,10 +366,10 @@ fn notes_and_registry() -> Result<(Registry, PathBuf), String> {
     Ok((registry, notes))
 }
 
-/// Everything checked before anything changes: on any failure the session's state, on or
-/// off, stays as it was. `previous` keeps a resumed session's switch-on time and probe.
+/// Everything checked, nothing written: the caller commits `state` once what it says is safe.
+/// `previous` keeps a resumed session's switch-on time and probe.
 pub fn switch_on(
-    dir: &Path,
+    _dir: &Path,
     effort: &str,
     session: &str,
     provider: &str,
@@ -367,7 +383,7 @@ pub fn switch_on(
         let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"));
         Ok::<_, String>(Part {
             body: text?.trim().to_owned(),
-            files: vec![notes.join(&file)],
+            files: vec![notes.join(&file).display().to_string()],
             title: file,
         })
     };
@@ -375,13 +391,22 @@ pub fn switch_on(
         title: "owner and voice".to_owned(),
         body: crate::voice::read(&notes)?,
         files: ["owner", "voice"]
-            .map(|f| notes.join(format!("knowledge/{f}.md")))
+            .map(|f| {
+                notes
+                    .join(format!("knowledge/{f}.md"))
+                    .display()
+                    .to_string()
+            })
             .to_vec(),
     };
     let current = Part {
         title: format!("{}, Current state", effort.file),
         body: effort.current.clone(),
-        files: vec![notes.join(&effort.file)],
+        // Never the whole file: the rest holds history and plans that no longer apply.
+        files: vec![format!(
+            "{}: only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans.",
+            notes.join(&effort.file).display()
+        )],
     };
     let parts = vec![
         current,
@@ -401,7 +426,6 @@ pub fn switch_on(
         "session": session, "provider": provider, "effort": effort.number, "file": effort.file,
         "repo": repo, "cwd": comparable(cwd), "at_ms": at_ms, "token": token,
     });
-    write_json(&state_path(dir, session), &state)?;
     fn meaning(table: &[(&str, &'static str)], value: &str) -> &'static str {
         table
             .iter()
@@ -447,6 +471,12 @@ pub fn status(dir: &Path, session: &str) -> String {
         state["effort"].as_str().unwrap_or_default(),
         state["repo"].as_str().unwrap_or_default()
     );
+    if let Some(why) = state["reload_failed"].as_str() {
+        return format!(
+            "{on} {}",
+            blocked(state["effort"].as_str().unwrap_or_default(), why)
+        );
+    }
     if marker(token).exists() {
         return format!(
             "{on} Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner."
@@ -458,14 +488,14 @@ pub fn status(dir: &Path, session: &str) -> String {
         .and_then(|log| std::fs::read_to_string(log).ok())
         .unwrap_or_default();
     let since = state["at_ms"].as_i64().unwrap_or(i64::MAX);
-    let program = program_id();
+    let program = hook_id();
     let denied = (log
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
     .any(|l| {
         l["session_id"] == session
             && l["command"] == probe.as_str()
-            && l["program"] == program.as_str()
+            && l["hook"] == program.as_str()
             && l["at_ms"].as_i64().is_some_and(|at| at >= since)
     });
     if denied {
@@ -474,7 +504,7 @@ pub fn status(dir: &Path, session: &str) -> String {
         )
     } else {
         format!(
-            "{on} Guard not proven yet: no hook denial of this session's probe since switch-on, by this build of the program. Run exactly this, alone: {probe}\nthen `astrolabe activate --status` again. Until then claim no protection."
+            "{on} Guard not proven yet: no hook denial of this session's probe since switch-on, by this build of the program and this version of the plugin's hooks. Run exactly this, alone: {probe}\nthen `astrolabe activate --status` again. Until then claim no protection."
         )
     }
 }
@@ -493,23 +523,56 @@ pub fn command(args: &[&str]) -> (String, bool) {
     }
 }
 
-/// `astrolabe activate <args>` for this session, run in its hook.
-fn act(dir: &Path, args: &[&str], session: &str, provider: &str, cwd: &Path) -> (String, bool) {
+/// What a switch changes, done only after its result is ready to show.
+enum Change {
+    Keep,
+    Write(Value),
+    Remove,
+}
+
+fn commit(dir: &Path, session: &str, change: &Change) -> Result<(), String> {
+    let path = state_path(dir, session);
+    match change {
+        Change::Keep => Ok(()),
+        Change::Write(state) => write_json(&path, state),
+        Change::Remove => {
+            std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))
+        }
+    }
+}
+
+/// `astrolabe activate <args>` for this session, run in its hook: what to show, and the
+/// change to make once it's ready, with what to show instead if that fails.
+fn act(
+    dir: &Path,
+    args: &[&str],
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> (String, bool, Change, String) {
+    let previous = read_state(dir, session);
     match args {
-        ["--status"] => (status(dir, session), true),
-        ["--off"] => match std::fs::remove_file(state_path(dir, session)) {
-            Ok(()) => ("Astrolabe is off in this session; its guard no longer runs here.".to_owned(), true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ("Astrolabe was already off in this session.".to_owned(), true),
-            Err(e) => (format!("Astrolabe could NOT switch off: {e}"), false),
+        ["--status"] => (status(dir, session), true, Change::Keep, String::new()),
+        ["--off"] => match previous {
+            Ok(None) => ("Astrolabe was already off in this session.".to_owned(), true, Change::Keep, String::new()),
+            _ => (
+                "Astrolabe is off in this session; its guard no longer runs here.".to_owned(),
+                true,
+                Change::Remove,
+                "Astrolabe could NOT switch off, so it stays on here, guard included".to_owned(),
+            ),
         },
         ["--effort", effort] => {
-            let previous = read_state(dir, session).ok().flatten();
+            let previous = previous.ok().flatten();
             match switch_on(dir, effort, session, provider, cwd, previous.as_ref()) {
-                Ok(activation) => (activation.text(), true),
-                Err(why) => (refused(effort, &why, previous.as_ref()), false),
+                Ok(activation) => {
+                    let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
+                    (activation.text(), true, Change::Write(activation.state), failed)
+                }
+                Err(why) => (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
             }
         }
-        _ => ("Usage: astrolabe activate <--effort <n>|--status|--off>, run alone so the hook can bind it.".to_owned(), false),
+        _ => ("Usage: astrolabe activate <--effort <n>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
     }
 }
 
@@ -546,7 +609,13 @@ pub fn gate(event: &str) {
             };
             match read_state(&dir, session) {
                 Ok(None) => {}
-                Ok(Some(_)) => hook::guard(&bytes),
+                Ok(Some(state)) => match state["reload_failed"].as_str() {
+                    Some(why) => hook::say(&hook::deny(&blocked(
+                        state["effort"].as_str().unwrap_or_default(),
+                        why,
+                    ))),
+                    None => hook::guard(&bytes),
+                },
                 Err(why) => hook::say(&hook::deny(&format!(
                     "Astrolabe is on for this session but can't read its state ({why}), so it can't judge this command. Repair: run `astrolabe activate --off`, then switch on again."
                 ))),
@@ -606,8 +675,16 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
     let left = state_dir()
         .ok_or_else(|| "no home folder".to_owned())
         .and_then(|dir| {
-            let (text, ok) = act(&dir, &words[2..], session, provider(input), &cwd);
-            leave(&dir, &text, ok)
+            let (text, ok, change, failed) = act(&dir, &words[2..], session, provider(input), &cwd);
+            // The result first: a switch whose result can't be shown isn't made.
+            let ticket = leave(&dir, &text, ok)?;
+            if let Err(why) = commit(&dir, session, &change) {
+                let path = dir.join("shown").join(format!("{ticket}.json"));
+                let body =
+                    json!({"text": format!("{failed}: {why}."), "ok": false, "at_ms": now_ms()});
+                write_json(&path, &body).map_err(|_| format!("{failed}: {why}"))?;
+            }
+            Ok(ticket)
         });
     Some(match left {
         Ok(ticket) => {
@@ -629,9 +706,15 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             }})
         }
         Err(why) => hook::deny(&format!(
-            "Astrolabe can't write its state folder ({why}), so this session's switch is unchanged and no protection is claimed."
+            "Astrolabe couldn't finish this ({why}). Run `astrolabe activate --status` to see where this session stands; claim no new protection."
         )),
     })
+}
+
+fn blocked(effort: &str, why: &str) -> String {
+    format!(
+        "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or switch off with `astrolabe activate --off`."
+    )
 }
 
 /// A resumed session keeps its switch with fresh context; a launch may switch on by
@@ -651,12 +734,20 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             let provider = state["provider"].as_str().unwrap_or("claude").to_owned();
             Some(
                 match switch_on(&dir, &effort, session, &provider, &cwd, Some(&state)) {
-                    Ok(activation) => activation.fitted(),
+                    Ok(activation) => {
+                        match write_json(&state_path(&dir, session), &activation.state) {
+                            Ok(()) => activation.fitted(),
+                            Err(why) => format!(
+                                "Astrolabe stays on for effort {effort}, guard included, but couldn't save its reload: {why}. Tell the owner."
+                            ),
+                        }
+                    }
                     Err(why) => {
-                        let _ = std::fs::remove_file(state_path(&dir, session));
-                        format!(
-                            "Astrolabe was on for effort {effort} in this session but couldn't be reloaded: {why}. It's off now and claims no protection. Tell the owner."
-                        )
+                        // Context failed, protection mustn't: stay on, and block until repaired.
+                        let mut state = state.clone();
+                        state["reload_failed"] = why.clone().into();
+                        let _ = write_json(&state_path(&dir, session), &state);
+                        blocked(&effort, &why)
                     }
                 },
             )
@@ -665,7 +756,16 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             let effort = launched?;
             Some(
                 match switch_on(&dir, &effort, session, provider(input), &cwd, None) {
-                    Ok(activation) => activation.fitted(),
+                    Ok(activation) => {
+                        match write_json(&state_path(&dir, session), &activation.state) {
+                            Ok(()) => activation.fitted(),
+                            Err(why) => refused(
+                                &effort,
+                                &format!("its state file couldn't be written: {why}"),
+                                None,
+                            ),
+                        }
+                    }
                     Err(why) => refused(&effort, &format!("{why} (from {EFFORT_VAR})"), None),
                 },
             )
