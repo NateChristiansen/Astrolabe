@@ -56,3 +56,8 @@ node scripts/test-control.mjs run steps.json --repo throwaway=/path/to/a/repo
 Clicks are events dispatched in the page, not input from the system. So it doesn't show that a window is on screen, focus or keyboard behaviour, drag, menus, the title bar's close button, or anything outside the page. The picture is the web view's, without the title bar.
 
 Agents still run as their real clients with the real login and home folder. Use a throwaway repo.
+
+## Traps
+
+- In `codex exec`, the tools also need `-c default_tools_approval_mode="approve"`.
+- A second, normal debug build beside a test build needs the `tauri/custom-protocol` feature. Without it the window looks for a dev server, shows a connection error and never reaches the core.
