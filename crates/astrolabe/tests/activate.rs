@@ -426,14 +426,51 @@ fn a_launch_switches_on_by_env_bound_to_its_own_session() {
 }
 
 #[test]
-fn a_subagent_starts_off_and_cant_switch() {
+fn a_subagent_inherits_the_guard_only_and_cant_switch() {
     let f = Fixture::new();
-    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
-    let input = |command: &str| json!({"session_id": "s1", "agent_id": "a1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": command}});
-    let answer = f.hook(input("astrolabe activate --off")).unwrap();
+    let child = |session: &str, command: &str| json!({"session_id": session, "agent_id": "a1", "agent_type": "general-purpose", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": command}});
+    assert_eq!(
+        f.hook(child("s1", "pkill x")),
+        None,
+        "an off parent's child stays off"
+    );
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    let answer = f.hook(child("s1", "astrolabe activate --off")).unwrap();
     assert!(answer.to_string().contains("subagent can't switch"));
-    assert_eq!(f.hook(input("pkill x")), None);
-    assert!(f.denies("s1", "pkill x"), "the parent stays on");
+    let answer = f
+        .hook(child("s1", "astrolabe activate --effort 72"))
+        .unwrap();
+    assert!(answer.to_string().contains("subagent can't switch"));
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("effort 70"),
+        "the parent's switch stands"
+    );
+    // Guard, from the parent: a denial, and an allowed control.
+    let answer = f.hook(child("s1", "pkill x")).unwrap();
+    assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(f.hook(child("s1", "git status")), None);
+    assert_eq!(
+        f.hook(child("s2", "pkill x")),
+        None,
+        "an unrelated parent's child stays off"
+    );
+    // The denial keeps the child's identity, and doesn't prove the parent's guard.
+    let log = std::fs::read_to_string(f.dir.0.join("data/guard-denials.log")).unwrap();
+    assert!(log.lines().any(|l| l.contains("\"agent_id\":\"a1\"")));
+    assert!(f.hook(child("s1", &f.probe(&text))).is_some());
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("not proven yet")
+    );
+    assert!(f.denies("s1", &f.probe(&text)));
+    assert!(
+        f.bash("s1", &f.demo, "astrolabe activate --status")
+            .0
+            .contains("Guard proven")
+    );
 }
 
 #[test]

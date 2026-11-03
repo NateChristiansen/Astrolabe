@@ -48,7 +48,7 @@ const AUTHORITY: [(&str, &str); 3] = [
         "change, commit and push the effort's branch where the repo's own rules allow, because the owner allowed sharing for this effort",
     ),
 ];
-pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. It's an accident guard, not a sandbox.";
+pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
 const NO_TICKET: &str = "Astrolabe NOT switched on: the plugin's hook didn't take this command, so it can't be bound to this session and no guard is running for it. Run the command alone, exactly as written, with nothing before or after it. If it still fails: on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
 
 pub fn state_dir() -> Option<PathBuf> {
@@ -494,6 +494,7 @@ pub fn status(dir: &Path, session: &str) -> String {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
     .any(|l| {
         l["session_id"] == session
+            && l["agent_id"].is_null()
             && l["command"] == probe.as_str()
             && l["hook"] == program.as_str()
             && l["at_ms"].as_i64().is_some_and(|at| at >= since)
@@ -596,7 +597,8 @@ pub fn gate(event: &str) {
     let bytes = hook::read_bytes();
     let input: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let session = input["session_id"].as_str().filter(|s| !s.is_empty());
-    // Child agents start off: they share their parent's session id but not its switch.
+    // A child agent shares its parent's session id. It inherits a switched-on parent's guard,
+    // but no context or authority, can't switch, and doesn't count toward the parent's proof.
     let child = input["agent_id"].as_str().is_some_and(|a| !a.is_empty());
     match event {
         "pre-command" => {
@@ -604,7 +606,7 @@ pub fn gate(event: &str) {
             if let Ok(Some(answer)) = answer {
                 return hook::say(&answer);
             }
-            let (Some(session), false, Some(dir)) = (session, child, state_dir()) else {
+            let (Some(session), Some(dir)) = (session, state_dir()) else {
                 return;
             };
             match read_state(&dir, session) {
@@ -664,7 +666,7 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
     }
     if child {
         return Some(hook::deny(
-            "A subagent can't switch Astrolabe on or off: it starts off until its own launch binds an effort, so the parent session's switch stays the parent's.",
+            "A subagent can't switch Astrolabe on or off: the switch is the parent session's. A subagent of a switched-on session gets the guard only.",
         ));
     }
     let session = session?;
