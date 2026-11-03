@@ -96,6 +96,8 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
         }
         ("repo", ["add", name, checkout]) => {
             registry.add(name, Path::new(checkout))?;
+            astrolabe::activate::add_repo(name, &registry.checkout(name)?)
+                .map_err(astrolabe::Error::Setup)?;
             vec![format!("{name} added")]
         }
         _ => usage(),

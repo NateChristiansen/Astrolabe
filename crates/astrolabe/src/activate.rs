@@ -6,8 +6,8 @@
 //! the hook left. A model can type the command but not a ticket, so it can't name another
 //! session. An accident guard like the rest: an agent can still delete its own state file.
 use crate::hook::{self, comparable};
-use crate::registry::Registry;
-use serde_json::{Value, json};
+use crate::registry::AGENT;
+use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,10 +54,52 @@ const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this co
 const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
 /// The machine switch's file in the state folder. Present means on.
 const SWITCH: &str = "on";
+/// The notes checkout and repos by name, in the state folder. Not the AppData database: a
+/// packaged Windows app reads AppData from its own private copy, so it would miss a repo added
+/// from a terminal.
+const REPOS: &str = "repos.json";
 
 /// Whether Astrolabe is on for this machine. Off, the hooks do nothing.
 pub fn machine_on(dir: &Path) -> bool {
     dir.join(SWITCH).is_file()
+}
+
+struct Repos(Map<String, Value>);
+
+impl Repos {
+    /// None written yet is no repos.
+    fn read(dir: &Path) -> Result<Self, String> {
+        let path = dir.join(REPOS);
+        match std::fs::read(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self(Map::new())),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(Value::Object(map)) => Ok(Self(map)),
+                _ => Err(format!(
+                    "{} isn't a repo list this program wrote",
+                    path.display()
+                )),
+            },
+        }
+    }
+
+    fn checkout(&self, name: &str) -> Option<PathBuf> {
+        self.0.get(name)?.as_str().map(PathBuf::from)
+    }
+}
+
+/// `astrolabe repo add` for the plugin, beside the database entry the notes repo's own layer reads.
+pub fn add_repo(name: &str, checkout: &Path) -> Result<(), String> {
+    let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
+    let mut repos = Repos::read(&dir)?;
+    let checkout = checkout.display().to_string();
+    repos.0.insert(name.to_owned(), checkout.into());
+    write_json(&dir.join(REPOS), &Value::Object(repos.0))
+}
+
+/// Codex on Windows runs its shell commands in PowerShell, as Claude's PowerShell tool does.
+fn in_powershell(provider: &str, tool: &Value) -> bool {
+    tool == "PowerShell" || (cfg!(windows) && provider == "codex")
 }
 
 /// `astrolabe on | off | status`, for the machine. The owner's, from a terminal: the hook refuses
@@ -267,18 +309,18 @@ fn common_dir(dir: &Path) -> Option<String> {
 }
 
 /// The effort's repo this session's folder is in, as a checkout or a worktree of it.
-fn session_repo(registry: &Registry, repos: &[String], cwd: &Path) -> Result<String, String> {
+fn session_repo(registry: &Repos, repos: &[String], cwd: &Path) -> Result<String, String> {
     let here = common_dir(cwd).ok_or_else(|| {
         format!("this session's folder {} isn't in a git repo, so it can't be matched to the effort's repo", cwd.display())
     })?;
     let mut unknown = Vec::new();
     for name in repos {
         match registry.checkout(name) {
-            Ok(checkout) if common_dir(&checkout).as_ref() == Some(&here) => {
+            Some(checkout) if common_dir(&checkout).as_ref() == Some(&here) => {
                 return Ok(name.clone());
             }
-            Ok(_) => {}
-            Err(_) => unknown.push(format!("`astrolabe repo add {name} <checkout>`")),
+            Some(_) => {}
+            None => unknown.push(format!("`astrolabe repo add {name} <checkout>`")),
         }
     }
     let mut why = format!(
@@ -361,9 +403,14 @@ fn marker(token: &str) -> PathBuf {
     std::env::temp_dir().join(format!("astrolabe-probe-{token}"))
 }
 
-fn probe(token: &str) -> String {
-    let marker = marker(token);
-    format!("touch '{}'; pkill -0 {PROBE_NAME}", marker.display())
+/// In the session's shell, so that a probe the hook missed would leave its marker.
+fn probe(token: &str, powershell: bool) -> String {
+    let marker = marker(token).display().to_string();
+    if powershell {
+        format!("New-Item -ItemType File -Force '{marker}'; Stop-Process -Name {PROBE_NAME}")
+    } else {
+        format!("touch '{marker}'; pkill -0 {PROBE_NAME}")
+    }
 }
 
 fn state_path(dir: &Path, session: &str) -> PathBuf {
@@ -439,15 +486,13 @@ fn show(dir: &Path, ticket: &str) -> Result<(String, bool), String> {
     Ok((text.to_owned(), body["ok"] == true))
 }
 
-fn notes_and_registry() -> Result<(Registry, PathBuf), String> {
-    let data = hook::data_dir().ok_or("no Astrolabe data folder can be named")?;
-    let registry = Registry::open(&data.join("astrolabe.db"))
-        .map_err(|e| format!("this machine's Astrolabe config: {e}"))?;
-    let notes = (registry.agent_repo()).map_err(|e| format!("this machine's notes path: {e}"))?;
-    let notes = notes.ok_or(
+fn notes_and_repos() -> Result<(Repos, PathBuf), String> {
+    let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
+    let repos = Repos::read(&dir).map_err(|e| format!("this machine's Astrolabe repos: {e}"))?;
+    let notes = repos.checkout(AGENT).ok_or(
         "no notes checkout is set on this machine; run `astrolabe repo add agent <notes checkout>`",
     )?;
-    Ok((registry, notes))
+    Ok((repos, notes))
 }
 
 /// Everything checked, nothing written: the caller commits `state` once what it says is safe.
@@ -459,8 +504,9 @@ pub fn switch_on(
     provider: &str,
     cwd: &Path,
     previous: Option<&Value>,
+    powershell: bool,
 ) -> Result<Activation, String> {
-    let (registry, notes) = notes_and_registry()?;
+    let (registry, notes) = notes_and_repos()?;
     let effort = read_effort(&notes, effort)?;
     let repo = session_repo(&registry, &effort.repos, cwd)?;
     let read = |file: String| {
@@ -522,7 +568,7 @@ pub fn switch_on(
         inv_m = meaning(&INVOLVEMENT, &effort.involvement),
         auth = effort.authority,
         auth_m = meaning(&AUTHORITY, &effort.authority),
-        probe = probe(&token),
+        probe = probe(&token, powershell),
     );
     Ok(Activation { state, head, parts })
 }
@@ -538,12 +584,14 @@ fn session_token(session: &str) -> String {
 
 /// Whether this session's own hook (not a child's), of this build and plugin, denied the
 /// probe since `since_ms`, and the probe didn't run.
-fn proof(session: &str, token: &str, since_ms: i64) -> String {
+fn proof(session: &str, token: &str, since_ms: i64, powershell: bool) -> String {
     if marker(token).exists() {
         return "Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner.".to_owned();
     }
-    let probe = probe(token);
-    let log = hook::data_dir().map(|data| data.join(hook::DENIAL_LOG));
+    let probe = probe(token, powershell);
+    // Either shell's form: a Claude session can run it through Bash or PowerShell.
+    let forms = [false, true].map(|powershell| self::probe(token, powershell));
+    let log = state_dir().map(|dir| dir.join(hook::DENIAL_LOG));
     let log = log
         .and_then(|log| std::fs::read_to_string(log).ok())
         .unwrap_or_default();
@@ -554,7 +602,7 @@ fn proof(session: &str, token: &str, since_ms: i64) -> String {
     .any(|l| {
         l["session_id"] == session
             && l["agent_id"].is_null()
-            && l["command"] == probe.as_str()
+            && forms.iter().any(|form| l["command"] == form.as_str())
             && l["hook"] == program.as_str()
             && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
     });
@@ -569,7 +617,7 @@ fn proof(session: &str, token: &str, since_ms: i64) -> String {
     }
 }
 
-pub fn status(dir: &Path, session: &str) -> String {
+pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
     // Proof counts only from the latest switch-on: off and on again starts it over.
     let on = std::fs::read(dir.join(SWITCH)).ok();
     let on = on.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
@@ -578,7 +626,7 @@ pub fn status(dir: &Path, session: &str) -> String {
         Ok(None) => {
             return format!(
                 "No effort is set in this session. {}",
-                proof(session, &session_token(session), since)
+                proof(session, &session_token(session), since, powershell)
             );
         }
         Err(why) => {
@@ -605,7 +653,8 @@ pub fn status(dir: &Path, session: &str) -> String {
         proof(
             session,
             token,
-            state["at_ms"].as_i64().unwrap_or(i64::MAX).max(since)
+            state["at_ms"].as_i64().unwrap_or(i64::MAX).max(since),
+            powershell
         )
     )
 }
@@ -649,10 +698,16 @@ fn act(
     session: &str,
     provider: &str,
     cwd: &Path,
+    powershell: bool,
 ) -> (String, bool, Change, String) {
     let previous = read_state(dir, session);
     match args {
-        ["--status"] => (status(dir, session), true, Change::Keep, String::new()),
+        ["--status"] => (
+            status(dir, session, powershell),
+            true,
+            Change::Keep,
+            String::new(),
+        ),
         ["--off"] => match previous {
             Ok(None) => ("This session has no effort set.".to_owned(), true, Change::Keep, String::new()),
             _ => (
@@ -664,7 +719,7 @@ fn act(
         },
         ["--effort", effort] => {
             let previous = previous.ok().flatten();
-            match switch_on(dir, effort, session, provider, cwd, previous.as_ref()) {
+            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), powershell) {
                 Ok(activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
                     (activation.text(), true, Change::Write(activation.state), failed)
@@ -709,17 +764,20 @@ pub fn gate(event: &str) {
             if let Ok(Some(answer)) = answer {
                 return hook::say(&answer);
             }
-            let (Some(session), Some(dir)) = (session, state_dir()) else {
-                return hook::guard(&bytes);
+            // The plugin's denials go in its state folder, which every app reads the same.
+            let dir = state_dir();
+            let guard = || hook::guard(&bytes, dir.as_deref());
+            let (Some(session), Some(dir)) = (session, dir.as_deref()) else {
+                return guard();
             };
-            match read_state(&dir, session) {
-                Ok(None) => hook::guard(&bytes),
-                Ok(Some(state)) => match block_reason(&dir, &state, session) {
+            match read_state(dir, session) {
+                Ok(None) => guard(),
+                Ok(Some(state)) => match block_reason(dir, &state, session) {
                     Some(why) => hook::say(&hook::deny(&blocked(
                         state["effort"].as_str().unwrap_or_default(),
                         &why,
                     ))),
-                    None => hook::guard(&bytes),
+                    None => guard(),
                 },
                 Err(why) => hook::say(&hook::deny(&format!(
                     "Astrolabe is on for this session but can't read its state ({why}), so it can't judge this command. Repair: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
@@ -747,7 +805,7 @@ fn in_notes(input: &Value) -> bool {
     let Some(here) = cwd.as_deref().and_then(common_dir) else {
         return false;
     };
-    let notes = notes_and_registry().ok().map(|(_, notes)| notes);
+    let notes = notes_and_repos().ok().map(|(_, notes)| notes);
     notes
         .and_then(|notes| common_dir(&notes))
         .is_some_and(|notes| notes == here)
@@ -798,10 +856,18 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
         .as_str()
         .map(PathBuf::from)
         .unwrap_or_else(|| ".".into());
+    let powershell = in_powershell(provider(input), &input["tool_name"]);
     let left = state_dir()
         .ok_or_else(|| "no home folder".to_owned())
         .and_then(|dir| {
-            let (text, ok, change, failed) = act(&dir, &words[2..], session, provider(input), &cwd);
+            let (text, ok, change, failed) = act(
+                &dir,
+                &words[2..],
+                session,
+                provider(input),
+                &cwd,
+                powershell,
+            );
             // The result first: a switch whose result can't be shown isn't made.
             let ticket = leave(&dir, &text, ok)?;
             if let Err(why) = commit(&dir, session, &change) {
@@ -818,11 +884,8 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             let exe = std::env::current_exe().map(|exe| exe.display().to_string());
             let exe = exe.ok().filter(|exe| !exe.contains('\''));
             let exe = exe.map_or("astrolabe".to_owned(), |exe| format!("'{exe}'"));
-            let call = if input["tool_name"] == "PowerShell" {
-                "& "
-            } else {
-                ""
-            };
+            // PowerShell reads a quoted path followed by arguments as an error, so call it.
+            let call = if powershell { "& " } else { "" };
             let mut updated = tool_input.clone();
             updated[key] = format!("{call}{exe} activate --show {ticket}").into();
             json!({ "hookSpecificOutput": {
@@ -860,8 +923,8 @@ fn block_reason(dir: &Path, state: &Value, session: &str) -> Option<String> {
 
 /// A fresh session while the machine is on: the effort if its repo has exactly one active,
 /// else the owner and voice notes and the guard, and why there's no effort.
-fn fresh(session: &str, cwd: &Path) -> String {
-    let (registry, notes) = match notes_and_registry() {
+fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
+    let (registry, notes) = match notes_and_repos() {
         Ok(found) => found,
         Err(why) => {
             return format!(
@@ -897,7 +960,10 @@ fn fresh(session: &str, cwd: &Path) -> String {
     };
     let mut head = format!(
         "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\nProve the guard for this session: run exactly this, alone: {}\nThe hook must deny it. Then run `astrolabe activate --status`. Until it says proven, claim no protection.",
-        probe(&session_token(session))
+        probe(
+            &session_token(session),
+            in_powershell(provider, &Value::Null)
+        )
     );
     let parts = match owner_voice(&notes) {
         Ok(part) => vec![part],
@@ -920,7 +986,7 @@ type Offer = (String, String);
 /// The repo names this folder is registered under, and the active efforts naming one of them.
 fn active_efforts(
     notes: &Path,
-    registry: &Registry,
+    registry: &Repos,
     cwd: &Path,
 ) -> Result<(Vec<String>, Vec<Offer>), String> {
     let here = common_dir(cwd).ok_or_else(|| {
@@ -929,19 +995,16 @@ fn active_efforts(
             cwd.display()
         )
     })?;
-    let names = registry
-        .repos()
-        .map_err(|e| format!("this machine's repos: {e}"))?;
-    let repos: Vec<String> = (names.into_iter())
-        .filter(|name| name != crate::registry::AGENT)
+    let repos: Vec<String> = (registry.0.keys())
+        .filter(|name| *name != AGENT)
         .filter(|name| {
             registry
                 .checkout(name)
-                .ok()
                 .and_then(|c| common_dir(&c))
                 .as_ref()
                 == Some(&here)
         })
+        .cloned()
         .collect();
     if repos.is_empty() {
         return Err("this session's repo isn't registered on this machine (`astrolabe repo add <name> <checkout>`)".to_owned());
@@ -1014,8 +1077,18 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
         Ok(Some(state)) => {
             let effort = state["effort"].as_str().unwrap_or_default().to_owned();
             let provider = state["provider"].as_str().unwrap_or("claude").to_owned();
+            // No tool at session start: the provider's usual shell.
+            let powershell = in_powershell(&provider, &Value::Null);
             Some(
-                match switch_on(&dir, &effort, session, &provider, &cwd, Some(&state)) {
+                match switch_on(
+                    &dir,
+                    &effort,
+                    session,
+                    &provider,
+                    &cwd,
+                    Some(&state),
+                    powershell,
+                ) {
                     Ok(activation) => {
                         match commit(&dir, session, &Change::Write(activation.state.clone())) {
                             Ok(()) => activation.fitted(),
@@ -1045,10 +1118,19 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
         }
         Ok(None) => {
             let Some(effort) = launched else {
-                return Some(fresh(session, &cwd));
+                return Some(fresh(session, &cwd, provider(input)));
             };
+            let powershell = in_powershell(provider(input), &Value::Null);
             Some(
-                match switch_on(&dir, &effort, session, provider(input), &cwd, None) {
+                match switch_on(
+                    &dir,
+                    &effort,
+                    session,
+                    provider(input),
+                    &cwd,
+                    None,
+                    powershell,
+                ) {
                     Ok(activation) => {
                         match write_json(&state_path(&dir, session), &activation.state) {
                             Ok(()) => activation.fitted(),

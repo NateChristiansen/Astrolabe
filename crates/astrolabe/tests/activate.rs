@@ -4,7 +4,6 @@ mod common;
 
 use astrolabe::activate::{EFFORT_VAR, STATE_VAR};
 use astrolabe::layer::DATA_DIR_VAR;
-use astrolabe::registry::Registry;
 use common::TempDir;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -33,9 +32,11 @@ fn git(cwd: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-/// The arguments of a command the hook rewrote, which calls this program by its full path.
+/// The arguments of a command the hook rewrote, which calls this program by its full path,
+/// with PowerShell's call operator in front where the command runs in PowerShell.
 fn rewritten(command: &str) -> Vec<&str> {
     let exe = format!("'{}' ", env!("CARGO_BIN_EXE_astrolabe"));
+    let command = command.strip_prefix("& ").unwrap_or(command);
     let rest = command.strip_prefix(&exe);
     let rest = rest.unwrap_or_else(|| panic!("only the switch reaches here: {command}"));
     rest.split_whitespace().collect()
@@ -82,16 +83,17 @@ impl Fixture {
             git(repo, &["init", "-q"]);
             git(repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
         }
-        let registry = Registry::open(&dir.0.join("data/astrolabe.db")).unwrap();
-        registry.add("agent", &notes).unwrap();
-        registry.add("demo", &demo).unwrap();
-        registry.add("other", &other).unwrap();
         write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
         write(
             &dir.0.join("plugin/.claude-plugin/plugin.json"),
             "manifest v1",
         );
         let f = Self { dir, demo, other };
+        for (name, checkout) in [("agent", &notes), ("demo", &f.demo), ("other", &f.other)] {
+            let checkout = checkout.to_str().unwrap();
+            let (out, ok) = f.run(&notes, &["repo", "add", name, checkout], "", &[]);
+            assert!(ok, "{out}");
+        }
         assert!(f.machine("on").contains("on for this machine"));
         f
     }
@@ -201,7 +203,7 @@ impl Fixture {
     fn probe(&self, text: &str) -> String {
         let line = text
             .lines()
-            .find(|l| l.contains("pkill -0 astrolabe-guard-probe"))
+            .find(|l| l.contains("astrolabe-guard-probe") && l.contains("alone: "))
             .unwrap();
         line.split_once("alone: ").unwrap().1.to_owned()
     }
@@ -629,7 +631,7 @@ fn a_subagent_inherits_the_guard_only_and_cant_switch() {
         "a child switched nothing"
     );
     // The denial keeps the child's identity, and doesn't prove the parent's guard.
-    let log = std::fs::read_to_string(f.dir.0.join("data/guard-denials.log")).unwrap();
+    let log = std::fs::read_to_string(f.state().join("guard-denials.log")).unwrap();
     assert!(log.lines().any(|l| l.contains("\"agent_id\":\"a1\"")));
     assert!(f.hook(child("s1", &f.probe(&text))).is_some());
     assert!(
@@ -695,6 +697,94 @@ fn codex_input_is_told_apart_and_bound_the_same_way() {
     assert!(ok && text.contains("codex session t1"), "{text}");
 }
 
+/// Catches: a rewrite or probe that PowerShell can't parse, which Codex on Windows runs.
+#[test]
+fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
+    let f = Fixture::new();
+    let rewrite = |input: Value| {
+        let answer = f.hook(input).unwrap();
+        let command = &answer["hookSpecificOutput"]["updatedInput"]["command"];
+        command.as_str().unwrap().to_owned()
+    };
+    let claude_ps = json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    let command = rewrite(claude_ps);
+    assert!(command.starts_with("& '"), "{command}");
+    let (text, _) = f.run(&f.demo, &rewritten(&command), "", &[]);
+    assert!(
+        f.probe(&text).starts_with("New-Item"),
+        "the tool's own shell"
+    );
+    let codex = json!({"session_id": "c1", "turn_id": "u1", "cwd": f.demo, "tool_name": "shell_command", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    let command = rewrite(codex);
+    assert_eq!(command.starts_with("& '"), cfg!(windows), "{command}");
+    let (text, ok) = f.run(&f.demo, &rewritten(&command), "", &[]);
+    assert!(ok, "{text}");
+    let probe = f.probe(&text);
+    let powershell = probe.starts_with("New-Item -ItemType File -Force '")
+        && probe.ends_with("'; Stop-Process -Name astrolabe-guard-probe");
+    assert_eq!(powershell, cfg!(windows), "{probe}");
+    // Denied in either form, and the form not offered proves the guard on its own.
+    let codex_runs = |command: &str| json!({"session_id": "c1", "turn_id": "u1", "cwd": f.demo, "tool_name": "shell_command", "tool_input": {"command": command}});
+    let other = if powershell {
+        probe
+            .replace("New-Item -ItemType File -Force", "touch")
+            .replace("Stop-Process -Name", "pkill -0")
+    } else {
+        probe
+            .replace("touch", "New-Item -ItemType File -Force")
+            .replace("pkill -0", "Stop-Process -Name")
+    };
+    let denied = |form: &str| {
+        let answer = f.hook(codex_runs(form)).unwrap();
+        answer["hookSpecificOutput"]["permissionDecision"] == "deny"
+    };
+    let status = || {
+        let status = rewrite(codex_runs("astrolabe activate --status"));
+        f.run(&f.demo, &rewritten(&status), "", &[]).0
+    };
+    assert!(status().contains("not proven yet"));
+    assert!(denied(&other), "{other}");
+    assert!(status().contains("Guard proven"), "{}", status());
+    assert!(denied(&probe), "{probe}");
+}
+
+/// Catches: the plugin reading AppData, which a packaged Windows app sees as its own private
+/// copy, so a repo added from a terminal never reached it.
+#[test]
+fn the_plugin_keeps_its_repos_and_denials_in_its_state_folder() {
+    let f = Fixture::new();
+    let repos = std::fs::read_to_string(f.state().join("repos.json")).unwrap();
+    assert!(
+        repos.contains("\"demo\"") && repos.contains("\"agent\""),
+        "{repos}"
+    );
+    let elsewhere = f.dir.0.join("empty-data");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let away = [(DATA_DIR_VAR, elsewhere.to_str().unwrap())];
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "startup"});
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &input.to_string(),
+        &away,
+    );
+    assert!(
+        out.contains("OWNER-TEXT") && out.contains("one active effort is 70"),
+        "{out}"
+    );
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &input.to_string(),
+        &away,
+    );
+    assert!(out.contains("deny"), "{out}");
+    assert!(f.state().join("guard-denials.log").is_file());
+    assert!(!elsewhere.join("guard-denials.log").exists());
+    assert!(!f.dir.0.join("data/guard-denials.log").exists());
+}
+
 #[test]
 fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
@@ -707,10 +797,10 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         ("PreToolUse", "pre-command"),
     ] {
         let command = &hooks["hooks"][event][0]["hooks"][0]["command"];
-        let wanted = format!(
-            "\"${{ASTROLABE_TRIAL_BIN:-$HOME/.local/bin/astrolabe-trial}}\" hook {slug} --if-active"
-        );
-        assert_eq!(command, &wanted, "the trial build, by path");
+        // Bare: Codex on Windows runs hooks in PowerShell, Claude in Git Bash or sh, and a
+        // name on PATH is the one form all of them read the same.
+        let wanted = format!("astrolabe-trial hook {slug} --if-active");
+        assert_eq!(command, &wanted, "the trial build, by name");
         assert!(
             hooks["hooks"][event][0].get("matcher").is_none(),
             "every tool, as the guard decides"

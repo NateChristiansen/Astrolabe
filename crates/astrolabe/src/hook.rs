@@ -178,17 +178,21 @@ const LOGGED_COMMAND: usize = 2000;
 /// hook's command line on Claude. No network, core or database.
 pub fn pre_command() {
     std::panic::set_hook(Box::new(|_| {}));
-    guard(&read_bytes());
+    guard(&read_bytes(), data_dir().as_deref());
 }
 
-/// The guard's answer to one hook input, as `pre_command` gives it.
-pub(crate) fn guard(bytes: &[u8]) {
+/// The guard's answer to one hook input, as `pre_command` gives it. A denial is recorded in
+/// `data`: the plugin's state folder for the plugin, else the app-data folder. The core reads
+/// only the app-data folder's reports, so the plugin's are for its own proof.
+pub(crate) fn guard(bytes: &[u8], data: Option<&Path>) {
     let reason = std::panic::catch_unwind(|| judge(bytes)).unwrap_or_else(|_| {
         crate::guard::names_denied_program(&String::from_utf8_lossy(bytes))
             .then(|| "a command the guard could not read".to_owned())
     });
     let Some(reason) = reason else { return };
-    let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason));
+    if let Some(data) = data {
+        let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason, data));
+    }
     say(&deny(&format!(
         "Astrolabe denied {reason}. Ask the owner if this is really needed."
     )));
@@ -236,7 +240,7 @@ fn worktree_root(cwd: Option<&Path>) -> Option<String> {
     Some(comparable(found))
 }
 
-fn record_denial(bytes: &[u8], reason: &str) {
+fn record_denial(bytes: &[u8], reason: &str, data: &Path) {
     let input: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
     let session_id = input["session_id"].as_str();
     if session_id == Some(SELF_TEST_SESSION) {
@@ -246,8 +250,7 @@ fn record_denial(bytes: &[u8], reason: &str) {
     let Some(cwd) = cwd.or_else(|| std::env::current_dir().ok()) else {
         return;
     };
-    let Some(dir) = reports_dir() else { return };
-    let _ = write_report(&dir, DENIAL_EVENT, session_id, &cwd);
+    let _ = write_report(&reports_dir_in(data), DENIAL_EVENT, session_id, &cwd);
     let tool_input = &input["tool_input"];
     let command = tool_input["command"].as_str().unwrap_or_default();
     let line = json!({
@@ -259,7 +262,6 @@ fn record_denial(bytes: &[u8], reason: &str) {
         "command": command.chars().take(LOGGED_COMMAND).collect::<String>(),
         "hook": crate::activate::hook_id(),
     });
-    let Some(data) = dir.parent() else { return };
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

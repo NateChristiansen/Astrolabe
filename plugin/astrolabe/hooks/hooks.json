@@ -1,10 +1,10 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "\"${ASTROLABE_TRIAL_BIN:-$HOME/.local/bin/astrolabe-trial}\" hook session-start --if-active" } ] }
+      { "hooks": [ { "type": "command", "command": "astrolabe-trial hook session-start --if-active" } ] }
     ],
     "PreToolUse": [
-      { "hooks": [ { "type": "command", "command": "\"${ASTROLABE_TRIAL_BIN:-$HOME/.local/bin/astrolabe-trial}\" hook pre-command --if-active" } ] }
+      { "hooks": [ { "type": "command", "command": "astrolabe-trial hook pre-command --if-active" } ] }
     ]
   }
 }

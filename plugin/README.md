@@ -10,9 +10,9 @@ The skill runs `astrolabe activate --effort <n>` as a plain shell command. The p
 
 ## Setup, once per machine
 
-1. The program at `~/.local/bin/astrolabe-trial`, which the hooks call by that path for the trial so the build in use elsewhere stays as it is. `ASTROLABE_TRIAL_BIN` overrides it, for tests.
-2. The notes checkout: `astrolabe repo add agent <notes checkout>`.
-3. Each target repo, under the name its note has in `knowledge/repos/<name>.md`: `astrolabe repo add <name> <checkout>`.
+1. The program as `astrolabe-trial` in a folder on PATH (`~/.local/bin`), so the build in use elsewhere stays as it is. The hooks call it by that bare name, because Codex on Windows runs hooks in PowerShell and Claude in Git Bash or sh, and a name on PATH is the one form all of them read. A trial run can put a scratch build first on PATH instead. An app started from the Mac Dock may not have `~/.local/bin` on its PATH; until that's checked per app, `astrolabe activate --status` is what says whether the hooks ran.
+2. The notes checkout: `astrolabe-trial repo add agent <notes checkout>`.
+3. Each target repo, under the name its note has in `knowledge/repos/<name>.md`: `astrolabe-trial repo add <name> <checkout>`. The plugin reads these from `repos.json` in its state folder, `~/.local/state/astrolabe-layer/` (`%USERPROFILE%\.local\state\astrolabe-layer\` on Windows), not from the app-data database, which a packaged Windows app reads from its own private copy. Its denial log is there too. `repo add` still writes the database for the notes repo's own layer. An install from before `repos.json` has to run `repo add` again for `agent` and each target repo; until then sessions are told no notes checkout is set, and the plugin doesn't know to stay out of the notes checkout.
 4. `astrolabe-trial on`.
 5. Each effort note has, in its properties (YAML frontmatter, as Obsidian shows them): `status: active` to be suggested, `repo: <name>` (or a list), `involvement: <autonomous | check in at plan | each step>` and `authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
 
@@ -27,4 +27,4 @@ These write each app's home config.
 - Claude: `claude plugin marketplace add <this folder>`, then `claude plugin install astrolabe@astrolabe`.
 - Codex: `codex plugin marketplace add <this folder>`, then `codex plugin add astrolabe@astrolabe`, then review and trust both hooks with `/hooks`. Codex marks the hooks modified after any plugin version change, and they don't run until trusted again.
 
-Remove: `claude plugin uninstall astrolabe@astrolabe` and `claude plugin marketplace remove astrolabe`; `codex plugin remove astrolabe@astrolabe` and `codex plugin marketplace remove astrolabe`. That leaves the program, its machine config and any activation state in `~/.local/state/astrolabe-layer/`.
+Remove: `claude plugin uninstall astrolabe@astrolabe` and `claude plugin marketplace remove astrolabe`; `codex plugin remove astrolabe@astrolabe` and `codex plugin marketplace remove astrolabe`. That leaves the program, its machine config, and the repo list, denial log and any activation state in `~/.local/state/astrolabe-layer/`.
