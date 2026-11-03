@@ -96,8 +96,12 @@ fn setup(verb: &str, rest: &[&str]) -> Result<()> {
         }
         ("repo", ["add", name, checkout]) => {
             registry.add(name, Path::new(checkout))?;
-            astrolabe::activate::add_repo(name, &registry.checkout(name)?)
-                .map_err(astrolabe::Error::Setup)?;
+            // The plugin reads only its own record, so the database alone isn't a registration.
+            astrolabe::activate::add_repo(name, &registry.checkout(name)?).map_err(|why| {
+                astrolabe::Error::Setup(format!(
+                    "{name} is in the database the notes layer reads, but the plugin's record couldn't be written ({why}), so the plugin doesn't have it. Fix that and run this again; rerunning is safe"
+                ))
+            })?;
             vec![format!("{name} added")]
         }
         _ => usage(),

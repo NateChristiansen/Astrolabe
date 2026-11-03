@@ -57,7 +57,9 @@ const SWITCH: &str = "on";
 /// The notes checkout and repos by name, in the state folder. Not the AppData database: a
 /// packaged Windows app reads AppData from its own private copy, so it would miss a repo added
 /// from a terminal.
-const REPOS: &str = "repos.json";
+/// One file per repo, `repos/<name>.json`: each add replaces only its own record, so two at
+/// once can't lose each other's.
+const REPOS: &str = "repos";
 
 /// Whether Astrolabe is on for this machine. Off, the hooks do nothing.
 pub fn machine_on(dir: &Path) -> bool {
@@ -67,20 +69,33 @@ pub fn machine_on(dir: &Path) -> bool {
 struct Repos(Map<String, Value>);
 
 impl Repos {
-    /// None written yet is no repos.
+    /// None written yet is no repos. A record that can't be read is an error, never skipped.
     fn read(dir: &Path) -> Result<Self, String> {
-        let path = dir.join(REPOS);
-        match std::fs::read(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self(Map::new())),
-            Err(e) => Err(format!("{}: {e}", path.display())),
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(Value::Object(map)) => Ok(Self(map)),
-                _ => Err(format!(
-                    "{} isn't a repo list this program wrote",
-                    path.display()
-                )),
-            },
+        let folder = dir.join(REPOS);
+        let entries = match std::fs::read_dir(&folder) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self(Map::new())),
+            Err(e) => return Err(format!("{}: {e}", folder.display())),
+            Ok(entries) => entries,
+        };
+        let mut map = Map::new();
+        for entry in entries {
+            let path = entry
+                .map_err(|e| format!("{}: {e}", folder.display()))?
+                .path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let bad = || format!("{} isn't a repo record this program wrote", path.display());
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let record: Value = serde_json::from_slice(&bytes).map_err(|_| bad())?;
+            let (Some(name), Some(checkout)) =
+                (record["name"].as_str(), record["checkout"].as_str())
+            else {
+                return Err(bad());
+            };
+            map.insert(name.to_owned(), checkout.into());
         }
+        Ok(Self(map))
     }
 
     fn checkout(&self, name: &str) -> Option<PathBuf> {
@@ -88,13 +103,29 @@ impl Repos {
     }
 }
 
-/// `astrolabe repo add` for the plugin, beside the database entry the notes repo's own layer reads.
+/// `astrolabe repo add` for the plugin, beside the database entry the notes repo's own layer
+/// reads. This record is the plugin's authority.
 pub fn add_repo(name: &str, checkout: &Path) -> Result<(), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
-    let mut repos = Repos::read(&dir)?;
-    let checkout = checkout.display().to_string();
-    repos.0.insert(name.to_owned(), checkout.into());
-    write_json(&dir.join(REPOS), &Value::Object(repos.0))
+    let named = !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if name.is_empty() || !named {
+        return Err(format!(
+            "repo name {name:?} must be letters, digits, '-', '_' or '.'"
+        ));
+    }
+    let record = json!({"name": name, "checkout": checkout.display().to_string()});
+    write_json(&dir.join(REPOS).join(format!("{name}.json")), &record)
+}
+
+/// The notes checkout as the plugin's own records name it, checked to be a git checkout.
+fn notes_checked() -> Result<PathBuf, String> {
+    let (_, notes) = notes_and_repos()?;
+    common_dir(&notes).map(|_| notes.clone()).ok_or_else(|| {
+        format!("the notes checkout on record, {}, isn't a git checkout here; run `astrolabe repo add agent <notes checkout>`", notes.display())
+    })
 }
 
 /// Codex on Windows runs its shell commands in PowerShell, as Claude's PowerShell tool does.
@@ -113,7 +144,10 @@ pub fn machine(verb: &str) -> (String, bool) {
     };
     let path = dir.join(SWITCH);
     let done = match verb {
-        "on" => write_json(&path, &json!({"at_ms": now_ms()})),
+        // Without the notes checkout on record the plugin can't stay out of it.
+        "on" => notes_checked()
+            .map_err(|why| format!("{why}. It's needed so the plugin stays out of the notes checkout, where that repo's own layer runs"))
+            .and_then(|_| write_json(&path, &json!({"at_ms": now_ms()}))),
         "off" => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 Err(format!("{}: {e}", path.display()))
@@ -403,13 +437,47 @@ fn marker(token: &str) -> PathBuf {
     std::env::temp_dir().join(format!("astrolabe-probe-{token}"))
 }
 
+/// Made by an allowed command in the same shell, so a missing probe marker means the deny
+/// held, not that the shell couldn't write there. One per shell.
+fn control_marker(token: &str, powershell: bool) -> PathBuf {
+    let shell = if powershell { "powershell" } else { "posix" };
+    std::env::temp_dir().join(format!("astrolabe-probe-{token}-control-{shell}"))
+}
+
+fn make_file(path: &Path, powershell: bool) -> String {
+    let path = path.display();
+    if powershell {
+        format!("New-Item -ItemType File -Force '{path}'")
+    } else {
+        format!("touch '{path}'")
+    }
+}
+
+/// The shell a hook input's command runs in, as the denial log records it.
+pub fn shell_of(input: &Value) -> &'static str {
+    if in_powershell(provider(input), &input["tool_name"]) {
+        "powershell"
+    } else {
+        "posix"
+    }
+}
+
+/// What the session runs to prove its guard, in its own shell.
+fn proof_steps(token: &str, powershell: bool) -> String {
+    format!(
+        "Prove the guard for this session, each command alone and exactly as written. First an allowed control, which must run: {}\nThen the probe, which the hook must deny: {}\nThen run `astrolabe activate --status`.",
+        make_file(&control_marker(token, powershell), powershell),
+        probe(token, powershell)
+    )
+}
+
 /// In the session's shell, so that a probe the hook missed would leave its marker.
 fn probe(token: &str, powershell: bool) -> String {
-    let marker = marker(token).display().to_string();
+    let make = make_file(&marker(token), powershell);
     if powershell {
-        format!("New-Item -ItemType File -Force '{marker}'; Stop-Process -Name {PROBE_NAME}")
+        format!("{make}; Stop-Process -Name {PROBE_NAME}")
     } else {
-        format!("touch '{marker}'; pkill -0 {PROBE_NAME}")
+        format!("{make}; pkill -0 {PROBE_NAME}")
     }
 }
 
@@ -559,8 +627,8 @@ pub fn switch_on(
         - A narrower current instruction from the owner wins, because it's the newest word.\n\
         - In this build these settings are context, not enforced, apart from the guard. Switching on wrote only Astrolabe's own state file; that isn't leave to edit project files.\n\n\
         {GUARD_SCOPE}\n\n\
-        Prove the guard for this session: run exactly this, alone: {probe}\n\
-        The hook must deny it. Then run `astrolabe activate --status`, and report the effort and what it says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.",
+        {proof}\n\
+        Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.",
         n = effort.number,
         title = effort.title,
         file = effort.file,
@@ -568,7 +636,7 @@ pub fn switch_on(
         inv_m = meaning(&INVOLVEMENT, &effort.involvement),
         auth = effort.authority,
         auth_m = meaning(&AUTHORITY, &effort.authority),
-        probe = probe(&token, powershell),
+        proof = proof_steps(&token, powershell),
     );
     Ok(Activation { state, head, parts })
 }
@@ -588,33 +656,52 @@ fn proof(session: &str, token: &str, since_ms: i64, powershell: bool) -> String 
     if marker(token).exists() {
         return "Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner.".to_owned();
     }
-    let probe = probe(token, powershell);
-    // Either shell's form: a Claude session can run it through Bash or PowerShell.
-    let forms = [false, true].map(|powershell| self::probe(token, powershell));
     let log = state_dir().map(|dir| dir.join(hook::DENIAL_LOG));
     let log = log
         .and_then(|log| std::fs::read_to_string(log).ok())
         .unwrap_or_default();
     let program = hook_id();
-    let denied = (log
-        .lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
-    .any(|l| {
-        l["session_id"] == session
-            && l["agent_id"].is_null()
-            && forms.iter().any(|form| l["command"] == form.as_str())
-            && l["hook"] == program.as_str()
-            && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
-    });
-    if denied {
-        format!(
-            "Guard proven for this session: the hook denied the probe, and its marker file wasn't made. {GUARD_SCOPE}"
-        )
-    } else {
-        format!(
-            "Guard not proven yet: no hook denial of this session's probe since it was set up, by this build of the program and this version of the plugin's hooks. Run exactly this, alone: {probe}\nthen `astrolabe activate --status` again. Until then claim no protection."
-        )
+    // Each denial counts only for the shell it was sent to, and only in that shell's form.
+    let denied_in = |shell: bool| {
+        let name = if shell { "powershell" } else { "posix" };
+        let form = probe(token, shell);
+        (log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
+        .any(|l| {
+            l["session_id"] == session
+                && l["agent_id"].is_null()
+                && l["shell"] == name
+                && l["command"] == form.as_str()
+                && l["hook"] == program.as_str()
+                && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
+        })
+    };
+    let proven: Vec<&str> = [false, true]
+        .into_iter()
+        .filter(|&shell| denied_in(shell) && control_marker(token, shell).exists())
+        .map(|shell| {
+            if shell {
+                "PowerShell"
+            } else {
+                "the POSIX shell (Bash, zsh)"
+            }
+        })
+        .collect();
+    if !proven.is_empty() {
+        return format!(
+            "Guard proven for this session in {}: the hook denied the probe there, its marker file wasn't made, and the allowed control in the same shell made its own. {GUARD_SCOPE}",
+            proven.join(" and ")
+        );
     }
+    let half = if denied_in(powershell) {
+        " The hook denied the probe, but the allowed control's marker isn't there, so a missing probe marker doesn't yet show the deny held."
+    } else {
+        ""
+    };
+    format!(
+        "Guard not proven yet:{half} Proof needs, in this session's own shell, by this build of the program and this version of the plugin's hooks, since it was set up: {}\nUntil then claim no protection.",
+        proof_steps(token, powershell)
+    )
 }
 
 pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
@@ -928,7 +1015,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
         Ok(found) => found,
         Err(why) => {
             return format!(
-                "Astrolabe is on for this machine and the guard runs here, but owner and voice weren't delivered: {why}. Tell the owner.\n\n{GUARD_SCOPE}"
+                "Astrolabe is on for this machine and the guard runs here, but owner and voice weren't delivered: {why}. Without the notes checkout on record the plugin also can't tell whether this is the notes repo, so it may be running beside that repo's own layer. Tell the owner.\n\n{GUARD_SCOPE}"
             );
         }
     };
@@ -959,8 +1046,8 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
         Err(why) => format!("Can't list efforts: {why}."),
     };
     let mut head = format!(
-        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\nProve the guard for this session: run exactly this, alone: {}\nThe hook must deny it. Then run `astrolabe activate --status`. Until it says proven, claim no protection.",
-        probe(
+        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\n{}\nUntil it says proven, claim no protection.",
+        proof_steps(
             &session_token(session),
             in_powershell(provider, &Value::Null)
         )

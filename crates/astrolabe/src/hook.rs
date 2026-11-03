@@ -258,6 +258,7 @@ fn record_denial(bytes: &[u8], reason: &str, data: &Path) {
         "session_id": session_id,
         "agent_id": input["agent_id"],
         "tool": input["tool_name"],
+        "shell": crate::activate::shell_of(&input),
         "reason": reason,
         "command": command.chars().take(LOGGED_COMMAND).collect::<String>(),
         "hook": crate::activate::hook_id(),

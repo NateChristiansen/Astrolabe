@@ -203,9 +203,21 @@ impl Fixture {
     fn probe(&self, text: &str) -> String {
         let line = text
             .lines()
-            .find(|l| l.contains("astrolabe-guard-probe") && l.contains("alone: "))
+            .find(|l| l.contains("astrolabe-guard-probe") && l.contains("deny: "))
             .unwrap();
-        line.split_once("alone: ").unwrap().1.to_owned()
+        line.split_once("deny: ").unwrap().1.to_owned()
+    }
+
+    /// The allowed control, as the session's shell would run it: it makes its marker.
+    fn control(&self, text: &str) {
+        let line = text
+            .lines()
+            .find(|l| l.contains("which must run: "))
+            .unwrap();
+        let command = line.split_once("which must run: ").unwrap().1;
+        let path = command.split('\'').nth(1).unwrap();
+        assert!(Path::new(path).is_absolute(), "{path}");
+        std::fs::write(path, "").unwrap();
     }
 }
 
@@ -317,6 +329,7 @@ fn a_session_with_no_effort_proves_its_own_guard() {
     let f = Fixture::new();
     let text = f.session_start("s1", &f.other, &[]).unwrap();
     let probe = f.probe(&text);
+    f.control(&text);
     let status = || f.bash("s1", &f.other, "astrolabe activate --status").0;
     assert!(
         status().contains("No effort is set") && status().contains("not proven yet"),
@@ -498,6 +511,7 @@ fn the_guard_is_proven_only_by_a_hook_denial_of_this_activations_probe() {
     let f = Fixture::new();
     let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     let probe = f.probe(&text);
+    f.control(&text);
     let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
     assert!(status().contains("not proven yet"));
     assert!(f.denies("s2", &probe), "another session's denial");
@@ -639,6 +653,7 @@ fn a_subagent_inherits_the_guard_only_and_cant_switch() {
             .0
             .contains("not proven yet")
     );
+    f.control(&text);
     assert!(f.denies("s1", &f.probe(&text)));
     assert!(
         f.bash("s1", &f.demo, "astrolabe activate --status")
@@ -720,10 +735,11 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     let (text, ok) = f.run(&f.demo, &rewritten(&command), "", &[]);
     assert!(ok, "{text}");
     let probe = f.probe(&text);
+    f.control(&text);
     let powershell = probe.starts_with("New-Item -ItemType File -Force '")
         && probe.ends_with("'; Stop-Process -Name astrolabe-guard-probe");
     assert_eq!(powershell, cfg!(windows), "{probe}");
-    // Denied in either form, and the form not offered proves the guard on its own.
+    // Denied in either form, but only the form for the shell that ran it proves the guard.
     let codex_runs = |command: &str| json!({"session_id": "c1", "turn_id": "u1", "cwd": f.demo, "tool_name": "shell_command", "tool_input": {"command": command}});
     let other = if powershell {
         probe
@@ -744,8 +760,57 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     };
     assert!(status().contains("not proven yet"));
     assert!(denied(&other), "{other}");
-    assert!(status().contains("Guard proven"), "{}", status());
+    assert!(
+        status().contains("not proven yet"),
+        "the wrong shell's form: {}",
+        status()
+    );
     assert!(denied(&probe), "{probe}");
+    let shell = if powershell {
+        "PowerShell"
+    } else {
+        "the POSIX shell"
+    };
+    assert!(
+        status().contains("Guard proven") && status().contains(shell),
+        "{}",
+        status()
+    );
+    // Claude's PowerShell tool: its own form, its own control, named as the path proven.
+    let (text, _) = f.run(&f.demo, &rewritten(&rewrite(json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --status"}}))), "", &[]);
+    let ps_probe = f.probe(&text);
+    assert!(ps_probe.starts_with("New-Item"), "{text}");
+    f.control(&text);
+    let ps = json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": ps_probe}});
+    assert_eq!(
+        f.hook(ps).unwrap()["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+    let (text, _) = f.run(&f.demo, &rewritten(&rewrite(json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --status"}}))), "", &[]);
+    assert!(
+        text.contains("Guard proven for this session in PowerShell"),
+        "{text}"
+    );
+}
+
+#[test]
+fn proof_needs_the_allowed_control_in_the_same_shell() {
+    let f = Fixture::new();
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    let probe = f.probe(&text);
+    assert!(
+        text.contains("touch '") && text.contains("-control-posix'"),
+        "marker only, no kill: {text}"
+    );
+    let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(f.denies("s1", &probe));
+    let half = status();
+    assert!(
+        half.contains("not proven yet") && half.contains("control's marker isn't there"),
+        "{half}"
+    );
+    f.control(&text);
+    assert!(status().contains("Guard proven"));
 }
 
 /// Catches: the plugin reading AppData, which a packaged Windows app sees as its own private
@@ -753,11 +818,10 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
 #[test]
 fn the_plugin_keeps_its_repos_and_denials_in_its_state_folder() {
     let f = Fixture::new();
-    let repos = std::fs::read_to_string(f.state().join("repos.json")).unwrap();
-    assert!(
-        repos.contains("\"demo\"") && repos.contains("\"agent\""),
-        "{repos}"
-    );
+    for name in ["demo", "agent"] {
+        let record = std::fs::read_to_string(f.state().join(format!("repos/{name}.json"))).unwrap();
+        assert!(record.contains(&format!("\"name\":\"{name}\"")), "{record}");
+    }
     let elsewhere = f.dir.0.join("empty-data");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let away = [(DATA_DIR_VAR, elsewhere.to_str().unwrap())];
@@ -874,6 +938,7 @@ fn a_changed_hook_needs_its_own_proof() {
     let f = Fixture::new();
     let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     let probe = f.probe(&text);
+    f.control(&text);
     let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
     assert!(f.denies("s1", &probe));
     assert!(status().contains("Guard proven"));
@@ -1025,6 +1090,7 @@ fn a_loaded_effort_proves_again_after_the_switch_goes_off_and_on() {
     let f = Fixture::new();
     let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     let probe = f.probe(&text);
+    f.control(&text);
     let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
     assert!(f.denies("s1", &probe));
     assert!(status().contains("Guard proven"));
@@ -1060,4 +1126,110 @@ fn a_refused_load_says_the_guard_still_runs_and_it_does() {
     );
     let input = json!({"session_id": "s1", "cwd": loose, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
     assert!(f.hook(input).is_some(), "and it does");
+}
+
+#[test]
+fn simultaneous_repo_adds_both_land() {
+    let f = Fixture::new();
+    std::fs::remove_dir_all(f.state().join("repos")).unwrap();
+    let notes = f.dir.0.join("notes");
+    let start = |name: &str, checkout: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        command
+            .args(["repo", "add", name, checkout.to_str().unwrap()])
+            .env(DATA_DIR_VAR, f.dir.0.join("data"))
+            .env(STATE_VAR, f.state())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command.spawn().unwrap()
+    };
+    // Both started before either is waited on.
+    let mut children = [
+        start("agent", &notes),
+        start("demo", &f.demo),
+        start("other", &f.other),
+    ];
+    for child in &mut children {
+        assert!(child.wait().unwrap().success());
+    }
+    for name in ["agent", "demo", "other"] {
+        assert!(
+            f.state().join(format!("repos/{name}.json")).exists(),
+            "{name} lost"
+        );
+    }
+    assert!(
+        f.session_start("s1", &f.demo, &[])
+            .unwrap()
+            .contains("pick up 70")
+    );
+}
+
+#[test]
+fn on_refuses_without_the_notes_checkout_and_sessions_say_why() {
+    let f = Fixture::new();
+    f.machine("off");
+    std::fs::remove_file(f.state().join("repos/agent.json")).unwrap();
+    let (text, ok) = f.run(&f.demo, &["on"], "", &[]);
+    assert!(
+        !ok && text.contains("repo add agent") && text.contains("stays out of the notes checkout"),
+        "{text}"
+    );
+    assert!(f.machine("status").contains("off for this machine"));
+    write(&f.state().join("repos/agent.json"), "not json");
+    let (text, ok) = f.run(&f.demo, &["on"], "", &[]);
+    assert!(!ok && text.contains("isn't a repo record"), "{text}");
+    // A map lost after switching on: sessions say plainly what that means.
+    let (out, ok) = f.run(
+        &f.dir.0.join("notes"),
+        &[
+            "repo",
+            "add",
+            "agent",
+            f.dir.0.join("notes").to_str().unwrap(),
+        ],
+        "",
+        &[],
+    );
+    assert!(ok, "{out}");
+    assert!(f.machine("on").contains("on for this machine"));
+    std::fs::remove_file(f.state().join("repos/agent.json")).unwrap();
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("can't tell whether this is the notes repo")
+            && text.contains("repo add agent"),
+        "{text}"
+    );
+    assert!(f.denies("s1", "pkill x"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repo_add_the_plugin_cant_record_says_so_and_rerunning_fixes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let repos = f.state().join("repos");
+    std::fs::set_permissions(&repos, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+    let out = command
+        .args(["repo", "add", "late", f.other.to_str().unwrap()])
+        .env(DATA_DIR_VAR, f.dir.0.join("data"))
+        .env(STATE_VAR, f.state())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success()
+            && said.contains("plugin doesn't have it")
+            && said.contains("rerunning is safe"),
+        "{said}"
+    );
+    std::fs::set_permissions(&repos, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (_, ok) = f.run(
+        &f.demo,
+        &["repo", "add", "late", f.other.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(ok && repos.join("late.json").exists());
 }
