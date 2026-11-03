@@ -1256,11 +1256,7 @@ fn a_bad_repo_name_is_refused_before_anything_is_written() {
 fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_shells() {
     let f = Fixture::new();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
-    let probe_dir = if cfg!(windows) {
-        f.state().join("probe")
-    } else {
-        std::env::temp_dir().join("astrolabe-probe")
-    };
+    let probe_dir = std::env::temp_dir().join("astrolabe-probe");
     assert!(
         f.probe(&text).contains(&probe_dir.display().to_string()),
         "{text}"

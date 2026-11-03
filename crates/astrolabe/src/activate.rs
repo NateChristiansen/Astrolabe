@@ -439,16 +439,11 @@ impl Activation {
 
 /// The marker goes in the temp folder, which a sandboxed shell can still write, so a probe that
 /// got past the hook leaves a trace.
-/// Where probe and control markers go, somewhere a sandboxed shell can write. On Windows the
-/// layer's state folder, since Codex's writes to the temp folder under AppData fail there.
-/// Elsewhere the temp folder, since Codex's sandbox on a Mac can write that but not the state
-/// folder. Made here, so a shell's `touch` finds it.
+/// Where probe and control markers go: the temp folder, the one place Codex's sandbox lets
+/// a shell write on both systems (tested: not the state folder, on the Mac or under Windows'
+/// sandbox). Made here, so a shell's `touch` finds it.
 pub fn probe_dir() -> PathBuf {
-    let dir = if cfg!(windows) {
-        state_dir().unwrap_or_else(std::env::temp_dir).join("probe")
-    } else {
-        std::env::temp_dir().join("astrolabe-probe")
-    };
+    let dir = std::env::temp_dir().join("astrolabe-probe");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

@@ -1714,11 +1714,10 @@ fn the_sessions_get_the_whole_bound_however_fast_the_windows_close() {
     std::thread::sleep(Duration::from_secs(3).saturating_sub(began.elapsed()));
     assert!(core.0.try_wait().unwrap().is_none(), "cut short");
     core.exits_within(Duration::from_secs(3));
-    assert!(
-        began.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        began.elapsed()
-    );
+    // Past the 4 s bound but short of the 6 s the sessions want: the bound ended it. Windows
+    // takes longer to tear the processes down, measured at 5.4 s, so it gets up to 5.8.
+    let most = Duration::from_millis(if cfg!(windows) { 5800 } else { 5000 });
+    assert!(began.elapsed() < most, "{:?}", began.elapsed());
 }
 
 #[test]
