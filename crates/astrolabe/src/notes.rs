@@ -50,10 +50,14 @@ pub struct JournalLine {
     pub effort: String,
     pub text: String,
     pub machine: String,
+    /// When it was written, so after a union merge of two machines' replacements the latest
+    /// line per effort is the one kept; hidden in the tail, never shown.
+    #[serde(default)]
+    pub at_ms: i64,
     /// The day file `YYYY-MM-DD`, fixed when the op was planned.
     pub day: String,
-    /// One line per effort per day: this one replaces an earlier line with the same tag and
-    /// machine, so "started" gives way to "finished" when both happen in a day.
+    /// One line per effort per day: this one replaces an earlier line for the effort, so
+    /// "started" gives way to "finished" when both happen in a day.
     #[serde(default)]
     pub replace: bool,
 }
@@ -63,15 +67,51 @@ impl JournalLine {
         format!("- {} <!-- {} -->", self.text, self.tail())
     }
 
-    /// `0016 mac e:abc`: the tail inside the comment.
+    /// `0016 mac 1793790492505 e:abc`: the tail inside the comment.
     pub fn tail(&self) -> String {
-        format!("{} {} e:{}", self.effort, self.machine, self.id)
+        format!(
+            "{} {} {} e:{}",
+            self.effort, self.machine, self.at_ms, self.id
+        )
     }
+}
 
-    /// `0016 mac`: what an earlier line of the same writer shares.
-    fn owner_tag(&self) -> String {
-        format!("<!-- {} {} e:", self.effort, self.machine)
+/// A day file with one line per effort: where a union merge or two writers left more, the
+/// latest by its stamp stays and the rest go. Lines for findings (repo tags) and lines in the
+/// first shape are left as they are.
+pub fn tidy_journal(text: &str) -> String {
+    let entries = parse_journal(text);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut keep = vec![true; lines.len()];
+    let mut latest: Vec<(String, usize, i64)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some(entry) = entries.iter().find(|e| e.line == *line) else {
+            continue;
+        };
+        if !entry.is_effort() || entry.at_ms == 0 {
+            continue;
+        }
+        match latest.iter_mut().find(|(tag, _, _)| *tag == entry.effort) {
+            Some((_, at, stamp)) => {
+                if entry.at_ms >= *stamp {
+                    keep[*at] = false;
+                    *at = i;
+                    *stamp = entry.at_ms;
+                } else {
+                    keep[i] = false;
+                }
+            }
+            None => latest.push((entry.effort.clone(), i, entry.at_ms)),
+        }
     }
+    let mut out = String::new();
+    for (line, k) in lines.iter().zip(keep) {
+        if k {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// A journal line as read back: the sentence and its tail, in the current shape or the
@@ -81,24 +121,48 @@ pub struct JournalEntry {
     pub effort: String,
     pub text: String,
     pub id: String,
+    #[serde(default)]
+    pub at_ms: i64,
+    /// The line as it is in the file.
+    #[serde(skip)]
+    pub line: String,
+}
+
+impl JournalEntry {
+    /// Tagged with an effort number, not a repo.
+    pub fn is_effort(&self) -> bool {
+        self.effort.len() == 4 && self.effort.chars().all(|c| c.is_ascii_digit())
+    }
 }
 
 pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
     text.lines()
-        .filter_map(|line| {
-            let line = line.strip_prefix("- ")?;
+        .filter_map(|raw| {
+            let line = raw.strip_prefix("- ")?;
             let (body, tail) = line.rsplit_once(" <!-- ")?;
             let tail = tail.strip_suffix(" -->")?;
             let words: Vec<&str> = tail.split_whitespace().collect();
             let id = words.last()?.strip_prefix("e:")?.to_owned();
-            let first_shape = body.len() > 6
-                && body.as_bytes()[2] == b':'
-                && body[..2].chars().all(|c| c.is_ascii_digit());
-            if !first_shape {
+            // The first shape's tail was `machine provider e:id` and its body began with the
+            // time and kind; the current tail is `tag machine stamp e:id`.
+            let legacy = words.len() == 3 && {
+                let mut parts = body.splitn(3, ' ');
+                let (time, kind) = (parts.next()?, parts.next()?);
+                time.len() == 5
+                    && time.as_bytes()[2] == b':'
+                    && time.chars().filter(|c| c.is_ascii_digit()).count() == 4
+                    && matches!(
+                        kind,
+                        "started" | "decision" | "blocked" | "done" | "abandoned" | "renumbered"
+                    )
+            };
+            if !legacy {
                 return Some(JournalEntry {
                     effort: words.first()?.to_string(),
                     text: body.to_owned(),
                     id,
+                    at_ms: words.get(2).and_then(|w| w.parse().ok()).unwrap_or(0),
+                    line: raw.to_owned(),
                 });
             }
             let mut parts = body.splitn(4, ' ');
@@ -109,6 +173,8 @@ pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
                 effort: number.to_owned(),
                 text: text.to_owned(),
                 id,
+                at_ms: 0,
+                line: raw.to_owned(),
             })
         })
         .collect()
@@ -314,11 +380,17 @@ impl Notes {
         ));
         let key = format!("renumber-{old_number:04}-{next:04}");
         let mut files = vec![(new_rel.clone(), file.render())];
-        // This machine's journal lines for the old number follow it; the other machine's
-        // lines for that number keep it, which is why the tail names the machine.
+        // The renumbered effort's own journal lines follow it: the ones written by the
+        // machine that saved it, which the tail names. The other machine's lines for that
+        // number belong to the effort that keeps it.
+        let writer = file
+            .prop("saved_by")
+            .and_then(|s| s.split(" · ").next())
+            .unwrap_or_default()
+            .to_owned();
         let (from, to) = (
-            format!("<!-- {old_number:04} {} e:", machine_name()),
-            format!("<!-- {next:04} {} e:", machine_name()),
+            format!("<!-- {old_number:04} {writer} "),
+            format!("<!-- {next:04} {writer} "),
         );
         for entry in std::fs::read_dir(self.root.join("journal"))
             .into_iter()
@@ -534,9 +606,9 @@ impl Notes {
             }
             let mut text = String::new();
             if line.replace {
-                // This writer's earlier line for the effort today gives way; other machines'
-                // lines and other efforts' stay, so a union merge never doubles a day.
-                let tag = line.owner_tag();
+                // The effort's earlier line today gives way, whichever machine wrote it:
+                // one line per effort per day, the latest. Other efforts' lines stay.
+                let tag = format!("<!-- {} ", line.effort);
                 for l in have.lines().filter(|l| !l.contains(&tag)) {
                     text.push_str(l);
                     text.push('\n');
@@ -549,7 +621,8 @@ impl Notes {
             }
             text.push_str(&line.rendered());
             text.push('\n');
-            write_text(&path, &text)?;
+            // A union merge can have left both sides of a replacement; the latest stays.
+            write_text(&path, &tidy_journal(&text))?;
         }
         self.ensure_attributes()?;
         // Only what exists: a first effort with no journal line yet has no journal folder.
@@ -626,6 +699,7 @@ impl Notes {
             Pull::Pulled => {}
         }
         let stale = self.stale_saves();
+        self.tidy_after_merge()?;
         let mut pushed = self.git_timed(&["push", "--quiet"]);
         // Another machine's push can land between our pull and push: once more, fresh.
         if pushed
@@ -768,6 +842,49 @@ impl Notes {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_else(|| json!({}))
+    }
+
+    /// After a pull: day files a union merge left with two lines for one effort are tidied
+    /// and committed, so the file the owner reads has one.
+    fn tidy_after_merge(&self) -> Result<(), String> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(self.root.join("journal"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let tidied = tidy_journal(&text);
+            if tidied != text {
+                files.push((format!("journal/{name}"), tidied));
+            }
+        }
+        if files.is_empty() {
+            return Ok(());
+        }
+        let key = format!(
+            "tidy-{}",
+            hash(&files.iter().map(|(_, t)| t.as_str()).collect::<String>())
+        );
+        let op = Op {
+            key: key.clone(),
+            files,
+            renames: Vec::new(),
+            journal: Vec::new(),
+            message: "journal tidied after a merge".to_owned(),
+            base: None,
+            states: Vec::new(),
+            committed: false,
+            digest: None,
+            result: None,
+            cwd: None,
+        };
+        self.apply(&op)?;
+        self.forget(&key);
+        Ok(())
     }
 
     /// Milliseconds left of a backoff after a timed-out network call, if any.

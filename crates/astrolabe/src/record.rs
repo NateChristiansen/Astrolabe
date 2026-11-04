@@ -302,9 +302,8 @@ fn save_inner(
     let ticks = cmd.flags_all("tick");
     let unticks = cmd.flags_all("untick");
     let pieces_file = cmd.flag("pieces-file");
-    if let Some(both) = ticks.iter().find(|t| unticks.contains(t)) {
-        return Err(format!("{both:?} is both ticked and unticked"));
-    }
+    // Conflicts are checked on the pieces they name, not the words: "Tether" and
+    // "Tether cap" are one item.
     if journal_text.is_some_and(|j| j.lines().count() > 1) {
         return Err("a journal line is one line".to_owned());
     }
@@ -413,11 +412,24 @@ fn save_inner(
     if let Some(p) = &pieces {
         file.set_pieces(p);
     }
-    for label in &ticks {
-        file.tick(label, true)?;
-    }
-    for label in &unticks {
-        file.tick(label, false)?;
+    if !ticks.is_empty() || !unticks.is_empty() {
+        let on: Vec<usize> = ticks
+            .iter()
+            .map(|l| file.piece_at(l))
+            .collect::<Result<_, _>>()?;
+        let off: Vec<usize> = unticks
+            .iter()
+            .map(|l| file.piece_at(l))
+            .collect::<Result<_, _>>()?;
+        if let Some(i) = on.iter().position(|i| off.contains(i)) {
+            return Err(format!("{:?} is both ticked and unticked", ticks[i]));
+        }
+        for label in &ticks {
+            file.tick(label, true)?;
+        }
+        for label in &unticks {
+            file.tick(label, false)?;
+        }
     }
     if let Some(w) = waits_for {
         file.set("waits_for", w);
@@ -437,6 +449,7 @@ fn save_inner(
             effort: format!("{:04}", number.parse::<u32>().unwrap_or(0)),
             text: j.to_owned(),
             machine: notes::machine_name(),
+            at_ms: notes::now_ms(),
             day: day.clone(),
             replace: true,
         })
@@ -557,6 +570,7 @@ fn journal_inner(
             effort: repo.clone(),
             text: sentence.to_owned(),
             machine: notes::machine_name(),
+            at_ms: notes::now_ms(),
             day: day.clone(),
             replace: false,
         }],

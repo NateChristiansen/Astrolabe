@@ -1088,6 +1088,11 @@ pub fn switch_on(
         auth_m = meaning(&AUTHORITY, &effort.authority),
         proof = proof_steps(&token, shells),
     );
+    // A worker stays a worker through resume and reload, and is told so each time.
+    let mut head = head;
+    if state["worker"] == true {
+        head += &format!("\n\n{WORKER_RULE}");
+    }
     Ok(Activation { state, head, parts })
 }
 
@@ -1308,7 +1313,7 @@ fn act(
             match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]) {
                 Ok(mut activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
-                    if worker {
+                    if worker && activation.state["worker"] != true {
                         activation.state["worker"] = true.into();
                         activation.head += &format!("\n\n{WORKER_RULE}");
                     }

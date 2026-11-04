@@ -597,9 +597,9 @@ impl EffortFile {
         Some((done, total))
     }
 
-    /// Ticks or unticks the one item whose text starts with `label`; refused when none or
-    /// more than one does, so a tick never lands on the wrong piece.
-    pub fn tick(&mut self, label: &str, done: bool) -> Result<(), String> {
+    /// The one item whose text starts with `label`; refused when none or more than one does,
+    /// so a tick never lands on the wrong piece.
+    pub fn piece_at(&self, label: &str) -> Result<usize, String> {
         let label = label.trim();
         let text = self
             .pieces()
@@ -613,15 +613,19 @@ impl EffortFile {
             })
             .map(|(i, _)| i)
             .collect();
-        let at = match matches.as_slice() {
-            [one] => *one,
-            [] => return Err(format!("no piece starts with {label:?}")),
-            _ => {
-                return Err(format!(
-                    "{label:?} names more than one piece; say more of it"
-                ));
-            }
-        };
+        match matches.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(format!("no piece starts with {label:?}")),
+            _ => Err(format!(
+                "{label:?} names more than one piece; say more of it"
+            )),
+        }
+    }
+
+    /// Ticks or unticks one item by its label.
+    pub fn tick(&mut self, label: &str, done: bool) -> Result<(), String> {
+        let at = self.piece_at(label)?;
+        let text = self.pieces().unwrap_or_default();
         let lines: Vec<String> = text
             .lines()
             .enumerate()

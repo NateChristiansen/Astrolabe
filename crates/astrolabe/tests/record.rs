@@ -409,7 +409,7 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     let journal = mac.journal_today();
     assert!(
         journal.starts_with(
-            "- Started smoothing the ink; the first frame still jumps. <!-- 0001 mac e:"
+            "- Started smoothing the ink; the first frame still jumps. <!-- 0001 mac "
         ) && journal.lines().count() == 1,
         "{journal}"
     );
@@ -456,7 +456,7 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     assert!(!ok && out.contains("no piece starts with"), "{out}");
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save --tick \"Goo at\" --untick \"Goo at\"",
+        "astrolabe effort save --tick \"Goo at\" --untick \"Goo at speed\"",
     );
     assert!(!ok && out.contains("both ticked and unticked"), "{out}");
     assert!(
@@ -596,8 +596,8 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     // The PC's own journal line for its 3 follows it to 4; the Mac's line for 3 stays.
     let journal = pc.journal_today();
     assert!(
-        journal.contains("PC three's line <!-- 0004 pc e:")
-            && journal.contains("Mac three's line <!-- 0003 mac e:"),
+        journal.contains("PC three's line <!-- 0004 pc ")
+            && journal.contains("Mac three's line <!-- 0003 mac "),
         "{journal}"
     );
     let state: Value =
@@ -609,8 +609,8 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     assert!(mac.notes.join("efforts/0004-pc-three.md").exists());
     let journal = mac.journal_today();
     assert!(
-        journal.contains("Mac three's line <!-- 0003 mac e:")
-            && journal.contains("PC three's line <!-- 0004 pc e:")
+        journal.contains("Mac three's line <!-- 0003 mac ")
+            && journal.contains("PC three's line <!-- 0004 pc ")
             && journal.lines().count() == 2,
         "{journal}"
     );
@@ -796,7 +796,7 @@ fn efforts_json_is_what_the_home_view_reads() {
     assert_eq!(e["repo"], "demo");
     assert_eq!(v["journal"], "");
     // The reader takes both journal shapes.
-    let mixed = "- 14:02 done 0012 Smooth ink: merged the ink MR <!-- mac claude e:7f3a -->\n- Finished the ink. <!-- 0013 mac e:9b -->\n- Found the Deck preset. <!-- demo mac e:aa -->\n";
+    let mixed = "- 14:02 done 0012 Smooth ink: merged the ink MR <!-- mac claude e:7f3a -->\n- Finished the ink. <!-- 0013 mac 5 e:9b -->\n- 12:30 is when it broke: fixed. <!-- 0014 pc 6 e:9c -->\n- Found the Deck preset. <!-- demo mac 7 e:aa -->\n";
     let lines = astrolabe::notes::parse_journal(mixed);
     assert_eq!(
         lines
@@ -806,8 +806,72 @@ fn efforts_json_is_what_the_home_view_reads() {
         vec![
             ("0012", "merged the ink MR", "7f3a"),
             ("0013", "Finished the ink.", "9b"),
+            ("0014", "12:30 is when it broke: fixed.", "9c"),
             ("demo", "Found the Deck preset.", "aa")
         ]
+    );
+    // Tidy keeps the latest line per effort, as a union merge of two replacements leaves
+    // both; findings and first-shape lines stay.
+    let doubled = "- Started A. <!-- 0001 mac 10 e:a1 -->\n- Started B. <!-- 0002 pc 11 e:b1 -->\n- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n";
+    assert_eq!(
+        astrolabe::notes::tidy_journal(doubled),
+        "- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n"
+    );
+}
+
+#[test]
+fn two_machines_replacing_their_lines_the_same_day_leave_one_line_each_after_merge() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        mac.bash("s1", "astrolabe effort save --journal \"Started A.\"")
+            .1
+    );
+    assert!(mac.sync().1);
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort new --title \"Two\" <<'ASTROLABE'\ng2\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 2 created"), "{out}");
+    assert!(
+        pc.bash("p1", "astrolabe effort save --journal \"Started B.\"")
+            .1
+    );
+    assert!(pc.sync().1);
+    assert!(mac.sync().1);
+    assert_eq!(mac.journal_today().lines().count(), 2);
+    // Both replace their own line without seeing the other's replacement: a union merge
+    // would keep all four; the tidy after the pull keeps the latest per effort.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(
+        mac.bash("s1", "astrolabe effort save --journal \"Finished A.\"")
+            .1
+    );
+    assert!(
+        pc.bash("p1", "astrolabe effort save --journal \"Finished B.\"")
+            .1
+    );
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    for m in [&mac, &pc] {
+        let journal = m.journal_today();
+        assert!(
+            journal.contains("- Finished A. <!-- 0001 mac ")
+                && journal.contains("- Finished B. <!-- 0002 pc ")
+                && journal.lines().count() == 2,
+            "{journal}"
+        );
+    }
+    assert!(
+        pc.log().contains("journal tidied after a merge"),
+        "{}",
+        pc.log()
     );
 }
 
@@ -844,7 +908,7 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
     assert!(ok && out.contains("Journal line written"), "{out}");
     let journal = mac.journal_today();
     assert!(
-        journal.starts_with("- Found the Deck preset in the video settings: everything Low, render scale 0.75. <!-- demo mac e:"),
+        journal.starts_with("- Found the Deck preset in the video settings: everything Low, render scale 0.75. <!-- demo mac "),
         "{journal}"
     );
     assert_eq!(mac.log().lines().next(), Some("journal: demo"));
@@ -874,8 +938,12 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
         assert!(!ok && out.contains("worker under effort 1"), "{out}");
     }
     // Still a worker after a resume and after loading the effort again without the flag.
-    mac.session_start("w1", "resume");
-    assert!(mac.bash("w1", "astrolabe activate --effort 1").1);
+    assert!(
+        mac.session_start("w1", "resume")
+            .contains("worker under that effort")
+    );
+    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 1");
+    assert!(ok && out.contains("worker under that effort"), "{out}");
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("w1.json")).unwrap()).unwrap();
     assert_eq!(state["worker"], true);
