@@ -890,7 +890,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 
 /// What the hook did, left for the command to print. Old ones go as new ones come.
 fn leave(dir: &Path, text: &str, ok: bool) -> Result<String, String> {
-    leave_with(dir, text, ok, None)
+    leave_with(dir, text, ok, None, None)
 }
 
 /// A ticket that also names the command it answers, so the plain command can find it.
@@ -899,6 +899,7 @@ pub(crate) fn leave_with(
     text: &str,
     ok: bool,
     digest: Option<&str>,
+    cwd: Option<&Path>,
 ) -> Result<String, String> {
     let shown = dir.join("shown");
     for entry in std::fs::read_dir(&shown).into_iter().flatten().flatten() {
@@ -911,13 +912,19 @@ pub(crate) fn leave_with(
         }
     }
     let ticket = random_hex()?;
-    let body = json!({"text": text, "ok": ok, "at_ms": now_ms(), "digest": digest});
+    let cwd = cwd.map(comparable);
+    let body = json!({"text": text, "ok": ok, "at_ms": now_ms(), "digest": digest, "cwd": cwd});
     write_json(&shown.join(format!("{ticket}.json")), &body)?;
     Ok(ticket)
 }
 
 /// The freshest ticket the hook left for a command with this digest, within `within_ms`.
-pub(crate) fn shown_for(dir: &Path, digest: &str, within_ms: i64) -> Option<(String, bool)> {
+pub(crate) fn shown_for(
+    dir: &Path,
+    digest: &str,
+    cwd: &str,
+    within_ms: i64,
+) -> Option<(String, bool, i64)> {
     let mut best: Option<(i64, String, bool)> = None;
     for entry in std::fs::read_dir(dir.join("shown"))
         .into_iter()
@@ -932,6 +939,7 @@ pub(crate) fn shown_for(dir: &Path, digest: &str, within_ms: i64) -> Option<(Str
         };
         let at = body["at_ms"].as_i64().unwrap_or(0);
         if body["digest"] == digest
+            && body["cwd"] == cwd
             && now_ms() - at <= within_ms
             && best.as_ref().is_none_or(|b| at > b.0)
         {
@@ -942,7 +950,7 @@ pub(crate) fn shown_for(dir: &Path, digest: &str, within_ms: i64) -> Option<(Str
             ));
         }
     }
-    best.map(|(_, text, ok)| (text, ok))
+    best.map(|(at, text, ok)| (text, ok, now_ms() - at))
 }
 
 /// Only while fresh. Reads and nothing else, so it works inside a client's sandbox.
@@ -1019,10 +1027,22 @@ pub fn switch_on(
     let at_ms = same
         .and_then(|p| p["at_ms"].as_i64())
         .unwrap_or_else(now_ms);
-    let state = json!({
+    // The effort as delivered, so a save can tell whether it would overwrite another's, and
+    // the repo as it stands, so the Stop hook can tell whether work moved.
+    let delivered = std::fs::read_to_string(notes.join(&effort.file))
+        .map(|t| crate::notes::hash(&t))
+        .ok();
+    let baseline = crate::notes::RepoFacts::read(cwd).map(|f| f.fingerprint);
+    let mut state = json!({
         "session": session, "provider": provider, "effort": effort.number, "file": effort.file,
         "repo": repo, "cwd": comparable(cwd), "at_ms": at_ms, "token": token,
+        "delivered": delivered, "baseline": baseline, "mark": false,
     });
+    for keep in ["mark", "acknowledged", "last_save_ms"] {
+        if let Some(value) = same.and_then(|p| p.get(keep)) {
+            state[keep] = value.clone();
+        }
+    }
     fn meaning(table: &[(&str, &'static str)], value: &str) -> &'static str {
         table
             .iter()
@@ -1499,37 +1519,44 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             .as_str()
             .map(PathBuf::from)
             .unwrap_or_else(|| ".".into());
-        let (text, ok, digest) = match crate::effort::EffortCommand::parse(command) {
+        let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
             Ok(parsed) => {
                 // The same tool call retried gets the same key, so it can't commit twice.
-                let key = match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+                let op_key = match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
                     Some(id) => crate::notes::hash(&format!("{session} {id} {}", parsed.digest())),
                     None => random_hex().unwrap_or_else(|_| parsed.digest()),
                 };
                 let done = match parsed.verb.as_str() {
                     "new" => crate::record::new(
                         &parsed,
-                        &key,
+                        &op_key,
                         session,
                         provider(input),
                         &cwd,
                         &[powershell],
                     ),
-                    _ => crate::record::save(&parsed, &key, session, provider(input), &cwd),
+                    _ => crate::record::save(&parsed, &op_key, session, provider(input), &cwd),
                 };
-                (done.text, done.ok, Some(parsed.digest()))
+                (done.text, done.ok, Some(parsed.digest()), Some(op_key))
             }
             Err(why) => (
                 format!("Effort command refused: {why}.\n{}", crate::effort::FORMS),
                 false,
                 None,
+                None,
             ),
         };
         let left = state_dir()
             .ok_or_else(|| "no home folder".to_owned())
-            .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref()));
+            .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref(), Some(&cwd)));
         return Some(match left {
-            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+            Ok(ticket) => {
+                // The ticket now holds the result, so the intent that held it can go.
+                if let Some(op_key) = op_key {
+                    crate::record::forget(&op_key);
+                }
+                rewrite_to_show(tool_input, key, &ticket, powershell)
+            }
             Err(why) => hook::deny(&format!(
                 "Astrolabe couldn't show this effort command's result ({why}); run `astrolabe notes status`."
             )),
@@ -1789,6 +1816,8 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
             let provider = state["provider"].as_str().unwrap_or("claude").to_owned();
             // No tool at session start: the provider's usual shell.
             let shells = session_shells(&provider);
+            // Another machine may have saved since: the published checkpoint, not a stale copy.
+            let refreshed = crate::record::refresh_notes();
             Some(
                 match switch_on(
                     &dir,
@@ -1801,7 +1830,10 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
                 ) {
                     Ok(activation) => {
                         match commit(&dir, session, &Change::Write(activation.state.clone())) {
-                            Ok(()) => activation.fitted(),
+                            Ok(()) => match refreshed {
+                                Some(note) => format!("{note}\n\n{}", activation.fitted()),
+                                None => activation.fitted(),
+                            },
                             Err(why) => format!(
                                 "Astrolabe stays on for effort {effort}, guard included, but couldn't save its reload: {why}. Tell the owner."
                             ),

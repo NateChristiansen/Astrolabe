@@ -22,6 +22,10 @@ pub struct EffortCommand {
     pub body: Option<String>,
 }
 
+/// The flags each verb takes; any other is refused, so a mistyped one can't be ignored.
+pub const NEW_FLAGS: [&str; 6] = ["title", "status", "involvement", "authority", "initiative", "priority"];
+pub const SAVE_FLAGS: [&str; 5] = ["status", "decision", "waits-for", "reason", "plan-file"];
+
 /// The accepted forms, for a refusal.
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n\
@@ -68,6 +72,14 @@ impl EffortCommand {
                 .ok_or_else(|| format!("--{key} needs a value"))?;
             if value.starts_with("--") {
                 return Err(format!("--{key} needs a value, not another flag"));
+            }
+            let allowed: &[&str] = if verb == "new" { &NEW_FLAGS } else { &SAVE_FLAGS };
+            if !allowed.contains(&key) {
+                let named: Vec<String> = allowed.iter().map(|f| format!("--{f}")).collect();
+                return Err(format!(
+                    "--{key} isn't a flag of `effort {verb}`; its flags are {}",
+                    named.join(", ")
+                ));
             }
             flags.push((key.to_owned(), value));
         }
@@ -273,6 +285,7 @@ mod tests {
                 "not another flag",
             ),
             ("astrolabe effort save title", "isn't a flag"),
+            ("astrolabe effort save --plan x", "isn't a flag of `effort save`"),
         ] {
             let err = EffortCommand::parse(text).unwrap_err();
             assert!(err.contains(why), "{text:?}: {err}");
@@ -317,7 +330,8 @@ pub struct EffortFile {
     pub title: String,
     pub current: String,
     pub plan: Option<String>,
-    pub decisions: Vec<String>,
+    /// Kept verbatim; a save only appends a line, because a rebuilt list drops nested text.
+    pub decisions: String,
     /// Other sections, heading and body, in their order.
     pub other: Vec<(String, String)>,
 }
@@ -362,12 +376,7 @@ impl EffortFile {
                 None => {}
                 Some("Current state") => file.current = body,
                 Some("Plan") => file.plan = Some(body),
-                Some("Decisions") => {
-                    file.decisions = body
-                        .lines()
-                        .filter_map(|l| l.trim().strip_prefix("- ").map(str::to_owned))
-                        .collect()
-                }
+                Some("Decisions") => file.decisions = body,
                 Some(h) => file.other.push((h.to_owned(), body)),
             }
             buf.clear();
@@ -388,6 +397,15 @@ impl EffortFile {
         }
         flush(&heading, &mut buf, &mut file);
         Ok(file)
+    }
+
+    pub fn add_decision(&mut self, line: &str) {
+        let mut text = self.decisions.trim_end().to_owned();
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text += &format!("- {line}");
+        self.decisions = text;
     }
 
     pub fn prop(&self, key: &str) -> Option<&str> {
@@ -469,11 +487,8 @@ impl EffortFile {
         if let Some(plan) = &self.plan {
             out += &format!("\n## Plan\n{}\n", plan.trim());
         }
-        if !self.decisions.is_empty() {
-            out += "\n## Decisions\n";
-            for d in &self.decisions {
-                out += &format!("- {d}\n");
-            }
+        if !self.decisions.trim().is_empty() {
+            out += &format!("\n## Decisions\n{}\n", self.decisions.trim());
         }
         for (h, body) in &self.other {
             out += &format!("\n## {h}\n{}\n", body.trim());
@@ -520,6 +535,8 @@ mod file_tests {
         assert!(out.contains("## Current state\n**Goal:** g2.\n"));
         assert!(out.contains("## History\nold stuff\n"));
         assert!(out.contains("- 2026-11-03: a over b: why.\n"));
+        file.add_decision("2026-11-04: c over d: why.");
+        assert!(file.render().contains("- 2026-11-03: a over b: why.\n- 2026-11-04: c over d: why.\n"));
         assert_eq!(
             EffortFile::parse(&out).unwrap().missing_fields(),
             vec!["Next"]

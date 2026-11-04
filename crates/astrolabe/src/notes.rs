@@ -23,6 +23,8 @@ pub const PUSH_EVERY_MS: i64 = 10 * 60 * 1000;
 const INTENTS: &str = "ops";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
+/// A finished intent or a ticket older than this no longer explains a plain command.
+pub const RECENT_MS: i64 = 60_000;
 
 /// The notes checkout and the state folder its lock and intents live in.
 pub struct Notes {
@@ -77,8 +79,22 @@ pub struct Op {
     pub message: String,
     /// The effort file's hash as delivered to the session, for the stale-save check at sync.
     pub base: Option<String>,
-    /// The session state file to write once the notes are committed.
-    pub state: Option<(PathBuf, Value)>,
+    /// Session state files to write once the notes are committed.
+    #[serde(default)]
+    pub states: Vec<(PathBuf, Value)>,
+    /// Set once the notes commit landed, so a rerun writes no file again: a newer save may
+    /// have landed since.
+    #[serde(default)]
+    pub committed: bool,
+    /// The command this op answers, so the plain command can find it.
+    #[serde(default)]
+    pub digest: Option<String>,
+    /// What the hook showed, kept until the ticket exists, then the intent goes.
+    #[serde(default)]
+    pub result: Option<String>,
+    /// The folder the command ran in, with the digest.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,7 +253,7 @@ impl Notes {
         file.title = format!("{next:04} {}", file.name());
         let (day, time) = local_day_time();
         let key = format!("renumber-{old_number:04}-{next:04}");
-        let op = Op {
+        let mut op = Op {
             key: key.clone(),
             files: vec![(new_rel.clone(), file.render())],
             renames: vec![(old_rel.clone(), new_rel.clone())],
@@ -254,27 +270,14 @@ impl Notes {
             }],
             message: format!("{old_number:04} renumbered to {next:04}"),
             base: None,
-            state: None,
+            states: Vec::new(),
+            committed: false,
+            digest: None,
+            result: None,
+            cwd: None,
         };
-        if self.apply(&op).is_err() {
-            return None;
-        }
-        // The renamed file's old path must go too, where the rename found it already moved.
-        if self.root.join(&old_rel).exists() {
-            let _ = std::fs::remove_file(self.root.join(&old_rel));
-            let _ = self.git(&["add", "-A", "--", "efforts"]);
-            let _ = self.git(&[
-                "commit",
-                "--quiet",
-                "-m",
-                &format!("{old_number:04} renumbered to {next:04}: old path"),
-            ]);
-        }
-        for entry in std::fs::read_dir(&self.state)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
+        // Every session bound to the old path follows, inside the same recoverable op.
+        for entry in std::fs::read_dir(&self.state).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
@@ -288,9 +291,13 @@ impl Notes {
             if state["file"] == old_rel.as_str() {
                 state["file"] = new_rel.clone().into();
                 state["effort"] = next.to_string().into();
-                let _ = write_text(&path, &state.to_string());
+                op.states.push((path, state));
             }
         }
+        if self.apply(&op).is_err() {
+            return None;
+        }
+        self.forget(&key);
         Some(format!("{old_number:04} renumbered to {next:04}"))
     }
 
@@ -341,18 +348,73 @@ impl Notes {
         ops
     }
 
-    /// Finishes whatever an earlier run left, under the caller's lock.
+    /// Finishes whatever an earlier run left, under the caller's lock. A finished op whose
+    /// ticket never got written is dropped once it's old; nothing is applied twice.
     pub fn reconcile(&self) -> Vec<String> {
-        self.intents()
-            .iter()
-            .filter_map(|op| self.apply(op).err().map(|why| format!("{}: {why}", op.key)))
-            .collect()
+        let mut failed = Vec::new();
+        for op in self.intents() {
+            if op.result.is_some() {
+                let age = std::fs::metadata(self.intent_path(&op.key))
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|m| m.elapsed().ok());
+                if age.is_some_and(|a| a.as_millis() as i64 > RECENT_MS) {
+                    let _ = std::fs::remove_file(self.intent_path(&op.key));
+                }
+                continue;
+            }
+            match self.apply(&op) {
+                Ok(()) => self.finish(
+                    &op.key,
+                    "Finished by a later run: this write landed; the reply for it was lost.",
+                ),
+                Err(why) => failed.push(format!("{}: {why}", op.key)),
+            }
+        }
+        failed
+    }
+
+    /// Records what the hook showed for this op; the caller removes the intent once the
+    /// ticket exists.
+    pub fn finish(&self, key: &str, result: &str) {
+        let path = self.intent_path(key);
+        if let Ok(bytes) = std::fs::read(&path)
+            && let Ok(mut op) = serde_json::from_slice::<Op>(&bytes)
+        {
+            op.result = Some(result.to_owned());
+            let _ = write_text(&path, &serde_json::to_string(&op).unwrap_or_default());
+        }
+    }
+
+    pub fn forget(&self, key: &str) {
+        let _ = std::fs::remove_file(self.intent_path(key));
+    }
+
+    /// A recent op for this command in this folder: finished (its result) or still going.
+    pub fn intent_for(&self, digest: &str, cwd: &str) -> Option<Op> {
+        self.intents().into_iter().find(|op| {
+            op.digest.as_deref() == Some(digest) && op.cwd.as_deref() == Some(cwd)
+        })
     }
 
     /// Writes, journals, commits and records the session state, each step skipped when it's
-    /// already done, so applying twice is applying once.
+    /// already done, so applying twice is applying once. Once committed, the files are never
+    /// written again, only the state files: a newer save may have landed since.
     pub fn apply(&self, op: &Op) -> Result<(), String> {
-        self.save_intent(op)?;
+        let mut op = op.clone();
+        if let Ok(bytes) = std::fs::read(self.intent_path(&op.key))
+            && let Ok(saved) = serde_json::from_slice::<Op>(&bytes)
+            && saved.committed
+        {
+            op.committed = true;
+        }
+        self.save_intent(&op)?;
+        if op.committed {
+            for (path, state) in &op.states {
+                write_text(path, &state.to_string())?;
+            }
+            return Ok(());
+        }
         for (from, to) in &op.renames {
             let (from, to) = (self.root.join(from), self.root.join(to));
             if from.exists() && !to.exists() {
@@ -388,7 +450,7 @@ impl Notes {
             ".gitattributes",
         ])?;
         if !changed.trim().is_empty() {
-            self.git(&["add", "--", "efforts", "journal", ".gitattributes"])?;
+            self.git(&["add", "-A", "--", "efforts", "journal", ".gitattributes"])?;
             let mut message = format!("{}\n\nOp-Key: {}", op.message, op.key);
             if let Some(base) = &op.base {
                 message += &format!("\nBase: {base}");
@@ -402,11 +464,15 @@ impl Notes {
                 &message,
             ])?;
         }
-        if let Some((path, state)) = &op.state {
-            let text = state.to_string();
-            write_text(path, &text)?;
+        op.committed = true;
+        self.save_intent(&op)?;
+        // A save of a file two machines wrote unseen resolves that warning.
+        for (rel, _) in &op.files {
+            self.clear_stale(rel);
         }
-        let _ = std::fs::remove_file(self.intent_path(&op.key));
+        for (path, state) in &op.states {
+            write_text(path, &state.to_string())?;
+        }
         Ok(())
     }
 
@@ -507,11 +573,36 @@ impl Notes {
         stale.sort();
         stale.dedup();
         if !stale.is_empty() {
-            self.record_sync("stale", &stale.join(", "));
-        } else {
-            self.clear_sync("stale");
+            // Kept, per file, until a later save of that file lands.
+            let mut record = self.sync_record();
+            let mut files: Vec<String> = record["stale"]["files"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            files.extend(stale.iter().cloned());
+            files.sort();
+            files.dedup();
+            record["stale"] = json!({"files": files, "at_ms": now_ms()});
+            let _ = write_text(&self.state.join(SYNC), &record.to_string());
         }
         stale
+    }
+
+    fn clear_stale(&self, rel: &str) {
+        let mut record = self.sync_record();
+        let Some(files) = record["stale"]["files"].as_array() else {
+            return;
+        };
+        let kept: Vec<Value> = files.iter().filter(|f| f.as_str() != Some(rel)).cloned().collect();
+        if kept.len() == files.len() {
+            return;
+        }
+        if kept.is_empty() {
+            record.as_object_mut().map(|o| o.remove("stale"));
+        } else {
+            record["stale"]["files"] = kept.into();
+        }
+        let _ = write_text(&self.state.join(SYNC), &record.to_string());
     }
 
     /// Runs `astrolabe notes sync` as its own process, so a hook or a save returns at once and
@@ -589,10 +680,11 @@ impl Notes {
                 d["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
             ));
         }
-        if let Some(s) = record.get("stale") {
+        if let Some(files) = record["stale"]["files"].as_array().filter(|f| !f.is_empty()) {
+            let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
             lines.push(format!(
                 "Two machines saved the same effort unseen: {}. The file holds whichever landed last; both are in git. Resave it from what's there.",
-                s["why"].as_str().unwrap_or_default()
+                names.join(", ")
             ));
         }
         let unpublished = self.unpublished();

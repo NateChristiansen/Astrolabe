@@ -21,7 +21,7 @@ const AUTHORITIES: [&str; 3] = ["read", "edit", "push"];
 /// Past this the owner stops reading; said, never enforced.
 const CURRENT_LINES: usize = 12;
 /// A ticket or intent this old no longer explains a plain command.
-const RECENT_MS: i64 = 60_000;
+use crate::notes::RECENT_MS;
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
 /// state written when it did.
@@ -151,10 +151,17 @@ fn new_inner(
     let repo = repo_of(&notes, &registry, cwd)?;
     let dir = notes.state.clone();
     let _held = notes.lock()?;
+    // Leftovers first: one of them may be this very call, interrupted.
+    let leftovers = notes.reconcile();
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
     if notes.already_applied(key) {
         return Err("this same tool call was already done (a retry); nothing new was written. Run `astrolabe activate --status` to see the session's effort".to_owned());
     }
-    let leftovers = notes.reconcile();
     let pulled = notes.pull();
     let number = notes.next_number();
     let file_name = format!("efforts/{number:04}-{}.md", slug(title));
@@ -210,7 +217,11 @@ fn new_inner(
         }],
         message: format!("{number:04}: started"),
         base: None,
-        state: Some((state_path(&dir, session), state)),
+        states: vec![(state_path(&dir, session), state)],
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
     };
     notes.apply(&op)?;
     notes.spawn_sync();
@@ -232,13 +243,9 @@ fn new_inner(
             why.lines().next().unwrap_or_default()
         );
     }
-    if !leftovers.is_empty() {
-        head += &format!(
-            " Earlier unfinished notes writes failed again: {}.",
-            leftovers.join("; ")
-        );
-    }
-    Ok(format!("{head}\n\n{}", activation.text()))
+    let text = format!("{head}\n\n{}", activation.text());
+    notes.finish(key, &text);
+    Ok(text)
 }
 
 /// `astrolabe effort save`, in the hook.
@@ -311,21 +318,27 @@ fn save_inner(
         None => None,
     };
     let _held = notes.lock()?;
+    let leftovers = notes.reconcile();
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
     if notes.already_applied(key) {
         return Ok(format!(
             "Already saved: this same tool call was done before (a retry), so nothing new was written to effort {number}."
         ));
     }
-    let leftovers = notes.reconcile();
     let pulled = notes.pull();
     let path = notes.root.join(&rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
     let on_disk_hash = notes::hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
-    if state["delivered"]
-        .as_str()
-        .is_some_and(|d| d != on_disk_hash)
-    {
+    let Some(delivered) = state["delivered"].as_str().map(str::to_owned) else {
+        return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
+    };
+    if delivered != on_disk_hash {
         // Delivered anew, so the next save from this text goes through.
         state["delivered"] = on_disk_hash.clone().into();
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
@@ -380,7 +393,7 @@ fn save_inner(
         line("decision", d);
     }
     if let Some(d) = decision {
-        file.decisions.push(format!("{day}: {d}"));
+        file.add_decision(&format!("{day}: {d}"));
     }
     if let Some(w) = waits_for {
         file.set("waits_for", w);
@@ -425,7 +438,11 @@ fn save_inner(
         journal,
         message,
         base: Some(on_disk_hash),
-        state: Some((state_path(&dir, session), next_state)),
+        states: vec![(state_path(&dir, session), next_state)],
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
     };
     notes.apply(&op)?;
     let state_changed = status.as_deref().is_some_and(|s| s != before);
@@ -445,16 +462,18 @@ fn save_inner(
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
     }
-    if !leftovers.is_empty() {
-        head += &format!(
-            " Earlier unfinished notes writes failed again: {}.",
-            leftovers.join("; ")
-        );
-    }
     for l in notes_lines {
         head += &format!(" {l}");
     }
+    notes.finish(key, &head);
     Ok(head)
+}
+
+/// The ticket is written; the intent that held the result can go.
+pub fn forget(key: &str) {
+    if let Ok((_, notes)) = notes_here() {
+        notes.forget(key);
+    }
 }
 
 /// The plain `astrolabe effort …` command, when no hook rewrote it: it explains what happened
@@ -462,15 +481,19 @@ fn save_inner(
 /// same command means it was done; a recent intent means it's still finishing.
 pub fn plain(args: &[&str], body: Option<&str>) -> (String, bool) {
     let mut words = vec!["astrolabe".to_owned(), "effort".to_owned()];
-    words.extend(args.iter().map(|a| {
-        if a.contains(' ') || a.is_empty() {
-            format!("\"{a}\"")
+    // PowerShell hands the here-string over as one argument with its line breaks.
+    let mut body = body.map(str::to_owned);
+    for a in args {
+        if a.contains('\n') {
+            body = Some((*a).to_owned());
+        } else if a.contains(' ') || a.is_empty() {
+            words.push(format!("\"{a}\""));
         } else {
-            (*a).to_owned()
+            words.push((*a).to_owned());
         }
-    }));
+    }
     let mut text = words.join(" ");
-    if let Some(body) = body.filter(|b| !b.trim().is_empty()) {
+    if let Some(body) = body.as_deref().filter(|b| !b.trim().is_empty()) {
         text += &format!(" <<'ASTROLABE'\n{}\nASTROLABE", body.trim());
     }
     let parsed = match EffortCommand::parse(&text) {
@@ -484,16 +507,24 @@ pub fn plain(args: &[&str], body: Option<&str>) -> (String, bool) {
             false,
         );
     };
-    if let Some((text, ok)) = activate::shown_for(&dir, &digest, RECENT_MS) {
-        return (text, ok);
+    let here = std::env::current_dir()
+        .map(|c| crate::hook::comparable(&c))
+        .unwrap_or_default();
+    if let Some((text, ok, age_ms)) = activate::shown_for(&dir, &digest, &here, RECENT_MS) {
+        return (
+            format!("{text}\n\n(This is the result of a command with this exact text, run in this folder {} s ago through the hook. If that was another session, this one's command wasn't taken by the hook and recorded nothing.)", age_ms / 1000),
+            ok,
+        );
     }
     let notes = Notes::new(std::path::PathBuf::new(), dir);
-    if notes
-        .intents()
-        .iter()
-        .any(|op| op.key.ends_with(&digest) || op.message.contains(&digest))
-    {
-        return ("This save may still be finishing in the hook; run `astrolabe notes status` in a moment to see.".to_owned(), false);
+    if let Some(op) = notes.intent_for(&digest, &here) {
+        return match op.result {
+            Some(result) => (
+                format!("{result}\n\n(Recovered from the hook's record of this command: its reply was lost on the way.)"),
+                true,
+            ),
+            None => ("This write may still be finishing in the hook; run `astrolabe notes status` in a moment to see.".to_owned(), false),
+        };
     }
     (
         format!(
