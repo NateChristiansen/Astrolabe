@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# The Rust checks CI runs first, so a push is never red for something a minute here catches:
+# format, clippy with warnings denied, the test suites. Run before every push.
+set -eu
+cd "$(dirname "$0")/.."
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+echo "check: clean"
