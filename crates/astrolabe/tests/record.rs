@@ -469,6 +469,13 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n## Plan\nsecond\nASTROLABE",
     );
     assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    // Checked as stored: an indented heading in a plan file would be a heading after the trim.
+    write(
+        &mac.demo.join("plan.md"),
+        "  ## Current state\n**Goal:** stolen",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --plan-file plan.md");
+    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n### Step one\nfirst\n### Step two\nsecond\nASTROLABE",

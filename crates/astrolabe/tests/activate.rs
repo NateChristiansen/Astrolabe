@@ -50,7 +50,7 @@ fn rewritten(command: &str) -> Vec<&str> {
 fn read_ticket(command: &str) -> Option<&str> {
     let path = command
         .strip_prefix("cat '")
-        .or_else(|| command.strip_prefix("Get-Content -Raw -LiteralPath '"))?;
+        .or_else(|| command.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))?;
     let path = path.strip_suffix('\'')?;
     Path::new(path).file_stem()?.to_str()
 }
@@ -740,7 +740,7 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     let claude_ps = json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --effort 70"}});
     let command = rewrite(claude_ps);
     assert!(
-        command.starts_with("Get-Content -Raw -LiteralPath '"),
+        command.starts_with("Get-Content -Raw -Encoding UTF8 -LiteralPath '"),
         "{command}"
     );
     let (text, _) = f.run(&f.demo, &rewritten(&command), "", &[]);
@@ -1837,7 +1837,7 @@ fn the_rewritten_command_is_a_read_of_the_tickets_text() {
         .as_str()
         .unwrap();
     assert!(
-        command.starts_with("Get-Content -Raw -LiteralPath '"),
+        command.starts_with("Get-Content -Raw -Encoding UTF8 -LiteralPath '"),
         "{command}"
     );
 }

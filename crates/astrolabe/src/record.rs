@@ -373,13 +373,14 @@ fn save_inner(
         .map(|p| read_file("pieces-file", p))
         .transpose()?;
     // The file's sections are read back by their `## ` headings, so a heading inside one
-    // would split it on the next read.
+    // would split it on the next read; checked after trimming, as it's stored.
     for (what, text) in [
         ("Current state", body.as_deref()),
         ("the plan", plan.as_deref()),
         ("Pieces", pieces.as_deref()),
     ] {
-        if let Some(line) = text.and_then(|t| t.lines().find(|l| l.starts_with("## "))) {
+        if let Some(line) = text.and_then(|t| t.lines().find(|l| l.trim_start().starts_with("## ")))
+        {
             return Err(format!(
                 "{what} can't hold a `## ` heading ({}), because the effort file's sections are read by those; use ### or deeper. Nothing was written",
                 line.trim()

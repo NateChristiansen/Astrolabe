@@ -964,11 +964,12 @@ fn quoted(path: &str, powershell: bool) -> String {
 }
 
 /// The read the app runs: `cat` is in Claude's built-in read-only set; PowerShell's
-/// `-LiteralPath` keeps `[` and `]` in a path from being read as wildcards.
+/// `-LiteralPath` keeps `[` and `]` in a path from being read as wildcards, and `-Encoding
+/// UTF8` keeps Windows PowerShell 5.1 from reading the UTF-8 text as ANSI.
 fn print_command(path: &str, powershell: bool) -> String {
     let path = quoted(path, powershell);
     if powershell {
-        format!("Get-Content -Raw -LiteralPath {path}")
+        format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}")
     } else {
         format!("cat {path}")
     }
@@ -2006,7 +2007,7 @@ mod print_tests {
         );
         assert_eq!(
             print_command("C:\\s\\[work]\\t.txt", true),
-            "Get-Content -Raw -LiteralPath 'C:\\s\\[work]\\t.txt'"
+            "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\s\\[work]\\t.txt'"
         );
     }
 }
