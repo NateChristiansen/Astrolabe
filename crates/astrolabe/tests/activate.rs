@@ -739,7 +739,10 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     };
     let claude_ps = json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --effort 70"}});
     let command = rewrite(claude_ps);
-    assert!(command.starts_with("Get-Content -Raw -LiteralPath '"), "{command}");
+    assert!(
+        command.starts_with("Get-Content -Raw -LiteralPath '"),
+        "{command}"
+    );
     let (text, _) = f.run(&f.demo, &rewritten(&command), "", &[]);
     assert!(
         f.probe(&text).starts_with("New-Item"),
@@ -1833,7 +1836,10 @@ fn the_rewritten_command_is_a_read_of_the_tickets_text() {
     let command = answer["hookSpecificOutput"]["updatedInput"]["command"]
         .as_str()
         .unwrap();
-    assert!(command.starts_with("Get-Content -Raw -LiteralPath '"), "{command}");
+    assert!(
+        command.starts_with("Get-Content -Raw -LiteralPath '"),
+        "{command}"
+    );
 }
 
 #[test]
