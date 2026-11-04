@@ -1,0 +1,702 @@
+//! Writing notes through the hook: `astrolabe effort new | save` as a client runs them, against
+//! a notes checkout with a bare origin, from one machine and from two.
+mod common;
+
+use astrolabe::activate::STATE_VAR;
+use astrolabe::layer::DATA_DIR_VAR;
+use common::TempDir;
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn write(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// One machine: its own state folder and notes clone of the shared origin, and a product
+/// repo `demo` whose remote the repo note names.
+struct Machine {
+    dir: TempDir,
+    name: &'static str,
+    notes: PathBuf,
+    demo: PathBuf,
+}
+
+struct World {
+    origin: TempDir,
+    demo_origin: PathBuf,
+}
+
+impl World {
+    fn new() -> Self {
+        let origin = TempDir::new();
+        let bare = origin.0.join("notes.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+        let seed = origin.0.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        for (file, text) in [
+            ("knowledge/owner.md", "OWNER-TEXT"),
+            ("knowledge/voice.md", "VOICE-TEXT"),
+            ("knowledge/machines.md", "MACHINE-TEXT"),
+            (
+                "knowledge/repos/demo.md",
+                "---\nremote: git@example.com:team/demo.git\n---\nREPO-DEMO-TEXT",
+            ),
+            ("efforts/.keep", ""),
+        ] {
+            write(&seed.join(file), text);
+        }
+        git(&seed, &["add", "-A"]);
+        git(&seed, &["commit", "-q", "-m", "seed"]);
+        git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&seed, &["push", "-q", "origin", "main"]);
+        let demo_origin = origin.0.join("demo.git");
+        std::fs::create_dir_all(&demo_origin).unwrap();
+        git(&demo_origin, &["init", "-q", "--bare", "-b", "main"]);
+        Self {
+            origin,
+            demo_origin,
+        }
+    }
+
+    fn machine(&self, name: &'static str) -> Machine {
+        let dir = TempDir::new();
+        let notes = dir.0.join("notes");
+        git(
+            &dir.0,
+            &[
+                "clone",
+                "-q",
+                self.origin.0.join("notes.git").to_str().unwrap(),
+                "notes",
+            ],
+        );
+        git(&notes, &["config", "user.email", "t@example.com"]);
+        git(&notes, &["config", "user.name", "T"]);
+        let demo = dir.0.join("demo");
+        std::fs::create_dir_all(&demo).unwrap();
+        git(&demo, &["init", "-q", "-b", "main"]);
+        git(&demo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(
+            &demo,
+            &["remote", "add", "origin", "git@example.com:team/demo.git"],
+        );
+        write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
+        write(
+            &dir.0.join("plugin/.claude-plugin/plugin.json"),
+            "manifest v1",
+        );
+        let m = Machine {
+            dir,
+            name,
+            notes,
+            demo,
+        };
+        let notes_str = m.notes.to_str().unwrap().to_owned();
+        let (out, ok) = m.run(&m.notes, &["repo", "add", "agent", &notes_str], "");
+        assert!(ok, "{out}");
+        assert!(
+            m.run(&m.demo, &["on"], "")
+                .0
+                .contains("on for this machine")
+        );
+        m
+    }
+}
+
+impl Machine {
+    fn state(&self) -> PathBuf {
+        self.dir.0.join("state")
+    }
+
+    fn run(&self, cwd: &Path, args: &[&str], stdin: &str) -> (String, bool) {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(args)
+            .current_dir(cwd)
+            .env(DATA_DIR_VAR, self.dir.0.join("data"))
+            .env(STATE_VAR, self.state())
+            .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
+            .env("ASTROLABE_MACHINE", self.name)
+            .env("ASTROLABE_NO_DETACHED_SYNC", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text += &String::from_utf8_lossy(&output.stderr);
+        (text, output.status.success())
+    }
+
+    /// A Bash command as a client runs it: through the hook, then what the hook let through.
+    fn bash(&self, session: &str, command: &str) -> (String, bool) {
+        self.bash_as(session, command, None)
+    }
+
+    fn bash_as(&self, session: &str, command: &str, agent: Option<&str>) -> (String, bool) {
+        let mut input = json!({"session_id": session, "cwd": self.demo, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": command}});
+        if let Some(agent) = agent {
+            input["agent_id"] = agent.into();
+        }
+        let (out, ok) = self.run(
+            &self.demo,
+            &["hook", "pre-command", "--if-active"],
+            &input.to_string(),
+        );
+        assert!(ok, "a hook always exits 0");
+        if out.trim().is_empty() {
+            return self.plain(command);
+        }
+        let answer: Value = serde_json::from_str(&out).unwrap();
+        let hso = &answer["hookSpecificOutput"];
+        if hso["permissionDecision"] == "deny" {
+            return (
+                hso["permissionDecisionReason"].as_str().unwrap().to_owned(),
+                false,
+            );
+        }
+        let command = hso["updatedInput"]["command"].as_str().unwrap();
+        let exe = format!("'{}' ", env!("CARGO_BIN_EXE_astrolabe"));
+        let rest = command
+            .strip_prefix(&exe)
+            .unwrap_or_else(|| panic!("{command}"));
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        self.run(&self.demo, &words, "")
+    }
+
+    /// The command run with no hook: the shell feeds the heredoc body on stdin.
+    fn plain(&self, command: &str) -> (String, bool) {
+        let (head, body) = match command.split_once("<<'ASTROLABE'\n") {
+            Some((h, b)) => (
+                h.trim(),
+                b.trim_end()
+                    .trim_end_matches("ASTROLABE")
+                    .trim_end()
+                    .to_owned(),
+            ),
+            None => (command.trim(), String::new()),
+        };
+        let words: Vec<String> = astrolabe_words(head);
+        let args: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+        self.run(&self.demo, &args, &body)
+    }
+
+    fn session_start(&self, session: &str, source: &str) -> String {
+        let input = json!({"session_id": session, "cwd": self.demo, "source": source});
+        let (out, ok) = self.run(
+            &self.demo,
+            &["hook", "session-start", "--if-active"],
+            &input.to_string(),
+        );
+        assert!(ok);
+        let out: Value = serde_json::from_str(out.trim()).unwrap();
+        out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn effort_text(&self, n: u32) -> String {
+        let dir = self.notes.join("efforts");
+        let name = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .find(|f| f.starts_with(&format!("{n:04}-")))
+            .unwrap_or_else(|| panic!("no effort {n} in {}", dir.display()));
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    fn journal_today(&self) -> String {
+        let dir = self.notes.join("journal");
+        std::fs::read_dir(&dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .collect()
+    }
+
+    fn log(&self) -> String {
+        git(&self.notes, &["log", "--format=%s"])
+    }
+
+    fn sync(&self) -> (String, bool) {
+        self.run(&self.notes, &["notes", "sync"], "")
+    }
+}
+
+/// Bare words and double-quoted values, as the shell would hand them to the program.
+fn astrolabe_words(head: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut rest = head.trim();
+    while !rest.is_empty() {
+        if let Some(q) = rest.strip_prefix('"') {
+            let end = q.find('"').unwrap();
+            words.push(q[..end].to_owned());
+            rest = q[end + 1..].trim_start();
+        } else {
+            let end = rest.find(' ').unwrap_or(rest.len());
+            words.push(rest[..end].to_owned());
+            rest = rest[end..].trim_start();
+        }
+    }
+    words
+}
+
+const NEW: &str = "astrolabe effort new --title \"Smooth ink\" <<'ASTROLABE'\nsmooth the ink across frames, with café in it\nASTROLABE\n";
+
+#[test]
+fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let start = mac.session_start("s1", "startup");
+    assert!(start.contains("astrolabe effort new"), "{start}");
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains(
+            "Effort 1 created as efforts/0001-smooth-ink.md, status active, bound to this session"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("involvement check in at plan · authority edit"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Astrolabe is on in this session for effort 1"),
+        "{out}"
+    );
+    let text = mac.effort_text(1);
+    for line in [
+        "status: active",
+        "repo: demo",
+        "involvement: check in at plan",
+        "authority: edit",
+        "saved_by: mac · claude",
+        "branch: main",
+        "dirty: false",
+        "# 0001 Smooth ink",
+        "**Goal:** smooth the ink across frames, with café in it",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    let journal = mac.journal_today();
+    assert!(journal.contains(" started 0001 Smooth ink: smooth the ink across frames, with café in it <!-- mac claude e:"), "{journal}");
+    assert!(mac.log().starts_with("0001: started\n"), "{}", mac.log());
+    assert!(mac.notes.join(".gitattributes").exists());
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert_eq!(state["effort"], "1");
+    assert!(state["delivered"].is_string() && state["baseline"].is_string());
+    // The same command typed again with no hook explains itself from the ticket.
+    let (plain, ok) = mac.plain(NEW);
+    assert!(ok, "{plain}");
+    assert!(plain.contains("Effort 1 created"), "{plain}");
+    // A different plain command with no hook is NOT recorded.
+    let (plain, ok) =
+        mac.plain("astrolabe effort new --title \"Other\" <<'ASTROLABE'\ngoal\nASTROLABE\n");
+    assert!(!ok && plain.contains("NOT recorded"), "{plain}");
+    // A subagent can't.
+    let (out, ok) = mac.bash_as("s1", NEW, Some("child-1"));
+    assert!(!ok && out.contains("subagent"), "{out}");
+    // Resume re-injects the effort with its freshness.
+    let resumed = mac.session_start("s1", "resume");
+    assert!(
+        resumed.contains("Last saved by mac · claude at"),
+        "{resumed}"
+    );
+}
+
+#[test]
+fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Done:** half.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Current state replaced") && out.contains("lacks Next"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status blocked");
+    assert!(!ok && out.contains("--waits-for"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: should it be X?\""),
+        "{}",
+        mac.effort_text(1)
+    );
+    assert!(
+        mac.journal_today()
+            .contains(" blocked 0001 Smooth ink: owner: should it be X?")
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" <<'ASTROLABE'\n**Goal:** g.\n**Done:** merged the ink MR.\n**Next:** none.\nASTROLABE\n");
+    assert!(ok && out.contains("status done"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("status: done")
+            && text.contains("waits_for: \"\"")
+            && text.contains("- 20")
+            && text.contains(": X over Y: cheaper"),
+        "{text}"
+    );
+    let journal = mac.journal_today();
+    assert!(
+        journal.contains(" done 0001 Smooth ink: merged the ink MR.")
+            && journal.contains(" decision 0001 Smooth ink: X over Y: cheaper"),
+        "{journal}"
+    );
+    assert_eq!(mac.log().lines().next(), Some("0001: done"));
+    // The plan file is read as the user, relative to the session's folder.
+    write(&mac.demo.join("plan.md"), "the plan");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active --plan-file plan.md",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\nthe plan\n"));
+    assert!(
+        mac.journal_today()
+            .contains("decision 0001 Smooth ink: plan approved")
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save");
+    assert!(!ok && out.contains("nothing to save"), "{out}");
+}
+
+#[test]
+fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The owner edits the note by hand.
+    let path = mac.notes.join("efforts/0001-smooth-ink.md");
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("**Goal:** smooth", "**Goal:** OWNER EDIT smooth");
+    std::fs::write(&path, edited).unwrap();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** mine.\n**Next:** n.\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("changed since it was delivered") && out.contains("OWNER EDIT"),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(1).contains("OWNER EDIT"),
+        "nothing overwritten"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** OWNER EDIT kept, mine too.\n**Next:** n.\nASTROLABE\n");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
+}
+
+#[test]
+fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    // The PC pulls on create, so it takes 2.
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort new --title \"On the PC\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 2 created"), "{out}");
+    assert!(pc.sync().1);
+    assert!(mac.sync().1);
+    // Both go offline (an unreachable remote) and create: both take 3.
+    for m in [&mac, &pc] {
+        git(
+            &m.notes,
+            &["remote", "set-url", "origin", "/nonexistent/notes.git"],
+        );
+    }
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Mac three\" <<'ASTROLABE'\nmac goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 3 created"), "{out}");
+    let (out, ok) = pc.bash(
+        "p2",
+        "astrolabe effort new --title \"PC three\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 3 created"), "{out}");
+    let origin = world.origin.0.join("notes.git");
+    for m in [&mac, &pc] {
+        git(
+            &m.notes,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+    }
+    let (out, ok) = mac.sync();
+    assert!(
+        ok,
+        "{out}\n{}\n{}",
+        git(&mac.notes, &["log", "--oneline", "--all", "--graph"]),
+        git(&mac.notes, &["status"])
+    );
+    // The PC's pull rebases its 3 onto the Mac's 3: two files, one number; the newer (the
+    // PC's, created later) is renumbered to 4 and its session follows.
+    let (out, ok) = pc.sync();
+    assert!(
+        ok,
+        "{out}\n{}\n{}",
+        git(&pc.notes, &["log", "--oneline", "--all", "--graph"]),
+        git(&pc.notes, &["status"])
+    );
+    assert!(
+        pc.notes.join("efforts/0004-pc-three.md").exists(),
+        "{:?}",
+        std::fs::read_dir(pc.notes.join("efforts"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>()
+    );
+    assert!(!pc.notes.join("efforts/0003-pc-three.md").exists());
+    assert!(pc.effort_text(4).contains("# 0004 PC three"));
+    assert!(
+        pc.journal_today()
+            .contains(" renumbered 0004 PC three: was 0003")
+    );
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(pc.state().join("p2.json")).unwrap()).unwrap();
+    assert_eq!(state["effort"], "4");
+    assert_eq!(state["file"], "efforts/0004-pc-three.md");
+    // And the Mac sees it after its own pull, with the journal's day file merged by union.
+    assert!(mac.sync().1);
+    assert!(mac.notes.join("efforts/0004-pc-three.md").exists());
+    let journal = mac.journal_today();
+    assert!(
+        journal.contains("Mac three")
+            && journal.contains("PC three")
+            && journal.contains("On the PC"),
+        "{journal}"
+    );
+}
+
+#[test]
+fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.sync().1);
+    // The PC loads 1 (pulling it), saves, pushes.
+    let (out, ok) = pc.bash("p1", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** pc view.\n**Next:** pc next.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(pc.sync().1);
+    // The Mac, offline, saves the same effort from its older delivered text.
+    git(
+        &mac.notes,
+        &["remote", "set-url", "origin", "/nonexistent/notes.git"],
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** mac view.\n**Next:** mac next.\nASTROLABE\n");
+    assert!(ok, "{out}");
+    git(
+        &mac.notes,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            world.origin.0.join("notes.git").to_str().unwrap(),
+        ],
+    );
+    // Both rewrote the same stamp and Current state, so the rebase conflicts: aborted, the
+    // Mac's commit kept, and every session hears it until the owner resolves it.
+    let (out, ok) = mac.sync();
+    assert!(!ok && out.contains("diverged"), "{out}");
+    assert!(
+        git(&mac.notes, &["status", "--porcelain"])
+            .trim()
+            .is_empty(),
+        "rebase aborted cleanly"
+    );
+    assert!(mac.effort_text(1).contains("mac view"), "local save kept");
+    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(status.contains("Notes diverged from origin"), "{status}");
+    let resumed = mac.session_start("s1", "resume");
+    assert!(resumed.contains("Notes diverged from origin"), "{resumed}");
+    // The owner resolves it (here: keep theirs), and the next sync is clean.
+    git(&mac.notes, &["fetch", "-q"]);
+    git(&mac.notes, &["reset", "-q", "--hard", "origin/main"]);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(status.contains("nothing pending"), "{status}");
+}
+
+#[test]
+fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A crash after the file write, before the commit: the file is there, nothing committed,
+    // the intent remains.
+    let intent = json!({
+        "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("**Goal:**", "**Goal:** CRASHED")]],
+        "renames": [], "journal": [{"id": "crashed-key0", "kind": "decision", "effort": "0001", "title": "Smooth ink", "text": "crash line", "machine": "mac", "provider": "claude", "time": "01:00", "day": "2026-01-01"}],
+        "message": "0001: checkpoint", "base": null, "state": null
+    });
+    write(
+        &mac.state().join("ops/crashed-key.json"),
+        &intent.to_string(),
+    );
+    std::fs::write(
+        mac.notes.join("efforts/0001-smooth-ink.md"),
+        intent["files"][0][1].as_str().unwrap(),
+    )
+    .unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"after the crash\"");
+    // The delivered hash no longer matches, because the crashed write landed: refused, and
+    // the leftover was still finished first.
+    assert!(
+        !ok && out.contains("changed since it was delivered"),
+        "{out}"
+    );
+    assert!(
+        !mac.state().join("ops/crashed-key.json").exists(),
+        "intent finished"
+    );
+    let log = mac.log();
+    assert!(
+        log.starts_with("0001: checkpoint\n0001: started\n"),
+        "{log}"
+    );
+    assert!(
+        std::fs::read_to_string(mac.notes.join("journal/2026-01-01.md"))
+            .unwrap()
+            .contains("crash line")
+    );
+    // The same tool call again (a lost reply) commits nothing new.
+    let before = mac.log();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"after the crash\"");
+    assert!(ok, "{out}");
+    let after = mac.log();
+    assert_eq!(after.lines().count(), before.lines().count() + 1);
+    let (_, ok) = mac.bash("s1", "astrolabe effort save --decision \"after the crash\"");
+    assert!(ok);
+    assert_eq!(
+        mac.log().lines().count(),
+        after.lines().count(),
+        "same tool_use_id, same key: no second commit"
+    );
+    assert_eq!(mac.journal_today().matches("after the crash").count(), 1);
+}
+
+#[test]
+fn two_saves_at_once_both_land_under_the_lock() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Second\" <<'ASTROLABE'\ng2\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let mac = std::sync::Arc::new(mac);
+    let handles: Vec<_> = ["s1", "s2"].into_iter().map(|s| {
+        let mac = mac.clone();
+        std::thread::spawn(move || {
+            let mut input = json!({"session_id": s, "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": format!("c-{s}"), "tool_input": {"command": format!("astrolabe effort save --decision \"from {s}\"")}});
+            input["x"] = Value::Null;
+            let (out, ok) = mac.run(&mac.demo, &["hook", "pre-command", "--if-active"], &input.to_string());
+            assert!(ok && out.contains("permissionDecision"), "{out}");
+        })
+    }).collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+    let journal = mac.journal_today();
+    assert!(
+        journal.contains("from s1") && journal.contains("from s2"),
+        "{journal}"
+    );
+    assert_eq!(
+        mac.log()
+            .lines()
+            .filter(|l| *l == "0001: checkpoint" || *l == "0002: checkpoint")
+            .count(),
+        2,
+        "{}",
+        mac.log()
+    );
+    assert!(
+        std::fs::read_dir(mac.state().join("ops"))
+            .map(|d| d.count())
+            .unwrap_or(0)
+            == 0
+    );
+}
+
+#[test]
+fn efforts_json_is_what_the_home_view_reads() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which?\" <<'ASTROLABE'\n**Goal:** g.\n**Next:** ask.\nASTROLABE\n").1);
+    let (out, ok) = mac.run(&mac.demo, &["efforts", "--repo", "demo"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let e = &v["efforts"][0];
+    assert_eq!(e["number"], 1);
+    assert_eq!(e["status"], "blocked");
+    assert_eq!(e["needs_owner"], true);
+    assert_eq!(e["next"], "ask.");
+    assert_eq!(e["repo"], "demo");
+    assert!(v["journal"].as_str().unwrap().contains("blocked 0001"));
+}

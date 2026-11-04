@@ -13,6 +13,8 @@ sha2 = "0.10"
 protocol = { path = "../protocol" }
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 getrandom = "=0.4.3"
+fs4 = "0.13"
+chrono = "0.4"
 
 # Not a test target: it runs as a real child process, and cargo test builds it.
 [[example]]

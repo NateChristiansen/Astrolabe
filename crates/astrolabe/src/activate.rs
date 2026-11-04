@@ -48,10 +48,14 @@ const AUTHORITY: [(&str, &str); 3] = [
         "change, commit and push the effort's branch where the repo's own rules allow, because the owner allowed sharing for this effort",
     ),
 ];
+/// Why and when work gets recorded, told at session start. Every rule says its reason, so a
+/// newer model can judge the edge cases and a dead rule is easy to spot.
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. When the owner's request means a change, findings or a plan, first run one command alone, with the goal in its body:\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. A question answered in chat needs no effort. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state (at most 12 lines, the owner's voice, Goal · Done · Decided · Verified · Next · Open, no paths or ids) with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\nStates: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request.";
+
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
 const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
 /// What a refusal leaves running: it only ever comes from a hook, so the machine is on.
-const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
+pub(crate) const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
 /// The machine switch's file in the state folder. Present means on.
 const SWITCH: &str = "on";
 /// The notes checkout and repos by name, in the state folder. Not the AppData database: a
@@ -66,7 +70,7 @@ pub fn machine_on(dir: &Path) -> bool {
     dir.join(SWITCH).is_file()
 }
 
-struct Repos(Map<String, Value>);
+pub(crate) struct Repos(pub(crate) Map<String, Value>);
 
 impl Repos {
     /// None written yet is no repos. A record that can't be read is an error, never skipped.
@@ -212,7 +216,7 @@ fn now_ms() -> i64 {
     since.as_millis() as i64
 }
 
-fn random_hex() -> Result<String, String> {
+pub(crate) fn random_hex() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|why| format!("no randomness: {why}"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
@@ -312,7 +316,7 @@ const BOM: char = '\u{feff}';
 
 /// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
 /// `[a, b]` or `- a` lines, joined with commas. Nested YAML isn't read.
-fn frontmatter(text: &str) -> Vec<(String, String)> {
+pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
     // A byte-order mark, as some Windows editors save, isn't part of the first line.
     let text = text.strip_prefix(BOM).unwrap_or(text);
     let mut lines = text.lines();
@@ -347,7 +351,7 @@ fn frontmatter(text: &str) -> Vec<(String, String)> {
     props
 }
 
-fn common_dir(dir: &Path) -> Option<String> {
+pub(crate) fn common_dir(dir: &Path) -> Option<String> {
     let args = ["rev-parse", "--path-format=absolute", "--git-common-dir"].map(AsRef::as_ref);
     let out = crate::worktree::git(dir, &args).ok()?;
     Some(comparable(Path::new(out.trim())))
@@ -490,7 +494,7 @@ fn remote_notes(notes: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
 /// machine for its git repo (`here`, its common directory), and those whose repo note lists
 /// one of its remotes. A name can be both, even for different folders; this folder is every
 /// name it matches.
-fn repo_names(
+pub(crate) fn repo_names(
     notes: &Path,
     registry: &Repos,
     cwd: &Path,
@@ -843,7 +847,7 @@ fn probe(token: &str, powershell: bool) -> String {
     }
 }
 
-fn state_path(dir: &Path, session: &str) -> PathBuf {
+pub(crate) fn state_path(dir: &Path, session: &str) -> PathBuf {
     let safe = |c: char| {
         if c.is_ascii_alphanumeric() || c == '-' {
             c
@@ -886,6 +890,16 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 
 /// What the hook did, left for the command to print. Old ones go as new ones come.
 fn leave(dir: &Path, text: &str, ok: bool) -> Result<String, String> {
+    leave_with(dir, text, ok, None)
+}
+
+/// A ticket that also names the command it answers, so the plain command can find it.
+pub(crate) fn leave_with(
+    dir: &Path,
+    text: &str,
+    ok: bool,
+    digest: Option<&str>,
+) -> Result<String, String> {
     let shown = dir.join("shown");
     for entry in std::fs::read_dir(&shown).into_iter().flatten().flatten() {
         let age = entry
@@ -897,9 +911,38 @@ fn leave(dir: &Path, text: &str, ok: bool) -> Result<String, String> {
         }
     }
     let ticket = random_hex()?;
-    let body = json!({"text": text, "ok": ok, "at_ms": now_ms()});
+    let body = json!({"text": text, "ok": ok, "at_ms": now_ms(), "digest": digest});
     write_json(&shown.join(format!("{ticket}.json")), &body)?;
     Ok(ticket)
+}
+
+/// The freshest ticket the hook left for a command with this digest, within `within_ms`.
+pub(crate) fn shown_for(dir: &Path, digest: &str, within_ms: i64) -> Option<(String, bool)> {
+    let mut best: Option<(i64, String, bool)> = None;
+    for entry in std::fs::read_dir(dir.join("shown"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let at = body["at_ms"].as_i64().unwrap_or(0);
+        if body["digest"] == digest
+            && now_ms() - at <= within_ms
+            && best.as_ref().is_none_or(|b| at > b.0)
+        {
+            best = Some((
+                at,
+                body["text"].as_str().unwrap_or_default().to_owned(),
+                body["ok"] == true,
+            ));
+        }
+    }
+    best.map(|(_, text, ok)| (text, ok))
 }
 
 /// Only while fresh. Reads and nothing else, so it works inside a client's sandbox.
@@ -916,7 +959,12 @@ fn show(dir: &Path, ticket: &str) -> Result<(String, bool), String> {
     Ok((text.to_owned(), body["ok"] == true))
 }
 
-fn notes_and_repos() -> Result<(Repos, PathBuf), String> {
+/// The notes checkout on record, for commands run outside a hook.
+pub fn notes_root() -> Result<PathBuf, String> {
+    notes_and_repos().map(|(_, notes)| notes)
+}
+
+pub(crate) fn notes_and_repos() -> Result<(Repos, PathBuf), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
     let repos = Repos::read(&dir).map_err(|e| format!("this machine's Astrolabe repos: {e}"))?;
     let notes = repos.checkout(AGENT).ok_or(
@@ -990,8 +1038,9 @@ pub fn switch_on(
         - In this build these settings are context, not enforced, apart from the guard. Switching on wrote only Astrolabe's own state file; that isn't leave to edit project files.\n\n\
         {GUARD_SCOPE}\n\n\
         {proof}\n\
-        Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.",
+        Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.\n\n{freshness}\n\n{RECORD_RULE}",
         n = effort.number,
+        freshness = freshness(&notes, &effort, cwd),
         title = effort.title,
         file = effort.file,
         inv = effort.involvement,
@@ -1001,6 +1050,55 @@ pub fn switch_on(
         proof = proof_steps(&token, shells),
     );
     Ok(Activation { state, head, parts })
+}
+
+/// What the stamp says against the repo here: who saved last and when, and what moved since.
+/// Reported at the last published checkpoint; work after it on another machine isn't visible.
+fn freshness(notes: &Path, effort: &Effort, cwd: &Path) -> String {
+    let text = std::fs::read_to_string(notes.join(&effort.file)).unwrap_or_default();
+    let file = crate::effort::EffortFile::parse(&text).unwrap_or_default();
+    let (Some(saved_by), Some(updated)) = (file.prop("saved_by"), file.prop("updated")) else {
+        return "This effort has no stamp yet: it was written by hand, not saved by a session."
+            .to_owned();
+    };
+    let here = crate::notes::machine_name();
+    let other = !saved_by.starts_with(&here);
+    let mut text = format!("Last saved by {saved_by} at {updated}");
+    if let (Some(branch), Some(head)) = (file.prop("branch"), file.prop("head")) {
+        text += &format!(", on {branch} at {head}");
+        if let Some(n) = file.prop("unpushed").filter(|n| *n != "0") {
+            text += &format!(", {n} unpushed commit(s) then");
+        }
+        if file.prop("dirty") == Some("true") {
+            text += ", tree dirty then";
+        }
+    }
+    text.push('.');
+    if other {
+        text +=
+            " That was another machine: anything after that save there isn't visible from here.";
+    }
+    if let Some(facts) = crate::notes::RepoFacts::read(cwd) {
+        let same_branch = file.prop("branch") == Some(facts.branch.as_str());
+        let moved = file.prop("head").is_some_and(|h| h != facts.head);
+        text += &format!(
+            " Here now: {} at {}{}{}.",
+            facts.branch,
+            facts.head,
+            if moved && same_branch {
+                ", moved since that save"
+            } else {
+                ""
+            },
+            if facts.dirty { ", tree dirty" } else { "" }
+        );
+    }
+    let warnings =
+        crate::notes::Notes::new(notes.to_path_buf(), state_dir().unwrap_or_default()).warnings();
+    if !warnings.is_empty() {
+        text += &format!(" Notes: {}", warnings.join(" "));
+    }
+    text
 }
 
 /// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
@@ -1168,10 +1266,16 @@ fn act(
         },
         ["--effort", effort] => {
             let previous = previous.ok().flatten();
+            // The published checkpoint, not a stale local copy: another machine may hold it.
+            let refreshed = crate::record::refresh_notes();
             match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]) {
                 Ok(activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
-                    (activation.text(), true, Change::Write(activation.state), failed)
+                    let mut text = activation.text();
+                    if let Some(note) = refreshed {
+                        text = format!("{note}\n\n{text}");
+                    }
+                    (text, true, Change::Write(activation.state), failed)
                 }
                 Err(why) => (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
             }
@@ -1332,7 +1436,7 @@ fn in_notes(input: &Value) -> bool {
         .is_some_and(|notes| notes == here)
 }
 
-fn provider(input: &Value) -> &'static str {
+pub(crate) fn provider(input: &Value) -> &'static str {
     // Codex adds a turn id to tool hooks and names its transcripts `rollout-…`; Claude does neither.
     let transcript = input["transcript_path"].as_str().unwrap_or_default();
     let name = Path::new(transcript).file_name().and_then(|n| n.to_str());
@@ -1355,6 +1459,56 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
         return Some(hook::deny(
             "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
         ));
+    }
+    // An effort command is done here, in the hook, bound to the session the app named, and
+    // the app runs only a print of the result (see `record`).
+    if crate::effort::EffortCommand::is_effort_command(command) {
+        let session = session?;
+        if child {
+            return Some(hook::deny(
+                "A subagent can't create or save an effort: one session writes an effort's record, the one the owner talks to. Report to it instead.",
+            ));
+        }
+        let powershell = in_powershell(provider(input), &input["tool_name"]);
+        let cwd = input["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+        let (text, ok, digest) = match crate::effort::EffortCommand::parse(command) {
+            Ok(parsed) => {
+                // The same tool call retried gets the same key, so it can't commit twice.
+                let key = match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+                    Some(id) => crate::notes::hash(&format!("{session} {id} {}", parsed.digest())),
+                    None => random_hex().unwrap_or_else(|_| parsed.digest()),
+                };
+                let done = match parsed.verb.as_str() {
+                    "new" => crate::record::new(
+                        &parsed,
+                        &key,
+                        session,
+                        provider(input),
+                        &cwd,
+                        &[powershell],
+                    ),
+                    _ => crate::record::save(&parsed, &key, session, provider(input), &cwd),
+                };
+                (done.text, done.ok, Some(parsed.digest()))
+            }
+            Err(why) => (
+                format!("Effort command refused: {why}.\n{}", crate::effort::FORMS),
+                false,
+                None,
+            ),
+        };
+        let left = state_dir()
+            .ok_or_else(|| "no home folder".to_owned())
+            .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref()));
+        return Some(match left {
+            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+            Err(why) => hook::deny(&format!(
+                "Astrolabe couldn't show this effort command's result ({why}); run `astrolabe notes status`."
+            )),
+        });
     }
     if words.get(..2) != Some(&["astrolabe", "activate"]) {
         return None;
@@ -1400,25 +1554,28 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             Ok(ticket)
         });
     Some(match left {
-        Ok(ticket) => {
-            // This program by its full path: a login shell's PATH can find another copy.
-            let exe = std::env::current_exe().map(|exe| exe.display().to_string());
-            let exe = exe.ok().filter(|exe| !exe.contains('\''));
-            let exe = exe.map_or("astrolabe".to_owned(), |exe| format!("'{exe}'"));
-            // PowerShell reads a quoted path followed by arguments as an error, so call it.
-            let call = if powershell { "& " } else { "" };
-            let mut updated = tool_input.clone();
-            updated[key] = format!("{call}{exe} activate --show {ticket}").into();
-            json!({ "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "updatedInput": updated,
-            }})
-        }
+        Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
         Err(why) => hook::deny(&format!(
             "Astrolabe couldn't finish this ({why}). Run `astrolabe activate --status` to see where this session stands; claim no new protection."
         )),
     })
+}
+
+/// The command the app runs instead: this program by its full path, printing the ticket.
+fn rewrite_to_show(tool_input: &Value, key: &str, ticket: &str, powershell: bool) -> Value {
+    // This program by its full path: a login shell's PATH can find another copy.
+    let exe = std::env::current_exe().map(|exe| exe.display().to_string());
+    let exe = exe.ok().filter(|exe| !exe.contains('\''));
+    let exe = exe.map_or("astrolabe".to_owned(), |exe| format!("'{exe}'"));
+    // PowerShell reads a quoted path followed by arguments as an error, so call it.
+    let call = if powershell { "& " } else { "" };
+    let mut updated = tool_input.clone();
+    updated[key] = format!("{call}{exe} activate --show {ticket}").into();
+    json!({ "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": updated,
+    }})
 }
 
 /// Where a failed reload's block goes when the state file can't take it: the temp folder.
@@ -1481,7 +1638,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
         Err(why) => format!("Can't list efforts: {why}."),
     };
     let mut head = format!(
-        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Don't load one unless the owner asks. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{GUARD_SCOPE}\n\n{}\nUntil it says proven, claim no protection.",
+        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Never load or attach to one unless the owner names it: a related guess is theirs to make. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{RECORD_RULE}\n\n{GUARD_SCOPE}\n\n{}\nUntil it says proven, claim no protection.",
         proof_steps(&session_token(session), &session_shells(provider))
     );
     let parts = match owner_voice(&notes) {
@@ -1501,7 +1658,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
 
 /// Why a folder no repo matches gets no suggestion, and what would match it, offered only for
 /// the owner to ask for, as the notes are theirs.
-fn no_note(cwd: &Path) -> String {
+pub(crate) fn no_note(cwd: &Path) -> String {
     let remotes = folder_remotes(cwd).unwrap_or_default();
     let remotes: Vec<&String> = (remotes.iter())
         .filter(|r| normalize_remote(r).is_some())

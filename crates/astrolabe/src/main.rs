@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|efforts [--repo <name>] [--all]|notes <sync|status>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,6 +43,38 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        ["effort", rest @ ..] => {
+            // Only the hook does the work; here the body is read so the command can be told
+            // apart from one the hook already answered.
+            let body = read_piped_stdin();
+            let (text, ok) = astrolabe::record::plain(rest, body.as_deref());
+            println!("{text}");
+            if !ok {
+                std::process::exit(1);
+            }
+        }
+        ["efforts", rest @ ..] => {
+            let repo = rest
+                .iter()
+                .position(|a| *a == "--repo")
+                .and_then(|i| rest.get(i + 1).copied());
+            let all = rest.contains(&"--all");
+            match astrolabe::record::list(repo, all) {
+                Ok(text) => println!("{text}"),
+                Err(why) => fail(&why),
+            }
+        }
+        ["notes", "sync"] => match notes_here() {
+            Ok(notes) => match notes.sync() {
+                Ok(text) => println!("{text}"),
+                Err(why) => fail(&why),
+            },
+            Err(why) => fail(&why),
+        },
+        ["notes", "status"] => match notes_here() {
+            Ok(notes) => println!("{}", notes.status_text()),
+            Err(why) => fail(&why),
+        },
         ["hook", "pre-command"] => astrolabe::hook::pre_command(),
         ["hook", event] => astrolabe::hook::run(event),
         ["mcp"] => {
@@ -159,4 +191,23 @@ fn serve(db: &Path) {
 fn fail(message: &str) {
     eprintln!("astrolabe: {message}");
     std::process::exit(1);
+}
+
+fn notes_here() -> std::result::Result<astrolabe::notes::Notes, String> {
+    let dir =
+        astrolabe::activate::state_dir().ok_or("Astrolabe has no home folder for its state")?;
+    let root = astrolabe::activate::notes_root()?;
+    Ok(astrolabe::notes::Notes::new(root, dir))
+}
+
+/// What was piped in, if anything: a terminal is left alone.
+fn read_piped_stdin() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return None;
+    }
+    let mut text = String::new();
+    stdin.lock().take(1 << 20).read_to_string(&mut text).ok()?;
+    Some(text)
 }

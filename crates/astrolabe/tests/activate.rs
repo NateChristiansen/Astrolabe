@@ -268,7 +268,7 @@ fn a_repos_active_efforts_are_suggested_and_never_loaded_unasked() {
     assert!(
         text.contains("No effort is loaded")
             && !text.contains("EFFORT-70")
-            && !text.contains("check in at plan"),
+            && !text.contains("- involvement: check in at plan"),
         "{text}"
     );
     assert!(text.contains("OWNER-TEXT") && !f.state().join("s1.json").exists());
