@@ -750,7 +750,11 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     );
     let codex = json!({"session_id": "c1", "turn_id": "u1", "cwd": f.demo, "tool_name": "shell_command", "tool_input": {"command": "astrolabe activate --effort 70"}});
     let command = rewrite(codex);
-    assert_eq!(command.starts_with("& '"), cfg!(windows), "{command}");
+    assert_eq!(
+        command.starts_with("Get-Content -Raw"),
+        cfg!(windows),
+        "{command}"
+    );
     let (text, ok) = f.run(&f.demo, &rewritten(&command), "", &[]);
     assert!(ok, "{text}");
     let probe = f.probe(&text);
@@ -1817,13 +1821,12 @@ fn the_rewritten_command_is_a_read_of_the_tickets_text() {
         .unwrap()
         .to_owned();
     let shown = f.state().join("shown");
-    let expected = format!("cat '{}/", shown.display());
-    assert!(command.starts_with(&expected), "{command}");
     let path = command
         .strip_prefix("cat '")
-        .unwrap()
+        .unwrap_or_else(|| panic!("{command}"))
         .strip_suffix('\'')
         .unwrap();
+    assert_eq!(Path::new(path).parent(), Some(shown.as_path()), "{command}");
     let printed = std::fs::read_to_string(path).unwrap();
     let (shown, ok) = f.run(&f.demo, &rewritten(&command), "", &[]);
     assert!(ok && printed.contains("effort 70"), "{printed}");
