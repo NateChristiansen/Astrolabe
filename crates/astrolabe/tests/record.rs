@@ -492,7 +492,7 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     // A different command from the one above, or it reads as that call's retry.
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save --status active --plan-file plan.md",
+        "astrolabe effort save --status ready --plan-file plan.md",
     );
     assert!(ok && out.contains("stored as `###`"), "{out}");
     let text = mac.effort_text(1);
