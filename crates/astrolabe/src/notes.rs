@@ -88,7 +88,8 @@ pub fn tidy_journal(text: &str) -> String {
         let Some(entry) = entries.iter().find(|e| e.line == *line) else {
             continue;
         };
-        if !entry.is_effort() || entry.at_ms == 0 {
+        // An unstamped line (one early build wrote them) counts as older than any stamped.
+        if !entry.is_effort() || entry.legacy {
             continue;
         }
         match latest.iter_mut().find(|(tag, _, _)| *tag == entry.effort) {
@@ -126,6 +127,9 @@ pub struct JournalEntry {
     /// The line as it is in the file.
     #[serde(skip)]
     pub line: String,
+    /// In the first shape, which held history and is left alone.
+    #[serde(skip)]
+    pub legacy: bool,
 }
 
 impl JournalEntry {
@@ -173,6 +177,7 @@ pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
                     id,
                     at_ms: words.get(2).and_then(|w| w.parse().ok()).unwrap_or(0),
                     line: raw.to_owned(),
+                    legacy: false,
                 });
             }
             let mut parts = body.splitn(4, ' ');
@@ -185,6 +190,7 @@ pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
                 id,
                 at_ms: 0,
                 line: raw.to_owned(),
+                legacy: true,
             })
         })
         .collect()
@@ -313,8 +319,12 @@ impl Notes {
             Ok(_) => {
                 self.clear_sync("diverged");
                 self.fix_duplicate();
-                // Every pull, not only a sync's: a pickup's pull merges day files too.
-                let _ = self.tidy_after_merge();
+                // Every pull, not only a sync's: a pickup's pull merges day files too. A
+                // failure is recorded, not hidden: the next status and session text say so.
+                match self.tidy_after_merge() {
+                    Ok(()) => self.clear_sync("tidy-failed"),
+                    Err(why) => self.record_sync("tidy-failed", &why),
+                }
                 Pull::Pulled
             }
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
@@ -978,6 +988,12 @@ impl Notes {
                 ),
                 None => format!("{unpublished} notes commit(s) not yet pushed."),
             });
+        }
+        if let Some(t) = record.get("tidy-failed") {
+            lines.push(format!(
+                "A journal tidy after a merge failed ({}); the day file may show two lines for one effort until the next save.",
+                t["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
+            ));
         }
         let intents = self.intents().len();
         if intents > 0 {

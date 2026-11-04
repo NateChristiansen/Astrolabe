@@ -814,10 +814,10 @@ fn efforts_json_is_what_the_home_view_reads() {
     );
     // Tidy keeps the latest line per effort, as a union merge of two replacements leaves
     // both; findings and first-shape lines stay.
-    let doubled = "- Started A. <!-- 0001 mac 10 e:a1 -->\n- Started B. <!-- 0002 pc 11 e:b1 -->\n- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n";
+    let doubled = "- 09:00 started 0001 A: a <!-- mac claude e:l1 -->\n- 09:05 done 0001 A: a <!-- mac claude e:l2 -->\n- Started A. <!-- 0001 mac 10 e:a1 -->\n- Started B. <!-- 0002 pc 11 e:b1 -->\n- Unstamped C. <!-- 0003 mac e:c0 -->\n- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Finished C. <!-- 0003 mac 22 e:c1 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n";
     assert_eq!(
         astrolabe::notes::tidy_journal(doubled),
-        "- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n"
+        "- 09:00 started 0001 A: a <!-- mac claude e:l1 -->\n- 09:05 done 0001 A: a <!-- mac claude e:l2 -->\n- Finished A. <!-- 0001 mac 20 e:a2 -->\n- Finished B. <!-- 0002 pc 21 e:b2 -->\n- Finished C. <!-- 0003 mac 22 e:c1 -->\n- Found x. <!-- demo mac 30 e:f1 -->\n- Found y. <!-- demo pc 31 e:f2 -->\n"
     );
 }
 
