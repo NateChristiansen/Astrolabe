@@ -1938,3 +1938,53 @@ fn a_command_is_readable_only_as_text_or_a_list_of_text_in_the_field_the_guard_r
         !reason(&f.hook_raw(input.to_string().into_bytes()).unwrap()).contains("couldn't read")
     );
 }
+
+#[test]
+fn the_cap_counts_what_follows_a_byte_order_mark() {
+    let f = Fixture::new();
+    let template = r#"{"session_id": "s1", "tool_name": "Write", "tool_input": {"content": ""}}"#;
+    let pad = (64 << 20) - template.len();
+    let at = template.find(r#""}}"#).unwrap();
+    let body = format!("{}{}{}", &template[..at], "a".repeat(pad), &template[at..]);
+    assert_eq!(body.len(), 64 << 20, "exactly the cap");
+    assert_eq!(f.hook_raw(format!("\u{feff}{body}").into_bytes()), None);
+}
+
+#[test]
+fn input_trickling_past_the_deadline_is_blocked_as_unreadable() {
+    let f = Fixture::new();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        .args(["hook", "pre-command", "--if-active"])
+        .current_dir(&f.demo)
+        .env(DATA_DIR_VAR, f.dir.0.join("data"))
+        .env(STATE_VAR, f.state())
+        .env("ASTROLABE_HOOK_STDIN_DEADLINE_MS", "600")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut pipe = child.stdin.take().unwrap();
+    // A byte at a time, each well inside the idle wait, for longer than the deadline.
+    let writer = std::thread::spawn(move || {
+        for byte in
+            br#"{"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "echo hi"}}"#
+        {
+            if pipe.write_all(&[*byte]).and_then(|_| pipe.flush()).is_err() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+    let started = std::time::Instant::now();
+    let output = child.wait_with_output().unwrap();
+    let took = started.elapsed();
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        reason(&answer)
+            .starts_with("Astrolabe couldn't read what the app sent its hook (not a JSON object)"),
+        "{answer}"
+    );
+    assert!(took < std::time::Duration::from_secs(4), "{took:?}");
+    let _ = writer.join();
+}

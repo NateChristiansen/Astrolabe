@@ -10,7 +10,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Reports we write are far smaller. Anything bigger is not one of ours.
 const REPORT_LIMIT: u64 = 1 << 16;
@@ -20,6 +20,13 @@ const STDIN_WAIT: Duration = Duration::from_secs(1);
 /// Input over this isn't read whole: far above any one tool call (a big Write or patch),
 /// and a bound on memory for a client that streams without end.
 pub(crate) const STDIN_LIMIT: usize = 64 << 20;
+/// The most a hook spends reading its input in all, so a client trickling bytes can't hold it:
+/// well under the apps' own hook timeouts (Claude's is 60 seconds), and far more than a pipe
+/// takes to carry 64 MiB. Input still incomplete then is read as it stands, so the plugin
+/// blocks it as unreadable.
+const STDIN_DEADLINE: Duration = Duration::from_secs(30);
+/// Tests set a shorter deadline, in milliseconds.
+const STDIN_DEADLINE_VAR: &str = "ASTROLABE_HOOK_STDIN_DEADLINE_MS";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -84,13 +91,14 @@ pub(crate) fn read_bytes() -> Vec<u8> {
 }
 
 /// What arrived, and whether it ran past `STDIN_LIMIT` and was cut there. Read until the
-/// JSON is whole, the client closes the pipe, or nothing more comes for `STDIN_WAIT`, so a
-/// big input that's still arriving isn't cut.
+/// JSON is whole, the client closes the pipe, nothing more comes for `STDIN_WAIT`, so a
+/// big input that's still arriving isn't cut, or `STDIN_DEADLINE` passes in all.
 pub(crate) fn read_stdin() -> (Vec<u8>, bool) {
     const BOM: &[u8] = b"\xEF\xBB\xBF";
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut stdin = io::stdin().take(STDIN_LIMIT as u64 + 1);
+        // The limit is on what follows a mark, so room for one, and a byte to see it's over.
+        let mut stdin = io::stdin().take((STDIN_LIMIT + BOM.len()) as u64 + 1);
         let mut chunk = vec![0; 1 << 16];
         while let Ok(read @ 1..) = stdin.read(&mut chunk) {
             if sender.send(chunk[..read].to_vec()).is_err() {
@@ -98,8 +106,13 @@ pub(crate) fn read_stdin() -> (Vec<u8>, bool) {
             }
         }
     });
+    let total = std::env::var(STDIN_DEADLINE_VAR)
+        .ok()
+        .and_then(|ms| ms.parse().ok());
+    let deadline = Instant::now() + total.map_or(STDIN_DEADLINE, Duration::from_millis);
     let mut input = Vec::new();
-    while let Ok(chunk) = receiver.recv_timeout(STDIN_WAIT) {
+    let wait = || STDIN_WAIT.min(deadline.saturating_duration_since(Instant::now()));
+    while let Ok(chunk) = receiver.recv_timeout(wait()) {
         input.extend(chunk);
         // Checked as it grows, as the mark may arrive split across reads.
         if input.starts_with(BOM) {
