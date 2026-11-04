@@ -1782,3 +1782,50 @@ fn hook_input_with_a_byte_order_mark_is_read_as_without() {
     );
     assert!(out.contains("activate --show"), "{out}");
 }
+
+#[test]
+fn hook_input_that_cant_be_read_is_blocked_while_on_and_ignored_while_off() {
+    let f = Fixture::new();
+    let raw = |stdin: &str| {
+        let (out, ok) = f.run(&f.demo, &["hook", "pre-command", "--if-active"], stdin, &[]);
+        assert!(ok, "a hook always exits 0");
+        (!out.trim().is_empty()).then(|| serde_json::from_str::<Value>(out.trim()).unwrap())
+    };
+    let unreadable = [
+        "not json at all".to_owned(),
+        r#"{"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "echo hi"#.to_owned(),
+        String::new(),
+        json!({"session_id": "s1", "tool_name": "Bash", "tool_input": {}}).to_string(),
+        json!({"session_id": "s1", "tool_name": "shell_command", "tool_input": {"description": "x"}}).to_string(),
+        json!({"session_id": "s1", "tool_input": {"command": "echo hi"}}).to_string(),
+    ];
+    for stdin in &unreadable {
+        let answer = raw(stdin).unwrap_or_else(|| panic!("allowed: {stdin:?}"));
+        let reason = answer["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(
+            answer["hookSpecificOutput"]["permissionDecision"] == "deny"
+                && reason.starts_with("Astrolabe couldn't read what the app sent its hook (")
+                && reason.contains("can't tell which session this is or check the command")
+                && reason.contains("`astrolabe off` in a terminal"),
+            "{stdin:?}: {answer}"
+        );
+    }
+    // Readable input for a tool the guard doesn't check passes, as before.
+    for tool in [
+        json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Read", "tool_input": {"file_path": "/x"}}),
+        json!({"session_id": "s1", "cwd": f.demo, "tool_name": "mcp__x__y", "tool_input": {}}),
+        json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": "git status"}}),
+    ] {
+        assert_eq!(raw(&tool.to_string()), None, "{tool}");
+    }
+    // These denials are no session's proof.
+    let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(status.contains("Guard not proven yet"), "{status}");
+    // Off for the machine: the plugin stays idle, whatever arrives.
+    f.machine("off");
+    for stdin in &unreadable {
+        assert_eq!(raw(stdin), None, "{stdin:?}");
+    }
+}

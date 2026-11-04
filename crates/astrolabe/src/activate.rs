@@ -1191,6 +1191,35 @@ fn refused(effort: &str, why: &str, previous: Option<&Value>) -> String {
     format!("Effort {effort} NOT loaded: {why}. {kept} {STILL_ON}")
 }
 
+/// The shell tools a pre-command hook is sent for: Claude's two, and Codex's names for its
+/// shell commands. Their input must carry the command.
+const SHELL_TOOLS: [&str; 6] = [
+    "bash",
+    "powershell",
+    "shell",
+    "shell_command",
+    "exec_command",
+    "local_shell",
+];
+
+/// Why a pre-command hook's input can't be read, if it can't: not a JSON object (empty,
+/// truncated, or anything else), no tool named, or a shell tool with no command. Input for a
+/// tool the guard doesn't check is readable and passes as before.
+fn unreadable(input: &Value) -> Option<&'static str> {
+    if !input.is_object() {
+        return Some("not a JSON object");
+    }
+    let Some(tool) = input["tool_name"].as_str().filter(|t| !t.is_empty()) else {
+        return Some("no tool named");
+    };
+    let shell = SHELL_TOOLS.iter().any(|s| tool.eq_ignore_ascii_case(s));
+    let tool_input = &input["tool_input"];
+    let command = ["command", "cmd"]
+        .iter()
+        .any(|key| tool_input[*key].is_string() || tool_input[*key].is_array());
+    (shell && !command).then_some("no command for its shell tool")
+}
+
 /// `astrolabe hook <event> --if-active`. Silent in a session that's off, except for its own
 /// switch. Always exits 0, like the hooks it reuses.
 pub fn gate(event: &str) {
@@ -1209,6 +1238,12 @@ pub fn gate(event: &str) {
     }
     match event {
         "pre-command" => {
+            // Not recorded as a denial, so it counts toward no session's proof.
+            if let Some(what) = unreadable(&input) {
+                return hook::say(&hook::deny(&format!(
+                    "Astrolabe couldn't read what the app sent its hook ({what}), so it can't tell which session this is or check the command, and it blocks the command rather than let it run unguarded. If this keeps happening, the app's hook input has changed or the plugin is broken; the owner can run `astrolabe off` in a terminal to stop Astrolabe on this machine until it's fixed."
+                )));
+            }
             let answer = std::panic::catch_unwind(|| switch_command(&input, session, child));
             if let Ok(Some(answer)) = answer {
                 return hook::say(&answer);
