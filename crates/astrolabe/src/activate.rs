@@ -1140,7 +1140,7 @@ fn freshness(notes: &Path, effort: &Effort, cwd: &Path) -> String {
 /// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
 /// A session with no effort still has a probe: named for the session, proven from the
 /// machine switch's time.
-fn session_token(session: &str) -> String {
+pub(crate) fn session_token(session: &str) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(format!("astrolabe probe {session}"));
     hash.iter().take(16).map(|b| format!("{b:02x}")).collect()
@@ -1233,12 +1233,9 @@ pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
     }
     format!(
         "{on} {}",
-        proof(
-            session,
-            token,
-            state["at_ms"].as_i64().unwrap_or(i64::MAX).max(since),
-            powershell
-        )
+        // Per session, from the machine's switch-on: the same hook in the same session,
+        // whichever effort is loaded, so a proof made before the effort still counts.
+        proof(session, token, since, powershell)
     )
 }
 

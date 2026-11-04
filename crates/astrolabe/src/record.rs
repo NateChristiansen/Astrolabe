@@ -210,7 +210,8 @@ fn new_inner(
     }
     stamp(&mut file, session, provider, facts.as_ref());
     let text = file.render();
-    let token = activate::random_hex()?;
+    // The session's one probe token, so the proof from session start carries in.
+    let token = activate::session_token(session);
     let state = json!({
         "session": session, "provider": provider, "effort": number.to_string(), "file": file_name,
         "repo": repo, "cwd": crate::hook::comparable(cwd), "at_ms": notes::now_ms(), "token": token,

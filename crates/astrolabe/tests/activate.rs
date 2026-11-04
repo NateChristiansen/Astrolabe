@@ -525,18 +525,21 @@ fn the_guard_is_proven_only_by_a_hook_denial_of_this_activations_probe() {
     );
     assert!(status().contains("Guard proven"));
     let marker = probe.split('\'').nth(1).unwrap().to_owned();
-    // Switching effort revalidates and needs a new proof.
+    // Switching effort revalidates the context but keeps the proof: the guard is the same
+    // hook in the same session whatever effort is loaded, and a probe named in tool output
+    // after a create was declined by the model (PC, 2026-11-03).
     let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 75");
-    assert!(text.contains("authority: read") && status().contains("not proven yet"));
-    assert!(f.denies("s1", &f.probe(&text)));
-    let second = f.probe(&text).split('\'').nth(1).unwrap().to_owned();
-    std::fs::write(&second, "").unwrap();
-    assert!(status().contains("Guard FAILED"));
-    std::fs::remove_file(second).unwrap();
     assert!(
-        !std::path::Path::new(&marker).exists(),
-        "the first probe never ran"
+        text.contains("authority: read") && status().contains("Guard proven"),
+        "{}",
+        status()
     );
+    assert_eq!(f.probe(&text), probe, "one probe per session");
+    // A probe that did run is a failure whenever it's found.
+    std::fs::write(&marker, "").unwrap();
+    assert!(status().contains("Guard FAILED"));
+    std::fs::remove_file(&marker).unwrap();
+    assert!(status().contains("Guard proven"));
 }
 
 #[test]
