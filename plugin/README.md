@@ -8,7 +8,7 @@ Everything personal is read from the notes checkout at run time; nothing here ho
 
 ## How an effort is bound to a session
 
-The skill runs `astrolabe activate --effort <n>` as a plain shell command. The plugin's pre-command hook sees it with the session id the app supplies, does the work there, and rewrites the command to `astrolabe activate --show <ticket>`, which only prints what the hook left. A command no hook took prints `NOT switched on` and claims no protection, which is what an untrusted Codex hook looks like.
+The skill runs `astrolabe activate --effort <n>` as a plain shell command. The plugin's pre-command hook sees it with the session id the app supplies, does the work there, and rewrites the command to a plain read of the result the hook left (`cat '<state folder>/shown/<ticket>.txt'`, `Get-Content -Raw` in PowerShell). A read-only command runs in every mode: Claude's plan mode ignores a hook's allow for anything else, and the hook has already written by then, so the effort commands work while planning. A command no hook took prints `NOT switched on` and claims no protection, which is what an untrusted Codex hook looks like.
 
 ## How notes get written
 

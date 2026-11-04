@@ -47,6 +47,7 @@ pub const SAVE_FLAGS: [&str; 9] = [
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  **Goal:** …\n  '@\n  or:  @'\n  **Goal:** …\n  '@ | astrolabe effort save --status active\n\
+The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the fields after a line `## Plan`.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is prose; it needs no quoting.";
 

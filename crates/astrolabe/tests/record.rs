@@ -202,12 +202,17 @@ impl Machine {
             );
         }
         let command = hso["updatedInput"]["command"].as_str().unwrap();
-        let exe = format!("'{}' ", env!("CARGO_BIN_EXE_astrolabe"));
-        let rest = command
-            .strip_prefix(&exe)
+        // The app runs a read of the ticket's text; the ticket's own `--show` says the same
+        // and carries whether it worked.
+        let path = command
+            .strip_prefix("cat '")
+            .and_then(|p| p.strip_suffix('\''))
             .unwrap_or_else(|| panic!("{command}"));
-        let words: Vec<&str> = rest.split_whitespace().collect();
-        self.run(&self.demo, &words, "")
+        let ticket = Path::new(path).file_stem().unwrap().to_str().unwrap();
+        let printed = std::fs::read_to_string(path).unwrap();
+        let (text, ok) = self.run(&self.demo, &["activate", "--show", ticket], "");
+        assert_eq!(printed.trim_end(), text.trim_end(), "{command}");
+        (text, ok)
     }
 
     /// The command run with no hook: the shell feeds the heredoc body on stdin.
@@ -433,6 +438,25 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("## Plan\nthe plan\n"));
     assert_eq!(mac.journal_today().lines().count(), 1);
+    // Codex keeps no plan file: the plan rides in the body under a `## Plan` line, and the
+    // fields above it are the Current state.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\n\n## Plan\n1. first\n2. second\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains("## Plan\n1. first\n2. second\n"), "{text}");
+    assert!(
+        text.contains("## Current state\n**Goal:** g.\n**Next:** n.\n\n## "),
+        "{text}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --plan-file plan.md <<'ASTROLABE'\n## Plan\nagain\nASTROLABE",
+    );
+    assert!(!ok && out.contains("one way"), "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\n1. first\n"));
     let (out, ok) = mac.bash("s1", "astrolabe effort save");
     assert!(!ok && out.contains("nothing to save"), "{out}");
     // Pieces: a checklist the owner reads, ticked by name, counted for the home view.

@@ -270,6 +270,31 @@ pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: 
     }
 }
 
+/// The body apart from a plan it carries after a `## Plan` line: Codex keeps no plan file,
+/// so the plan rides in the one heredoc, below the Current state fields.
+fn split_plan(body: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(body) = body else {
+        return (None, None);
+    };
+    let mut lines = body.lines();
+    let current: Vec<&str> = lines
+        .by_ref()
+        .take_while(|l| l.trim() != "## Plan")
+        .collect();
+    let plan: Vec<&str> = lines.collect();
+    let part = |lines: &[&str]| {
+        let text = lines.join("\n");
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    };
+    let plan = body
+        .lines()
+        .any(|l| l.trim() == "## Plan")
+        .then(|| part(&plan))
+        .flatten();
+    (part(&current), plan)
+}
+
 fn save_inner(
     cmd: &EffortCommand,
     key: &str,
@@ -307,7 +332,15 @@ fn save_inner(
     if journal_text.is_some_and(|j| j.lines().count() > 1) {
         return Err("a journal line is one line".to_owned());
     }
-    if cmd.body.is_none()
+    let (body, body_plan) = split_plan(cmd.body.as_deref());
+    if plan_file.is_some() && body_plan.is_some() {
+        return Err(
+            "the plan comes one way: --plan-file, or a `## Plan` section in the body, not both"
+                .to_owned(),
+        );
+    }
+    if body.is_none()
+        && body_plan.is_none()
         && status.is_none()
         && decision.is_none()
         && waits_for.is_none()
@@ -335,7 +368,10 @@ fn save_inner(
         };
         std::fs::read_to_string(&path).map_err(|e| format!("--{flag} {}: {e}", path.display()))
     };
-    let plan = plan_file.map(|p| read_file("plan-file", p)).transpose()?;
+    let plan = plan_file
+        .map(|p| read_file("plan-file", p))
+        .transpose()?
+        .or(body_plan);
     let pieces = pieces_file
         .map(|p| read_file("pieces-file", p))
         .transpose()?;
@@ -378,7 +414,7 @@ fn save_inner(
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
-    if let Some(body) = &cmd.body {
+    if let Some(body) = &body {
         let current = as_current(body);
         let probe = EffortFile {
             current: current.clone(),

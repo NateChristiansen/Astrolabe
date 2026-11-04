@@ -50,7 +50,7 @@ const AUTHORITY: [(&str, &str); 3] = [
 ];
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state (at most 12 lines, the owner's voice, Goal · Done · Decided · Verified · Next · Open, one line each, no ids, at most one path and only for the thing the owner has to open) with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Any other shape is refused with the accepted forms. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one sentence per effort per day, as they would say it (past tense, plain words, what changed, no evidence counts, no lane or hook talk). Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state (at most 12 lines, the owner's voice, Goal · Done · Decided · Verified · Next · Open, one line each, no ids, at most one path and only for the thing the owner has to open) with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state fields. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one sentence per effort per day, as they would say it (past tense, plain words, what changed, no evidence counts, no lane or hook talk). Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request.";
 
 /// Said to a worker on binding: what it may not do, and why.
 pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it creates, saves and journals nothing in the owner's notes, because one session writes an effort's record and the dispatcher reports for its workers. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
@@ -928,7 +928,19 @@ pub(crate) fn leave_with(
     let cwd = cwd.map(comparable);
     let body = json!({"text": text, "ok": ok, "at_ms": now_ms(), "digest": digest, "cwd": cwd});
     write_json(&shown.join(format!("{ticket}.json")), &body)?;
+    // The text alone too, for the read the app runs in place of the command.
+    let printed = if text.ends_with('\n') {
+        text.to_owned()
+    } else {
+        format!("{text}\n")
+    };
+    crate::notes::write_text(&ticket_text(&shown, &ticket), &printed)?;
     Ok(ticket)
+}
+
+/// The ticket's text file, which a plain `cat` prints.
+fn ticket_text(shown: &Path, ticket: &str) -> PathBuf {
+    shown.join(format!("{ticket}.txt"))
 }
 
 /// The freshest ticket the hook left for a command with this digest, within `within_ms`.
@@ -1654,16 +1666,29 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
     })
 }
 
-/// The command the app runs instead: this program by its full path, printing the ticket.
+/// The command the app runs instead: a plain read of the ticket's text. A read-only command
+/// runs in every mode, where Claude's plan mode ignores a hook's allow for anything else
+/// and its classifier denied this program's own print; the hook has written by then, so a
+/// denied print would hide a write that happened. This program's `--show` is the fallback
+/// when the path can't be quoted.
 fn rewrite_to_show(tool_input: &Value, key: &str, ticket: &str, powershell: bool) -> Value {
-    // This program by its full path: a login shell's PATH can find another copy.
-    let exe = std::env::current_exe().map(|exe| exe.display().to_string());
-    let exe = exe.ok().filter(|exe| !exe.contains('\''));
-    let exe = exe.map_or("astrolabe".to_owned(), |exe| format!("'{exe}'"));
-    // PowerShell reads a quoted path followed by arguments as an error, so call it.
-    let call = if powershell { "& " } else { "" };
+    let text = state_dir().map(|dir| ticket_text(&dir.join("shown"), ticket));
+    let text = text.map(|p| p.display().to_string());
+    let print = match text.filter(|p| !p.contains('\'')) {
+        Some(path) if powershell => format!("Get-Content -Raw '{path}'"),
+        Some(path) => format!("cat '{path}'"),
+        None => {
+            // This program by its full path: a login shell's PATH can find another copy.
+            let exe = std::env::current_exe().map(|exe| exe.display().to_string());
+            let exe = exe.ok().filter(|exe| !exe.contains('\''));
+            let exe = exe.map_or("astrolabe".to_owned(), |exe| format!("'{exe}'"));
+            // PowerShell reads a quoted path followed by arguments as an error, so call it.
+            let call = if powershell { "& " } else { "" };
+            format!("{call}{exe} activate --show {ticket}")
+        }
+    };
     let mut updated = tool_input.clone();
-    updated[key] = format!("{call}{exe} activate --show {ticket}").into();
+    updated[key] = print.into();
     json!({ "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "allow",

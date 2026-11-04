@@ -35,11 +35,24 @@ fn git(cwd: &Path, args: &[&str]) {
 /// The arguments of a command the hook rewrote, which calls this program by its full path,
 /// with PowerShell's call operator in front where the command runs in PowerShell.
 fn rewritten(command: &str) -> Vec<&str> {
+    // The read the app runs: its ticket is the file's stem, shown the same way.
+    if let Some(ticket) = read_ticket(command) {
+        return vec!["activate", "--show", ticket];
+    }
     let exe = format!("'{}' ", env!("CARGO_BIN_EXE_astrolabe"));
     let command = command.strip_prefix("& ").unwrap_or(command);
     let rest = command.strip_prefix(&exe);
     let rest = rest.unwrap_or_else(|| panic!("only the switch reaches here: {command}"));
     rest.split_whitespace().collect()
+}
+
+/// The ticket a rewritten read names: `cat '<state>/shown/<ticket>.txt'`, or PowerShell's.
+fn read_ticket(command: &str) -> Option<&str> {
+    let path = command
+        .strip_prefix("cat '")
+        .or_else(|| command.strip_prefix("Get-Content -Raw '"))?;
+    let path = path.strip_suffix('\'')?;
+    Path::new(path).file_stem()?.to_str()
 }
 
 fn write(path: &Path, text: &str) {
@@ -726,7 +739,7 @@ fn a_command_that_runs_in_powershell_is_called_and_probed_in_its_form() {
     };
     let claude_ps = json!({"session_id": "p1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe activate --effort 70"}});
     let command = rewrite(claude_ps);
-    assert!(command.starts_with("& '"), "{command}");
+    assert!(command.starts_with("Get-Content -Raw '"), "{command}");
     let (text, _) = f.run(&f.demo, &rewritten(&command), "", &[]);
     assert!(
         f.probe(&text).starts_with("New-Item"),
@@ -1786,7 +1799,41 @@ fn hook_input_with_a_byte_order_mark_is_read_as_without() {
         &bom(input),
         &[],
     );
-    assert!(out.contains("activate --show"), "{out}");
+    assert!(out.contains("cat '"), "{out}");
+}
+
+/// Catches: a rewrite that isn't a plain read. Claude's plan mode ignores a hook's allow for
+/// anything but a read-only command, and the hook has written by the time the app decides.
+#[test]
+fn the_rewritten_command_is_a_read_of_the_tickets_text() {
+    let f = Fixture::new();
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    let answer = f.hook(input).unwrap();
+    let command = answer["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = f.state().join("shown");
+    let expected = format!("cat '{}/", shown.display());
+    assert!(command.starts_with(&expected), "{command}");
+    let path = command
+        .strip_prefix("cat '")
+        .unwrap()
+        .strip_suffix('\'')
+        .unwrap();
+    let printed = std::fs::read_to_string(path).unwrap();
+    let (shown, ok) = f.run(&f.demo, &rewritten(&command), "", &[]);
+    assert!(ok && printed.contains("effort 70"), "{printed}");
+    assert_eq!(printed, shown, "the file says what --show says");
+    let ticket = read_ticket(&command).unwrap();
+    assert_eq!(ticket.len(), 32, "the text file sits beside the ticket");
+    // An effort command's result too.
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "PowerShell", "tool_input": {"command": "astrolabe effort save --status done"}});
+    let answer = f.hook(input).unwrap();
+    let command = answer["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap();
+    assert!(command.starts_with("Get-Content -Raw '"), "{command}");
 }
 
 #[test]
