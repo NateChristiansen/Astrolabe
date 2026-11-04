@@ -425,6 +425,37 @@ mod tests {
     }
 }
 
+/// Which lines sit inside a Markdown code fence. A fence opens with three or more of one
+/// character (backtick or tilde) and closes only with a line of at least as many of the same
+/// character and nothing else, so a shorter run or the other character inside stays text.
+pub(crate) fn fence_mask<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<bool> {
+    let run = |t: &str, c: char| t.chars().take_while(|x| *x == c).count();
+    let mut open: Option<(char, usize)> = None;
+    lines
+        .map(|l| {
+            let t = l.trim();
+            match open {
+                Some((c, n)) => {
+                    if run(t, c) >= n && t.chars().all(|x| x == c) {
+                        open = None;
+                    }
+                    true
+                }
+                None => {
+                    for c in ['`', '~'] {
+                        let n = run(t, c);
+                        if n >= 3 {
+                            open = Some((c, n));
+                            return true;
+                        }
+                    }
+                    false
+                }
+            }
+        })
+        .collect()
+}
+
 /// An effort note as a whole: properties, title, the sections the program touches, and
 /// everything else kept as it is. Only `## Current state` is replaced whole; `## Plan` is set
 /// once a plan is approved and sits below Decisions; `## Decisions` only grows. The rest is the
@@ -475,6 +506,9 @@ impl EffortFile {
         };
         let mut heading: Option<String> = None;
         let mut buf = String::new();
+        // A `## ` line inside a code fence (a plan's shell sample, say) is text, not a
+        // section, or a fenced "## Current state" would replace the real one on reread.
+        let fenced = fence_mask(body.lines());
         let flush = |heading: &Option<String>, buf: &mut String, file: &mut Self| {
             let body = buf.trim().to_owned();
             match heading.as_deref() {
@@ -486,8 +520,11 @@ impl EffortFile {
             }
             buf.clear();
         };
-        for line in body.lines() {
-            if let Some(t) = line
+        for (line, in_fence) in body.lines().zip(fenced) {
+            if in_fence && heading.is_some() {
+                buf.push_str(line);
+                buf.push('\n');
+            } else if let Some(t) = line
                 .strip_prefix("# ")
                 .filter(|_| file.title.is_empty() && heading.is_none())
             {
@@ -783,6 +820,20 @@ mod file_tests {
         );
         let back = EffortFile::parse(&out).unwrap();
         assert_eq!(back.plan.as_deref(), Some("### Steps\n1. a"));
+        // A fenced section heading inside the plan stays in the plan.
+        let mut fenced = back.clone();
+        fenced.plan = Some("### Steps\n```md\n## Current state\nstolen\n```\n".to_owned());
+        let out = fenced.render();
+        let again = EffortFile::parse(&out).unwrap();
+        assert_eq!(again.current, "Done.");
+        assert_eq!(
+            again.plan.as_deref(),
+            Some("### Steps\n```md\n## Current state\nstolen\n```")
+        );
+        assert_eq!(
+            fence_mask("a\n````\n```\nb\n````\nc".lines()),
+            vec![false, true, true, true, true, false]
+        );
         assert_eq!(back.decisions.lines().count(), 2);
         let mut labelled = back;
         labelled.current =

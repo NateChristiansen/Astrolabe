@@ -111,18 +111,12 @@ fn shift_plan_headings(plan: &str) -> (String, bool) {
         let rest = l[n..].trim_end_matches('\r');
         (n > 0 && (rest.is_empty() || rest.starts_with(' '))).then_some(n)
     };
-    // Each line with its heading level, or none inside a ``` or ~~~ fence.
-    let mut fenced = false;
+    // Each line with its heading level, or none inside a code fence.
+    let fenced = crate::effort::fence_mask(plan.split('\n'));
     let lines: Vec<(&str, Option<usize>)> = plan
         .split('\n')
-        .map(|l| {
-            let t = l.trim();
-            if t.starts_with("```") || t.starts_with("~~~") {
-                fenced = !fenced;
-                return (l, None);
-            }
-            (l, (!fenced).then(|| level(l)).flatten())
-        })
+        .zip(fenced)
+        .map(|(l, in_fence)| (l, (!in_fence).then(|| level(l)).flatten()))
         .collect();
     let Some(min) = lines.iter().filter_map(|(_, n)| *n).min() else {
         return (plan.to_owned(), false);
@@ -139,43 +133,6 @@ fn shift_plan_headings(plan: &str) -> (String, bool) {
         .collect::<Vec<_>>()
         .join("\n");
     (out, true)
-}
-
-#[cfg(test)]
-mod plan_heading_tests {
-    use super::shift_plan_headings;
-
-    #[test]
-    fn headings_shift_together_and_fences_and_blank_ones_are_handled() {
-        assert_eq!(
-            shift_plan_headings("# T\n\n## A\n### B\n#not\n"),
-            ("### T\n\n#### A\n##### B\n#not\n".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("#### Only\n##### deep"),
-            ("### Only\n#### deep".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("### fine\n```sh\n# comment\n```\n#### sub"),
-            (
-                "### fine\n```sh\n# comment\n```\n#### sub".to_owned(),
-                false
-            )
-        );
-        assert_eq!(
-            shift_plan_headings("## A\n~~~\n# in fence\n~~~\n"),
-            ("### A\n~~~\n# in fence\n~~~\n".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("#\r\n#### Steps\r\n"),
-            ("###\r\n###### Steps\r\n".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("no headings"),
-            ("no headings".to_owned(), false)
-        );
-        assert_eq!(shift_plan_headings(""), (String::new(), false));
-    }
 }
 
 fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&RepoFacts>) {
@@ -874,4 +831,49 @@ pub fn refresh_notes() -> Option<String> {
         ));
     }
     (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+#[cfg(test)]
+mod plan_heading_tests {
+    use super::shift_plan_headings;
+
+    #[test]
+    fn headings_shift_together_and_fences_and_blank_ones_are_handled() {
+        assert_eq!(
+            shift_plan_headings("# T\n\n## A\n### B\n#not\n"),
+            ("### T\n\n#### A\n##### B\n#not\n".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("#### Only\n##### deep"),
+            ("### Only\n#### deep".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("### fine\n```sh\n# comment\n```\n#### sub"),
+            (
+                "### fine\n```sh\n# comment\n```\n#### sub".to_owned(),
+                false
+            )
+        );
+        assert_eq!(
+            shift_plan_headings("## A\n~~~\n# in fence\n~~~\n"),
+            ("### A\n~~~\n# in fence\n~~~\n".to_owned(), true)
+        );
+        // A longer fence isn't closed by a shorter one, nor by the other character.
+        assert_eq!(
+            shift_plan_headings("## A\n````md\n```\n# still in\n~~~\n# still in\n````\n# out"),
+            (
+                "#### A\n````md\n```\n# still in\n~~~\n# still in\n````\n### out".to_owned(),
+                true
+            )
+        );
+        assert_eq!(
+            shift_plan_headings("#\r\n#### Steps\r\n"),
+            ("###\r\n###### Steps\r\n".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("no headings"),
+            ("no headings".to_owned(), false)
+        );
+        assert_eq!(shift_plan_headings(""), (String::new(), false));
+    }
 }
