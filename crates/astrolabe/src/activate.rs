@@ -1203,8 +1203,10 @@ const SHELL_TOOLS: [&str; 6] = [
 ];
 
 /// Why a pre-command hook's input can't be read, if it can't: not a JSON object (empty,
-/// truncated, or anything else), no tool named, or a shell tool with no command. Input for a
-/// tool the guard doesn't check is readable and passes as before.
+/// truncated, or anything else), no tool named, a shell tool with no command, or a command
+/// the guard would read that isn't text or a list of text. The command is looked for in the
+/// field the guard judges, so the two can't disagree. Input for a tool the guard doesn't
+/// check is readable and passes as before.
 fn unreadable(input: &Value) -> Option<&'static str> {
     if !input.is_object() {
         return Some("not a JSON object");
@@ -1212,19 +1214,42 @@ fn unreadable(input: &Value) -> Option<&'static str> {
     let Some(tool) = input["tool_name"].as_str().filter(|t| !t.is_empty()) else {
         return Some("no tool named");
     };
-    let shell = SHELL_TOOLS.iter().any(|s| tool.eq_ignore_ascii_case(s));
-    let tool_input = &input["tool_input"];
-    let command = ["command", "cmd"]
-        .iter()
-        .any(|key| tool_input[*key].is_string() || tool_input[*key].is_array());
-    (shell && !command).then_some("no command for its shell tool")
+    // The guard's own exceptions: their `command` isn't a shell's.
+    if tool.starts_with("mcp__") || tool == "apply_patch" {
+        return None;
+    }
+    let shell = is_shell_tool(tool);
+    match crate::guard::command_field(&input["tool_input"]) {
+        None if shell => Some("no command for its shell tool"),
+        Some(command) if !crate::guard::readable_command(command) => {
+            Some("a command that isn't text or a list of text")
+        }
+        _ => None,
+    }
+}
+
+fn is_shell_tool(tool: &str) -> bool {
+    SHELL_TOOLS.iter().any(|s| tool.eq_ignore_ascii_case(s))
+}
+
+/// The tool an input names, read from its text when it was too big to parse whole: the first
+/// `"tool_name": "<name>"`, as the apps put it ahead of the tool's input.
+fn tool_named_in(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(1 << 16)]);
+    let rest = text.split_once("\"tool_name\"")?.1.trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let (name, _) = rest.split_once('"')?;
+    let plain = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c));
+    (!name.is_empty() && plain).then(|| name.to_owned())
 }
 
 /// `astrolabe hook <event> --if-active`. Silent in a session that's off, except for its own
 /// switch. Always exits 0, like the hooks it reuses.
 pub fn gate(event: &str) {
     std::panic::set_hook(Box::new(|_| {}));
-    let bytes = hook::read_bytes();
+    let (bytes, over) = hook::read_stdin();
     let input: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let session = input["session_id"].as_str().filter(|s| !s.is_empty());
     // A child agent shares its parent's session id. It gets the guard, as every session does
@@ -1238,8 +1263,20 @@ pub fn gate(event: &str) {
     }
     match event {
         "pre-command" => {
+            // Too big to read whole: a tool the guard doesn't check still runs, as it would
+            // have; anything else can't be checked.
+            let named = over.then(|| tool_named_in(&bytes)).flatten();
+            if named.as_deref().is_some_and(|t| !is_shell_tool(t)) {
+                return;
+            }
             // Not recorded as a denial, so it counts toward no session's proof.
-            if let Some(what) = unreadable(&input) {
+            let what = match over {
+                true => {
+                    Some("more than the hook reads whole, for a shell tool or one it couldn't name")
+                }
+                false => unreadable(&input),
+            };
+            if let Some(what) = what {
                 return hook::say(&hook::deny(&format!(
                     "Astrolabe couldn't read what the app sent its hook ({what}), so it can't tell which session this is or check the command, and it blocks the command rather than let it run unguarded. If this keeps happening, the app's hook input has changed or the plugin is broken; the owner can run `astrolabe off` in a terminal to stop Astrolabe on this machine until it's fixed."
                 )));

@@ -1829,3 +1829,112 @@ fn hook_input_that_cant_be_read_is_blocked_while_on_and_ignored_while_off() {
         assert_eq!(raw(stdin), None, "{stdin:?}");
     }
 }
+
+impl Fixture {
+    /// The pre-command hook's answer to raw input, written aside so a hook that stops
+    /// reading early doesn't fail the write.
+    fn hook_raw(&self, stdin: Vec<u8>) -> Option<Value> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(["hook", "pre-command", "--if-active"])
+            .current_dir(&self.demo)
+            .env(DATA_DIR_VAR, self.dir.0.join("data"))
+            .env(STATE_VAR, self.state())
+            .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
+            .env_remove(EFFORT_VAR)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut pipe = child.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || {
+            let _ = pipe.write_all(&stdin);
+        });
+        let output = child.wait_with_output().unwrap();
+        let _ = writer.join();
+        assert!(output.status.success(), "a hook always exits 0");
+        let out = String::from_utf8_lossy(&output.stdout);
+        (!out.trim().is_empty()).then(|| serde_json::from_str(out.trim()).unwrap())
+    }
+}
+
+fn reason(answer: &Value) -> &str {
+    assert_eq!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    answer["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap()
+}
+
+#[test]
+fn large_hook_input_is_read_whole_and_still_guarded() {
+    let f = Fixture::new();
+    let big = "rm -rf / ".repeat(250_000); // over 2 MiB
+    let edit = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Edit", "tool_input": {"file_path": "/x", "old_string": big, "new_string": "y"}});
+    assert_eq!(
+        f.hook_raw(edit.to_string().into_bytes()),
+        None,
+        "an edit isn't a command"
+    );
+    let bash = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": format!("pkill -f x # {big}")}});
+    let answer = f.hook_raw(bash.to_string().into_bytes()).expect("guarded");
+    assert!(
+        !reason(&answer).contains("couldn't read"),
+        "judged, not unreadable: {answer}"
+    );
+    let fine = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": format!("echo {}", "a".repeat(2 << 20))}});
+    assert_eq!(f.hook_raw(fine.to_string().into_bytes()), None);
+}
+
+#[test]
+fn hook_input_past_the_cap_runs_only_for_a_tool_the_guard_doesnt_check() {
+    let f = Fixture::new();
+    let huge = "a".repeat(65 << 20);
+    let edit = format!(
+        r#"{{"session_id": "s1", "tool_name": "Write", "tool_input": {{"content": "{huge}"}}}}"#
+    );
+    assert_eq!(f.hook_raw(edit.into_bytes()), None);
+    let bash = format!(
+        r#"{{"session_id": "s1", "tool_name": "Bash", "tool_input": {{"command": "echo {huge}"}}}}"#
+    );
+    let answer = f.hook_raw(bash.into_bytes()).expect("blocked");
+    assert!(
+        reason(&answer).contains("more than the hook reads whole"),
+        "{answer}"
+    );
+    let nameless = format!(r#"{{"session_id": "s1", "tool_input": {{"command": "echo {huge}"}}}}"#);
+    assert!(f.hook_raw(nameless.into_bytes()).is_some());
+}
+
+#[test]
+fn a_command_is_readable_only_as_text_or_a_list_of_text_in_the_field_the_guard_reads() {
+    let f = Fixture::new();
+    for tool_input in [
+        json!({"command": [null, 123]}),
+        json!({"command": ["echo", 1]}),
+        json!({"command": null, "cmd": "echo hi"}),
+        json!({"command": {"text": "echo hi"}}),
+    ] {
+        let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": tool_input});
+        let answer = f
+            .hook_raw(input.to_string().into_bytes())
+            .unwrap_or_else(|| panic!("allowed: {input}"));
+        assert!(reason(&answer).starts_with("Astrolabe couldn't read what the app sent its hook (a command that isn't text or a list of text)"), "{answer}");
+    }
+    // An unknown tool with a command is read as a shell by the guard, so it's held to the same.
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "NewShell", "tool_input": {"command": [null]}});
+    assert!(f.hook_raw(input.to_string().into_bytes()).is_some());
+    for tool_input in [
+        json!({"command": ["echo", "hi"]}),
+        json!({"cmd": "echo hi"}),
+    ] {
+        let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "shell", "tool_input": tool_input});
+        assert_eq!(f.hook_raw(input.to_string().into_bytes()), None, "{input}");
+    }
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "shell", "tool_input": {"command": ["pkill", "-f", "x"]}});
+    assert!(
+        !reason(&f.hook_raw(input.to_string().into_bytes()).unwrap()).contains("couldn't read")
+    );
+}

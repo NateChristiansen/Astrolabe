@@ -236,6 +236,22 @@ struct Context {
 
 /// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
 /// would remove the client's approval prompt.
+/// The field a shell tool's command is in, as the guard reads it: `command` if the input
+/// has one at all, else `cmd` (Codex). One function, so a check that the command can be read
+/// looks at the same field the guard judges.
+pub fn command_field(input: &Value) -> Option<&Value> {
+    input.get("command").or_else(|| input.get("cmd"))
+}
+
+/// Whether the guard can judge this command: text, or a list of words that are all text.
+pub fn readable_command(command: &Value) -> bool {
+    match command {
+        Value::String(_) => true,
+        Value::Array(parts) => parts.iter().all(Value::is_string),
+        _ => false,
+    }
+}
+
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     // Their `command` isn't a shell's: Codex's patch tool puts the patch text there. A tool
     // unknown here that has a `command` is read as a shell, so a new one stays covered.
@@ -260,7 +276,7 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     } else {
         Dialect::Sh
     };
-    match input.get("command").or_else(|| input.get("cmd"))? {
+    match command_field(input)? {
         Value::String(text) => script(text, dialect, &mut context, 0),
         Value::Array(parts) => {
             let word = |part: &Value| Word {

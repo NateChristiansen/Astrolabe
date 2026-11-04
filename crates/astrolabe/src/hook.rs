@@ -10,13 +10,16 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Reports we write are far smaller. Anything bigger is not one of ours.
 const REPORT_LIMIT: u64 = 1 << 16;
-/// A client writes the hook's input at once. One that doesn't still gets its receipt.
+/// How long a hook waits for more input once none comes. A client writes the hook's input
+/// at once; one that holds the pipe open still gets its receipt.
 const STDIN_WAIT: Duration = Duration::from_secs(1);
-const STDIN_LIMIT: u64 = 1 << 20;
+/// Input over this isn't read whole: far above any one tool call (a big Write or patch),
+/// and a bound on memory for a client that streams without end.
+pub(crate) const STDIN_LIMIT: usize = 64 << 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -77,31 +80,42 @@ fn read_input() -> Value {
 /// What arrived, whole or not, without a leading UTF-8 byte-order mark: a PowerShell pipe
 /// sends one, and JSON with it in front doesn't parse, so every hook would read nothing.
 pub(crate) fn read_bytes() -> Vec<u8> {
+    read_stdin().0
+}
+
+/// What arrived, and whether it ran past `STDIN_LIMIT` and was cut there. Read until the
+/// JSON is whole, the client closes the pipe, or nothing more comes for `STDIN_WAIT`, so a
+/// big input that's still arriving isn't cut.
+pub(crate) fn read_stdin() -> (Vec<u8>, bool) {
     const BOM: &[u8] = b"\xEF\xBB\xBF";
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut stdin = io::stdin().take(STDIN_LIMIT);
-        let mut chunk = [0; 8192];
+        let mut stdin = io::stdin().take(STDIN_LIMIT as u64 + 1);
+        let mut chunk = vec![0; 1 << 16];
         while let Ok(read @ 1..) = stdin.read(&mut chunk) {
             if sender.send(chunk[..read].to_vec()).is_err() {
                 return;
             }
         }
     });
-    let deadline = Instant::now() + STDIN_WAIT;
     let mut input = Vec::new();
-    while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
+    while let Ok(chunk) = receiver.recv_timeout(STDIN_WAIT) {
         input.extend(chunk);
         // Checked as it grows, as the mark may arrive split across reads.
         if input.starts_with(BOM) {
             input.drain(..BOM.len());
         }
-        if serde_json::from_slice::<Value>(&input).is_ok() {
+        if input.len() > STDIN_LIMIT {
+            input.truncate(STDIN_LIMIT);
+            return (input, true);
+        }
+        // Parsed only when it could be whole, so a big input isn't parsed once per read.
+        let last = input.iter().rev().find(|b| !b.is_ascii_whitespace());
+        if last == Some(&b'}') && serde_json::from_slice::<Value>(&input).is_ok() {
             break;
         }
     }
-    input
+    (input, false)
 }
 
 /// Appears whole or not at all: written aside, then renamed.
