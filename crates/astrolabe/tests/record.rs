@@ -748,7 +748,9 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     // Bound and saved: silence; a commit in the repo moves the fingerprint: one nudge.
     assert!(mac.bash("s1", NEW).1);
     assert!(mac.stop("s1", false, false).is_none(), "baseline taken at create");
-    // Created, never saved, long answer: one ask, then silence until a save.
+    // Created, never saved, long answer: one ask, then silence until a save. The ask is once
+    // per session whichever side asked, so the earlier one is cleared here.
+    std::fs::remove_file(mac.state().join("marks/s1.asked")).unwrap();
     let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "y".repeat(700)});
     let asked = mac.hook_json("stop", long.clone()).unwrap();
     assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("never saved"), "{asked}");

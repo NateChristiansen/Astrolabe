@@ -29,16 +29,19 @@ pub const SAVE_FLAGS: [&str; 5] = ["status", "decision", "waits-for", "reason", 
 /// The accepted forms, for a refusal.
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n\
-PowerShell:\n  astrolabe effort save --status active @'\n  **Goal:** …\n  '@\n\
+PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  **Goal:** …\n  '@\n  or:  @'\n  **Goal:** …\n  '@ | astrolabe effort save --status active\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is prose; it needs no quoting.";
 
 impl EffortCommand {
     /// Whether a command string is one of these at all, so other commands pass untouched.
+    /// Any shape that names `astrolabe effort` is claimed, so one the grammar rejects is
+    /// refused with the forms rather than run by whatever `astrolabe` is on PATH.
     pub fn is_effort_command(command: &str) -> bool {
-        let mut words = command.split_whitespace().skip_while(|w| *w == "&");
-        let first = words.next();
-        first.is_some_and(|w| w == "astrolabe" || w.ends_with("/astrolabe"))
-            && words.next() == Some("effort")
+        let words: Vec<&str> = command.split_whitespace().collect();
+        words.windows(2).any(|w| {
+            (w[0] == "astrolabe" || w[0].ends_with("/astrolabe") || w[0].ends_with("\\astrolabe"))
+                && w[1] == "effort"
+        })
     }
 
     /// Reads a command, or says why it isn't one the program accepts.
@@ -158,6 +161,13 @@ fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
             return Err("nothing may follow @' on its line".to_owned());
         }
         let (body, after) = end_of_body(rest, "'@")?;
+        // Either the here-string is the last argument, or it's piped into the command.
+        if head.trim().is_empty() {
+            let piped = after.trim_start().strip_prefix('|').ok_or(
+                "a here-string first must be piped into the command: '@ | astrolabe effort …",
+            )?;
+            return Ok((piped.trim(), Some(body)));
+        }
         if !after.trim().is_empty() {
             return Err("nothing may follow the closing '@ line".to_owned());
         }
@@ -180,6 +190,15 @@ fn end_of_body<'a>(rest: &'a str, end: &str) -> Result<(String, &'a str), String
         };
         if line.trim() == end {
             return Ok((lines.join("\n").trim().to_owned(), after));
+        }
+        // A here-string may close and pipe on one line: `'@ | astrolabe effort …`.
+        if end == "'@"
+            && let Some(tail) = line.trim_start().strip_prefix("'@")
+            && tail.trim_start().starts_with('|')
+        {
+            let body = lines.join("\n").trim().to_owned();
+            let at = rest.len() - remaining.len() + (line.len() - line.trim_start().len()) + 2;
+            return Ok((body, &rest[at..]));
         }
         if after.is_empty() && !remaining.contains('\n') {
             return Err(format!("the body never ends: no line with only {end}"));
@@ -264,6 +283,13 @@ mod tests {
         assert_eq!(cmd.body.as_deref(), Some("Goal line."));
         let full = "/Users/x/.local/bin/astrolabe effort save";
         assert_eq!(EffortCommand::parse(full).unwrap().body, None);
+        let piped = "@'\r\nFind the thing; research only.\r\n'@ | astrolabe effort new --title \"Trace input\" --authority read";
+        let cmd = EffortCommand::parse(piped).unwrap();
+        assert_eq!(cmd.verb, "new");
+        assert_eq!(cmd.flag("authority"), Some("read"));
+        assert_eq!(cmd.body.as_deref(), Some("Find the thing; research only."));
+        assert!(EffortCommand::is_effort_command("@'\nx\n'@ | astrolabe effort new --title t"));
+        assert!(EffortCommand::is_effort_command("echo hi | astrolabe effort save"));
     }
 
     #[test]
