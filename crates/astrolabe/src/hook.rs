@@ -74,8 +74,10 @@ fn read_input() -> Value {
     serde_json::from_slice(&read_bytes()).unwrap_or(Value::Null)
 }
 
-/// What arrived, whole or not.
+/// What arrived, whole or not, without a leading UTF-8 byte-order mark: a PowerShell pipe
+/// sends one, and JSON with it in front doesn't parse, so every hook would read nothing.
 pub(crate) fn read_bytes() -> Vec<u8> {
+    const BOM: &[u8] = b"\xEF\xBB\xBF";
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut stdin = io::stdin().take(STDIN_LIMIT);
@@ -91,6 +93,10 @@ pub(crate) fn read_bytes() -> Vec<u8> {
     while let Ok(chunk) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
     {
         input.extend(chunk);
+        // Checked as it grows, as the mark may arrive split across reads.
+        if input.starts_with(BOM) {
+            input.drain(..BOM.len());
+        }
         if serde_json::from_slice::<Value>(&input).is_ok() {
             break;
         }

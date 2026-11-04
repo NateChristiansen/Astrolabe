@@ -1729,3 +1729,56 @@ fn a_remote_with_only_a_push_url_is_skipped_and_the_rest_still_match() {
         "{text}"
     );
 }
+
+#[test]
+fn hook_input_with_a_byte_order_mark_is_read_as_without() {
+    let f = Fixture::new();
+    let bom = |input: Value| format!("\u{feff}{input}");
+    // Session start, as a PowerShell pipe would send it.
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "startup"});
+    let (out, ok) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &bom(input),
+        &[],
+    );
+    assert!(ok);
+    let out: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}"));
+    let text = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.contains("pick up 70") && text.contains("OWNER-TEXT"),
+        "{text}"
+    );
+    // Pre-command: the probe is denied by the real guard, for this session, so it proves it.
+    f.control(text);
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": f.probe(text)}});
+    let (out, ok) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &bom(input),
+        &[],
+    );
+    assert!(ok);
+    let out: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}"));
+    let reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap();
+    assert!(
+        out["hookSpecificOutput"]["permissionDecision"] == "deny"
+            && !reason.contains("could not read"),
+        "{out}"
+    );
+    let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(status.contains("Guard proven"), "{status}");
+    // The switch command is taken too.
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "pre-command", "--if-active"],
+        &bom(input),
+        &[],
+    );
+    assert!(out.contains("activate --show"), "{out}");
+}
