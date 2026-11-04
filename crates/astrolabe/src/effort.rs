@@ -561,12 +561,22 @@ impl EffortFile {
             .filter(|p| !p.is_empty())
     }
 
-    /// A `**Label:**` line's text, in the labelled form efforts had before 2026-11-04.
+    /// A `**Label:**` line's text, in the labelled form efforts had before 2026-11-04:
+    /// only when the block opens with `**Goal:**`, so a bold word later in prose isn't one.
     fn field(&self, name: &str) -> Option<&str> {
-        let prefix = format!("**{name}:**");
-        self.current
+        let legacy = self
+            .current
             .lines()
-            .find_map(|l| l.trim_start().strip_prefix(prefix.as_str()))
+            .find(|l| !l.trim().is_empty())
+            .is_some_and(|l| l.trim_start().starts_with("**Goal:**"));
+        let prefix = format!("**{name}:**");
+        legacy
+            .then(|| {
+                self.current
+                    .lines()
+                    .find_map(|l| l.trim_start().strip_prefix(prefix.as_str()))
+            })
+            .flatten()
             .map(str::trim)
     }
 
@@ -781,6 +791,12 @@ mod file_tests {
         labelled.current = "**Goal:** g.\n**Done:** d.\n**Next:** n.".to_owned();
         assert_eq!(labelled.first_paragraph(), Some("g."));
         assert_eq!(labelled.last_paragraph(), Some("n."));
+        labelled.current = "Prose first.\n\n**Goal:** example in prose.".to_owned();
+        assert_eq!(labelled.first_paragraph(), Some("Prose first."));
+        assert_eq!(
+            labelled.last_paragraph(),
+            Some("**Goal:** example in prose.")
+        );
         assert_eq!(
             slug("Smooth ink: across frames, v2!"),
             "smooth-ink-across-frames-v2"

@@ -104,27 +104,78 @@ fn check_journal(text: &str) -> Result<(), String> {
 
 /// Plan headings shifted together so the top level lands at `###`: the effort file's
 /// sections are read by `## `, and a plan file's own `# ` title would read as a second
-/// document. Line endings and indentation stay as they are.
+/// document. Lines inside a code fence, line endings and indentation stay as they are.
 fn shift_plan_headings(plan: &str) -> (String, bool) {
     let level = |l: &str| {
         let n = l.bytes().take_while(|b| *b == b'#').count();
-        (n > 0 && l[n..].starts_with(' ')).then_some(n)
+        let rest = l[n..].trim_end_matches('\r');
+        (n > 0 && (rest.is_empty() || rest.starts_with(' '))).then_some(n)
     };
-    let Some(min) = plan.split('\n').filter_map(level).min() else {
+    // Each line with its heading level, or none inside a ``` or ~~~ fence.
+    let mut fenced = false;
+    let lines: Vec<(&str, Option<usize>)> = plan
+        .split('\n')
+        .map(|l| {
+            let t = l.trim();
+            if t.starts_with("```") || t.starts_with("~~~") {
+                fenced = !fenced;
+                return (l, None);
+            }
+            (l, (!fenced).then(|| level(l)).flatten())
+        })
+        .collect();
+    let Some(min) = lines.iter().filter_map(|(_, n)| *n).min() else {
         return (plan.to_owned(), false);
     };
     if min == 3 {
         return (plan.to_owned(), false);
     }
-    let out = plan
-        .split('\n')
-        .map(|l| match level(l) {
-            Some(n) => format!("{}{}", "#".repeat(n + 3 - min), &l[n..]),
-            None => l.to_owned(),
+    let out = lines
+        .iter()
+        .map(|(l, n)| match n {
+            Some(n) => format!("{}{}", "#".repeat(n + 3 - min), &l[*n..]),
+            None => (*l).to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n");
     (out, true)
+}
+
+#[cfg(test)]
+mod plan_heading_tests {
+    use super::shift_plan_headings;
+
+    #[test]
+    fn headings_shift_together_and_fences_and_blank_ones_are_handled() {
+        assert_eq!(
+            shift_plan_headings("# T\n\n## A\n### B\n#not\n"),
+            ("### T\n\n#### A\n##### B\n#not\n".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("#### Only\n##### deep"),
+            ("### Only\n#### deep".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("### fine\n```sh\n# comment\n```\n#### sub"),
+            (
+                "### fine\n```sh\n# comment\n```\n#### sub".to_owned(),
+                false
+            )
+        );
+        assert_eq!(
+            shift_plan_headings("## A\n~~~\n# in fence\n~~~\n"),
+            ("### A\n~~~\n# in fence\n~~~\n".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("#\r\n#### Steps\r\n"),
+            ("###\r\n###### Steps\r\n".to_owned(), true)
+        );
+        assert_eq!(
+            shift_plan_headings("no headings"),
+            ("no headings".to_owned(), false)
+        );
+        assert_eq!(shift_plan_headings(""), (String::new(), false));
+    }
 }
 
 fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&RepoFacts>) {
