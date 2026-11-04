@@ -732,8 +732,13 @@ impl Machine {
 fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     let world = World::new();
     let mac = world.machine("mac");
-    // Nothing bound, nothing edited: silence.
+    // Nothing bound, nothing edited, a short answer: silence. A long answer: one ask per
+    // session, then silence.
     assert!(mac.stop("s1", false, false).is_none());
+    let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "x".repeat(700)});
+    let asked = mac.hook_json("stop", long.clone()).unwrap();
+    assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("long answer and no effort"), "{asked}");
+    assert!(mac.hook_json("stop", long).is_none(), "asked once per session");
     // An edit with no effort: one nudge to start one, then silence.
     mac.edit("s1", "Edit");
     let nudge = mac.stop("s1", false, false).unwrap();

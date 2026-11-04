@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 /// Tools whose success means a file changed. Codex's `apply_patch` matches `Edit` or `Write`.
 pub const EDIT_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"];
 
+/// An answer this long in a session with no effort is more likely findings than chat.
+const LONG_ANSWER: usize = 600;
+
 /// Where an unbound session's mark goes.
 fn mark_path(dir: &Path, session: &str) -> PathBuf {
     dir.join("marks").join(state_path(dir, session).file_name().unwrap_or_default())
@@ -78,11 +81,23 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         }
         Ok(None) => {
             let path = mark_path(&dir, session);
-            if !path.exists() {
-                return None;
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+                "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work (a change, findings or a plan), run `astrolabe effort new` with its title and goal, then save; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+            } else {
+                // Findings reported only in chat touch no file, so nothing else detects them;
+                // three research runs skipped the effort on the text alone. A long answer with
+                // no effort gets one ask per session, because that's the one sign there is.
+                let long = input["last_assistant_message"]
+                    .as_str()
+                    .is_some_and(|m| m.len() > LONG_ANSWER);
+                let asked = path.with_extension("asked");
+                if !long || asked.exists() {
+                    return None;
+                }
+                let _ = notes::write_text(&asked, "");
+                "Astrolabe: this turn ended with a long answer and no effort recorded. If the owner asked you to find out, look into, check or compare something, that's findings they want in their notes: run `astrolabe effort new` with a title and the goal, then `astrolabe effort save --status done` with what you found in its Current state. If it was a plain question or chat, say so in a few words and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             }
-            let _ = std::fs::remove_file(&path);
-            "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work (a change, findings or a plan), run `astrolabe effort new` with its title and goal, then save; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
         }
         Err(_) => return None,
     };
