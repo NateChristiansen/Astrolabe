@@ -748,6 +748,13 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     // Bound and saved: silence; a commit in the repo moves the fingerprint: one nudge.
     assert!(mac.bash("s1", NEW).1);
     assert!(mac.stop("s1", false, false).is_none(), "baseline taken at create");
+    // Created, never saved, long answer: one ask, then silence until a save.
+    let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "y".repeat(700)});
+    let asked = mac.hook_json("stop", long.clone()).unwrap();
+    assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("never saved"), "{asked}");
+    assert!(mac.hook_json("stop", long.clone()).is_none());
+    assert!(mac.bash("s1", "astrolabe effort save --decision "d0"").1);
+    assert!(mac.hook_json("stop", long).is_none(), "saved: no ask");
     write(&mac.demo.join("a.txt"), "a");
     git(&mac.demo, &["add", "a.txt"]);
     git(&mac.demo, &["commit", "-q", "-m", "a"]);

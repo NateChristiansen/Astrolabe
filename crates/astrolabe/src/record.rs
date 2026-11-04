@@ -208,7 +208,7 @@ fn new_inner(
         "session": session, "provider": provider, "effort": number.to_string(), "file": file_name,
         "repo": repo, "cwd": crate::hook::comparable(cwd), "at_ms": notes::now_ms(), "token": token,
         "delivered": notes::hash(&text), "baseline": facts.as_ref().map(|f| f.fingerprint.clone()),
-        "last_save_ms": notes::now_ms(), "mark": false,
+        "last_save_ms": notes::now_ms(), "mark": false, "saves": 0,
     });
     let op = Op {
         key: key.to_owned(),
@@ -441,6 +441,7 @@ fn save_inner(
     next_state["delivered"] = notes::hash(&text).into();
     next_state["baseline"] = facts.as_ref().map(|f| f.fingerprint.clone()).into();
     next_state["last_save_ms"] = now.into();
+    next_state["saves"] = (state["saves"].as_u64().unwrap_or(0) + 1).into();
     next_state["mark"] = false.into();
     next_state["acknowledged"] = Value::Null;
     let message = match &status {

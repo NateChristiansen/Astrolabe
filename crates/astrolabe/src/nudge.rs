@@ -58,10 +58,28 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
             let acknowledged = state["acknowledged"].as_str().map(str::to_owned);
             let moved = print.is_some_and(|p| baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p));
             let marked = state["mark"] == true;
-            if !moved && !marked {
-                return None;
-            }
             let effort = state["effort"].as_str().unwrap_or_default().to_owned();
+            if !moved && !marked {
+                // Created and never saved, and a long answer just went by: the findings
+                // are probably in that answer and not in the notes. Once per session.
+                let unsaved = state["saves"].as_u64() == Some(0);
+                let long = input["last_assistant_message"]
+                    .as_str()
+                    .is_some_and(|m| m.len() > LONG_ANSWER);
+                let asked = mark_path(&dir, session).with_extension("asked");
+                if !(unsaved && long) || asked.exists() {
+                    return None;
+                }
+                let _ = notes::write_text(&asked, "");
+                let text = format!(
+                    "Astrolabe: effort {effort} was created in this session and never saved, and this turn ended with a long answer. If that answer holds what the owner asked for, put it in the notes: replace Current state with the findings and run `astrolabe effort save` (with --status done if the work is done). If there's nothing to keep yet, say so in a few words and finish. This is the plugin's hook, not the owner: not a request."
+                );
+                return Some(if codex {
+                    json!({"decision": "block", "reason": text})
+                } else {
+                    json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})
+                });
+            }
             let what = match (&facts, moved) {
                 (Some(f), true) => format!(
                     "the repo changed since the last save of effort {effort} (now {} at {}{})",
