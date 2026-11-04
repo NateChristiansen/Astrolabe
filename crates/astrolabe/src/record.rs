@@ -160,7 +160,19 @@ fn new_inner(
         ));
     }
     if notes.already_applied(key) {
-        return Err("this same tool call was already done (a retry); nothing new was written. Run `astrolabe activate --status` to see the session's effort".to_owned());
+        // Done before, by this call or its interrupted first run: the result it had, or the
+        // effort it bound.
+        if let Some(result) = notes.intents().into_iter().find(|op| op.key == key).and_then(|op| op.result) {
+            return Ok(result);
+        }
+        let bound = read_state(&dir, session)?.and_then(|s| s["effort"].as_str().map(str::to_owned));
+        return match bound {
+            Some(n) => {
+                let activation = activate::switch_on(&dir, &n, session, provider, cwd, read_state(&dir, session).ok().flatten().as_ref(), shells)?;
+                Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written.\n\n{}", activation.text()))
+            }
+            None => Err("this same tool call was already done (a retry); nothing new was written. Run `astrolabe activate --status` to see the session's effort".to_owned()),
+        };
     }
     let pulled = notes.pull();
     let number = notes.next_number();
@@ -481,16 +493,21 @@ pub fn forget(key: &str) {
 /// same command means it was done; a recent intent means it's still finishing.
 pub fn plain(args: &[&str], body: Option<&str>) -> (String, bool) {
     let mut words = vec!["astrolabe".to_owned(), "effort".to_owned()];
-    // PowerShell hands the here-string over as one argument with its line breaks.
+    // PowerShell hands the here-string over as one argument: the one that isn't a flag or a
+    // flag's value, or any with line breaks.
     let mut body = body.map(str::to_owned);
-    for a in args {
-        if a.contains('\n') {
+    let mut wants_value = false;
+    for (i, a) in args.iter().enumerate() {
+        let is_flag = a.starts_with("--");
+        let positional = i > 0 && !is_flag && !wants_value;
+        if a.contains('\n') || positional {
             body = Some((*a).to_owned());
         } else if a.contains(' ') || a.is_empty() {
             words.push(format!("\"{a}\""));
         } else {
             words.push((*a).to_owned());
         }
+        wants_value = is_flag;
     }
     let mut text = words.join(" ");
     if let Some(body) = body.as_deref().filter(|b| !b.trim().is_empty()) {

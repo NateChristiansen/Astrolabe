@@ -18,6 +18,8 @@ Writes are planned whole as an intent file in the state folder and applied idemp
 
 The Stop hook nudges once per change when the repo's fingerprint (HEAD, the diff, untracked contents) differs from the last save's, or an edit or commit marked the session: Claude gets it as hook feedback, Codex as a block whose reason is the text, and `stop_hook_active` stops a second one. No save is ever required to finish. `astrolabe efforts [--repo <name>] [--all]` prints what the home view reads as JSON.
 
+Known limits, stated: a plain command run within a minute of another session's identical command in the same folder sees that one's result (the reply says so); the effort file's shape is fixed by the program, there is no `templates/effort.md`; findings written only in chat, with no file touched, aren't detected at turn end.
+
 ## Setup, once per machine
 
 1. The program at `~/.local/bin/astrolabe-trial` (`astrolabe-trial.exe` on Windows), so the build in use elsewhere stays as it is. The hooks call it as `~/.local/bin/astrolabe-trial`, unquoted: Codex on Windows runs hooks in PowerShell and Claude in Git Bash or sh, all of them expand that `~`, and none needs PATH, which an app started from the Mac Dock may lack. A trial run points `~` at a scratch folder instead: HOME for Git Bash and sh, USERPROFILE for PowerShell.

@@ -232,6 +232,8 @@ pub struct Effort {
     pub involvement: String,
     pub authority: String,
     pub current: String,
+    /// The file as read, hashed: what a save compares against, from the same read.
+    pub hash: String,
 }
 
 /// `efforts/<nnnn>-*.md`, its properties (YAML frontmatter, as Obsidian keeps them) and its
@@ -257,6 +259,7 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     };
     let file = format!("efforts/{name}");
     let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+    let hash = crate::notes::hash(&text);
     let text = text.replace("\r\n", "\n");
     let props = frontmatter(&text);
     let title = (props
@@ -308,6 +311,7 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             .filter(|c| !c.is_empty())
             .ok_or_else(|| format!("{file} has no `## Current state` section"))?,
         file,
+        hash,
     })
 }
 
@@ -1029,10 +1033,12 @@ pub fn switch_on(
         .unwrap_or_else(now_ms);
     // The effort as delivered, so a save can tell whether it would overwrite another's, and
     // the repo as it stands, so the Stop hook can tell whether work moved.
-    let delivered = std::fs::read_to_string(notes.join(&effort.file))
-        .map(|t| crate::notes::hash(&t))
-        .ok();
-    let baseline = crate::notes::RepoFacts::read(cwd).map(|f| f.fingerprint);
+    let delivered = Some(effort.hash.clone());
+    // A resumed session keeps its baseline, so changes made before it closed still count.
+    let baseline = match same.and_then(|p| p["baseline"].as_str()) {
+        Some(kept) => Some(kept.to_owned()),
+        None => crate::notes::RepoFacts::read(cwd).map(|f| f.fingerprint),
+    };
     let mut state = json!({
         "session": session, "provider": provider, "effort": effort.number, "file": effort.file,
         "repo": repo, "cwd": comparable(cwd), "at_ms": at_ms, "token": token,
@@ -1551,8 +1557,9 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref(), Some(&cwd)));
         return Some(match left {
             Ok(ticket) => {
-                // The ticket now holds the result, so the intent that held it can go.
-                if let Some(op_key) = op_key {
+                // The ticket now holds the result, so the intent that held it can go. A
+                // failed one keeps its intent, which is its recovery plan.
+                if let (Some(op_key), true) = (op_key, ok) {
                     crate::record::forget(&op_key);
                 }
                 rewrite_to_show(tool_input, key, &ticket, powershell)
@@ -1810,14 +1817,23 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
     let Some(dir) = state_dir() else {
         return launched.map(|e| refused(&e, "no home folder for its state", None));
     };
-    match read_state(&dir, session) {
+    let state = read_state(&dir, session);
+    // Another machine may have saved since: the published checkpoint, not a stale copy. The
+    // refresh may renumber this session's effort, so the state is read again after it.
+    let refreshed = match &state {
+        Ok(Some(_)) => crate::record::refresh_notes(),
+        _ => None,
+    };
+    let state = match state {
+        Ok(Some(_)) => read_state(&dir, session),
+        other => other,
+    };
+    match state {
         Ok(Some(state)) => {
             let effort = state["effort"].as_str().unwrap_or_default().to_owned();
             let provider = state["provider"].as_str().unwrap_or("claude").to_owned();
             // No tool at session start: the provider's usual shell.
             let shells = session_shells(&provider);
-            // Another machine may have saved since: the published checkpoint, not a stale copy.
-            let refreshed = crate::record::refresh_notes();
             Some(
                 match switch_on(
                     &dir,

@@ -318,6 +318,10 @@ impl Notes {
         match self.lock() {
             Ok(_held) => {
                 let leftovers = self.reconcile();
+                if !leftovers.is_empty() {
+                    // Nothing moves under an unfinished write.
+                    return (leftovers, Pull::Offline("unfinished writes".to_owned()));
+                }
                 (leftovers, self.pull())
             }
             Err(why) => (vec![why], Pull::Offline("no lock".to_owned())),
@@ -393,7 +397,12 @@ impl Notes {
     /// A recent op for this command in this folder: finished (its result) or still going.
     pub fn intent_for(&self, digest: &str, cwd: &str) -> Option<Op> {
         self.intents().into_iter().find(|op| {
-            op.digest.as_deref() == Some(digest) && op.cwd.as_deref() == Some(cwd)
+            let fresh = std::fs::metadata(self.intent_path(&op.key))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age.as_millis() as i64 <= RECENT_MS);
+            fresh && op.digest.as_deref() == Some(digest) && op.cwd.as_deref() == Some(cwd)
         })
     }
 
@@ -498,6 +507,12 @@ impl Notes {
     pub fn sync(&self) -> Result<String, String> {
         let _held = self.lock()?;
         let leftovers = self.reconcile();
+        if !leftovers.is_empty() {
+            return Err(format!(
+                "unfinished writes failed again, so nothing was pulled or pushed: {}",
+                leftovers.join("; ")
+            ));
+        }
         if !self.has_remote() {
             return Ok("no remote: nothing to push".to_owned());
         }
