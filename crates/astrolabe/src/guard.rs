@@ -252,6 +252,15 @@ pub fn readable_command(command: &Value) -> bool {
     }
 }
 
+/// A command as one line of text, whichever form it came in.
+pub fn command_text(command: &Value) -> String {
+    match command {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        _ => String::new(),
+    }
+}
+
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     // Their `command` isn't a shell's: Codex's patch tool puts the patch text there. A tool
     // unknown here that has a `command` is read as a shell, so a new one stays covered.

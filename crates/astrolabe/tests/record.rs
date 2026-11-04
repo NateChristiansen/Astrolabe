@@ -180,6 +180,14 @@ impl Machine {
         );
         assert!(ok, "a hook always exits 0");
         if out.trim().is_empty() {
+            if !command.trim_start().starts_with("astrolabe") {
+                let out = Command::new("sh").arg("-c").arg(command).current_dir(&self.demo)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@example.com")
+                    .env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@example.com")
+                    .output().unwrap();
+                return (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.success());
+            }
             return self.plain(command);
         }
         let answer: Value = serde_json::from_str(&out).unwrap();
@@ -699,4 +707,69 @@ fn efforts_json_is_what_the_home_view_reads() {
     assert_eq!(e["next"], "ask.");
     assert_eq!(e["repo"], "demo");
     assert!(v["journal"].as_str().unwrap().contains("blocked 0001"));
+}
+
+impl Machine {
+    fn hook_json(&self, event: &str, input: Value) -> Option<Value> {
+        let (out, ok) = self.run(&self.demo, &["hook", event, "--if-active"], &input.to_string());
+        assert!(ok, "{out}");
+        (!out.trim().is_empty()).then(|| serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}")))
+    }
+
+    fn stop(&self, session: &str, active: bool, codex: bool) -> Option<Value> {
+        let mut input = json!({"session_id": session, "cwd": self.demo, "stop_hook_active": active, "last_assistant_message": "done"});
+        if codex {
+            input["turn_id"] = "t1".into();
+        }
+        self.hook_json("stop", input)
+    }
+
+    fn edit(&self, session: &str, tool: &str) {
+        let input = json!({"session_id": session, "cwd": self.demo, "tool_name": tool, "tool_input": {"file_path": "x"}, "tool_response": {}});
+        assert!(self.hook_json("post-tool", input).is_none());
+    }
+}
+
+#[test]
+fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    // Nothing bound, nothing edited: silence.
+    assert!(mac.stop("s1", false, false).is_none());
+    // An edit with no effort: one nudge to start one, then silence.
+    mac.edit("s1", "Edit");
+    let nudge = mac.stop("s1", false, false).unwrap();
+    let text = nudge["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(text.contains("no effort recorded") && text.contains("not the owner"), "{text}");
+    assert!(mac.stop("s1", false, false).is_none(), "said once");
+    // Bound and saved: silence; a commit in the repo moves the fingerprint: one nudge.
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.stop("s1", false, false).is_none(), "baseline taken at create");
+    write(&mac.demo.join("a.txt"), "a");
+    git(&mac.demo, &["add", "a.txt"]);
+    git(&mac.demo, &["commit", "-q", "-m", "a"]);
+    let nudge = mac.stop("s1", false, true).unwrap();
+    assert_eq!(nudge["decision"], "block", "Codex continues only by a block");
+    let text = nudge["reason"].as_str().unwrap();
+    assert!(text.contains("the repo changed since the last save of effort 1") && text.contains("not the owner"), "{text}");
+    assert!(mac.stop("s1", true, true).is_none(), "already continued");
+    assert!(mac.stop("s1", false, true).is_none(), "acknowledged: no second nudge for the same state");
+    // A second edit to a dirty file changes the print; a save clears everything.
+    write(&mac.demo.join("a.txt"), "aa");
+    assert!(mac.stop("s1", false, false).is_some());
+    write(&mac.demo.join("a.txt"), "aaa");
+    assert!(mac.stop("s1", false, false).is_some(), "content, not file names");
+    assert!(mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n").1);
+    assert!(mac.stop("s1", false, false).is_none(), "saved");
+    // The guard's view of a commit, and an apply_patch, both mark.
+    let (_, ok) = mac.bash("s1", "git commit --allow-empty -q -m nothing");
+    assert!(ok);
+    assert!(mac.stop("s1", false, false).is_some());
+    assert!(mac.stop("s1", false, false).is_none());
+    mac.edit("s1", "apply_patch");
+    assert!(mac.stop("s1", false, false).is_some());
+    // Session end closes the state; a fresh session on the same id still reloads it.
+    assert!(mac.hook_json("session-end", json!({"session_id": "s1", "cwd": mac.demo, "reason": "other"})).is_none());
+    let state: Value = serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert!(state["closed_ms"].is_number());
 }

@@ -1,0 +1,117 @@
+//! Detection, so the save instruction isn't advisory: the audit found agents asked once wrote
+//! well and skipped the save; "update memory" prompts stay advisory unless a missing write is
+//! detected. A mark is set when the session edits a file or commits; at turn end, the repo's
+//! fingerprint is compared with the last save's. Work moved without a save gets one bounded
+//! message, the same on both clients, never a requirement to save before finishing.
+use crate::activate::{read_state, state_dir, state_path};
+use crate::notes::{self, Notes, RepoFacts};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+
+/// Tools whose success means a file changed. Codex's `apply_patch` matches `Edit` or `Write`.
+pub const EDIT_TOOLS: [&str; 5] = ["Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"];
+
+/// Where an unbound session's mark goes.
+fn mark_path(dir: &Path, session: &str) -> PathBuf {
+    dir.join("marks").join(state_path(dir, session).file_name().unwrap_or_default())
+}
+
+/// Records that this session did work: in its state when bound, else in a mark file.
+pub fn mark(session: &str) {
+    let Some(dir) = state_dir() else { return };
+    match read_state(&dir, session) {
+        Ok(Some(mut state)) => {
+            if state["mark"] != true {
+                state["mark"] = true.into();
+                let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
+            }
+        }
+        _ => {
+            let _ = notes::write_text(&mark_path(&dir, session), &json!({"at_ms": notes::now_ms()}).to_string());
+        }
+    }
+}
+
+/// Whether a shell command commits: the one shell edit the guard can see cheaply.
+pub fn commits(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words.windows(2).any(|w| w[0] == "git" && w[1] == "commit")
+}
+
+/// The Stop hook's answer, or None when nothing moved since the last save. `stop_hook_active`
+/// means this turn was already continued once: then nothing, so it can't loop.
+pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
+    if input["stop_hook_active"] == true {
+        return None;
+    }
+    let dir = state_dir()?;
+    let cwd = input["cwd"].as_str().map(PathBuf::from).or_else(|| std::env::current_dir().ok())?;
+    let codex = crate::activate::provider(input) == "codex";
+    let text = match read_state(&dir, session) {
+        Ok(Some(mut state)) => {
+            let facts = RepoFacts::read(&cwd);
+            let print = facts.as_ref().map(|f| f.fingerprint.as_str());
+            let baseline = state["baseline"].as_str().map(str::to_owned);
+            let acknowledged = state["acknowledged"].as_str().map(str::to_owned);
+            let moved = print.is_some_and(|p| baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p));
+            let marked = state["mark"] == true;
+            if !moved && !marked {
+                return None;
+            }
+            let effort = state["effort"].as_str().unwrap_or_default().to_owned();
+            let what = match (&facts, moved) {
+                (Some(f), true) => format!(
+                    "the repo changed since the last save of effort {effort} (now {} at {}{})",
+                    f.branch,
+                    f.head,
+                    if f.dirty { ", tree dirty" } else { "" }
+                ),
+                _ => format!("files were edited or commits made since the last save of effort {effort}"),
+            };
+            // Said once per state: the print is acknowledged and the mark cleared.
+            state["acknowledged"] = print.into();
+            state["mark"] = false.into();
+            let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
+            format!(
+                "Astrolabe: {what}. If that's work worth remembering, replace Current state and run `astrolabe effort save` now (a closed window saves nothing); if nothing changed worth saving, say so and finish. This is the plugin's hook, not the owner: not a request, and no reason to start an effort."
+            )
+        }
+        Ok(None) => {
+            let path = mark_path(&dir, session);
+            if !path.exists() {
+                return None;
+            }
+            let _ = std::fs::remove_file(&path);
+            "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work (a change, findings or a plan), run `astrolabe effort new` with its title and goal, then save; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+        }
+        Err(_) => return None,
+    };
+    Some(if codex {
+        // Codex's Stop can only continue by a block, whose reason becomes a prompt; the text
+        // says what it is, so the model doesn't take it for the owner.
+        json!({"decision": "block", "reason": text})
+    } else {
+        json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})
+    })
+}
+
+/// Session end: the session's state says it closed, and a push starts for anything unpublished.
+pub fn at_end(session: &str) {
+    let Some(dir) = state_dir() else { return };
+    if let Ok(Some(mut state)) = read_state(&dir, session) {
+        state["closed_ms"] = notes::now_ms().into();
+        let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
+    }
+    let _ = std::fs::remove_file(mark_path(&dir, session));
+    push_pending();
+}
+
+/// A detached push when notes have commits origin lacks, or writes left unfinished.
+pub fn push_pending() {
+    let Some(dir) = state_dir() else { return };
+    let Ok(root) = crate::activate::notes_root() else { return };
+    let notes = Notes::new(root, dir);
+    if notes.unpublished() > 0 || !notes.intents().is_empty() {
+        notes.spawn_sync();
+    }
+}

@@ -18,6 +18,7 @@ pub mod layer;
 pub mod mcp;
 pub mod model;
 pub mod notes;
+pub mod nudge;
 mod private_file;
 pub mod protect;
 pub mod record;

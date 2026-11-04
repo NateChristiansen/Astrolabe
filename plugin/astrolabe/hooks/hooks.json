@@ -1,10 +1,20 @@
 {
+  "description": "Astrolabe: the owner's notes and guard for every session while the machine switch is on. Each hook runs the astrolabe program, which does nothing while the switch is off.",
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook session-start --if-active" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook session-start --if-active", "timeout": 20 } ] }
     ],
     "PreToolUse": [
-      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook pre-command --if-active" } ] }
+      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook pre-command --if-active", "timeout": 20 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch", "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook post-tool --if-active", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook stop --if-active", "timeout": 5 } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe-trial hook session-end --if-active", "timeout": 1 } ] }
     ]
   }
 }

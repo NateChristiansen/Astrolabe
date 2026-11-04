@@ -1389,6 +1389,12 @@ pub fn gate(event: &str) {
             if let Ok(Some(answer)) = answer {
                 return hook::say(&answer);
             }
+            // A commit is work the save should cover; a child's counts for its parent.
+            if let (Some(session), Some(command)) = (session, crate::guard::command_field(&input["tool_input"])) {
+                if crate::nudge::commits(&crate::guard::command_text(command)) {
+                    let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
+                }
+            }
             // The plugin's denials go in its state folder, which every app reads the same.
             let dir = state_dir();
             let guard = || hook::guard(&bytes, dir.as_deref());
@@ -1409,7 +1415,26 @@ pub fn gate(event: &str) {
                 ))),
             }
         }
+        "post-tool" => {
+            let tool = input["tool_name"].as_str().unwrap_or_default();
+            if let (Some(session), true) = (session, crate::nudge::EDIT_TOOLS.contains(&tool)) {
+                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
+            }
+        }
+        "stop" if !child => {
+            let answer = std::panic::catch_unwind(|| crate::nudge::at_stop(&input, session?));
+            if let Ok(Some(answer)) = answer {
+                hook::say(&answer);
+            }
+        }
+        "session-end" if !child => {
+            if let Some(session) = session {
+                let _ = std::panic::catch_unwind(|| crate::nudge::at_end(session));
+            }
+        }
         "session-start" if !child => {
+            // Anything an earlier session left unpublished goes now, in the background.
+            let _ = std::panic::catch_unwind(crate::nudge::push_pending);
             let text = std::panic::catch_unwind(|| session_start(&input, session?));
             if let Ok(Some(text)) = text {
                 let inner = json!({"hookEventName": "SessionStart", "additionalContext": text});
