@@ -753,7 +753,7 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     let asked = mac.hook_json("stop", long.clone()).unwrap();
     assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("never saved"), "{asked}");
     assert!(mac.hook_json("stop", long.clone()).is_none());
-    assert!(mac.bash("s1", "astrolabe effort save --decision "d0"").1);
+    assert!(mac.bash("s1", "astrolabe effort save --decision \"d0\"").1);
     assert!(mac.hook_json("stop", long).is_none(), "saved: no ask");
     write(&mac.demo.join("a.txt"), "a");
     git(&mac.demo, &["add", "a.txt"]);
