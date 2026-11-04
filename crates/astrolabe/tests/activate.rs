@@ -1256,11 +1256,14 @@ fn a_bad_repo_name_is_refused_before_anything_is_written() {
 fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_shells() {
     let f = Fixture::new();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
-    let probe_dir = std::env::temp_dir().join("astrolabe-probe");
-    assert!(
-        f.probe(&text).contains(&probe_dir.display().to_string()),
-        "{text}"
-    );
+    // The folder is in the temp folder, named for this state folder, and already made.
+    let probe = f.probe(&text);
+    let marker = probe.split('\'').nth(1).unwrap();
+    let probe_dir = Path::new(marker).parent().unwrap();
+    let temp = std::env::temp_dir();
+    assert!(probe_dir.starts_with(&temp), "{probe}");
+    let name = probe_dir.file_name().unwrap().to_string_lossy();
+    assert!(name.starts_with("astrolabe-probe-"), "{probe}");
     assert!(probe_dir.is_dir(), "made, so the shell's touch works");
     // Claude on Windows may use Bash or PowerShell, so session start offers both.
     let both = text.contains("For PowerShell:") && text.contains("For the POSIX shell");
