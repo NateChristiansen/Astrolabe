@@ -373,20 +373,34 @@ fn save_inner(
         .map(|p| read_file("pieces-file", p))
         .transpose()?;
     // The file's sections are read back by their `## ` headings, so a heading inside one
-    // would split it on the next read; checked after trimming, as it's stored.
+    // would split it on the next read; checked after trimming, as it's stored. A plan is
+    // the app's own file (Claude's plans use `## `), so its headings are demoted a level
+    // rather than refused; the short agent-written sections are refused.
+    let is_heading = |l: &str| l.trim_start().starts_with("## ");
     for (what, text) in [
         ("Current state", body.as_deref()),
-        ("the plan", plan.as_deref()),
         ("Pieces", pieces.as_deref()),
     ] {
-        if let Some(line) = text.and_then(|t| t.lines().find(|l| l.trim_start().starts_with("## ")))
-        {
+        if let Some(line) = text.and_then(|t| t.lines().find(|l| is_heading(l))) {
             return Err(format!(
                 "{what} can't hold a `## ` heading ({}), because the effort file's sections are read by those; use ### or deeper. Nothing was written",
                 line.trim()
             ));
         }
     }
+    let plan_demoted = plan.as_deref().is_some_and(|t| t.lines().any(is_heading));
+    let plan = plan.map(|t| {
+        t.lines()
+            .map(|l| {
+                if is_heading(l) {
+                    format!("#{}", l.trim_start())
+                } else {
+                    l.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
     let _held = notes.lock()?;
     let leftovers = notes.reconcile();
     if !leftovers.is_empty() {
@@ -426,6 +440,12 @@ fn save_inner(
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
+    if plan_demoted {
+        notes_lines.push(
+            "The plan's `## ` headings were stored as `###`, because the effort file's sections are read by `## `."
+                .to_owned(),
+        );
+    }
     if let Some(body) = &body {
         let current = as_current(body);
         let probe = EffortFile {

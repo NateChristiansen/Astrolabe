@@ -462,19 +462,34 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     );
     assert!(!ok && out.contains("one way"), "{out}");
     assert!(mac.effort_text(1).contains("## Plan\n1. first\n"));
-    // A heading inside a section would split it on the next read, so it's refused; a
-    // deeper one survives a second save.
+    // A heading inside a section would split it on the next read. The plan is the app's
+    // file, so its headings are demoted and said so; an indented one counts, as it's stored
+    // trimmed. Current state and Pieces are refused.
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n## Plan\nsecond\nASTROLABE",
     );
-    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
-    // Checked as stored: an indented heading in a plan file would be a heading after the trim.
+    assert!(ok && out.contains("stored as `###`"), "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\n### Plan\nsecond\n"));
     write(
         &mac.demo.join("plan.md"),
         "  ## Current state\n**Goal:** stolen",
     );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --plan-file plan.md");
+    assert!(ok && out.contains("stored as `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Current state\n**Goal:** stolen\n"),
+        "{text}"
+    );
+    assert!(text.contains("## Current state\n**Goal:** g.\n"), "{text}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n## Decisions\nASTROLABE",
+    );
+    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    write(&mac.demo.join("pieces.md"), "## Pieces\n- [ ] x\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
     assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
     let (out, ok) = mac.bash(
         "s1",
