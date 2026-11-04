@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|efforts [--repo <name>] [--all]|notes <sync|status>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|notes <sync|status>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,11 +43,11 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        ["effort", rest @ ..] => {
+        [first @ ("effort" | "journal"), rest @ ..] => {
             // Only the hook does the work; here the body is read so the command can be told
             // apart from one the hook already answered.
             let body = read_piped_stdin();
-            let (text, ok) = astrolabe::record::plain(rest, body.as_deref());
+            let (text, ok) = astrolabe::record::plain(first, rest, body.as_deref());
             println!("{text}");
             if !ok {
                 std::process::exit(1);

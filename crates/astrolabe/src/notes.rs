@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 /// How long a network git call may take before it counts as offline, so a save never hangs
 /// on a bad connection.
-const NETWORK_SECS: u64 = 5;
+const NETWORK_SECS: u64 = 15;
+/// After a network call times out, no sync is tried for this long: under three parallel
+/// builds the Mac hit the bound on half its syncs (2026-11-04), each one a hook's seconds.
+const BACKOFF_MS: i64 = 5 * 60 * 1000;
 /// A push is batched: at a state change, at session end, at start, or this long after the last.
 pub const PUSH_EVERY_MS: i64 = 10 * 60 * 1000;
 const INTENTS: &str = "ops";
@@ -35,35 +38,80 @@ pub struct Notes {
 /// Held while writing. Dropped, the lock is released; killed, the OS releases it.
 pub struct Held(#[allow(dead_code)] File);
 
-/// One journal line, kept apart so a retry can tell it's already there.
+/// One journal line: the agent's sentence, with a hidden tail the owner never reads. The
+/// tail names the effort (or the repo, for a finding with no effort) and the machine, so one
+/// line per effort per day can be replaced by its own writer and a renumber can retag it,
+/// and an id so a retry can tell it's already there. Nothing visible is code-written: the
+/// owner found code-built lines mechanical and unreadable (2026-11-04).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalLine {
     pub id: String,
-    pub kind: String,
+    /// `0016`, or a repo name for a line with no effort.
     pub effort: String,
-    pub title: String,
     pub text: String,
     pub machine: String,
-    pub provider: String,
-    /// `HH:MM` local, and the day file `YYYY-MM-DD`, fixed when the op was planned.
-    pub time: String,
+    /// The day file `YYYY-MM-DD`, fixed when the op was planned.
     pub day: String,
+    /// One line per effort per day: this one replaces an earlier line with the same tag and
+    /// machine, so "started" gives way to "finished" when both happen in a day.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 impl JournalLine {
     pub fn rendered(&self) -> String {
-        format!(
-            "- {} {} {} {}: {} <!-- {} {} e:{} -->",
-            self.time,
-            self.kind,
-            self.effort,
-            self.title,
-            self.text,
-            self.machine,
-            self.provider,
-            self.id
-        )
+        format!("- {} <!-- {} -->", self.text, self.tail())
     }
+
+    /// `0016 mac e:abc`: the tail inside the comment.
+    pub fn tail(&self) -> String {
+        format!("{} {} e:{}", self.effort, self.machine, self.id)
+    }
+
+    /// `0016 mac`: what an earlier line of the same writer shares.
+    fn owner_tag(&self) -> String {
+        format!("<!-- {} {} e:", self.effort, self.machine)
+    }
+}
+
+/// A journal line as read back: the sentence and its tail, in the current shape or the
+/// first one (`time kind number title: text <!-- machine provider e:id -->`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub effort: String,
+    pub text: String,
+    pub id: String,
+}
+
+pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("- ")?;
+            let (body, tail) = line.rsplit_once(" <!-- ")?;
+            let tail = tail.strip_suffix(" -->")?;
+            let words: Vec<&str> = tail.split_whitespace().collect();
+            let id = words.last()?.strip_prefix("e:")?.to_owned();
+            let first_shape = body.len() > 6
+                && body.as_bytes()[2] == b':'
+                && body[..2].chars().all(|c| c.is_ascii_digit());
+            if !first_shape {
+                return Some(JournalEntry {
+                    effort: words.first()?.to_string(),
+                    text: body.to_owned(),
+                    id,
+                });
+            }
+            let mut parts = body.splitn(4, ' ');
+            let (_time, _kind, number) = (parts.next()?, parts.next()?, parts.next()?);
+            let rest = parts.next().unwrap_or_default();
+            let text = rest.split_once(": ").map_or(rest, |(_, t)| t);
+            Some(JournalEntry {
+                effort: number.to_owned(),
+                text: text.to_owned(),
+                id,
+            })
+        })
+        .collect()
 }
 
 /// A planned write, applied whole and idempotently.
@@ -172,8 +220,17 @@ impl Notes {
         if !self.has_remote() {
             return Pull::Offline("no remote".to_owned());
         }
+        if let Some(left) = self.backing_off() {
+            return Pull::Offline(format!(
+                "a network call timed out lately; no fetch for another {} s",
+                left / 1000
+            ));
+        }
         if let Err(why) = self.git_timed(&["fetch", "--quiet"]) {
             self.record_sync("offline", &why);
+            if why.contains("took over") {
+                self.record_backoff();
+            }
             return Pull::Offline(why);
         }
         match self.git(&["rebase", "--quiet", "@{upstream}"]) {
@@ -251,23 +308,36 @@ impl Notes {
         let mut file = crate::effort::EffortFile::parse(&text).ok()?;
         let old_number = file.number().unwrap_or(0);
         file.title = format!("{next:04} {}", file.name());
-        let (day, time) = local_day_time();
+        let (day, _) = local_day_time();
+        file.add_decision(&format!(
+            "{day}: renumbered from {old_number:04}; that number was taken by another machine's effort first"
+        ));
         let key = format!("renumber-{old_number:04}-{next:04}");
+        let mut files = vec![(new_rel.clone(), file.render())];
+        // This machine's journal lines for the old number follow it; the other machine's
+        // lines for that number keep it, which is why the tail names the machine.
+        let (from, to) = (
+            format!("<!-- {old_number:04} {} e:", machine_name()),
+            format!("<!-- {next:04} {} e:", machine_name()),
+        );
+        for entry in std::fs::read_dir(self.root.join("journal"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            if text.contains(&from) {
+                files.push((format!("journal/{name}"), text.replace(&from, &to)));
+            }
+        }
         let mut op = Op {
             key: key.clone(),
-            files: vec![(new_rel.clone(), file.render())],
+            files,
             renames: vec![(old_rel.clone(), new_rel.clone())],
-            journal: vec![JournalLine {
-                id: key.clone(),
-                kind: "renumbered".to_owned(),
-                effort: format!("{next:04}"),
-                title: file.name().to_owned(),
-                text: format!("was {old_number:04}, taken by another machine's effort"),
-                machine: machine_name(),
-                provider: "astrolabe".to_owned(),
-                time,
-                day,
-            }],
+            journal: Vec::new(),
             message: format!("{old_number:04} renumbered to {next:04}"),
             base: None,
             states: Vec::new(),
@@ -459,27 +529,41 @@ impl Notes {
         for line in &op.journal {
             let path = self.root.join("journal").join(format!("{}.md", line.day));
             let have = std::fs::read_to_string(&path).unwrap_or_default();
-            if !have.contains(&format!("e:{} ", line.id)) {
-                let mut text = have;
+            if have.contains(&format!("e:{} ", line.id)) {
+                continue;
+            }
+            let mut text = String::new();
+            if line.replace {
+                // This writer's earlier line for the effort today gives way; other machines'
+                // lines and other efforts' stay, so a union merge never doubles a day.
+                let tag = line.owner_tag();
+                for l in have.lines().filter(|l| !l.contains(&tag)) {
+                    text.push_str(l);
+                    text.push('\n');
+                }
+            } else {
+                text = have;
                 if !text.is_empty() && !text.ends_with('\n') {
                     text.push('\n');
                 }
-                text.push_str(&line.rendered());
-                text.push('\n');
-                write_text(&path, &text)?;
             }
+            text.push_str(&line.rendered());
+            text.push('\n');
+            write_text(&path, &text)?;
         }
         self.ensure_attributes()?;
-        let changed = self.git(&[
-            "status",
-            "--porcelain",
-            "--",
-            "efforts",
-            "journal",
-            ".gitattributes",
-        ])?;
+        // Only what exists: a first effort with no journal line yet has no journal folder.
+        let mut status = vec!["status", "--porcelain", "--"];
+        let mut add = vec!["add", "-A", "--"];
+        for path in ["efforts", "journal", ".gitattributes"] {
+            if self.root.join(path).exists() {
+                status.push(path);
+                add.push(path);
+            }
+        }
+        let changed = self.git(&status)?;
         if !changed.trim().is_empty() {
-            self.git(&["add", "-A", "--", "efforts", "journal", ".gitattributes"])?;
+            self.git(&add)?;
             let mut message = format!("{}\n\nOp-Key: {}", op.message, op.key);
             if let Some(base) = &op.base {
                 message += &format!("\nBase: {base}");
@@ -567,6 +651,9 @@ impl Notes {
             }
             Err(why) => {
                 self.record_sync("push-failed", &why);
+                if why.contains("took over") {
+                    self.record_backoff();
+                }
                 Err(format!("push failed: {why}"))
             }
         }
@@ -683,6 +770,19 @@ impl Notes {
             .unwrap_or_else(|| json!({}))
     }
 
+    /// Milliseconds left of a backoff after a timed-out network call, if any.
+    fn backing_off(&self) -> Option<i64> {
+        let until = self.sync_record()["backoff_until_ms"].as_i64()?;
+        let left = until - now_ms();
+        (left > 0).then_some(left)
+    }
+
+    fn record_backoff(&self) {
+        let mut record = self.sync_record();
+        record["backoff_until_ms"] = (now_ms() + BACKOFF_MS).into();
+        let _ = write_text(&self.state.join(SYNC), &record.to_string());
+    }
+
     fn record_sync(&self, what: &str, why: &str) {
         let mut record = self.sync_record();
         record[what] = json!({"why": why, "at_ms": now_ms()});
@@ -700,7 +800,7 @@ impl Notes {
     fn record_pushed(&self) {
         let mut record = self.sync_record();
         record["pushed_ms"] = json!(now_ms());
-        for what in ["offline", "push-failed"] {
+        for what in ["offline", "push-failed", "backoff_until_ms"] {
             record.as_object_mut().map(|o| o.remove(what));
         }
         let _ = write_text(&self.state.join(SYNC), &record.to_string());

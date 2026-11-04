@@ -329,8 +329,12 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
-    let journal = mac.journal_today();
-    assert!(journal.contains(" started 0001 Smooth ink: smooth the ink across frames, with café in it <!-- mac claude e:"), "{journal}");
+    // Starting is state, not history: no journal line until the agent writes one.
+    assert!(
+        !mac.notes.join("journal").exists(),
+        "{}",
+        mac.journal_today()
+    );
     assert!(mac.log().starts_with("0001: started\n"), "{}", mac.log());
     assert!(mac.notes.join(".gitattributes").exists());
     let state: Value =
@@ -383,12 +387,16 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "{}",
         mac.effort_text(1)
     );
+    // Blocked is state: nothing in the journal.
+    assert!(!mac.notes.join("journal").exists());
+    // A field twice is refused before anything is written.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Verified:** a.\n**Verified:** b.\n**Next:** n.\nASTROLABE\n");
+    assert!(!ok && out.contains("Verified appears twice"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\n**Goal:** g.\n**Done:** merged the ink MR.\n**Next:** none.\nASTROLABE\n");
     assert!(
-        mac.journal_today()
-            .contains(" blocked 0001 Smooth ink: owner: should it be X?")
+        ok && out.contains("status done") && out.contains("journal line written"),
+        "{out}"
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" <<'ASTROLABE'\n**Goal:** g.\n**Done:** merged the ink MR.\n**Next:** none.\nASTROLABE\n");
-    assert!(ok && out.contains("status done"), "{out}");
     let text = mac.effort_text(1);
     assert!(
         text.contains("status: done")
@@ -397,13 +405,25 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
             && text.contains(": X over Y: cheaper"),
         "{text}"
     );
+    // The journal holds only the agent's sentence, with a hidden tail.
     let journal = mac.journal_today();
     assert!(
-        journal.contains(" done 0001 Smooth ink: merged the ink MR.")
-            && journal.contains(" decision 0001 Smooth ink: X over Y: cheaper"),
+        journal.starts_with(
+            "- Started smoothing the ink; the first frame still jumps. <!-- 0001 mac e:"
+        ) && journal.lines().count() == 1,
         "{journal}"
     );
     assert_eq!(mac.log().lines().next(), Some("0001: done"));
+    // A later line the same day replaces this writer's earlier one: one per effort per day.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"Finished the ink smoothing: strokes no longer split across frames.\"");
+    assert!(ok, "{out}");
+    let journal = mac.journal_today();
+    assert!(
+        journal.starts_with("- Finished the ink smoothing") && journal.lines().count() == 1,
+        "{journal}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"two\nlines\"");
+    assert!(!ok && out.contains("one line"), "{out}");
     // The plan file is read as the user, relative to the session's folder.
     write(&mac.demo.join("plan.md"), "the plan");
     let (out, ok) = mac.bash(
@@ -412,12 +432,57 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     );
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("## Plan\nthe plan\n"));
-    assert!(
-        mac.journal_today()
-            .contains("decision 0001 Smooth ink: plan approved")
-    );
+    assert_eq!(mac.journal_today().lines().count(), 1);
     let (out, ok) = mac.bash("s1", "astrolabe effort save");
     assert!(!ok && out.contains("nothing to save"), "{out}");
+    // Pieces: a checklist the owner reads, ticked by name, counted for the home view.
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick \"Tether\"",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Pieces\n- [x] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n"),
+        "{text}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Goo\"");
+    assert!(!ok && out.contains("more than one piece"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Nothing\"");
+    assert!(!ok && out.contains("no piece starts with"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --tick \"Goo at\" --untick \"Goo at\"",
+    );
+    assert!(!ok && out.contains("both ticked and unticked"), "{out}");
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --tick \"Goo at\" --untick \"Tether\""
+        )
+        .1
+    );
+    assert!(
+        mac.effort_text(1)
+            .contains("- [ ] Tether cap\n- [x] Goo at speed\n")
+    );
+    // Pieces survive a Current state save.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n"
+        )
+        .1
+    );
+    assert!(mac.effort_text(1).contains("- [x] Goo at speed"));
+    let (out, ok) = mac.run(&mac.demo, &["efforts", "--all"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["efforts"][0]["pieces"], json!({"done": 1, "total": 3}));
 }
 
 #[test]
@@ -481,6 +546,14 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
         "astrolabe effort new --title \"PC three\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
     );
     assert!(ok && out.contains("Effort 3 created"), "{out}");
+    assert!(
+        mac.bash("s2", "astrolabe effort save --journal \"Mac three's line\"")
+            .1
+    );
+    assert!(
+        pc.bash("p2", "astrolabe effort save --journal \"PC three's line\"")
+            .1
+    );
     let origin = world.origin.0.join("notes.git");
     for m in [&mac, &pc] {
         git(
@@ -516,8 +589,16 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     assert!(!pc.notes.join("efforts/0003-pc-three.md").exists());
     assert!(pc.effort_text(4).contains("# 0004 PC three"));
     assert!(
-        pc.journal_today()
-            .contains(" renumbered 0004 PC three: was 0003")
+        pc.effort_text(4).contains("renumbered from 0003"),
+        "{}",
+        pc.effort_text(4)
+    );
+    // The PC's own journal line for its 3 follows it to 4; the Mac's line for 3 stays.
+    let journal = pc.journal_today();
+    assert!(
+        journal.contains("PC three's line <!-- 0004 pc e:")
+            && journal.contains("Mac three's line <!-- 0003 mac e:"),
+        "{journal}"
     );
     let state: Value =
         serde_json::from_slice(&std::fs::read(pc.state().join("p2.json")).unwrap()).unwrap();
@@ -528,9 +609,9 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     assert!(mac.notes.join("efforts/0004-pc-three.md").exists());
     let journal = mac.journal_today();
     assert!(
-        journal.contains("Mac three")
-            && journal.contains("PC three")
-            && journal.contains("On the PC"),
+        journal.contains("Mac three's line <!-- 0003 mac e:")
+            && journal.contains("PC three's line <!-- 0004 pc e:")
+            && journal.lines().count() == 2,
         "{journal}"
     );
 }
@@ -600,6 +681,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
     // the intent remains.
     let intent = json!({
         "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("**Goal:**", "**Goal:** CRASHED")]],
+        // The first journal shape, as an intent written by the build before this one.
         "renames": [], "journal": [{"id": "crashed-key0", "kind": "decision", "effort": "0001", "title": "Smooth ink", "text": "crash line", "machine": "mac", "provider": "claude", "time": "01:00", "day": "2026-01-01"}],
         "message": "0001: checkpoint", "base": null, "states": []
     });
@@ -638,11 +720,11 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
     );
     // The same tool call again (a lost reply) commits nothing new.
     let before = mac.log();
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"after the crash\"");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"after the crash\"");
     assert!(ok, "{out}");
     let after = mac.log();
     assert_eq!(after.lines().count(), before.lines().count() + 1);
-    let (_, ok) = mac.bash("s1", "astrolabe effort save --decision \"after the crash\"");
+    let (_, ok) = mac.bash("s1", "astrolabe effort save --journal \"after the crash\"");
     assert!(ok);
     assert_eq!(
         mac.log().lines().count(),
@@ -666,7 +748,7 @@ fn two_saves_at_once_both_land_under_the_lock() {
     let handles: Vec<_> = ["s1", "s2"].into_iter().map(|s| {
         let mac = mac.clone();
         std::thread::spawn(move || {
-            let mut input = json!({"session_id": s, "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": format!("c-{s}"), "tool_input": {"command": format!("astrolabe effort save --decision \"from {s}\"")}});
+            let mut input = json!({"session_id": s, "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": format!("c-{s}"), "tool_input": {"command": format!("astrolabe effort save --journal \"from {s}\"")}});
             input["x"] = Value::Null;
             let (out, ok) = mac.run(&mac.demo, &["hook", "pre-command", "--if-active"], &input.to_string());
             assert!(ok && out.contains("permissionDecision"), "{out}");
@@ -712,7 +794,95 @@ fn efforts_json_is_what_the_home_view_reads() {
     assert_eq!(e["needs_owner"], true);
     assert_eq!(e["next"], "ask.");
     assert_eq!(e["repo"], "demo");
-    assert!(v["journal"].as_str().unwrap().contains("blocked 0001"));
+    assert_eq!(v["journal"], "");
+    // The reader takes both journal shapes.
+    let mixed = "- 14:02 done 0012 Smooth ink: merged the ink MR <!-- mac claude e:7f3a -->\n- Finished the ink. <!-- 0013 mac e:9b -->\n- Found the Deck preset. <!-- demo mac e:aa -->\n";
+    let lines = astrolabe::notes::parse_journal(mixed);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|l| (l.effort.as_str(), l.text.as_str(), l.id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("0012", "merged the ink MR", "7f3a"),
+            ("0013", "Finished the ink.", "9b"),
+            ("demo", "Found the Deck preset.", "aa")
+        ]
+    );
+}
+
+#[test]
+fn a_timed_out_network_call_backs_syncs_off_for_a_while() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let far = astrolabe::notes::now_ms() + 60_000;
+    write(
+        &mac.state().join("sync.json"),
+        &json!({"backoff_until_ms": far}).to_string(),
+    );
+    let (out, ok) = mac.sync();
+    assert!(!ok && out.contains("no fetch for another"), "{out}");
+    // Over, a sync goes through and clears it.
+    write(
+        &mac.state().join("sync.json"),
+        &json!({"backoff_until_ms": astrolabe::notes::now_ms() - 1}).to_string(),
+    );
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("sync.json")).unwrap()).unwrap();
+    assert!(record.get("backoff_until_ms").is_none(), "{record}");
+}
+
+#[test]
+fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    // A question answered now: no effort, one sentence in the day file, tagged with the repo.
+    let (out, ok) = mac.bash("s1", "astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"");
+    assert!(ok && out.contains("Journal line written"), "{out}");
+    let journal = mac.journal_today();
+    assert!(
+        journal.starts_with("- Found the Deck preset in the video settings: everything Low, render scale 0.75. <!-- demo mac e:"),
+        "{journal}"
+    );
+    assert_eq!(mac.log().lines().next(), Some("journal: demo"));
+    // Findings don't replace each other: two in a day are two lines.
+    assert!(mac.bash("s1", "astrolabe journal <<'ASTROLABE'\nWalk is 3.0 and sprint 4.8, in the player motor.\nASTROLABE\n").1);
+    assert_eq!(mac.journal_today().lines().count(), 2);
+    let (out, ok) = mac.bash("s1", "astrolabe journal --title x");
+    assert!(!ok && out.contains("no flags"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe journal");
+    assert!(!ok && out.contains("needs the sentence"), "{out}");
+    // No hook: the plain command explains itself like an effort command does.
+    let (plain, ok) = mac.run(&mac.demo, &["journal", "Something new"], "");
+    assert!(!ok && plain.contains("NOT recorded"), "{plain}");
+    // With an effort, the line belongs on the effort.
+    assert!(mac.bash("s2", NEW).1);
+    let (out, ok) = mac.bash("s2", "astrolabe journal \"x\"");
+    assert!(!ok && out.contains("--journal"), "{out}");
+    // A worker binds to the dispatcher's effort for context and the guard, and writes nothing.
+    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 1 --worker");
+    assert!(ok && out.contains("worker under that effort"), "{out}");
+    for cmd in [
+        NEW,
+        "astrolabe effort save --journal \"x\"",
+        "astrolabe journal \"x\"",
+    ] {
+        let (out, ok) = mac.bash("w1", cmd);
+        assert!(!ok && out.contains("worker under effort 1"), "{out}");
+    }
+    // Still a worker after a resume and after loading the effort again without the flag.
+    mac.session_start("w1", "resume");
+    assert!(mac.bash("w1", "astrolabe activate --effort 1").1);
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("w1.json")).unwrap()).unwrap();
+    assert_eq!(state["worker"], true);
+    // Its edits never nudge.
+    mac.edit("w1", "Edit");
+    assert!(mac.stop("w1", false, false).is_none());
+    assert!(mac.stop("w1", false, true).is_none());
 }
 
 impl Machine {

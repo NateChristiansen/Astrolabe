@@ -58,6 +58,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
+        Ok(Some(state)) if state["worker"] == true => return None,
         Ok(Some(mut state)) => {
             let facts = RepoFacts::read(&cwd);
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
@@ -112,7 +113,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
             let path = mark_path(&dir, session);
             if path.exists() {
                 let _ = std::fs::remove_file(&path);
-                "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work (a change, findings or a plan), run `astrolabe effort new` with its title and goal, then save; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+                "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work the owner asked for (a change or a plan), run `astrolabe effort new` with its title and goal, then save; if another agent dispatched you, run `astrolabe activate --effort <n> --worker` under its effort; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             } else {
                 // Findings reported only in chat touch no file, so nothing else detects them;
                 // three research runs skipped the effort on the text alone. A long answer with
@@ -125,7 +126,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                     return None;
                 }
                 let _ = notes::write_text(&asked, "");
-                "Astrolabe: this turn ended with a long answer and no effort recorded. If the owner asked you to find out, look into, check or compare something, that's findings they want in their notes: run `astrolabe effort new` with a title and the goal, then `astrolabe effort save --status done` with what you found in its Current state. If it was a plain question or chat, say so in a few words and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+                "Astrolabe: this turn ended with a long answer and no effort recorded. If the owner asked you to find out, look into, check or compare something and the answer is worth keeping, put one sentence in their journal: `astrolabe journal \"…\"`. If the work goes on past this session, it's an effort: `astrolabe effort new`. If it was a plain question or chat, say so in a few words and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             }
         }
         Err(_) => return None,

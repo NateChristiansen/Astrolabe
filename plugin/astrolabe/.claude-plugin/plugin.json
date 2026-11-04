@@ -1,5 +1,5 @@
 {
   "name": "astrolabe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Every session gets the owner's notes and guard while the machine switch is on, and records its work as efforts in those notes"
 }

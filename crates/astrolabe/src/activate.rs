@@ -50,7 +50,10 @@ const AUTHORITY: [(&str, &str); 3] = [
 ];
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. When the owner's request means a change, findings or a plan, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`). Findings means they asked you to find out, look into, check, audit or compare something: that's an effort even when you report it in chat, because the owner wants to see it later in their notes. A question needs no effort only when answering takes no investigating, a line from what's already in front of you.\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state (at most 12 lines, the owner's voice, Goal · Done · Decided · Verified · Next · Open, no paths or ids) with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Any other shape is refused with the accepted forms. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state (at most 12 lines, the owner's voice, Goal · Done · Decided · Verified · Next · Open, one line each, no ids, at most one path and only for the thing the owner has to open) with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Any other shape is refused with the accepted forms. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one sentence per effort per day, as they would say it (past tense, plain words, what changed, no evidence counts, no lane or hook talk). Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request.";
+
+/// Said to a worker on binding: what it may not do, and why.
+pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it creates, saves and journals nothing in the owner's notes, because one session writes an effort's record and the dispatcher reports for its workers. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
 
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
 const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
@@ -1054,7 +1057,7 @@ pub fn switch_on(
         "repo": repo, "cwd": comparable(cwd), "at_ms": at_ms, "token": token,
         "delivered": delivered, "baseline": baseline, "mark": false,
     });
-    for keep in ["mark", "acknowledged", "last_save_ms"] {
+    for keep in ["mark", "acknowledged", "last_save_ms", "worker"] {
         if let Some(value) = same.and_then(|p| p.get(keep)) {
             state[keep] = value.clone();
         }
@@ -1297,13 +1300,18 @@ fn act(
                 "Astrolabe could NOT drop this session's effort, so it stays as it was".to_owned(),
             ),
         },
-        ["--effort", effort] => {
+        ["--effort", effort] | ["--effort", effort, "--worker"] => {
+            let worker = args.len() == 3;
             let previous = previous.ok().flatten();
             // The published checkpoint, not a stale local copy: another machine may hold it.
             let refreshed = crate::record::refresh_notes();
             match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]) {
-                Ok(activation) => {
+                Ok(mut activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
+                    if worker {
+                        activation.state["worker"] = true.into();
+                        activation.head += &format!("\n\n{WORKER_RULE}");
+                    }
                     let mut text = activation.text();
                     if let Some(note) = refreshed {
                         text = format!("{note}\n\n{text}");
@@ -1313,7 +1321,7 @@ fn act(
                 Err(why) => (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
             }
         }
-        _ => ("Usage: astrolabe activate <--effort <n>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
+        _ => ("Usage: astrolabe activate <--effort <n> [--worker]|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
     }
 }
 
@@ -1528,6 +1536,18 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
                 "A subagent can't create or save an effort: one session writes an effort's record, the one the owner talks to. Report to it instead.",
             ));
         }
+        // A worker was dispatched by another agent under its effort: it writes nothing to
+        // the notes, because last night's thirteen lane records were read by no one and the
+        // dispatcher reports for the lot (owner, 2026-11-04).
+        if let Some(dir) = state_dir()
+            && let Ok(Some(state)) = read_state(&dir, session)
+            && state["worker"] == true
+        {
+            return Some(hook::deny(&format!(
+                "This session is a worker under effort {}: it creates, saves and journals nothing; the session that dispatched it writes the notes. Report to it instead.",
+                state["effort"].as_str().unwrap_or_default()
+            )));
+        }
         let powershell = in_powershell(provider(input), &input["tool_name"]);
         let cwd = input["cwd"]
             .as_str()
@@ -1549,6 +1569,7 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
                         &cwd,
                         &[powershell],
                     ),
+                    "journal" => crate::record::journal(&parsed, &op_key, session, &cwd),
                     _ => crate::record::save(&parsed, &op_key, session, provider(input), &cwd),
                 };
                 (done.text, done.ok, Some(parsed.digest()), Some(op_key))

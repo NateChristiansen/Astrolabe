@@ -1,5 +1,5 @@
-//! `astrolabe effort new | save`: the command an agent types to record its work, and what
-//! the hook reads out of it. The agent writes meaning (the title, the goal, a Current state
+//! `astrolabe effort new | save` and `astrolabe journal`: the commands an agent types to record
+//! its work, and what the hook reads out of them. The agent writes meaning (the title, the goal, a Current state
 //! body); code writes everything else. The body rides in a heredoc, because prose in
 //! command arguments breaks on quoting, PowerShell most of all, and because the hook sees the
 //! whole command string and does the write itself, outside the sandbox the command would run
@@ -11,10 +11,10 @@
 /// The one delimiter, quoted so the shell expands nothing in the body.
 pub const DELIMITER: &str = "ASTROLABE";
 
-/// What an `astrolabe effort …` command says.
+/// What an `astrolabe effort …` or `astrolabe journal …` command says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffortCommand {
-    /// `new` or `save`.
+    /// `new`, `save` or `journal`.
     pub verb: String,
     /// `--key value` pairs, in order, keys without the dashes.
     pub flags: Vec<(String, String)>,
@@ -31,23 +31,35 @@ pub const NEW_FLAGS: [&str; 6] = [
     "initiative",
     "priority",
 ];
-pub const SAVE_FLAGS: [&str; 5] = ["status", "decision", "waits-for", "reason", "plan-file"];
+pub const SAVE_FLAGS: [&str; 9] = [
+    "status",
+    "decision",
+    "waits-for",
+    "reason",
+    "plan-file",
+    "journal",
+    "tick",
+    "untick",
+    "pieces-file",
+];
 
 /// The accepted forms, for a refusal.
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  **Goal:** …\n  '@\n  or:  @'\n  **Goal:** …\n  '@ | astrolabe effort save --status active\n\
+A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is prose; it needs no quoting.";
 
 impl EffortCommand {
     /// Whether a command string is one of these at all, so other commands pass untouched.
-    /// Any shape that names `astrolabe effort` is claimed, so one the grammar rejects is
-    /// refused with the forms rather than run by whatever `astrolabe` is on PATH.
+    /// Any shape that names `astrolabe effort` or `astrolabe journal` is claimed, so one the
+    /// grammar rejects is refused with the forms rather than run by whatever `astrolabe` is
+    /// on PATH.
     pub fn is_effort_command(command: &str) -> bool {
         let words: Vec<&str> = command.split_whitespace().collect();
         words.windows(2).any(|w| {
             (w[0] == "astrolabe" || w[0].ends_with("/astrolabe") || w[0].ends_with("\\astrolabe"))
-                && w[1] == "effort"
+                && (w[1] == "effort" || w[1] == "journal")
         })
     }
 
@@ -61,13 +73,51 @@ impl EffortCommand {
         if program != "astrolabe" && !program.ends_with("/astrolabe") {
             return Err(format!("{program:?} isn't the astrolabe program"));
         }
-        if words.next_word()?.as_deref() != Some("effort") {
-            return Err("the second word must be `effort`".to_owned());
-        }
         let verb = match words.next_word()?.as_deref() {
-            Some(v @ ("new" | "save")) => v.to_owned(),
-            Some(other) => return Err(format!("`effort {other}` isn't a verb; use new or save")),
-            None => return Err("`effort` needs a verb: new or save".to_owned()),
+            Some("effort") => match words.next_word()?.as_deref() {
+                Some(v @ ("new" | "save")) => v.to_owned(),
+                Some(other) => {
+                    return Err(format!("`effort {other}` isn't a verb; use new or save"));
+                }
+                None => return Err("`effort` needs a verb: new or save".to_owned()),
+            },
+            Some("journal") => {
+                // The sentence as one quoted word, or in the body; never both.
+                let mut body = body;
+                if let Some(sentence) = words.next_word()? {
+                    if sentence.starts_with("--") {
+                        return Err(
+                            "`journal` takes no flags: the sentence alone, quoted, or in a body"
+                                .to_owned(),
+                        );
+                    }
+                    if body.is_some() {
+                        return Err(
+                            "`journal` takes the sentence once: quoted, or in a body, not both"
+                                .to_owned(),
+                        );
+                    }
+                    body = Some(sentence);
+                }
+                if words.next_word()?.is_some() {
+                    return Err(
+                        "`journal` takes one quoted sentence; quote the whole of it".to_owned()
+                    );
+                }
+                let text = body.as_deref().map(str::trim).unwrap_or_default();
+                if text.is_empty() {
+                    return Err("`journal` needs the sentence".to_owned());
+                }
+                if text.lines().count() > 1 {
+                    return Err("a journal line is one line".to_owned());
+                }
+                return Ok(Self {
+                    verb: "journal".to_owned(),
+                    flags: Vec::new(),
+                    body: Some(text.to_owned()),
+                });
+            }
+            _ => return Err("the second word must be `effort` or `journal`".to_owned()),
         };
         let mut flags = Vec::new();
         while let Some(word) = words.next_word()? {
@@ -106,6 +156,15 @@ impl EffortCommand {
             .rev()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Every value of a flag given more than once, in order: `--tick a --tick b`.
+    pub fn flags_all(&self, key: &str) -> Vec<&str> {
+        self.flags
+            .iter()
+            .filter(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .collect()
     }
 
     /// A stable name for this exact command: what a retry would type again.
@@ -489,6 +548,96 @@ impl EffortFile {
             .map(str::trim)
     }
 
+    /// A field given twice in Current state: the owner reads it and the home view takes the
+    /// one `Next:` line, so each field is one line.
+    pub fn repeated_field(&self) -> Option<String> {
+        let mut seen: Vec<&str> = Vec::new();
+        for line in self.current.lines() {
+            let Some(rest) = line.strip_prefix("**") else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(":**") else {
+                continue;
+            };
+            if seen.contains(&name) {
+                return Some(name.to_owned());
+            }
+            seen.push(name);
+        }
+        None
+    }
+
+    /// The `## Pieces` checklist, when the effort has one.
+    pub fn pieces(&self) -> Option<&str> {
+        self.other
+            .iter()
+            .find(|(h, _)| h == "Pieces")
+            .map(|(_, b)| b.as_str())
+    }
+
+    pub fn set_pieces(&mut self, text: &str) {
+        let text = text.trim().to_owned();
+        match self.other.iter_mut().find(|(h, _)| h == "Pieces") {
+            Some((_, body)) => *body = text,
+            None => self.other.insert(0, ("Pieces".to_owned(), text)),
+        }
+    }
+
+    /// Ticked and total items of the checklist.
+    pub fn pieces_count(&self) -> Option<(usize, usize)> {
+        let text = self.pieces()?;
+        let items = text.lines().filter(|l| piece_box(l).is_some());
+        let (mut done, mut total) = (0, 0);
+        for l in items {
+            total += 1;
+            if piece_box(l) == Some(true) {
+                done += 1;
+            }
+        }
+        Some((done, total))
+    }
+
+    /// Ticks or unticks the one item whose text starts with `label`; refused when none or
+    /// more than one does, so a tick never lands on the wrong piece.
+    pub fn tick(&mut self, label: &str, done: bool) -> Result<(), String> {
+        let label = label.trim();
+        let text = self
+            .pieces()
+            .ok_or("this effort has no `## Pieces` checklist; add one with --pieces-file")?;
+        let wanted = label.to_lowercase();
+        let matches: Vec<usize> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                piece_box(l).is_some() && piece_text(l).to_lowercase().starts_with(&wanted)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let at = match matches.as_slice() {
+            [one] => *one,
+            [] => return Err(format!("no piece starts with {label:?}")),
+            _ => {
+                return Err(format!(
+                    "{label:?} names more than one piece; say more of it"
+                ));
+            }
+        };
+        let lines: Vec<String> = text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == at {
+                    let mark = if done { "[x]" } else { "[ ]" };
+                    format!("- {mark} {}", piece_text(l))
+                } else {
+                    l.to_owned()
+                }
+            })
+            .collect();
+        self.set_pieces(&lines.join("\n"));
+        Ok(())
+    }
+
     /// Fields the checkpoint shape asks for and this Current state lacks.
     pub fn missing_fields(&self) -> Vec<&'static str> {
         ["**Goal:**", "**Next:**"]
@@ -542,6 +691,26 @@ impl EffortFile {
 }
 
 /// A file name's slug from a title: lowercase words joined by dashes, at most six.
+/// Whether a line is a checklist item, and whether it's ticked.
+fn piece_box(line: &str) -> Option<bool> {
+    let rest = line.trim_start().strip_prefix("- ")?;
+    if rest.starts_with("[x] ") || rest.starts_with("[X] ") {
+        Some(true)
+    } else if rest.starts_with("[ ] ") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn piece_text(line: &str) -> &str {
+    line.trim_start()
+        .strip_prefix("- ")
+        .and_then(|r| r.get(4..))
+        .unwrap_or("")
+        .trim()
+}
+
 pub fn slug(title: &str) -> String {
     let words: Vec<String> = title
         .split(|c: char| !c.is_alphanumeric())

@@ -1,5 +1,5 @@
-//! `astrolabe effort new | save`, done inside the hook: the agent's words become an effort
-//! note, a journal line and a commit; the session is bound to the effort; code stamps what it
+//! `astrolabe effort new | save` and `astrolabe journal`, done inside the hook: the agent's
+//! words become an effort note, at most one journal line and a commit; the session is bound to the effort; code stamps what it
 //! can observe (time, machine, provider, session, branch, head, unpushed, dirty), because the
 //! audit found agents wrote accurate prose when asked and skipped exactly those fields.
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
@@ -7,6 +7,7 @@ use crate::effort::{EffortCommand, EffortFile, FORMS, slug};
 use crate::notes::{self, JournalLine, Notes, Op, Pull, RepoFacts};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::path::PathBuf;
 
 const STATUSES: [&str; 6] = [
     "proposed",
@@ -188,7 +189,7 @@ fn new_inner(
     let pulled = notes.pull();
     let number = notes.next_number();
     let file_name = format!("efforts/{number:04}-{}.md", slug(title));
-    let (day, time) = notes::local_day_time();
+    let (day, _) = notes::local_day_time();
     let facts = RepoFacts::read(cwd);
     let mut file = EffortFile {
         title: format!("{number} {title}"),
@@ -222,23 +223,9 @@ fn new_inner(
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
         renames: Vec::new(),
-        journal: vec![JournalLine {
-            id: line_id(key, 0),
-            kind: "started".to_owned(),
-            effort: format!("{number:04}"),
-            title: title.to_owned(),
-            text: goal
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_start_matches("**Goal:**")
-                .trim()
-                .to_owned(),
-            machine: notes::machine_name(),
-            provider: provider.to_owned(),
-            time,
-            day,
-        }],
+        // No journal line: starting is state, not history. The agent writes one with
+        // `--journal` when something worth telling has happened.
+        journal: Vec::new(),
         message: format!("{number:04}: started"),
         base: None,
         states: vec![(state_path(&dir, session), state)],
@@ -259,7 +246,7 @@ fn new_inner(
         shells,
     )?;
     let mut head = format!(
-        "Effort {number} created as {file_name}, status {status}, bound to this session; journal line written and committed. Say your reading in one line (involvement {involvement} · authority {authority} · one piece or multi-step) and proceed.",
+        "Effort {number} created as {file_name}, status {status}, bound to this session and committed. Say your reading in one line (involvement {involvement} · authority {authority} · one piece or multi-step) and proceed.",
     );
     if let Pull::Diverged(why) = &pulled {
         head += &format!(
@@ -311,11 +298,25 @@ fn save_inner(
         .filter(|w| !w.is_empty());
     let reason = cmd.flag("reason").map(str::trim).filter(|r| !r.is_empty());
     let plan_file = cmd.flag("plan-file");
+    let journal_text = cmd.flag("journal").map(str::trim).filter(|j| !j.is_empty());
+    let ticks = cmd.flags_all("tick");
+    let unticks = cmd.flags_all("untick");
+    let pieces_file = cmd.flag("pieces-file");
+    if let Some(both) = ticks.iter().find(|t| unticks.contains(t)) {
+        return Err(format!("{both:?} is both ticked and unticked"));
+    }
+    if journal_text.is_some_and(|j| j.lines().count() > 1) {
+        return Err("a journal line is one line".to_owned());
+    }
     if cmd.body.is_none()
         && status.is_none()
         && decision.is_none()
         && waits_for.is_none()
         && plan_file.is_none()
+        && journal_text.is_none()
+        && ticks.is_empty()
+        && unticks.is_empty()
+        && pieces_file.is_none()
     {
         return Err(format!(
             "nothing to save: give a Current state body, or a flag.\n{FORMS}"
@@ -327,20 +328,18 @@ fn save_inner(
     if status.as_deref() == Some("abandoned") && reason.is_none() {
         return Err("abandoned needs --reason \"<why>\"".to_owned());
     }
-    let plan = match plan_file {
-        Some(p) => {
-            let path = if Path::new(p).is_absolute() {
-                Path::new(p).to_path_buf()
-            } else {
-                cwd.join(p)
-            };
-            Some(
-                std::fs::read_to_string(&path)
-                    .map_err(|e| format!("--plan-file {}: {e}", path.display()))?,
-            )
-        }
-        None => None,
+    let read_file = |flag: &str, p: &str| {
+        let path = if Path::new(p).is_absolute() {
+            PathBuf::from(p)
+        } else {
+            cwd.join(p)
+        };
+        std::fs::read_to_string(&path).map_err(|e| format!("--{flag} {}: {e}", path.display()))
     };
+    let plan = plan_file.map(|p| read_file("plan-file", p)).transpose()?;
+    let pieces = pieces_file
+        .map(|p| read_file("pieces-file", p))
+        .transpose()?;
     let _held = notes.lock()?;
     let leftovers = notes.reconcile();
     if !leftovers.is_empty() {
@@ -366,33 +365,34 @@ fn save_inner(
         // Delivered anew, so the next save from this text goes through.
         state["delivered"] = on_disk_hash.clone().into();
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
+        let pieces = file
+            .pieces()
+            .map(|p| format!("\n\nIts Pieces now:\n\n{p}"))
+            .unwrap_or_default();
         return Err(format!(
-            "effort {number} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}\n\nSave again from this.",
+            "effort {number} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
             file.prop("saved_by").unwrap_or("?"),
             file.prop("updated").unwrap_or("?"),
             file.current
         ));
     }
     let facts = RepoFacts::read(cwd);
-    let (day, time) = notes::local_day_time();
+    let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
-    let mut journal = Vec::new();
-    let name = file.name().to_owned();
-    let mut line = |kind: &str, text: &str| {
-        journal.push(JournalLine {
-            id: line_id(key, journal.len()),
-            kind: kind.to_owned(),
-            effort: format!("{:04}", number.parse::<u32>().unwrap_or(0)),
-            title: name.clone(),
-            text: text.to_owned(),
-            machine: notes::machine_name(),
-            provider: provider.to_owned(),
-            time: time.clone(),
-            day: day.clone(),
-        });
-    };
-    if let Some(body) = cmd.body.as_deref() {
-        file.current = as_current(body);
+    if let Some(body) = &cmd.body {
+        let current = as_current(body);
+        let probe = EffortFile {
+            current: current.clone(),
+            ..Default::default()
+        };
+        // Refused before anything is written: the owner reads this block and the home
+        // view takes its one `Next:` line.
+        if let Some(field) = probe.repeated_field() {
+            return Err(format!(
+                "{field} appears twice in Current state; one line per field. Nothing was written"
+            ));
+        }
+        file.current = current;
         let lines = file.current.lines().count();
         if lines > CURRENT_LINES {
             notes_lines.push(format!(
@@ -406,18 +406,18 @@ fn save_inner(
     }
     if let Some(plan) = plan {
         file.plan = Some(plan.trim().to_owned());
-        line(
-            "decision",
-            &format!(
-                "plan approved{}",
-                decision.map_or(String::new(), |d| format!(": {d}"))
-            ),
-        );
-    } else if let Some(d) = decision {
-        line("decision", d);
     }
     if let Some(d) = decision {
         file.add_decision(&format!("{day}: {d}"));
+    }
+    if let Some(p) = &pieces {
+        file.set_pieces(p);
+    }
+    for label in &ticks {
+        file.tick(label, true)?;
+    }
+    for label in &unticks {
+        file.tick(label, false)?;
     }
     if let Some(w) = waits_for {
         file.set("waits_for", w);
@@ -428,20 +428,20 @@ fn save_inner(
         if s != "blocked" && waits_for.is_none() {
             file.set("waits_for", "");
         }
-        match s.as_str() {
-            "blocked" => line("blocked", waits_for.unwrap_or_default()),
-            "done" => {
-                let done = file
-                    .current
-                    .lines()
-                    .find_map(|l| l.strip_prefix("**Done:**"))
-                    .map(str::trim);
-                line("done", done.unwrap_or("done"));
-            }
-            "abandoned" => line("abandoned", reason.unwrap_or_default()),
-            _ => {}
-        }
     }
+    // The journal is the owner's history and only the agent's sentence goes in it; one per
+    // effort per day, the later replacing the earlier.
+    let journal = journal_text
+        .map(|j| JournalLine {
+            id: line_id(key, 0),
+            effort: format!("{:04}", number.parse::<u32>().unwrap_or(0)),
+            text: j.to_owned(),
+            machine: notes::machine_name(),
+            day: day.clone(),
+            replace: true,
+        })
+        .into_iter()
+        .collect();
     stamp(&mut file, session, provider, facts.as_ref());
     let text = file.render();
     let now = notes::now_ms();
@@ -475,10 +475,15 @@ fn save_inner(
         notes.spawn_sync();
     }
     let mut head = format!(
-        "Saved effort {number}: status {}{}; committed{}.",
+        "Saved effort {number}: status {}{}{}; committed{}.",
         file.prop("status").unwrap_or("?"),
         if cmd.body.is_some() {
             ", Current state replaced"
+        } else {
+            ""
+        },
+        if journal_text.is_some() {
+            ", journal line written"
         } else {
             ""
         },
@@ -501,18 +506,92 @@ pub fn forget(key: &str) {
     }
 }
 
-/// The plain `astrolabe effort …` command, when no hook rewrote it: it explains what happened
+/// `astrolabe journal "…"`, in the hook: one line in today's day file for a finding with no
+/// effort, tagged with the repo. A session with an effort passes `--journal` on its save
+/// instead, so the line is the effort's.
+pub fn journal(cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Done {
+    match journal_inner(cmd, key, session, cwd) {
+        Ok(text) => Done { text, ok: true },
+        Err(why) => Done {
+            text: format!("Journal line NOT written: {why}"),
+            ok: false,
+        },
+    }
+}
+
+fn journal_inner(
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    cwd: &Path,
+) -> Result<String, String> {
+    let sentence = cmd.body.as_deref().map(str::trim).unwrap_or_default();
+    let (registry, notes) = notes_here()?;
+    let dir = notes.state.clone();
+    let bound = read_state(&dir, session)?;
+    if let Some(n) = bound.as_ref().and_then(|s| s["effort"].as_str()) {
+        return Err(format!(
+            "this session has effort {n}; its journal line goes on the effort: `astrolabe effort save --journal \"…\"`"
+        ));
+    }
+    let repo = repo_of(&notes, &registry, cwd)?;
+    let _held = notes.lock()?;
+    let leftovers = notes.reconcile();
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
+    if notes.already_applied(key) {
+        return Ok("Already written: this same tool call was done before (a retry), so nothing new went in the journal.".to_owned());
+    }
+    let pulled = notes.pull();
+    let (day, _) = notes::local_day_time();
+    let op = Op {
+        key: key.to_owned(),
+        files: Vec::new(),
+        renames: Vec::new(),
+        journal: vec![JournalLine {
+            id: line_id(key, 0),
+            effort: repo.clone(),
+            text: sentence.to_owned(),
+            machine: notes::machine_name(),
+            day: day.clone(),
+            replace: false,
+        }],
+        message: format!("journal: {repo}"),
+        base: None,
+        states: Vec::new(),
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+    };
+    notes.apply(&op)?;
+    if notes::now_ms() - notes.last_push_ms() > notes::PUSH_EVERY_MS {
+        notes.spawn_sync();
+    }
+    let mut head = format!("Journal line written for {day} and committed.");
+    if matches!(pulled, Pull::Diverged(_)) {
+        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
+    }
+    notes.finish(key, &head);
+    Ok(head)
+}
+
+/// The plain `astrolabe effort …` or `astrolabe journal …` command, when no hook rewrote it: it explains what happened
 /// instead of doing anything, because only the hook knows the session. A recent ticket for the
 /// same command means it was done; a recent intent means it's still finishing.
-pub fn plain(args: &[&str], body: Option<&str>) -> (String, bool) {
-    let mut words = vec!["astrolabe".to_owned(), "effort".to_owned()];
+pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
+    let mut words = vec!["astrolabe".to_owned(), first.to_owned()];
     // PowerShell hands the here-string over as one argument: the one that isn't a flag or a
     // flag's value, or any with line breaks.
     let mut body = body.map(str::to_owned);
     let mut wants_value = false;
     for (i, a) in args.iter().enumerate() {
         let is_flag = a.starts_with("--");
-        let positional = i > 0 && !is_flag && !wants_value;
+        let positional = (i > 0 || first == "journal") && !is_flag && !wants_value;
         if a.contains('\n') || positional {
             body = Some((*a).to_owned());
         } else if a.contains(' ') || a.is_empty() {
@@ -602,15 +681,17 @@ pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
             "updated": file.prop("updated"), "saved_by": file.prop("saved_by"),
             "branch": file.prop("branch"), "unpushed": file.prop("unpushed"), "dirty": file.prop("dirty"),
             "next": file.next_line(),
+            "pieces": file.pieces_count().map(|(done, total)| json!({"done": done, "total": total})),
         }));
     }
     let (day, _) = notes::local_day_time();
     let journal = std::fs::read_to_string(notes.root.join("journal").join(format!("{day}.md")))
         .unwrap_or_default();
-    Ok(
-        json!({"efforts": rows, "today": day, "journal": journal, "notes": notes.warnings()})
-            .to_string(),
-    )
+    Ok(json!({
+        "efforts": rows, "today": day, "journal": journal,
+        "journal_lines": notes::parse_journal(&journal), "notes": notes.warnings(),
+    })
+    .to_string())
 }
 
 /// Before a pickup: the notes brought up to date, so the effort read is the published one.
