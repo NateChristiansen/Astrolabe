@@ -44,7 +44,6 @@ struct Machine {
 
 struct World {
     origin: TempDir,
-    demo_origin: PathBuf,
 }
 
 impl World {
@@ -72,13 +71,7 @@ impl World {
         git(&seed, &["commit", "-q", "-m", "seed"]);
         git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
         git(&seed, &["push", "-q", "origin", "main"]);
-        let demo_origin = origin.0.join("demo.git");
-        std::fs::create_dir_all(&demo_origin).unwrap();
-        git(&demo_origin, &["init", "-q", "--bare", "-b", "main"]);
-        Self {
-            origin,
-            demo_origin,
-        }
+        Self { origin }
     }
 
     fn machine(&self, name: &'static str) -> Machine {
@@ -181,12 +174,22 @@ impl Machine {
         assert!(ok, "a hook always exits 0");
         if out.trim().is_empty() {
             if !command.trim_start().starts_with("astrolabe") {
-                let out = Command::new("sh").arg("-c").arg(command).current_dir(&self.demo)
-                    .env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
-                    .env("GIT_AUTHOR_NAME", "T").env("GIT_AUTHOR_EMAIL", "t@example.com")
-                    .env("GIT_COMMITTER_NAME", "T").env("GIT_COMMITTER_EMAIL", "t@example.com")
-                    .output().unwrap();
-                return (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.success());
+                let out = Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(&self.demo)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_AUTHOR_NAME", "T")
+                    .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                    .env("GIT_COMMITTER_NAME", "T")
+                    .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                    .output()
+                    .unwrap();
+                return (
+                    String::from_utf8_lossy(&out.stdout).into_owned(),
+                    out.status.success(),
+                );
             }
             return self.plain(command);
         }
@@ -616,8 +619,13 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
         !ok && out.contains("changed since it was delivered"),
         "{out}"
     );
-    let finished: Value = serde_json::from_slice(&std::fs::read(mac.state().join("ops/crashed-key.json")).unwrap()).unwrap();
-    assert!(finished["committed"] == true && finished["result"].is_string(), "intent finished: {finished}");
+    let finished: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("ops/crashed-key.json")).unwrap())
+            .unwrap();
+    assert!(
+        finished["committed"] == true && finished["result"].is_string(),
+        "intent finished: {finished}"
+    );
     let log = mac.log();
     assert!(
         log.starts_with("0001: checkpoint\n0001: started\n"),
@@ -709,9 +717,14 @@ fn efforts_json_is_what_the_home_view_reads() {
 
 impl Machine {
     fn hook_json(&self, event: &str, input: Value) -> Option<Value> {
-        let (out, ok) = self.run(&self.demo, &["hook", event, "--if-active"], &input.to_string());
+        let (out, ok) = self.run(
+            &self.demo,
+            &["hook", event, "--if-active"],
+            &input.to_string(),
+        );
         assert!(ok, "{out}");
-        (!out.trim().is_empty()).then(|| serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}")))
+        (!out.trim().is_empty())
+            .then(|| serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}")))
     }
 
     fn stop(&self, session: &str, active: bool, codex: bool) -> Option<Value> {
@@ -737,23 +750,46 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     assert!(mac.stop("s1", false, false).is_none());
     let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "x".repeat(700)});
     let asked = mac.hook_json("stop", long.clone()).unwrap();
-    assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("long answer and no effort"), "{asked}");
-    assert!(mac.hook_json("stop", long).is_none(), "asked once per session");
+    assert!(
+        asked["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("long answer and no effort"),
+        "{asked}"
+    );
+    assert!(
+        mac.hook_json("stop", long).is_none(),
+        "asked once per session"
+    );
     // An edit with no effort: one nudge to start one, then silence.
     mac.edit("s1", "Edit");
     let nudge = mac.stop("s1", false, false).unwrap();
-    let text = nudge["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-    assert!(text.contains("no effort recorded") && text.contains("not the owner"), "{text}");
+    let text = nudge["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.contains("no effort recorded") && text.contains("not the owner"),
+        "{text}"
+    );
     assert!(mac.stop("s1", false, false).is_none(), "said once");
     // Bound and saved: silence; a commit in the repo moves the fingerprint: one nudge.
     assert!(mac.bash("s1", NEW).1);
-    assert!(mac.stop("s1", false, false).is_none(), "baseline taken at create");
+    assert!(
+        mac.stop("s1", false, false).is_none(),
+        "baseline taken at create"
+    );
     // Created, never saved, long answer: one ask, then silence until a save. The ask is once
     // per session whichever side asked, so the earlier one is cleared here.
     std::fs::remove_file(mac.state().join("marks/s1.asked")).unwrap();
     let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "y".repeat(700)});
     let asked = mac.hook_json("stop", long.clone()).unwrap();
-    assert!(asked["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("never saved"), "{asked}");
+    assert!(
+        asked["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("never saved"),
+        "{asked}"
+    );
     assert!(mac.hook_json("stop", long.clone()).is_none());
     assert!(mac.bash("s1", "astrolabe effort save --decision \"d0\"").1);
     assert!(mac.hook_json("stop", long).is_none(), "saved: no ask");
@@ -761,17 +797,36 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     git(&mac.demo, &["add", "a.txt"]);
     git(&mac.demo, &["commit", "-q", "-m", "a"]);
     let nudge = mac.stop("s1", false, true).unwrap();
-    assert_eq!(nudge["decision"], "block", "Codex continues only by a block");
+    assert_eq!(
+        nudge["decision"], "block",
+        "Codex continues only by a block"
+    );
     let text = nudge["reason"].as_str().unwrap();
-    assert!(text.contains("the repo changed since the last save of effort 1") && text.contains("not the owner"), "{text}");
+    assert!(
+        text.contains("the repo changed since the last save of effort 1")
+            && text.contains("not the owner"),
+        "{text}"
+    );
     assert!(mac.stop("s1", true, true).is_none(), "already continued");
-    assert!(mac.stop("s1", false, true).is_none(), "acknowledged: no second nudge for the same state");
+    assert!(
+        mac.stop("s1", false, true).is_none(),
+        "acknowledged: no second nudge for the same state"
+    );
     // A second edit to a dirty file changes the print; a save clears everything.
     write(&mac.demo.join("a.txt"), "aa");
     assert!(mac.stop("s1", false, false).is_some());
     write(&mac.demo.join("a.txt"), "aaa");
-    assert!(mac.stop("s1", false, false).is_some(), "content, not file names");
-    assert!(mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n").1);
+    assert!(
+        mac.stop("s1", false, false).is_some(),
+        "content, not file names"
+    );
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n"
+        )
+        .1
+    );
     assert!(mac.stop("s1", false, false).is_none(), "saved");
     // The guard's view of a commit, and an apply_patch, both mark.
     let (_, ok) = mac.bash("s1", "git commit --allow-empty -q -m nothing");
@@ -781,8 +836,15 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     mac.edit("s1", "apply_patch");
     assert!(mac.stop("s1", false, false).is_some());
     // Session end closes the state; a fresh session on the same id still reloads it.
-    assert!(mac.hook_json("session-end", json!({"session_id": "s1", "cwd": mac.demo, "reason": "other"})).is_none());
-    let state: Value = serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert!(
+        mac.hook_json(
+            "session-end",
+            json!({"session_id": "s1", "cwd": mac.demo, "reason": "other"})
+        )
+        .is_none()
+    );
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
     assert!(state["closed_ms"].is_number());
 }
 
@@ -794,21 +856,35 @@ fn review_fixes_hold() {
     // A pickup in another session records what was delivered, so its save is checked too.
     let (out, ok) = mac.bash("s2", "astrolabe activate --effort 1");
     assert!(ok, "{out}");
-    let state: Value = serde_json::from_slice(&std::fs::read(mac.state().join("s2.json")).unwrap()).unwrap();
-    assert!(state["delivered"].is_string() && state["baseline"].is_string(), "{state}");
-    assert!(mac.bash("s1", "astrolabe effort save --decision \"from s1\"").1);
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("s2.json")).unwrap()).unwrap();
+    assert!(
+        state["delivered"].is_string() && state["baseline"].is_string(),
+        "{state}"
+    );
+    assert!(
+        mac.bash("s1", "astrolabe effort save --decision \"from s1\"")
+            .1
+    );
     let (out, ok) = mac.bash("s2", "astrolabe effort save --decision \"from s2\"");
-    assert!(!ok && out.contains("changed since it was delivered"), "{out}");
+    assert!(
+        !ok && out.contains("changed since it was delivered"),
+        "{out}"
+    );
     // Nested decision text survives a save.
     let path = mac.notes.join("efforts/0001-smooth-ink.md");
-    let text = std::fs::read_to_string(&path).unwrap().replace("- 20", "- 20") + "  nested detail under the last decision\n";
+    let text =
+        std::fs::read_to_string(&path).unwrap() + "  nested detail under the last decision\n";
     std::fs::write(&path, &text).unwrap();
     let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"again\"");
     assert!(!ok, "{out}");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"again\"");
     assert!(ok, "{out}");
     let saved = std::fs::read_to_string(&path).unwrap();
-    assert!(saved.contains("nested detail under the last decision") && saved.contains(": again"), "{saved}");
+    assert!(
+        saved.contains("nested detail under the last decision") && saved.contains(": again"),
+        "{saved}"
+    );
     // A crash after the file write of a create, before its commit, then the same call again:
     // one effort, not two.
     let crashed = json!({
@@ -817,14 +893,34 @@ fn review_fixes_hold() {
         "digest": "d", "result": null, "cwd": "x"
     });
     write(&mac.state().join("ops/k-crash.json"), &crashed.to_string());
-    std::fs::write(mac.notes.join("efforts/0002-crashed.md"), crashed["files"][0][1].as_str().unwrap()).unwrap();
+    std::fs::write(
+        mac.notes.join("efforts/0002-crashed.md"),
+        crashed["files"][0][1].as_str().unwrap(),
+    )
+    .unwrap();
     let before = mac.log().lines().count();
-    let (out, ok) = mac.bash("s3", "astrolabe effort new --title \"Third\" <<'ASTROLABE'\ng3\nASTROLABE\n");
+    let (out, ok) = mac.bash(
+        "s3",
+        "astrolabe effort new --title \"Third\" <<'ASTROLABE'\ng3\nASTROLABE\n",
+    );
     assert!(ok && out.contains("Effort 3 created"), "{out}");
-    assert_eq!(mac.log().lines().count(), before + 2, "the leftover committed, then the new one");
-    assert!(!mac.state().join("ops/k-crash.json").exists() || serde_json::from_slice::<Value>(&std::fs::read(mac.state().join("ops/k-crash.json")).unwrap()).unwrap()["result"].is_string());
+    assert_eq!(
+        mac.log().lines().count(),
+        before + 2,
+        "the leftover committed, then the new one"
+    );
+    assert!(
+        !mac.state().join("ops/k-crash.json").exists()
+            || serde_json::from_slice::<Value>(
+                &std::fs::read(mac.state().join("ops/k-crash.json")).unwrap()
+            )
+            .unwrap()["result"]
+                .is_string()
+    );
     // A committed intent that still has a state file to write never rewrites the note.
-    let newer = std::fs::read_to_string(mac.notes.join("efforts/0002-crashed.md")).unwrap().replace("**Goal:** g.", "**Goal:** NEWER.");
+    let newer = std::fs::read_to_string(mac.notes.join("efforts/0002-crashed.md"))
+        .unwrap()
+        .replace("**Goal:** g.", "**Goal:** NEWER.");
     std::fs::write(mac.notes.join("efforts/0002-crashed.md"), &newer).unwrap();
     git(&mac.notes, &["add", "-A"]);
     git(&mac.notes, &["commit", "-q", "-m", "0002: newer"]);
@@ -832,30 +928,67 @@ fn review_fixes_hold() {
     committed["key"] = "k-committed".into();
     committed["committed"] = true.into();
     committed["states"] = json!([[mac.state().join("s9.json"), {"session": "s9", "effort": "2", "file": "efforts/0002-crashed.md"}]]);
-    write(&mac.state().join("ops/k-committed.json"), &committed.to_string());
+    write(
+        &mac.state().join("ops/k-committed.json"),
+        &committed.to_string(),
+    );
     assert!(mac.bash("s3", "astrolabe effort save --decision \"d\"").1);
-    assert!(std::fs::read_to_string(mac.notes.join("efforts/0002-crashed.md")).unwrap().contains("NEWER"), "not rolled back");
-    assert!(mac.state().join("s9.json").exists(), "the state step was finished");
+    assert!(
+        std::fs::read_to_string(mac.notes.join("efforts/0002-crashed.md"))
+            .unwrap()
+            .contains("NEWER"),
+        "not rolled back"
+    );
+    assert!(
+        mac.state().join("s9.json").exists(),
+        "the state step was finished"
+    );
     // The plain command finds a finished intent's result when the ticket never got written.
     let (_, ok) = mac.bash("s3", "astrolabe effort save --decision \"lost reply\"");
     assert!(ok);
-    let digest = astrolabe::effort::EffortCommand::parse("astrolabe effort save --decision \"lost reply\"").unwrap().digest();
+    let digest =
+        astrolabe::effort::EffortCommand::parse("astrolabe effort save --decision \"lost reply\"")
+            .unwrap()
+            .digest();
     let op = json!({"key": "k-lost", "files": [], "renames": [], "journal": [], "message": "m", "base": null, "states": [], "committed": true,
         "digest": digest, "result": "Saved effort 3: recovered text", "cwd": astrolabe::hook::comparable(&mac.demo)});
     write(&mac.state().join("ops/k-lost.json"), &op.to_string());
-    for f in std::fs::read_dir(mac.state().join("shown")).unwrap().flatten() {
+    for f in std::fs::read_dir(mac.state().join("shown"))
+        .unwrap()
+        .flatten()
+    {
         std::fs::remove_file(f.path()).unwrap();
     }
     let (out, ok) = mac.plain("astrolabe effort save --decision \"lost reply\"");
-    assert!(ok && out.contains("recovered text") && out.contains("Recovered from the hook's record"), "{out}");
+    assert!(
+        ok && out.contains("recovered text") && out.contains("Recovered from the hook's record"),
+        "{out}"
+    );
     // A PowerShell here-string arrives as one argument with line breaks: same digest.
-    let (out, ok) = mac.run(&mac.demo, &["effort", "save", "--decision", "lost reply"], "");
+    let (out, ok) = mac.run(
+        &mac.demo,
+        &["effort", "save", "--decision", "lost reply"],
+        "",
+    );
     assert!(ok, "{out}");
-    let (out, _) = mac.run(&mac.demo, &["effort", "save", "--status", "active", "**Goal:** g.\n**Next:** n."], "");
+    let (out, _) = mac.run(
+        &mac.demo,
+        &[
+            "effort",
+            "save",
+            "--status",
+            "active",
+            "**Goal:** g.\n**Next:** n.",
+        ],
+        "",
+    );
     assert!(out.contains("NOT recorded"), "{out}");
     // A mistyped flag is refused, not ignored.
     let (out, ok) = mac.bash("s3", "astrolabe effort save --plan x");
-    assert!(!ok && out.contains("isn't a flag of `effort save`"), "{out}");
+    assert!(
+        !ok && out.contains("isn't a flag of `effort save`"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -864,16 +997,38 @@ fn a_retried_create_after_switching_efforts_names_the_effort_it_made() {
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The lost-reply retry's intent is long gone; the session has since moved to effort 2.
-    for f in std::fs::read_dir(mac.state().join("ops")).unwrap().flatten() {
+    for f in std::fs::read_dir(mac.state().join("ops"))
+        .unwrap()
+        .flatten()
+    {
         std::fs::remove_file(f.path()).unwrap();
     }
-    assert!(mac.bash("s1", "astrolabe effort new --title \"Second\" <<'ASTROLABE'\ng2\nASTROLABE\n").1);
-    for f in std::fs::read_dir(mac.state().join("ops")).unwrap().flatten() {
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Second\" <<'ASTROLABE'\ng2\nASTROLABE\n"
+        )
+        .1
+    );
+    for f in std::fs::read_dir(mac.state().join("ops"))
+        .unwrap()
+        .flatten()
+    {
         std::fs::remove_file(f.path()).unwrap();
     }
     let (out, ok) = mac.bash("s1", NEW);
-    assert!(ok && out.contains("Effort 1 was already created by this same call"), "{out}");
-    let state: Value = serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert!(
+        ok && out.contains("Effort 1 was already created by this same call"),
+        "{out}"
+    );
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "1");
-    assert_eq!(mac.log().lines().filter(|l| l.ends_with(": started")).count(), 2);
+    assert_eq!(
+        mac.log()
+            .lines()
+            .filter(|l| l.ends_with(": started"))
+            .count(),
+        2
+    );
 }

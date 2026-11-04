@@ -235,7 +235,7 @@ impl Notes {
         let next = numbers.last().map_or(1, |(n, _)| n + 1);
         let new_name = format!(
             "{next:04}-{}",
-            newer.splitn(2, '-').nth(1).unwrap_or("x.md")
+            newer.split_once('-').map_or("x.md", |x| x.1)
         );
         Some((newer.clone(), new_name, next))
     }
@@ -277,7 +277,11 @@ impl Notes {
             cwd: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
-        for entry in std::fs::read_dir(&self.state).into_iter().flatten().flatten() {
+        for entry in std::fs::read_dir(&self.state)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
@@ -608,7 +612,11 @@ impl Notes {
             let mut record = self.sync_record();
             let mut files: Vec<String> = record["stale"]["files"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             files.extend(stale.iter().cloned());
             files.sort();
@@ -624,7 +632,11 @@ impl Notes {
         let Some(files) = record["stale"]["files"].as_array() else {
             return;
         };
-        let kept: Vec<Value> = files.iter().filter(|f| f.as_str() != Some(rel)).cloned().collect();
+        let kept: Vec<Value> = files
+            .iter()
+            .filter(|f| f.as_str() != Some(rel))
+            .cloned()
+            .collect();
         if kept.len() == files.len() {
             return;
         }
@@ -711,7 +723,10 @@ impl Notes {
                 d["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
             ));
         }
-        if let Some(files) = record["stale"]["files"].as_array().filter(|f| !f.is_empty()) {
+        if let Some(files) = record["stale"]["files"]
+            .as_array()
+            .filter(|f| !f.is_empty())
+        {
             let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
             lines.push(format!(
                 "Two machines saved the same effort unseen: {}. The file holds whichever landed last; both are in git. Resave it from what's there.",

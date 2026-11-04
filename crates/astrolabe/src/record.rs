@@ -162,11 +162,18 @@ fn new_inner(
     if notes.already_applied(key) {
         // Done before, by this call or its interrupted first run: the result it had, or the
         // effort it bound.
-        if let Some(result) = notes.intents().into_iter().find(|op| op.key == key).and_then(|op| op.result) {
+        if let Some(result) = notes
+            .intents()
+            .into_iter()
+            .find(|op| op.key == key)
+            .and_then(|op| op.result)
+        {
             return Ok(result);
         }
         // The effort that commit created, not whatever this session is bound to now.
-        let created = notes.applied_commit(key).and_then(|sha| notes.effort_in_commit(&sha));
+        let created = notes
+            .applied_commit(key)
+            .and_then(|sha| notes.effort_in_commit(&sha));
         return match created {
             Some(n) => {
                 let n = n.to_string();
@@ -534,7 +541,10 @@ pub fn plain(args: &[&str], body: Option<&str>) -> (String, bool) {
         .unwrap_or_default();
     if let Some((text, ok, age_ms)) = activate::shown_for(&dir, &digest, &here, RECENT_MS) {
         return (
-            format!("{text}\n\n(This is the result of a command with this exact text, run in this folder {} s ago through the hook. If that was another session, this one's command wasn't taken by the hook and recorded nothing.)", age_ms / 1000),
+            format!(
+                "{text}\n\n(This is the result of a command with this exact text, run in this folder {} s ago through the hook. If that was another session, this one's command wasn't taken by the hook and recorded nothing.)",
+                age_ms / 1000
+            ),
             ok,
         );
     }

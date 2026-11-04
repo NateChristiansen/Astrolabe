@@ -16,7 +16,8 @@ const LONG_ANSWER: usize = 600;
 
 /// Where an unbound session's mark goes.
 fn mark_path(dir: &Path, session: &str) -> PathBuf {
-    dir.join("marks").join(state_path(dir, session).file_name().unwrap_or_default())
+    dir.join("marks")
+        .join(state_path(dir, session).file_name().unwrap_or_default())
 }
 
 /// Records that this session did work: in its state when bound, else in a mark file.
@@ -30,7 +31,10 @@ pub fn mark(session: &str) {
             }
         }
         _ => {
-            let _ = notes::write_text(&mark_path(&dir, session), &json!({"at_ms": notes::now_ms()}).to_string());
+            let _ = notes::write_text(
+                &mark_path(&dir, session),
+                &json!({"at_ms": notes::now_ms()}).to_string(),
+            );
         }
     }
 }
@@ -48,7 +52,10 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         return None;
     }
     let dir = state_dir()?;
-    let cwd = input["cwd"].as_str().map(PathBuf::from).or_else(|| std::env::current_dir().ok())?;
+    let cwd = input["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
         Ok(Some(mut state)) => {
@@ -56,7 +63,9 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
             let baseline = state["baseline"].as_str().map(str::to_owned);
             let acknowledged = state["acknowledged"].as_str().map(str::to_owned);
-            let moved = print.is_some_and(|p| baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p));
+            let moved = print.is_some_and(|p| {
+                baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p)
+            });
             let marked = state["mark"] == true;
             let effort = state["effort"].as_str().unwrap_or_default().to_owned();
             if !moved && !marked {
@@ -87,7 +96,9 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                     f.head,
                     if f.dirty { ", tree dirty" } else { "" }
                 ),
-                _ => format!("files were edited or commits made since the last save of effort {effort}"),
+                _ => format!(
+                    "files were edited or commits made since the last save of effort {effort}"
+                ),
             };
             // Said once per state: the print is acknowledged and the mark cleared.
             state["acknowledged"] = print.into();
@@ -142,7 +153,9 @@ pub fn at_end(session: &str) {
 /// A detached push when notes have commits origin lacks, or writes left unfinished.
 pub fn push_pending() {
     let Some(dir) = state_dir() else { return };
-    let Ok(root) = crate::activate::notes_root() else { return };
+    let Ok(root) = crate::activate::notes_root() else {
+        return;
+    };
     let notes = Notes::new(root, dir);
     if notes.unpublished() > 0 || !notes.intents().is_empty() {
         notes.spawn_sync();

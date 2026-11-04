@@ -23,7 +23,14 @@ pub struct EffortCommand {
 }
 
 /// The flags each verb takes; any other is refused, so a mistyped one can't be ignored.
-pub const NEW_FLAGS: [&str; 6] = ["title", "status", "involvement", "authority", "initiative", "priority"];
+pub const NEW_FLAGS: [&str; 6] = [
+    "title",
+    "status",
+    "involvement",
+    "authority",
+    "initiative",
+    "priority",
+];
 pub const SAVE_FLAGS: [&str; 5] = ["status", "decision", "waits-for", "reason", "plan-file"];
 
 /// The accepted forms, for a refusal.
@@ -76,7 +83,11 @@ impl EffortCommand {
             if value.starts_with("--") {
                 return Err(format!("--{key} needs a value, not another flag"));
             }
-            let allowed: &[&str] = if verb == "new" { &NEW_FLAGS } else { &SAVE_FLAGS };
+            let allowed: &[&str] = if verb == "new" {
+                &NEW_FLAGS
+            } else {
+                &SAVE_FLAGS
+            };
             if !allowed.contains(&key) {
                 let named: Vec<String> = allowed.iter().map(|f| format!("--{f}")).collect();
                 return Err(format!(
@@ -288,8 +299,12 @@ mod tests {
         assert_eq!(cmd.verb, "new");
         assert_eq!(cmd.flag("authority"), Some("read"));
         assert_eq!(cmd.body.as_deref(), Some("Find the thing; research only."));
-        assert!(EffortCommand::is_effort_command("@'\nx\n'@ | astrolabe effort new --title t"));
-        assert!(EffortCommand::is_effort_command("echo hi | astrolabe effort save"));
+        assert!(EffortCommand::is_effort_command(
+            "@'\nx\n'@ | astrolabe effort new --title t"
+        ));
+        assert!(EffortCommand::is_effort_command(
+            "echo hi | astrolabe effort save"
+        ));
     }
 
     #[test]
@@ -311,7 +326,10 @@ mod tests {
                 "not another flag",
             ),
             ("astrolabe effort save title", "isn't a flag"),
-            ("astrolabe effort save --plan x", "isn't a flag of `effort save`"),
+            (
+                "astrolabe effort save --plan x",
+                "isn't a flag of `effort save`",
+            ),
         ] {
             let err = EffortCommand::parse(text).unwrap_err();
             assert!(err.contains(why), "{text:?}: {err}");
@@ -562,7 +580,10 @@ mod file_tests {
         assert!(out.contains("## History\nold stuff\n"));
         assert!(out.contains("- 2026-11-03: a over b: why.\n"));
         file.add_decision("2026-11-04: c over d: why.");
-        assert!(file.render().contains("- 2026-11-03: a over b: why.\n- 2026-11-04: c over d: why.\n"));
+        assert!(
+            file.render()
+                .contains("- 2026-11-03: a over b: why.\n- 2026-11-04: c over d: why.\n")
+        );
         assert_eq!(
             EffortFile::parse(&out).unwrap().missing_fields(),
             vec!["Next"]

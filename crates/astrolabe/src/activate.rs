@@ -1416,10 +1416,11 @@ pub fn gate(event: &str) {
                 return hook::say(&answer);
             }
             // A commit is work the save should cover; a child's counts for its parent.
-            if let (Some(session), Some(command)) = (session, crate::guard::command_field(&input["tool_input"])) {
-                if crate::nudge::commits(&crate::guard::command_text(command)) {
-                    let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
-                }
+            if let (Some(session), Some(command)) =
+                (session, crate::guard::command_field(&input["tool_input"]))
+                && crate::nudge::commits(&crate::guard::command_text(command))
+            {
+                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
             }
             // The plugin's denials go in its state folder, which every app reads the same.
             let dir = state_dir();

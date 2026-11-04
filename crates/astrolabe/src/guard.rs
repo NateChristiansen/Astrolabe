@@ -256,7 +256,11 @@ pub fn readable_command(command: &Value) -> bool {
 pub fn command_text(command: &Value) -> String {
     match command {
         Value::String(s) => s.clone(),
-        Value::Array(parts) => parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
         _ => String::new(),
     }
 }
