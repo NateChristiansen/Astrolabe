@@ -102,9 +102,9 @@ fn check_journal(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Plan headings shifted so the top level lands at `###`: the effort file's sections are
-/// read by `## `, and a plan file's own `# ` title would read as a second document.
-/// Line endings and indentation stay as they are.
+/// Plan headings shifted together so the top level lands at `###`: the effort file's
+/// sections are read by `## `, and a plan file's own `# ` title would read as a second
+/// document. Line endings and indentation stay as they are.
 fn shift_plan_headings(plan: &str) -> (String, bool) {
     let level = |l: &str| {
         let n = l.bytes().take_while(|b| *b == b'#').count();
@@ -113,18 +113,14 @@ fn shift_plan_headings(plan: &str) -> (String, bool) {
     let Some(min) = plan.split('\n').filter_map(level).min() else {
         return (plan.to_owned(), false);
     };
-    if min >= 3 {
+    if min == 3 {
         return (plan.to_owned(), false);
     }
-    let extra = "#".repeat(3 - min);
     let out = plan
         .split('\n')
-        .map(|l| {
-            if level(l).is_some() {
-                format!("{extra}{l}")
-            } else {
-                l.to_owned()
-            }
+        .map(|l| match level(l) {
+            Some(n) => format!("{}{}", "#".repeat(n + 3 - min), &l[n..]),
+            None => l.to_owned(),
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -190,6 +186,8 @@ fn new_inner(
         .map(str::trim)
         .filter(|b| !b.is_empty())
         .ok_or_else(|| format!("the goal goes in the body, one line is enough.\n{FORMS}"))?;
+    // Refused before the lock, reconcile and pull: a refused goal changes nothing.
+    let current = as_current(goal)?;
     let status = one_of("status", cmd.flag("status").unwrap_or("active"), &STATUSES)?;
     if status == "blocked" || status == "done" || status == "abandoned" {
         return Err(format!("a new effort can't start {status}"));
@@ -251,7 +249,7 @@ fn new_inner(
     let facts = RepoFacts::read(cwd);
     let mut file = EffortFile {
         title: format!("{number} {title}"),
-        current: as_current(goal)?,
+        current,
         ..Default::default()
     };
     file.title = format!("{number:04} {title}");

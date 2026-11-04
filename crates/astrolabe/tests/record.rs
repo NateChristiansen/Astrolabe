@@ -309,6 +309,15 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     let mac = world.machine("mac");
     let start = mac.session_start("s1", "startup");
     assert!(start.contains("astrolabe effort new"), "{start}");
+    // A labelled goal is refused before the lock and pull: no file, no commit.
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Nope\" <<'ASTROLABE'\n**Goal:** g.\nASTROLABE\n",
+    );
+    assert!(!ok && out.contains("no **Label:** lines"), "{out}");
+    assert_eq!(mac.log().lines().count(), before);
+    assert!(!mac.notes.join("efforts/0001-nope.md").exists());
     let (out, ok) = mac.bash("s1", NEW);
     assert!(ok, "{out}");
     assert!(
@@ -518,6 +527,17 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     );
     assert!(
         text.find("## Decisions").unwrap() < text.find("## Plan").unwrap(),
+        "{text}"
+    );
+    // A plan written only at `####` lifts to `###`; bold prose in Current state is not a
+    // label.
+    write(&mac.demo.join("plan.md"), "#### Only\n##### deep\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status active --plan-file plan.md <<'ASTROLABE'\n**Done.** Merged the **parser:** cleanup.\n\nNext: n.\nASTROLABE");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains("## Plan\n### Only\n#### deep\n"), "{text}");
+    assert!(
+        text.contains("## Current state\n**Done.** Merged"),
         "{text}"
     );
     // Only headings change, all by the same step: line endings and an indented line (no

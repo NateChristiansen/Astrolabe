@@ -543,14 +543,15 @@ impl EffortFile {
     }
 
     /// The first paragraph of Current state: where the effort stands, for the home view
-    /// and suggestions.
+    /// and suggestions. An older labelled block gives its `**Goal:**` line.
     pub fn first_paragraph(&self) -> Option<&str> {
-        self.paragraphs().next()
+        self.field("Goal").or_else(|| self.paragraphs().next())
     }
 
-    /// The last paragraph of Current state: what's next and what isn't checked.
+    /// The last paragraph of Current state: what's next and what isn't checked. An older
+    /// labelled block gives its `**Next:**` line.
     pub fn last_paragraph(&self) -> Option<&str> {
-        self.paragraphs().last()
+        self.field("Next").or_else(|| self.paragraphs().last())
     }
 
     fn paragraphs(&self) -> impl Iterator<Item = &str> {
@@ -560,13 +561,24 @@ impl EffortFile {
             .filter(|p| !p.is_empty())
     }
 
-    /// A `**Label:**` line in Current state. The block is plain paragraphs now; the old
-    /// labelled form read as a form and pushed the text into fragments.
-    pub fn labelled_line(&self) -> Option<&str> {
+    /// A `**Label:**` line's text, in the labelled form efforts had before 2026-11-04.
+    fn field(&self, name: &str) -> Option<&str> {
+        let prefix = format!("**{name}:**");
         self.current
             .lines()
-            .map(str::trim_start)
-            .find(|l| l.starts_with("**") && l[2..].contains(":**"))
+            .find_map(|l| l.trim_start().strip_prefix(prefix.as_str()))
+            .map(str::trim)
+    }
+
+    /// A line that opens with a `**Label:**` in Current state. The block is plain
+    /// paragraphs now; the old labelled form read as a form and pushed the text into
+    /// fragments. Bold inside a sentence, or a bold phrase with no colon, is prose.
+    pub fn labelled_line(&self) -> Option<&str> {
+        self.current.lines().map(str::trim_start).find(|l| {
+            l.strip_prefix("**")
+                .and_then(|rest| rest.split_once("**"))
+                .is_some_and(|(span, _)| span.ends_with(':'))
+        })
     }
 
     /// The `## Pieces` checklist, when the effort has one.
@@ -763,8 +775,12 @@ mod file_tests {
         assert_eq!(back.plan.as_deref(), Some("### Steps\n1. a"));
         assert_eq!(back.decisions.lines().count(), 2);
         let mut labelled = back;
-        labelled.current = "Done.\n  **Verified:** a.".to_owned();
+        labelled.current =
+            "**Done.** Merged the **parser:** cleanup.\n  **Verified:** a.".to_owned();
         assert_eq!(labelled.labelled_line(), Some("**Verified:** a."));
+        labelled.current = "**Goal:** g.\n**Done:** d.\n**Next:** n.".to_owned();
+        assert_eq!(labelled.first_paragraph(), Some("g."));
+        assert_eq!(labelled.last_paragraph(), Some("n."));
         assert_eq!(
             slug("Smooth ink: across frames, v2!"),
             "smooth-ink-across-frames-v2"
