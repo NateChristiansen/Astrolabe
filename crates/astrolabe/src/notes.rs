@@ -143,19 +143,29 @@ pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
             let tail = tail.strip_suffix(" -->")?;
             let words: Vec<&str> = tail.split_whitespace().collect();
             let id = words.last()?.strip_prefix("e:")?.to_owned();
-            // The first shape's tail was `machine provider e:id` and its body began with the
-            // time and kind; the current tail is `tag machine stamp e:id`.
-            let legacy = words.len() == 3 && {
-                let mut parts = body.splitn(3, ' ');
-                let (time, kind) = (parts.next()?, parts.next()?);
-                time.len() == 5
-                    && time.as_bytes()[2] == b':'
-                    && time.chars().filter(|c| c.is_ascii_digit()).count() == 4
-                    && matches!(
-                        kind,
-                        "started" | "decision" | "blocked" | "done" | "abandoned" | "renumbered"
-                    )
-            };
+            // The first shape's tail was `machine provider e:id`, the provider one of three
+            // words, and its body began with the time and kind; the current tail is
+            // `tag machine stamp e:id`.
+            let legacy =
+                words.len() == 3 && matches!(words[1], "claude" | "codex" | "astrolabe") && {
+                    let mut parts = body.splitn(3, ' ');
+                    let (time, kind) = (
+                        parts.next().unwrap_or_default(),
+                        parts.next().unwrap_or_default(),
+                    );
+                    time.len() == 5
+                        && time.as_bytes()[2] == b':'
+                        && time.chars().filter(|c| c.is_ascii_digit()).count() == 4
+                        && matches!(
+                            kind,
+                            "started"
+                                | "decision"
+                                | "blocked"
+                                | "done"
+                                | "abandoned"
+                                | "renumbered"
+                        )
+                };
             if !legacy {
                 return Some(JournalEntry {
                     effort: words.first()?.to_string(),
@@ -303,6 +313,8 @@ impl Notes {
             Ok(_) => {
                 self.clear_sync("diverged");
                 self.fix_duplicate();
+                // Every pull, not only a sync's: a pickup's pull merges day files too.
+                let _ = self.tidy_after_merge();
                 Pull::Pulled
             }
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
@@ -699,7 +711,6 @@ impl Notes {
             Pull::Pulled => {}
         }
         let stale = self.stale_saves();
-        self.tidy_after_merge()?;
         let mut pushed = self.git_timed(&["push", "--quiet"]);
         // Another machine's push can land between our pull and push: once more, fresh.
         if pushed

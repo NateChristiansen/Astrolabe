@@ -796,7 +796,7 @@ fn efforts_json_is_what_the_home_view_reads() {
     assert_eq!(e["repo"], "demo");
     assert_eq!(v["journal"], "");
     // The reader takes both journal shapes.
-    let mixed = "- 14:02 done 0012 Smooth ink: merged the ink MR <!-- mac claude e:7f3a -->\n- Finished the ink. <!-- 0013 mac 5 e:9b -->\n- 12:30 is when it broke: fixed. <!-- 0014 pc 6 e:9c -->\n- Found the Deck preset. <!-- demo mac 7 e:aa -->\n";
+    let mixed = "- 14:02 done 0012 Smooth ink: merged the ink MR <!-- mac claude e:7f3a -->\n- Finished the ink. <!-- 0013 mac 5 e:9b -->\n- 12:30 is when it broke: fixed. <!-- 0014 pc 6 e:9c -->\n- Found the Deck preset. <!-- demo mac 7 e:aa -->\n- Fixed. <!-- 0015 mac e:9d -->\n- 12:30 done fixing it. <!-- 0016 mac e:9e -->\n";
     let lines = astrolabe::notes::parse_journal(mixed);
     assert_eq!(
         lines
@@ -807,7 +807,9 @@ fn efforts_json_is_what_the_home_view_reads() {
             ("0012", "merged the ink MR", "7f3a"),
             ("0013", "Finished the ink.", "9b"),
             ("0014", "12:30 is when it broke: fixed.", "9c"),
-            ("demo", "Found the Deck preset.", "aa")
+            ("demo", "Found the Deck preset.", "aa"),
+            ("0015", "Fixed.", "9d"),
+            ("0016", "12:30 done fixing it.", "9e")
         ]
     );
     // Tidy keeps the latest line per effort, as a union merge of two replacements leaves
@@ -983,22 +985,11 @@ impl Machine {
 fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     let world = World::new();
     let mac = world.machine("mac");
-    // Nothing bound, nothing edited, a short answer: silence. A long answer: one ask per
-    // session, then silence.
+    // Nothing bound, nothing edited: silence, however long the answer. A question answered
+    // now is not an effort, and an ask here once turned a code review into a journal line.
     assert!(mac.stop("s1", false, false).is_none());
     let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "x".repeat(700)});
-    let asked = mac.hook_json("stop", long.clone()).unwrap();
-    assert!(
-        asked["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .unwrap()
-            .contains("long answer and no effort"),
-        "{asked}"
-    );
-    assert!(
-        mac.hook_json("stop", long).is_none(),
-        "asked once per session"
-    );
+    assert!(mac.hook_json("stop", long).is_none());
     // An edit with no effort: one nudge to start one, then silence.
     mac.edit("s1", "Edit");
     let nudge = mac.stop("s1", false, false).unwrap();
@@ -1016,9 +1007,7 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
         mac.stop("s1", false, false).is_none(),
         "baseline taken at create"
     );
-    // Created, never saved, long answer: one ask, then silence until a save. The ask is once
-    // per session whichever side asked, so the earlier one is cleared here.
-    std::fs::remove_file(mac.state().join("marks/s1.asked")).unwrap();
+    // Created, never saved, long answer: one ask, then silence until a save.
     let long = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "y".repeat(700)});
     let asked = mac.hook_json("stop", long.clone()).unwrap();
     assert!(

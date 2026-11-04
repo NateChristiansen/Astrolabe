@@ -115,18 +115,11 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                 let _ = std::fs::remove_file(&path);
                 "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work the owner asked for (a change or a plan), run `astrolabe effort new` with its title and goal, then save; if another agent dispatched you, run `astrolabe activate --effort <n> --worker` under its effort; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             } else {
-                // Findings reported only in chat touch no file, so nothing else detects them;
-                // three research runs skipped the effort on the text alone. A long answer with
-                // no effort gets one ask per session, because that's the one sign there is.
-                let long = input["last_assistant_message"]
-                    .as_str()
-                    .is_some_and(|m| m.len() > LONG_ANSWER);
-                let asked = path.with_extension("asked");
-                if !long || asked.exists() {
-                    return None;
-                }
-                let _ = notes::write_text(&asked, "");
-                "Astrolabe: this turn ended with a long answer and no effort recorded. If the owner asked you to find out, look into, check or compare something and the answer is worth keeping, put one sentence in their journal: `astrolabe journal \"…\"`. If the work goes on past this session, it's an effort: `astrolabe effort new`. If it was a plain question or chat, say so in a few words and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+                // A long answer with nothing bound and nothing edited gets no ask: a question
+                // answered now is not an effort, and the one ask that stood here turned a code
+                // review into a journal line (2026-11-04). The session text says when a
+                // finding earns a line; the model decides.
+                return None;
             }
         }
         Err(_) => return None,
