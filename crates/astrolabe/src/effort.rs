@@ -521,9 +521,12 @@ impl EffortFile {
             buf.clear();
         };
         for (line, in_fence) in body.lines().zip(fenced) {
-            if in_fence && heading.is_some() {
-                buf.push_str(line);
-                buf.push('\n');
+            if in_fence {
+                // Before any section, a fenced line is dropped like any other text there.
+                if heading.is_some() {
+                    buf.push_str(line);
+                    buf.push('\n');
+                }
             } else if let Some(t) = line
                 .strip_prefix("# ")
                 .filter(|_| file.title.is_empty() && heading.is_none())
@@ -834,6 +837,14 @@ mod file_tests {
             fence_mask("a\n````\n```\nb\n````\nc".lines()),
             vec![false, true, true, true, true, false]
         );
+        // A fenced heading before any section is neither a title nor a section.
+        let odd = EffortFile::parse(
+            "```\n# not a title\n## Not a section\n```\n# Real\n\n## Current state\nx\n",
+        )
+        .unwrap();
+        assert_eq!(odd.title, "Real");
+        assert_eq!(odd.current, "x");
+        assert!(odd.other.is_empty());
         assert_eq!(back.decisions.lines().count(), 2);
         let mut labelled = back;
         labelled.current =
