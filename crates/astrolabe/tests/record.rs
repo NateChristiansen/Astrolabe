@@ -335,7 +335,7 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
         "branch: main",
         "dirty: false",
         "# 0001 Smooth ink",
-        "**Goal:** smooth the ink across frames, with café in it",
+        "## Current state\nsmooth the ink across frames, with café in it\n",
     ] {
         assert!(text.contains(line), "{line}\n{text}");
     }
@@ -381,9 +381,14 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Done:** half.\nASTROLABE\n",
     );
     assert!(
-        ok && out.contains("Current state replaced") && out.contains("lacks Next"),
+        !ok && out.contains("no **Label:** lines (**Goal:** g.)"),
         "{out}"
     );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nActive, half done.\n\nNext: the rest.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Current state replaced"), "{out}");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status blocked");
     assert!(!ok && out.contains("--waits-for"), "{out}");
     let (out, ok) = mac.bash(
@@ -399,10 +404,13 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     );
     // Blocked is state: nothing in the journal.
     assert!(!mac.notes.join("journal").exists());
-    // A field twice is refused before anything is written.
-    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Verified:** a.\n**Verified:** b.\n**Next:** n.\nASTROLABE\n");
-    assert!(!ok && out.contains("Verified appears twice"), "{out}");
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\n**Goal:** g.\n**Done:** merged the ink MR.\n**Next:** none.\nASTROLABE\n");
+    // A long block and a long journal line are refused before anything is written.
+    let long = (0..151).map(|_| "word").collect::<Vec<_>>().join(" ");
+    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"));
+    assert!(!ok && out.contains("151 words") && out.contains("under 150"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one\"");
+    assert!(!ok && out.contains("41 words") && out.contains("aim for 25"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
     assert!(
         ok && out.contains("status done") && out.contains("journal line written"),
         "{out}"
@@ -447,13 +455,13 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     // fields above it are the Current state.
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\n\n## Plan\n1. first\n2. second\nASTROLABE",
+        "astrolabe effort save <<'ASTROLABE'\nActive: g.\n\nNext: n.\n\n## Plan\n1. first\n2. second\nASTROLABE",
     );
     assert!(ok, "{out}");
     let text = mac.effort_text(1);
     assert!(text.contains("## Plan\n1. first\n2. second\n"), "{text}");
     assert!(
-        text.contains("## Current state\n**Goal:** g.\n**Next:** n.\n\n## "),
+        text.contains("## Current state\nActive: g.\n\nNext: n.\n\n## "),
         "{text}"
     );
     let (out, ok) = mac.bash(
@@ -469,22 +477,39 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "s1",
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n## Plan\nsecond\nASTROLABE",
     );
-    assert!(ok && out.contains("stored as `###`"), "{out}");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
     assert!(mac.effort_text(1).contains("## Plan\n### Plan\nsecond\n"));
     write(
         &mac.demo.join("plan.md"),
         "  ## Current state\n**Goal:** stolen",
     );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --plan-file plan.md");
-    assert!(ok && out.contains("stored as `###`"), "{out}");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
     let text = mac.effort_text(1);
     assert!(
         text.contains("## Plan\n### Current state\n**Goal:** stolen\n"),
         "{text}"
     );
-    assert!(text.contains("## Current state\n**Goal:** g.\n"), "{text}");
-    // Only headings change: line endings and an indented line (no heading to the reader)
-    // stay as they were.
+    assert!(text.contains("## Current state\nActive: g.\n"), "{text}");
+    // The plan sits below Decisions, and a plan file's own `# ` title and its `## ` parts
+    // shift together so the top lands at `###`.
+    write(
+        &mac.demo.join("plan.md"),
+        "# Plan: ink\n\n## Context\nwhy\n### Step 1\n#### sub\n#not a heading\n",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status proposed --plan-file plan.md --decision \"a over b: c\"");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Plan: ink\n\n#### Context\nwhy\n##### Step 1\n###### sub\n#not a heading\n"),
+        "{text}"
+    );
+    assert!(
+        text.find("## Decisions").unwrap() < text.find("## Plan").unwrap(),
+        "{text}"
+    );
+    // Only headings change, all by the same step: line endings and an indented line (no
+    // heading to the reader) stay as they were.
     write(
         &mac.demo.join("plan.md"),
         "## Steps\r\n  ## not a heading\r\n### sub\r\n",
@@ -494,15 +519,15 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "s1",
         "astrolabe effort save --status ready --plan-file plan.md",
     );
-    assert!(ok && out.contains("stored as `###`"), "{out}");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
     let text = mac.effort_text(1);
     assert!(
-        text.contains("## Plan\n### Steps\r\n  ## not a heading\r\n### sub\n"),
+        text.contains("## Plan\n### Steps\r\n  ## not a heading\r\n#### sub\n"),
         "{text:?}"
     );
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n## Decisions\nASTROLABE",
+        "astrolabe effort save <<'ASTROLABE'\ng.\n## Decisions\nASTROLABE",
     );
     assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
     write(&mac.demo.join("pieces.md"), "## Pieces\n- [ ] x\n");
@@ -561,7 +586,7 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     assert!(
         mac.bash(
             "s1",
-            "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n"
+            "astrolabe effort save <<'ASTROLABE'\nActive: g.\n\nNext: n.\nASTROLABE\n"
         )
         .1
     );
@@ -581,11 +606,11 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     let path = mac.notes.join("efforts/0001-smooth-ink.md");
     let edited = std::fs::read_to_string(&path)
         .unwrap()
-        .replace("**Goal:** smooth", "**Goal:** OWNER EDIT smooth");
+        .replace("smooth the ink", "OWNER EDIT smooth the ink");
     std::fs::write(&path, edited).unwrap();
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save <<'ASTROLABE'\n**Goal:** mine.\n**Next:** n.\nASTROLABE\n",
+        "astrolabe effort save <<'ASTROLABE'\nMine.\n\nNext: n.\nASTROLABE\n",
     );
     assert!(
         !ok && out.contains("changed since it was delivered") && out.contains("OWNER EDIT"),
@@ -595,7 +620,7 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
         mac.effort_text(1).contains("OWNER EDIT"),
         "nothing overwritten"
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** OWNER EDIT kept, mine too.\n**Next:** n.\nASTROLABE\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nOWNER EDIT kept, mine too.\n\nNext: n.\nASTROLABE\n");
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
 }
@@ -715,7 +740,7 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
     assert!(ok, "{out}");
     let (out, ok) = pc.bash(
         "p1",
-        "astrolabe effort save <<'ASTROLABE'\n**Goal:** pc view.\n**Next:** pc next.\nASTROLABE\n",
+        "astrolabe effort save <<'ASTROLABE'\nPC view.\n\nPC next.\nASTROLABE\n",
     );
     assert!(ok, "{out}");
     assert!(pc.sync().1);
@@ -724,7 +749,7 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
         &mac.notes,
         &["remote", "set-url", "origin", "/nonexistent/notes.git"],
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\n**Goal:** mac view.\n**Next:** mac next.\nASTROLABE\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMac view.\n\nMac next.\nASTROLABE\n");
     assert!(ok, "{out}");
     git(
         &mac.notes,
@@ -745,7 +770,7 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
             .is_empty(),
         "rebase aborted cleanly"
     );
-    assert!(mac.effort_text(1).contains("mac view"), "local save kept");
+    assert!(mac.effort_text(1).contains("Mac view"), "local save kept");
     let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
     assert!(status.contains("Notes diverged from origin"), "{status}");
     let resumed = mac.session_start("s1", "resume");
@@ -767,7 +792,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
     // A crash after the file write, before the commit: the file is there, nothing committed,
     // the intent remains.
     let intent = json!({
-        "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("**Goal:**", "**Goal:** CRASHED")]],
+        "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("smooth the ink", "CRASHED smooth the ink")]],
         // The first journal shape, as an intent written by the build before this one.
         "renames": [], "journal": [{"id": "crashed-key0", "kind": "decision", "effort": "0001", "title": "Smooth ink", "text": "crash line", "machine": "mac", "provider": "claude", "time": "01:00", "day": "2026-01-01"}],
         "message": "0001: checkpoint", "base": null, "states": []
@@ -871,7 +896,7 @@ fn efforts_json_is_what_the_home_view_reads() {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
-    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which?\" <<'ASTROLABE'\n**Goal:** g.\n**Next:** ask.\nASTROLABE\n").1);
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which?\" <<'ASTROLABE'\nActive: g.\n\nNext: ask.\nASTROLABE\n").1);
     let (out, ok) = mac.run(&mac.demo, &["efforts", "--repo", "demo"], "");
     assert!(ok, "{out}");
     let v: Value = serde_json::from_str(&out).unwrap();
@@ -879,7 +904,8 @@ fn efforts_json_is_what_the_home_view_reads() {
     assert_eq!(e["number"], 1);
     assert_eq!(e["status"], "blocked");
     assert_eq!(e["needs_owner"], true);
-    assert_eq!(e["next"], "ask.");
+    assert_eq!(e["state"], "Active: g.");
+    assert_eq!(e["next"], "Next: ask.");
     assert_eq!(e["repo"], "demo");
     assert_eq!(v["journal"], "");
     // The reader takes both journal shapes.
@@ -1137,7 +1163,7 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     assert!(
         mac.bash(
             "s1",
-            "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Next:** n.\nASTROLABE\n"
+            "astrolabe effort save <<'ASTROLABE'\nActive: g.\n\nNext: n.\nASTROLABE\n"
         )
         .1
     );
@@ -1234,7 +1260,7 @@ fn review_fixes_hold() {
     // A committed intent that still has a state file to write never rewrites the note.
     let newer = std::fs::read_to_string(mac.notes.join("efforts/0002-crashed.md"))
         .unwrap()
-        .replace("**Goal:** g.", "**Goal:** NEWER.");
+        .replace("**Goal:** g.", "NEWER.");
     std::fs::write(mac.notes.join("efforts/0002-crashed.md"), &newer).unwrap();
     git(&mac.notes, &["add", "-A"]);
     git(&mac.notes, &["commit", "-q", "-m", "0002: newer"]);
@@ -1292,7 +1318,7 @@ fn review_fixes_hold() {
             "save",
             "--status",
             "active",
-            "**Goal:** g.\n**Next:** n.",
+            "g.",
         ],
         "",
     );

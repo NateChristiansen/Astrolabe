@@ -20,7 +20,10 @@ const STATUSES: [&str; 6] = [
 const INVOLVEMENTS: [&str; 3] = ["autonomous", "check in at plan", "each step"];
 const AUTHORITIES: [&str; 3] = ["read", "edit", "push"];
 /// Past this the owner stops reading; said, never enforced.
-const CURRENT_LINES: usize = 12;
+/// Current state is three short paragraphs the owner reads; past this it's a report.
+const CURRENT_WORDS: usize = 150;
+/// A journal line is one or two sentences, aimed at 25 words; past this it rambles.
+const JOURNAL_WORDS: usize = 40;
 /// A ticket or intent this old no longer explains a plain command.
 use crate::notes::RECENT_MS;
 
@@ -62,15 +65,70 @@ fn one_of(key: &str, value: &str, allowed: &[&str]) -> Result<String, String> {
         .ok_or_else(|| format!("--{key} {value:?} isn't one of {}", allowed.join(", ")))
 }
 
-/// The body as a Current state: a bare line becomes the goal, so a one-line ask needs no
-/// labels; labelled lines stay as written.
-fn as_current(body: &str) -> String {
-    let body = body.trim();
-    if body.contains("**") || body.is_empty() {
-        body.to_owned()
-    } else {
-        format!("**Goal:** {body}")
+/// The body as a Current state: plain paragraphs, trimmed. A `**Label:**` line is refused,
+/// because the labelled form read as a form and pushed the text into fragments; a long one
+/// is refused because the owner reads it.
+fn as_current(body: &str) -> Result<String, String> {
+    let current = body.trim().to_owned();
+    let probe = EffortFile {
+        current: current.clone(),
+        ..Default::default()
+    };
+    if let Some(line) = probe.labelled_line() {
+        return Err(format!(
+            "Current state is plain paragraphs now, no **Label:** lines ({line}): where it stands, then what was decided and why, then what's next and what isn't checked. Nothing was written"
+        ));
     }
+    let words = current.split_whitespace().count();
+    if words > CURRENT_WORDS {
+        return Err(format!(
+            "Current state is {words} words; the owner reads it, so keep it under {CURRENT_WORDS} (three short paragraphs). Nothing was written"
+        ));
+    }
+    Ok(current)
+}
+
+/// A journal line the owner would write: one or two sentences.
+fn check_journal(text: &str) -> Result<(), String> {
+    if text.lines().count() > 1 {
+        return Err("a journal line is one line".to_owned());
+    }
+    let words = text.split_whitespace().count();
+    if words > JOURNAL_WORDS {
+        return Err(format!(
+            "the journal line is {words} words; aim for 25, at most {JOURNAL_WORDS}: what changed, as the owner would say it. Nothing was written"
+        ));
+    }
+    Ok(())
+}
+
+/// Plan headings shifted so the top level lands at `###`: the effort file's sections are
+/// read by `## `, and a plan file's own `# ` title would read as a second document.
+/// Line endings and indentation stay as they are.
+fn shift_plan_headings(plan: &str) -> (String, bool) {
+    let level = |l: &str| {
+        let n = l.bytes().take_while(|b| *b == b'#').count();
+        (n > 0 && l[n..].starts_with(' ')).then_some(n)
+    };
+    let Some(min) = plan.split('\n').filter_map(level).min() else {
+        return (plan.to_owned(), false);
+    };
+    if min >= 3 {
+        return (plan.to_owned(), false);
+    }
+    let extra = "#".repeat(3 - min);
+    let out = plan
+        .split('\n')
+        .map(|l| {
+            if level(l).is_some() {
+                format!("{extra}{l}")
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (out, true)
 }
 
 fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&RepoFacts>) {
@@ -193,7 +251,7 @@ fn new_inner(
     let facts = RepoFacts::read(cwd);
     let mut file = EffortFile {
         title: format!("{number} {title}"),
-        current: as_current(goal),
+        current: as_current(goal)?,
         ..Default::default()
     };
     file.title = format!("{number:04} {title}");
@@ -326,8 +384,8 @@ fn save_inner(
     let pieces_file = cmd.flag("pieces-file");
     // Conflicts are checked on the pieces they name, not the words: "Tether" and
     // "Tether cap" are one item.
-    if journal_text.is_some_and(|j| j.lines().count() > 1) {
-        return Err("a journal line is one line".to_owned());
+    if let Some(j) = journal_text {
+        check_journal(j)?;
     }
     let (body, body_plan, body_marked) = split_plan(cmd.body.as_deref());
     if plan_file.is_some() && body_marked {
@@ -388,24 +446,14 @@ fn save_inner(
             ));
         }
     }
-    // As stored: trimmed whole, so a first-line indent is gone; then only a line that is a
-    // heading as the reader would see it is demoted, with its ending and the rest untouched.
-    let plan = plan.map(|t| t.trim().to_owned());
-    let plan_demoted = plan
-        .as_deref()
-        .is_some_and(|t| t.split('\n').any(|l| l.starts_with("## ")));
-    let plan = plan.map(|t| {
-        t.split('\n')
-            .map(|l| {
-                if l.starts_with("## ") {
-                    format!("#{l}")
-                } else {
-                    l.to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
+    // As stored: trimmed whole, so a first-line indent is gone; then headings are shifted
+    // with their endings and the rest untouched.
+    let (plan, plan_shifted) = match plan.map(|t| shift_plan_headings(t.trim())) {
+        Some((p, shifted)) => (Some(p), shifted),
+        None => (None, false),
+    };
+    // Checked before the lock and the hash: a refused body writes nothing either way.
+    let current = body.as_deref().map(as_current).transpose()?;
     let _held = notes.lock()?;
     let leftovers = notes.reconcile();
     if !leftovers.is_empty() {
@@ -445,36 +493,14 @@ fn save_inner(
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
-    if plan_demoted {
+    if plan_shifted {
         notes_lines.push(
-            "The plan's `## ` headings were stored as `###`, because the effort file's sections are read by `## `."
+            "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."
                 .to_owned(),
         );
     }
-    if let Some(body) = &body {
-        let current = as_current(body);
-        let probe = EffortFile {
-            current: current.clone(),
-            ..Default::default()
-        };
-        // Refused before anything is written: the owner reads this block and the home
-        // view takes its one `Next:` line.
-        if let Some(field) = probe.repeated_field() {
-            return Err(format!(
-                "{field} appears twice in Current state; one line per field. Nothing was written"
-            ));
-        }
+    if let Some(current) = current {
         file.current = current;
-        let lines = file.current.lines().count();
-        if lines > CURRENT_LINES {
-            notes_lines.push(format!(
-                "Current state is {lines} lines; the owner reads it, so keep it to {CURRENT_LINES}."
-            ));
-        }
-        let missing = file.missing_fields();
-        if !missing.is_empty() {
-            notes_lines.push(format!("Current state lacks {}.", missing.join(" and ")));
-        }
     }
     if let Some(plan) = plan {
         file.plan = Some(plan.trim().to_owned());
@@ -612,6 +638,7 @@ fn journal_inner(
     cwd: &Path,
 ) -> Result<String, String> {
     let sentence = cmd.body.as_deref().map(str::trim).unwrap_or_default();
+    check_journal(sentence)?;
     let (registry, notes) = notes_here()?;
     let dir = notes.state.clone();
     let bound = read_state(&dir, session)?;
@@ -767,7 +794,7 @@ pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
             "repo": file.prop("repo"), "waits_for": file.prop("waits_for"), "needs_owner": needs_owner,
             "updated": file.prop("updated"), "saved_by": file.prop("saved_by"),
             "branch": file.prop("branch"), "unpushed": file.prop("unpushed"), "dirty": file.prop("dirty"),
-            "next": file.next_line(),
+            "state": file.first_paragraph(), "next": file.last_paragraph(),
             "pieces": file.pieces_count().map(|(done, total)| json!({"done": done, "total": total})),
         }));
     }

@@ -45,11 +45,11 @@ pub const SAVE_FLAGS: [&str; 9] = [
 
 /// The accepted forms, for a refusal.
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
-POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  **Goal:** …\n  **Next:** …\n  ASTROLABE\n\
-PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  **Goal:** …\n  '@\n  or:  @'\n  **Goal:** …\n  '@ | astrolabe effort save --status active\n\
-The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the fields after a line `## Plan`.\n\
+POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n\
+PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
+The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
-Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is prose; it needs no quoting.";
+Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
 impl EffortCommand {
     /// Whether a command string is one of these at all, so other commands pass untouched.
@@ -427,7 +427,8 @@ mod tests {
 
 /// An effort note as a whole: properties, title, the sections the program touches, and
 /// everything else kept as it is. Only `## Current state` is replaced whole; `## Plan` is set
-/// once a plan is approved; `## Decisions` only grows. The rest is the owner's or history.
+/// once a plan is approved and sits below Decisions; `## Decisions` only grows. The rest is the
+/// owner's or history.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EffortFile {
     pub props: Vec<(String, String)>,
@@ -541,31 +542,31 @@ impl EffortFile {
         }
     }
 
-    /// The `**Next:**` line of Current state, for suggestions and the home view.
-    pub fn next_line(&self) -> Option<&str> {
-        self.current
-            .lines()
-            .find_map(|l| l.strip_prefix("**Next:**"))
-            .map(str::trim)
+    /// The first paragraph of Current state: where the effort stands, for the home view
+    /// and suggestions.
+    pub fn first_paragraph(&self) -> Option<&str> {
+        self.paragraphs().next()
     }
 
-    /// A field given twice in Current state: the owner reads it and the home view takes the
-    /// one `Next:` line, so each field is one line.
-    pub fn repeated_field(&self) -> Option<String> {
-        let mut seen: Vec<&str> = Vec::new();
-        for line in self.current.lines() {
-            let Some(rest) = line.strip_prefix("**") else {
-                continue;
-            };
-            let Some((name, _)) = rest.split_once(":**") else {
-                continue;
-            };
-            if seen.contains(&name) {
-                return Some(name.to_owned());
-            }
-            seen.push(name);
-        }
-        None
+    /// The last paragraph of Current state: what's next and what isn't checked.
+    pub fn last_paragraph(&self) -> Option<&str> {
+        self.paragraphs().last()
+    }
+
+    fn paragraphs(&self) -> impl Iterator<Item = &str> {
+        self.current
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+    }
+
+    /// A `**Label:**` line in Current state. The block is plain paragraphs now; the old
+    /// labelled form read as a form and pushed the text into fragments.
+    pub fn labelled_line(&self) -> Option<&str> {
+        self.current
+            .lines()
+            .map(str::trim_start)
+            .find(|l| l.starts_with("**") && l[2..].contains(":**"))
     }
 
     /// The `## Pieces` checklist, when the effort has one.
@@ -643,15 +644,6 @@ impl EffortFile {
         Ok(())
     }
 
-    /// Fields the checkpoint shape asks for and this Current state lacks.
-    pub fn missing_fields(&self) -> Vec<&'static str> {
-        ["**Goal:**", "**Next:**"]
-            .into_iter()
-            .filter(|f| !self.current.lines().any(|l| l.starts_with(f)))
-            .map(|f| f.trim_matches('*').trim_end_matches(':'))
-            .collect()
-    }
-
     pub fn render(&self) -> String {
         let mut out = String::from("---\n");
         let quoted = |v: &str| {
@@ -682,11 +674,12 @@ impl EffortFile {
             self.title,
             self.current.trim()
         );
-        if let Some(plan) = &self.plan {
-            out += &format!("\n## Plan\n{}\n", plan.trim());
-        }
         if !self.decisions.trim().is_empty() {
             out += &format!("\n## Decisions\n{}\n", self.decisions.trim());
+        }
+        // Below Decisions: the plan is written for agents, the rest for the owner.
+        if let Some(plan) = &self.plan {
+            out += &format!("\n## Plan\n{}\n", plan.trim());
         }
         for (h, body) in &self.other {
             out += &format!("\n## {h}\n{}\n", body.trim());
@@ -736,21 +729,23 @@ mod file_tests {
 
     #[test]
     fn a_note_round_trips_and_only_its_own_sections_change() {
-        let text = "---\nstatus: active\nrepo: demo\nnote: \"a: b\"\n---\n# 0012 Smooth ink\n\n## Current state\n**Goal:** g.\n**Next:** n.\n\n## History\nold stuff\n\n## Decisions\n- 2026-11-03: a over b: why.\n";
+        let text = "---\nstatus: active\nrepo: demo\nnote: \"a: b\"\n---\n# 0012 Smooth ink\n\n## Current state\nActive, half done.\n\nNext: n.\n\n## History\nold stuff\n\n## Decisions\n- 2026-11-03: a over b: why.\n";
         let mut file = EffortFile::parse(text).unwrap();
         assert_eq!(file.number(), Some(12));
         assert_eq!(file.name(), "Smooth ink");
-        assert_eq!(file.next_line(), Some("n."));
+        assert_eq!(file.first_paragraph(), Some("Active, half done."));
+        assert_eq!(file.last_paragraph(), Some("Next: n."));
+        assert_eq!(file.labelled_line(), None);
         assert_eq!(file.prop("note"), Some("a: b"));
         assert_eq!(
             file.other,
             vec![("History".to_owned(), "old stuff".to_owned())]
         );
-        file.current = "**Goal:** g2.".to_owned();
+        file.current = "Done.".to_owned();
         file.set("status", "done");
         let out = file.render();
         assert!(out.contains("status: done\n"));
-        assert!(out.contains("## Current state\n**Goal:** g2.\n"));
+        assert!(out.contains("## Current state\nDone.\n"));
         assert!(out.contains("## History\nold stuff\n"));
         assert!(out.contains("- 2026-11-03: a over b: why.\n"));
         file.add_decision("2026-11-04: c over d: why.");
@@ -758,10 +753,18 @@ mod file_tests {
             file.render()
                 .contains("- 2026-11-03: a over b: why.\n- 2026-11-04: c over d: why.\n")
         );
-        assert_eq!(
-            EffortFile::parse(&out).unwrap().missing_fields(),
-            vec!["Next"]
+        file.plan = Some("### Steps\n1. a".to_owned());
+        let out = file.render();
+        assert!(
+            out.find("## Decisions").unwrap() < out.find("## Plan").unwrap(),
+            "{out}"
         );
+        let back = EffortFile::parse(&out).unwrap();
+        assert_eq!(back.plan.as_deref(), Some("### Steps\n1. a"));
+        assert_eq!(back.decisions.lines().count(), 2);
+        let mut labelled = back;
+        labelled.current = "Done.\n  **Verified:** a.".to_owned();
+        assert_eq!(labelled.labelled_line(), Some("**Verified:** a."));
         assert_eq!(
             slug("Smooth ink: across frames, v2!"),
             "smooth-ink-across-frames-v2"
