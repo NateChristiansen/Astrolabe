@@ -775,7 +775,13 @@ impl Activation {
 /// a shell write on both systems (tested: not the state folder, on the Mac or under Windows'
 /// sandbox). Made here, so a shell's `touch` finds it.
 pub fn probe_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join("astrolabe-probe");
+    // Named for the state folder, so two installs (or two test fixtures) on one machine
+    // never read each other's markers.
+    let state = state_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_default();
+    let key: String = crate::notes::hash(&state).chars().take(8).collect();
+    let dir = std::env::temp_dir().join(format!("astrolabe-probe-{key}"));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -1024,9 +1030,13 @@ pub fn switch_on(
         read("knowledge/machines.md".to_owned())?,
     ];
     let same = previous.filter(|p| p["effort"] == effort.number.as_str());
+    // One probe per session: the guard is the same hook in the same session whichever effort
+    // is loaded, so the proof from session start carries into an effort created or picked up
+    // later. A new token per effort made the proof stale and asked for a probe named in tool
+    // output, which Claude declined (PC, 2026-11-03).
     let token = match same.and_then(|p| p["token"].as_str()) {
         Some(token) => token.to_owned(),
-        None => random_hex()?,
+        None => session_token(session),
     };
     let at_ms = same
         .and_then(|p| p["at_ms"].as_i64())
