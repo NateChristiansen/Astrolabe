@@ -272,9 +272,9 @@ pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: 
 
 /// The body apart from a plan it carries after a `## Plan` line: Codex keeps no plan file,
 /// so the plan rides in the one heredoc, below the Current state fields.
-fn split_plan(body: Option<&str>) -> (Option<String>, Option<String>) {
+fn split_plan(body: Option<&str>) -> (Option<String>, Option<String>, bool) {
     let Some(body) = body else {
-        return (None, None);
+        return (None, None, false);
     };
     let mut lines = body.lines();
     let current: Vec<&str> = lines
@@ -287,12 +287,9 @@ fn split_plan(body: Option<&str>) -> (Option<String>, Option<String>) {
         let text = text.trim();
         (!text.is_empty()).then(|| text.to_owned())
     };
-    let plan = body
-        .lines()
-        .any(|l| l.trim() == "## Plan")
-        .then(|| part(&plan))
-        .flatten();
-    (part(&current), plan)
+    let marked = body.lines().any(|l| l.trim() == "## Plan");
+    let plan = marked.then(|| part(&plan)).flatten();
+    (part(&current), plan, marked)
 }
 
 fn save_inner(
@@ -332,8 +329,8 @@ fn save_inner(
     if journal_text.is_some_and(|j| j.lines().count() > 1) {
         return Err("a journal line is one line".to_owned());
     }
-    let (body, body_plan) = split_plan(cmd.body.as_deref());
-    if plan_file.is_some() && body_plan.is_some() {
+    let (body, body_plan, body_marked) = split_plan(cmd.body.as_deref());
+    if plan_file.is_some() && body_marked {
         return Err(
             "the plan comes one way: --plan-file, or a `## Plan` section in the body, not both"
                 .to_owned(),
@@ -375,6 +372,20 @@ fn save_inner(
     let pieces = pieces_file
         .map(|p| read_file("pieces-file", p))
         .transpose()?;
+    // The file's sections are read back by their `## ` headings, so a heading inside one
+    // would split it on the next read.
+    for (what, text) in [
+        ("Current state", body.as_deref()),
+        ("the plan", plan.as_deref()),
+        ("Pieces", pieces.as_deref()),
+    ] {
+        if let Some(line) = text.and_then(|t| t.lines().find(|l| l.starts_with("## "))) {
+            return Err(format!(
+                "{what} can't hold a `## ` heading ({}), because the effort file's sections are read by those; use ### or deeper. Nothing was written",
+                line.trim()
+            ));
+        }
+    }
     let _held = notes.lock()?;
     let leftovers = notes.reconcile();
     if !leftovers.is_empty() {

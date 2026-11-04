@@ -943,6 +943,37 @@ fn ticket_text(shown: &Path, ticket: &str) -> PathBuf {
     shown.join(format!("{ticket}.txt"))
 }
 
+/// A ticket's result replaced by a failure, in both the file the app prints and the one
+/// the plain command looks up: a switch that failed after its ticket was left must not
+/// print success.
+fn reissue(dir: &Path, ticket: &str, text: &str) -> Result<(), String> {
+    let shown = dir.join("shown");
+    let body = json!({"text": text, "ok": false, "at_ms": now_ms()});
+    write_json(&shown.join(format!("{ticket}.json")), &body)?;
+    crate::notes::write_text(&ticket_text(&shown, ticket), &format!("{text}\n"))
+}
+
+/// A path as one single-quoted word for the shell the app runs: nothing inside single
+/// quotes is expanded, and a quote in the path is spelled the way that shell wants.
+fn quoted(path: &str, powershell: bool) -> String {
+    if powershell {
+        format!("'{}'", path.replace('\'', "''"))
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
+}
+
+/// The read the app runs: `cat` is in Claude's built-in read-only set; PowerShell's
+/// `-LiteralPath` keeps `[` and `]` in a path from being read as wildcards.
+fn print_command(path: &str, powershell: bool) -> String {
+    let path = quoted(path, powershell);
+    if powershell {
+        format!("Get-Content -Raw -LiteralPath {path}")
+    } else {
+        format!("cat {path}")
+    }
+}
+
 /// The freshest ticket the hook left for a command with this digest, within `within_ms`.
 pub(crate) fn shown_for(
     dir: &Path,
@@ -1651,10 +1682,8 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
             // The result first: a switch whose result can't be shown isn't made.
             let ticket = leave(&dir, &text, ok)?;
             if let Err(why) = commit(&dir, session, &change) {
-                let path = dir.join("shown").join(format!("{ticket}.json"));
-                let body =
-                    json!({"text": format!("{failed}: {why}."), "ok": false, "at_ms": now_ms()});
-                write_json(&path, &body).map_err(|_| format!("{failed}: {why}"))?;
+                let text = format!("{failed}: {why}.");
+                reissue(&dir, &ticket, &text).map_err(|_| text.clone())?;
             }
             Ok(ticket)
         });
@@ -1670,13 +1699,12 @@ fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<V
 /// runs in every mode, where Claude's plan mode ignores a hook's allow for anything else
 /// and its classifier denied this program's own print; the hook has written by then, so a
 /// denied print would hide a write that happened. This program's `--show` is the fallback
-/// when the path can't be quoted.
+/// when there's no state folder to name.
 fn rewrite_to_show(tool_input: &Value, key: &str, ticket: &str, powershell: bool) -> Value {
     let text = state_dir().map(|dir| ticket_text(&dir.join("shown"), ticket));
     let text = text.map(|p| p.display().to_string());
-    let print = match text.filter(|p| !p.contains('\'')) {
-        Some(path) if powershell => format!("Get-Content -Raw '{path}'"),
-        Some(path) => format!("cat '{path}'"),
+    let print = match text {
+        Some(path) => print_command(&path, powershell),
         None => {
             // This program by its full path: a login shell's PATH can find another copy.
             let exe = std::env::current_exe().map(|exe| exe.display().to_string());
@@ -1957,5 +1985,28 @@ fn session_start(input: &Value, session: &str) -> Option<String> {
         Err(why) => Some(format!(
             "Astrolabe state for this session can't be read ({why}). Shell commands are blocked until it's repaired: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
         )),
+    }
+}
+
+#[cfg(test)]
+mod print_tests {
+    use super::{print_command, quoted};
+
+    #[test]
+    fn a_path_with_a_quote_or_brackets_is_one_literal_word() {
+        assert_eq!(quoted("/a b/c", false), "'/a b/c'");
+        assert_eq!(quoted("/Users/O'Brien/x", false), "'/Users/O'\\''Brien/x'");
+        assert_eq!(
+            quoted("C:\\Users\\O'Brien\\x", true),
+            "'C:\\Users\\O''Brien\\x'"
+        );
+        assert_eq!(
+            print_command("/s/[work]/t.txt", false),
+            "cat '/s/[work]/t.txt'"
+        );
+        assert_eq!(
+            print_command("C:\\s\\[work]\\t.txt", true),
+            "Get-Content -Raw -LiteralPath 'C:\\s\\[work]\\t.txt'"
+        );
     }
 }

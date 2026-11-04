@@ -208,11 +208,16 @@ impl Machine {
             .strip_prefix("cat '")
             .and_then(|p| p.strip_suffix('\''))
             .unwrap_or_else(|| panic!("{command}"));
-        let ticket = Path::new(path).file_stem().unwrap().to_str().unwrap();
         let printed = std::fs::read_to_string(path).unwrap();
-        let (text, ok) = self.run(&self.demo, &["activate", "--show", ticket], "");
-        assert_eq!(printed.trim_end(), text.trim_end(), "{command}");
-        (text, ok)
+        // Whether it worked is in the ticket the plain command looks up; the app sees text.
+        let ticket: Value =
+            serde_json::from_str(&std::fs::read_to_string(path.replace(".txt", ".json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            ticket["text"].as_str().unwrap().trim_end(),
+            printed.trim_end()
+        );
+        (printed, ticket["ok"] == true)
     }
 
     /// The command run with no hook: the shell feeds the heredoc body on stdin.
@@ -457,6 +462,25 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     );
     assert!(!ok && out.contains("one way"), "{out}");
     assert!(mac.effort_text(1).contains("## Plan\n1. first\n"));
+    // A heading inside a section would split it on the next read, so it's refused; a
+    // deeper one survives a second save.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n## Plan\n## Plan\nsecond\nASTROLABE",
+    );
+    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n## Plan\n### Step one\nfirst\n### Step two\nsecond\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status active");
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Step one\nfirst\n### Step two\nsecond\n"),
+        "{text}"
+    );
     let (out, ok) = mac.bash("s1", "astrolabe effort save");
     assert!(!ok && out.contains("nothing to save"), "{out}");
     // Pieces: a checklist the owner reads, ticked by name, counted for the home view.
