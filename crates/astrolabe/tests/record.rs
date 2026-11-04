@@ -843,3 +843,23 @@ fn review_fixes_hold() {
     let (out, ok) = mac.bash("s3", "astrolabe effort save --plan x");
     assert!(!ok && out.contains("isn't a flag of `effort save`"), "{out}");
 }
+
+#[test]
+fn a_retried_create_after_switching_efforts_names_the_effort_it_made() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The lost-reply retry's intent is long gone; the session has since moved to effort 2.
+    for f in std::fs::read_dir(mac.state().join("ops")).unwrap().flatten() {
+        std::fs::remove_file(f.path()).unwrap();
+    }
+    assert!(mac.bash("s1", "astrolabe effort new --title \"Second\" <<'ASTROLABE'\ng2\nASTROLABE\n").1);
+    for f in std::fs::read_dir(mac.state().join("ops")).unwrap().flatten() {
+        std::fs::remove_file(f.path()).unwrap();
+    }
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok && out.contains("Effort 1 was already created by this same call"), "{out}");
+    let state: Value = serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert_eq!(state["effort"], "1");
+    assert_eq!(mac.log().lines().filter(|l| l.ends_with(": started")).count(), 2);
+}
