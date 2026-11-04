@@ -668,6 +668,11 @@ impl Notes {
             .stdout(out.map_or(Stdio::null(), Stdio::from))
             .stderr(err.map_or(Stdio::null(), Stdio::from));
         detach(&mut cmd);
+        // The hook's own stdio must not reach the child: on Windows every inheritable handle
+        // passes to a new process, and a child holding the hook's stdout pipe open means the
+        // app never sees end-of-stream and refuses the hook's reply (seen in Claude Code on the
+        // PC, 2026-11-03). The child gets its own files above.
+        keep_stdio_here();
         let _ = cmd.spawn();
     }
 
@@ -897,3 +902,24 @@ fn detach(cmd: &mut Command) {
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 }
+
+#[cfg(windows)]
+fn keep_stdio_here() {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // Safety: GetStdHandle and SetHandleInformation take no pointers we own; an invalid
+        // handle makes SetHandleInformation fail, which is ignored.
+        unsafe {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn keep_stdio_here() {}

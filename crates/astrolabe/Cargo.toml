@@ -20,3 +20,6 @@ chrono = "0.4"
 [[example]]
 name = "fake_agent"
 path = "tests/common/fake_agent.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

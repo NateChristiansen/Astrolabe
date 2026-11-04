@@ -24,6 +24,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tungstenite",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
