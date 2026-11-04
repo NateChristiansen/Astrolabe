@@ -483,6 +483,23 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         "{text}"
     );
     assert!(text.contains("## Current state\n**Goal:** g.\n"), "{text}");
+    // Only headings change: line endings and an indented line (no heading to the reader)
+    // stay as they were.
+    write(
+        &mac.demo.join("plan.md"),
+        "## Steps\r\n  ## not a heading\r\n### sub\r\n",
+    );
+    // A different command from the one above, or it reads as that call's retry.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active --plan-file plan.md",
+    );
+    assert!(ok && out.contains("stored as `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Steps\r\n  ## not a heading\r\n### sub\n"),
+        "{text:?}"
+    );
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n## Decisions\nASTROLABE",

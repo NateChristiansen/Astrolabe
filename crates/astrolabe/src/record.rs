@@ -388,12 +388,17 @@ fn save_inner(
             ));
         }
     }
-    let plan_demoted = plan.as_deref().is_some_and(|t| t.lines().any(is_heading));
+    // As stored: trimmed whole, so a first-line indent is gone; then only a line that is a
+    // heading as the reader would see it is demoted, with its ending and the rest untouched.
+    let plan = plan.map(|t| t.trim().to_owned());
+    let plan_demoted = plan
+        .as_deref()
+        .is_some_and(|t| t.split('\n').any(|l| l.starts_with("## ")));
     let plan = plan.map(|t| {
-        t.lines()
+        t.split('\n')
             .map(|l| {
-                if is_heading(l) {
-                    format!("#{}", l.trim_start())
+                if l.starts_with("## ") {
+                    format!("#{l}")
                 } else {
                     l.to_owned()
                 }
