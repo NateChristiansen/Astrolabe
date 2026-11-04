@@ -303,6 +303,11 @@ impl Notes {
 
     /// Whether a commit already carries this op's key: a retried tool call was done.
     pub fn already_applied(&self, key: &str) -> bool {
+        self.applied_commit(key).is_some()
+    }
+
+    /// The commit that carries this op's key, if any.
+    pub fn applied_commit(&self, key: &str) -> Option<String> {
         self.git(&[
             "log",
             "-1",
@@ -310,7 +315,18 @@ impl Notes {
             &format!("--grep=Op-Key: {key}"),
             "--fixed-strings",
         ])
-        .is_ok_and(|out| !out.trim().is_empty())
+        .ok()
+        .map(|out| out.trim().to_owned())
+        .filter(|sha| !sha.is_empty())
+    }
+
+    /// The effort file a commit added or changed, by number.
+    pub fn effort_in_commit(&self, sha: &str) -> Option<u32> {
+        let files = self.git(&["show", "--name-only", "--format=", sha]).ok()?;
+        files
+            .lines()
+            .filter_map(|f| f.strip_prefix("efforts/"))
+            .find_map(|f| f.split('-').next()?.parse().ok())
     }
 
     /// Lock, finish leftovers, pull: what a pickup does before reading.

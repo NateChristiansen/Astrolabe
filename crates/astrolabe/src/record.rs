@@ -165,11 +165,15 @@ fn new_inner(
         if let Some(result) = notes.intents().into_iter().find(|op| op.key == key).and_then(|op| op.result) {
             return Ok(result);
         }
-        let bound = read_state(&dir, session)?.and_then(|s| s["effort"].as_str().map(str::to_owned));
-        return match bound {
+        // The effort that commit created, not whatever this session is bound to now.
+        let created = notes.applied_commit(key).and_then(|sha| notes.effort_in_commit(&sha));
+        return match created {
             Some(n) => {
-                let activation = activate::switch_on(&dir, &n, session, provider, cwd, read_state(&dir, session).ok().flatten().as_ref(), shells)?;
-                Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written.\n\n{}", activation.text()))
+                let n = n.to_string();
+                let previous = read_state(&dir, session).ok().flatten();
+                let activation = activate::switch_on(&dir, &n, session, provider, cwd, previous.as_ref(), shells)?;
+                notes::write_text(&state_path(&dir, session), &activation.state.to_string())?;
+                Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written, and this session is bound to it.\n\n{}", activation.text()))
             }
             None => Err("this same tool call was already done (a retry); nothing new was written. Run `astrolabe activate --status` to see the session's effort".to_owned()),
         };
