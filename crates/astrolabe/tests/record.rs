@@ -406,10 +406,19 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
     assert!(!mac.notes.join("journal").exists());
     // A long block and a long journal line are refused before anything is written.
     let long = (0..151).map(|_| "word").collect::<Vec<_>>().join(" ");
-    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"));
-    assert!(!ok && out.contains("151 words") && out.contains("under 150"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"),
+    );
+    assert!(
+        !ok && out.contains("151 words") && out.contains("under 150"),
+        "{out}"
+    );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one\"");
-    assert!(!ok && out.contains("41 words") && out.contains("aim for 25"), "{out}");
+    assert!(
+        !ok && out.contains("41 words") && out.contains("aim for 25"),
+        "{out}"
+    );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
     assert!(
         ok && out.contains("status done") && out.contains("journal line written"),
@@ -497,7 +506,10 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         &mac.demo.join("plan.md"),
         "# Plan: ink\n\n## Context\nwhy\n### Step 1\n#### sub\n#not a heading\n",
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status proposed --plan-file plan.md --decision \"a over b: c\"");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status proposed --plan-file plan.md --decision \"a over b: c\"",
+    );
     assert!(ok && out.contains("top level is `###`"), "{out}");
     let text = mac.effort_text(1);
     assert!(
@@ -620,7 +632,10 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
         mac.effort_text(1).contains("OWNER EDIT"),
         "nothing overwritten"
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nOWNER EDIT kept, mine too.\n\nNext: n.\nASTROLABE\n");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nOWNER EDIT kept, mine too.\n\nNext: n.\nASTROLABE\n",
+    );
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
 }
@@ -749,7 +764,10 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
         &mac.notes,
         &["remote", "set-url", "origin", "/nonexistent/notes.git"],
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMac view.\n\nMac next.\nASTROLABE\n");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nMac view.\n\nMac next.\nASTROLABE\n",
+    );
     assert!(ok, "{out}");
     git(
         &mac.notes,
@@ -1313,13 +1331,7 @@ fn review_fixes_hold() {
     assert!(ok, "{out}");
     let (out, _) = mac.run(
         &mac.demo,
-        &[
-            "effort",
-            "save",
-            "--status",
-            "active",
-            "g.",
-        ],
+        &["effort", "save", "--status", "active", "g."],
         "",
     );
     assert!(out.contains("NOT recorded"), "{out}");
