@@ -366,27 +366,28 @@ fn a_session_with_no_effort_proves_its_own_guard() {
 }
 
 #[test]
-fn the_notes_checkout_and_its_worktrees_get_nothing_from_the_plugin() {
+fn the_notes_checkout_is_the_owners_seat_where_any_effort_loads() {
     let f = Fixture::new();
     let notes = f.dir.0.join("notes");
     let tree = f.dir.0.join("notes-tree");
     git(&notes, &["worktree", "add", "-q", tree.to_str().unwrap()]);
-    for cwd in [&notes, &tree] {
-        assert_eq!(
-            f.session_start("n1", cwd, &[]),
-            None,
-            "its own layer delivers there"
+    for (i, cwd) in [&notes, &tree].into_iter().enumerate() {
+        let session = format!("n{i}");
+        let text = f.session_start(&session, cwd, &[]).unwrap();
+        assert!(
+            text.contains("OWNER-TEXT"),
+            "the plugin runs here too: {text}"
         );
-        let input = json!({"session_id": "n1", "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
-        assert_eq!(f.hook(input), None, "its own layer guards there");
+        assert!(text.contains("the owner's seat"), "{text}");
+        let input = json!({"session_id": session, "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
+        assert!(f.hook(input).is_some(), "and guards here");
+        // Effort 70 is demo's; from the seat it loads all the same.
+        let (text, ok) = f.bash(&session, cwd, "astrolabe activate --effort 70");
+        assert!(ok, "{text}");
     }
-    // A product repo still gets the plugin.
-    assert!(
-        f.session_start("n2", &f.demo, &[])
-            .unwrap()
-            .contains("OWNER-TEXT")
-    );
-    assert!(f.denies("n2", "pkill x"));
+    // A product repo is still matched to the effort's repo.
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    assert!(f.denies("s1", "pkill x"));
 }
 
 #[test]
@@ -1195,7 +1196,7 @@ fn on_refuses_without_the_notes_checkout_and_sessions_say_why() {
     std::fs::remove_file(f.state().join("repos/agent.json")).unwrap();
     let (text, ok) = f.run(&f.demo, &["on"], "", &[]);
     assert!(
-        !ok && text.contains("repo add agent") && text.contains("stays out of the notes checkout"),
+        !ok && text.contains("repo add agent") && text.contains("where the notes are"),
         "{text}"
     );
     assert!(f.machine("status").contains("off for this machine"));
@@ -1219,8 +1220,7 @@ fn on_refuses_without_the_notes_checkout_and_sessions_say_why() {
     std::fs::remove_file(f.state().join("repos/agent.json")).unwrap();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(
-        text.contains("can't tell whether this is the notes repo")
-            && text.contains("repo add agent"),
+        text.contains("nothing can be saved either") && text.contains("repo add agent"),
         "{text}"
     );
     assert!(f.denies("s1", "pkill x"));

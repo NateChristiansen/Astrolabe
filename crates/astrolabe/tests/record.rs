@@ -169,12 +169,23 @@ impl Machine {
     }
 
     fn bash_as(&self, session: &str, command: &str, agent: Option<&str>) -> (String, bool) {
-        let mut input = json!({"session_id": session, "cwd": self.demo, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": command}});
+        self.bash_from(session, &self.demo, command, agent)
+    }
+
+    /// The same from another folder, such as the notes checkout.
+    fn bash_from(
+        &self,
+        session: &str,
+        cwd: &Path,
+        command: &str,
+        agent: Option<&str>,
+    ) -> (String, bool) {
+        let mut input = json!({"session_id": session, "cwd": cwd, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": command}});
         if let Some(agent) = agent {
             input["agent_id"] = agent.into();
         }
         let (out, ok) = self.run(
-            &self.demo,
+            cwd,
             &["hook", "pre-command", "--if-active"],
             &input.to_string(),
         );
@@ -184,7 +195,7 @@ impl Machine {
                 let out = Command::new("sh")
                     .arg("-c")
                     .arg(command)
-                    .current_dir(&self.demo)
+                    .current_dir(cwd)
                     .env("GIT_CONFIG_GLOBAL", "/dev/null")
                     .env("GIT_CONFIG_NOSYSTEM", "1")
                     .env("GIT_AUTHOR_NAME", "T")
@@ -1629,6 +1640,68 @@ impl Drop for Kill {
 }
 
 #[test]
+fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let notes = mac.notes.clone();
+    let (out, ok) = mac.bash_from("n1", &notes, NEW, None);
+    assert!(!ok && out.contains("--repo <name>"), "{out}");
+    assert!(!notes.join("efforts/0001-smooth-ink.md").exists());
+    let (out, ok) = mac.bash_from(
+        "n1",
+        &notes,
+        "astrolabe effort new --title \"Seat\" --repo nope <<'ASTROLABE'\ngoal\nASTROLABE\n",
+        None,
+    );
+    assert!(!ok && out.contains("repo add nope"), "{out}");
+    let (out, ok) = mac.bash_from(
+        "n1",
+        &notes,
+        "astrolabe effort new --title \"Seat\" --repo demo <<'ASTROLABE'\ngoal\nASTROLABE\n",
+        None,
+    );
+    assert!(ok && out.contains("Effort 1 created"), "{out}");
+    assert!(
+        mac.effort_text(1).contains("repo: demo"),
+        "{}",
+        mac.effort_text(1)
+    );
+    // In the repo's own folder the folder says which, so --repo is refused there.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Two\" --repo demo <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(!ok && out.contains("drop --repo"), "{out}");
+}
+
+#[test]
+fn a_dirty_notes_checkout_still_pulls() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    // The owner's seat is often mid-edit: a pull must not refuse over it.
+    write(
+        &pc.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT edited by hand",
+    );
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    assert!(
+        pc.notes.join("efforts/0001-smooth-ink.md").exists(),
+        "the Mac's effort arrived"
+    );
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT edited by hand",
+        "the hand edit survived the pull"
+    );
+    assert!(git(&pc.notes, &["stash", "list"]).trim().is_empty());
+}
+
+#[test]
 fn the_board_is_served_fresh_on_localhost() {
     use std::io::{BufRead, BufReader, Read};
     use std::time::Duration;
@@ -1688,10 +1761,10 @@ fn the_board_is_served_fresh_on_localhost() {
         .to_owned();
     let note = get(&link, &addr);
     assert!(
-        note.starts_with("HTTP/1.1 200 OK\r\n") && note.contains("text/plain"),
+        note.starts_with("HTTP/1.1 200 OK\r\n") && note.contains("text/html"),
         "{note}"
     );
-    assert!(note.contains("# 0001 Smooth ink"), "{note}");
+    assert!(note.contains("<h1>0001 Smooth ink</h1>"), "{note}");
     // Drawn per request: a save shows on the next fetch with no redraw of the file.
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = get("/", &addr);

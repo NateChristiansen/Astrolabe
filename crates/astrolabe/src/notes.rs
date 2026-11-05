@@ -299,7 +299,9 @@ impl Notes {
     }
 
     /// Brings the checkout up to date when online, under the lock. A rebase conflict is
-    /// aborted and recorded as diverged: local work is kept, nothing is merged unseen.
+    /// aborted and recorded as diverged: local work is kept, nothing is merged unseen. Hand
+    /// edits in the tree (the owner's seat is often mid-edit) are stashed around the rebase;
+    /// one that won't reapply stays in the stash and is reported, never lost.
     pub fn pull(&self) -> Pull {
         if !self.has_remote() {
             return Pull::Offline("no remote".to_owned());
@@ -319,9 +321,14 @@ impl Notes {
             return Pull::Offline(why);
         }
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
-        match self.git(&["rebase", "--quiet", "@{upstream}"]) {
+        match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
             Ok(_) => {
                 self.clear_sync("diverged");
+                let stashed = self.git(&["stash", "list"]).unwrap_or_default();
+                match stashed.lines().find(|l| l.contains("autostash")) {
+                    Some(line) => self.record_sync("stash", line),
+                    None => self.clear_sync("stash"),
+                }
                 self.fix_duplicate();
                 // Every pull, not only a sync's: a pickup's pull merges day files too. A
                 // failure is recorded, not hidden: the next status and session text say so.
@@ -1077,6 +1084,12 @@ impl Notes {
                 ),
                 None => format!("{unpublished} notes commit(s) not yet pushed."),
             });
+        }
+        if let Some(s) = record.get("stash") {
+            lines.push(format!(
+                "Hand edits in the notes checkout were stashed for a pull and didn't reapply cleanly ({}); `git stash pop` there brings them back.",
+                s["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
+            ));
         }
         if let Some(t) = record.get("tidy-failed") {
             lines.push(format!(

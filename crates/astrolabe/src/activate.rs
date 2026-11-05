@@ -50,13 +50,13 @@ const AUTHORITY: [(&str, &str); 3] = [
 ];
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path and only for the thing the owner has to open. The first sentence says the state in plain words; the second paragraph gives each choice with its reason; the last says what's next and what isn't checked. Numbers only when they're the result (\"200 ms instead of 310\"), never the evidence trail (no p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nA choice that leaves Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state paragraphs. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one line per effort per day, as they would say it (past tense, plain words, what changed, and why when the why matters; no evidence counts, no lane or hook talk), about 25 words, two sentences at most, like \"Deck guests see drawn pieces 200 ms late now, down from 310, by skipping the GPU readback. Dropped the stand-in and send-ahead.\" Name what changed in the game's own terms, not the level or file where you met it: a change to every tool press is \"tool presses\", not \"tool presses on Hot Wheels\". Where it stands (merged, blocked, waiting on a playtest) is the effort's status and --waits-for, already on the board, so it never goes in the line. Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request. The owner's board is home.html at the notes checkout root, redrawn at every save and sync; `astrolabe home --open` opens it, `astrolabe home --serve --open` serves it live on localhost (for the Claude app's pane, which never reloads a file), and `--theme dark` fixes the palette for a viewer that always renders light.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. From the notes checkout, the owner's seat, any effort loads whatever its repo, and `effort new` and `astrolabe journal` there need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path and only for the thing the owner has to open. The first sentence says the state in plain words; the second paragraph gives each choice with its reason; the last says what's next and what isn't checked. Numbers only when they're the result (\"200 ms instead of 310\"), never the evidence trail (no p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nA choice that leaves Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state paragraphs. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one line per effort per day, as they would say it (past tense, plain words, what changed, and why when the why matters; no evidence counts, no lane or hook talk), about 25 words, two sentences at most, like \"Deck guests see drawn pieces 200 ms late now, down from 310, by skipping the GPU readback. Dropped the stand-in and send-ahead.\" Name what changed in the game's own terms, not the level or file where you met it: a change to every tool press is \"tool presses\", not \"tool presses on Hot Wheels\". Where it stands (merged, blocked, waiting on a playtest) is the effort's status and --waits-for, already on the board, so it never goes in the line. Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request. The owner's board is home.html at the notes checkout root, redrawn at every save and sync; `astrolabe home --open` opens it, `astrolabe home --serve --open` serves it live on localhost with each note as a page (for the Claude app's pane, which never reloads a file), and `--theme dark` fixes the palette for a viewer that always renders light.";
 
 /// Said to a worker on binding: what it may not do, and why.
 pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it creates, saves and journals nothing in the owner's notes, because one session writes an effort's record and the dispatcher reports for its workers. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
 
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
-const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: in the notes checkout the plugin stays out, as that repo's own layer runs there; Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
+const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
 /// What a refusal leaves running: it only ever comes from a hook, so the machine is on.
 pub(crate) const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
 /// The machine switch's file in the state folder. Present means on.
@@ -105,7 +105,7 @@ impl Repos {
         Ok(Self(map))
     }
 
-    fn checkout(&self, name: &str) -> Option<PathBuf> {
+    pub(crate) fn checkout(&self, name: &str) -> Option<PathBuf> {
         self.0.get(name)?.as_str().map(PathBuf::from)
     }
 }
@@ -157,9 +157,9 @@ pub fn machine(verb: &str) -> (String, bool) {
     };
     let path = dir.join(SWITCH);
     let done = match verb {
-        // Without the notes checkout on record the plugin can't stay out of it.
+        // Without the notes checkout on record nothing can be read or saved.
         "on" => notes_checked()
-            .map_err(|why| format!("{why}. It's needed so the plugin stays out of the notes checkout, where that repo's own layer runs"))
+            .map_err(|why| format!("{why}. It's needed because that's where the notes are: every save, the board and the owner's seat read it"))
             .and_then(|_| write_json(&path, &json!({"at_ms": now_ms()}))),
         "off" => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -456,7 +456,7 @@ fn parse_remotes(file: &str, text: &str) -> Result<Vec<String>, String> {
 }
 
 /// `knowledge/repos/<name>.md`'s remotes. No note is no remotes.
-fn note_remotes(notes: &Path, name: &str) -> Result<Vec<String>, String> {
+pub(crate) fn note_remotes(notes: &Path, name: &str) -> Result<Vec<String>, String> {
     let file = format!("knowledge/repos/{name}.md");
     match std::fs::read_to_string(notes.join(&file)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -539,6 +539,12 @@ fn session_repo(
     let here = common_dir(cwd).ok_or_else(|| {
         format!("this session's folder {} isn't in a git repo, so it can't be matched to the effort's repo", cwd.display())
     })?;
+    // The notes checkout is the owner's seat: every effort loads there, as its first repo.
+    if in_notes(cwd)
+        && let Some(first) = repos.first()
+    {
+        return Ok(first.clone());
+    }
     let names = repo_names(notes, registry, cwd, &here)?;
     if let Some(name) = repos.iter().find(|r| names.contains(r)) {
         return Ok(name.clone());
@@ -1450,9 +1456,8 @@ pub fn gate(event: &str) {
     // while the machine is on, but no context or authority, can't switch, and doesn't count
     // toward the parent's proof.
     let child = input["agent_id"].as_str().is_some_and(|a| !a.is_empty());
-    // Off for the machine: nothing at all, as if the plugin weren't there. In the notes
-    // checkout its own layer runs, so the plugin stays out there too (a trial exception).
-    if !state_dir().is_some_and(|dir| machine_on(&dir)) || in_notes(&input) {
+    // Off for the machine: nothing at all, as if the plugin weren't there.
+    if !state_dir().is_some_and(|dir| machine_on(&dir)) {
         return;
     }
     match event {
@@ -1536,14 +1541,11 @@ pub fn gate(event: &str) {
     }
 }
 
-/// Whether this hook fired in the registered notes checkout or one of its worktrees, by the
-/// registry and git's common directory.
-fn in_notes(input: &Value) -> bool {
-    let cwd = input["cwd"]
-        .as_str()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
-    let Some(here) = cwd.as_deref().and_then(common_dir) else {
+/// Whether this folder is the registered notes checkout or one of its worktrees, by the
+/// registry and git's common directory: the owner's steering seat, where any effort loads
+/// whatever its repo and a new one names the repo its work is for.
+pub(crate) fn in_notes(cwd: &Path) -> bool {
+    let Some(here) = common_dir(cwd) else {
         return false;
     };
     let notes = notes_and_repos().ok().map(|(_, notes)| notes);
@@ -1753,7 +1755,7 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
         Ok(found) => found,
         Err(why) => {
             return format!(
-                "Astrolabe is on for this machine and the guard runs here, but owner and voice weren't delivered: {why}. Without the notes checkout on record the plugin also can't tell whether this is the notes repo, so it may be running beside that repo's own layer. Tell the owner.\n\n{GUARD_SCOPE}"
+                "Astrolabe is on for this machine and the guard runs here, but owner and voice weren't delivered: {why}. Without the notes checkout on record nothing can be saved either. Tell the owner.\n\n{GUARD_SCOPE}"
             );
         }
     };
@@ -1806,6 +1808,9 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
 /// Why a folder no repo matches gets no suggestion, and what would match it, offered only for
 /// the owner to ask for, as the notes are theirs.
 pub(crate) fn no_note(cwd: &Path) -> String {
+    if in_notes(cwd) {
+        return "This is the notes checkout, the owner's seat: any effort loads here with \"pick up N\" whatever its repo, and a new one names the repo its work is for with --repo <name>, as its note in knowledge/repos names it.".to_owned();
+    }
     let remotes = folder_remotes(cwd).unwrap_or_default();
     let remotes: Vec<&String> = (remotes.iter())
         .filter(|r| normalize_remote(r).is_some())

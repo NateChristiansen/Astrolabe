@@ -15,6 +15,7 @@ tungstenite = { version = "=0.30.0", default-features = false, features = ["hand
 getrandom = "=0.4.3"
 fs4 = "0.13"
 chrono = "0.4"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 # Not a test target: it runs as a real child process, and cargo test builds it.
 [[example]]

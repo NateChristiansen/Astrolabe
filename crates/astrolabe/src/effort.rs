@@ -23,14 +23,17 @@ pub struct EffortCommand {
 }
 
 /// The flags each verb takes; any other is refused, so a mistyped one can't be ignored.
-pub const NEW_FLAGS: [&str; 6] = [
+pub const NEW_FLAGS: [&str; 7] = [
     "title",
+    "repo",
     "status",
     "involvement",
     "authority",
     "initiative",
     "priority",
 ];
+/// From the notes checkout a finding names the repo it's about, as `effort new` does.
+pub const JOURNAL_FLAGS: [&str; 1] = ["repo"];
 pub const SAVE_FLAGS: [&str; 9] = [
     "status",
     "decision",
@@ -136,6 +139,8 @@ impl EffortCommand {
             }
             let allowed: &[&str] = if verb == "new" {
                 &NEW_FLAGS
+            } else if verb == "journal" {
+                &JOURNAL_FLAGS
             } else {
                 &SAVE_FLAGS
             };

@@ -204,7 +204,7 @@ fn request(stream: &mut TcpStream) -> Option<String> {
     }
 }
 
-/// One response: the board at `/`, an effort's text at its own path, nothing anywhere else.
+/// One response: the board at `/`, an effort as a page at its own path, nothing anywhere else.
 /// Only a request addressed to this loopback port is answered, so a page on another origin
 /// that reaches the socket by a rebound name gets nothing.
 fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, String) {
@@ -259,9 +259,68 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
         )
         && let Ok(text) = std::fs::read_to_string(notes.root.join("efforts").join(&name))
     {
-        return ("200 OK", "text/plain", text);
+        return ("200 OK", "text/html", note_page(&text, theme(notes)));
     }
     ("404 Not Found", "text/plain", "nothing here\n".to_owned())
+}
+
+/// An effort's note as a page in the board's palette: its properties as one line, then the
+/// Markdown rendered. Raw HTML in the note is shown as text, since the note is written by
+/// agents and the page runs in the owner's browser.
+fn note_page(text: &str, theme: Theme) -> String {
+    use pulldown_cmark::{Event, Options, Parser, html};
+    let text = text.replace("\r\n", "\n");
+    let (front, body) = match text.strip_prefix("---\n").and_then(|rest| {
+        rest.find("\n---\n")
+            .map(|end| (&rest[..end], &rest[end + 5..]))
+    }) {
+        Some((front, body)) => (front, body),
+        None => ("", text.as_str()),
+    };
+    let props: Vec<String> = [
+        "status",
+        "repo",
+        "priority",
+        "waits_for",
+        "updated",
+        "branch",
+    ]
+    .iter()
+    .filter_map(|key| {
+        let value = front
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
+            .trim()
+            .trim_matches('"');
+        (!value.is_empty()).then(|| format!("{}: {}", esc(key), esc(value)))
+    })
+    .collect();
+    let title = body
+        .lines()
+        .find_map(|l| l.strip_prefix("# "))
+        .unwrap_or("Effort")
+        .trim();
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    let events = Parser::new_ext(body, options).map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+        other => other,
+    });
+    let mut rendered = String::new();
+    html::push_html(&mut rendered, events);
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>{}</title>\n<style>{}{STYLE}{NOTE_STYLE}</style></head><body>\n<nav><a href=\"/\">&larr; board</a><span class=\"props\">{}</span></nav>\n<article>\n{rendered}</article>\n</body></html>\n",
+        match theme {
+            Theme::Auto => "light dark",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        },
+        esc(title),
+        palette(theme),
+        props.join(" · "),
+    )
 }
 
 /// Percent-decoding of a path segment, the inverse of `percent`; None for a malformed escape
@@ -607,6 +666,14 @@ fn esc(text: &str) -> String {
     out
 }
 
+const NOTE_STYLE: &str = r#"
+nav{display:flex;flex-wrap:wrap;gap:16px;align-items:baseline;margin-bottom:18px}nav a{color:var(--mute);text-decoration:none}nav a:hover{text-decoration:underline}.props{color:var(--mute);font-size:13px}
+article{max-width:72ch}article h1{font-size:22px;margin:0 0 14px}article h2{font-size:16px;margin:26px 0 8px}article h3{font-size:15px;margin:18px 0 6px}
+article p,article li{line-height:1.5}article a{color:var(--accent)}article code{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 4px;font-size:13px}
+article pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;overflow:auto}article pre code{border:0;padding:0}
+article table{border-collapse:collapse}article td,article th{border:1px solid var(--line);padding:4px 8px;text-align:left}article blockquote{margin:0;padding-left:12px;border-left:3px solid var(--line);color:var(--mute)}
+"#;
+
 const STYLE: &str = r#"
 *{box-sizing:border-box}body{margin:0;padding:24px 28px;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:18px;margin-bottom:20px}header h1{font-size:20px;margin:0;font-weight:600}header .counts,header .sync{color:var(--mute)}
@@ -745,6 +812,29 @@ mod tests {
         assert!(light.contains("--bg:#faf9f5") && !light.contains("--bg:#1b1b19"));
         assert_eq!(Theme::parse("system"), Some(Theme::Auto));
         assert_eq!(Theme::parse("blue"), None);
+    }
+
+    #[test]
+    fn a_note_is_a_page_with_its_properties_and_no_raw_html() {
+        let text = "---\nstatus: active\nrepo: demo\nwaits_for: \"owner: pick\"\nupdated: \"2026-11-05T12:00-07:00\"\n---\n# 0001 Smooth <ink>\n\n## Current state\n\nDone & dusted. <script>alert(1)</script>\n\n- [x] one\n";
+        let page = note_page(text, Theme::Auto);
+        assert!(
+            page.contains("<title>0001 Smooth &lt;ink&gt;</title>"),
+            "{page}"
+        );
+        assert!(page.contains("<h1>0001 Smooth &lt;ink&gt;</h1>"), "{page}");
+        assert!(page.contains("status: active · repo: demo · waits_for: owner: pick · updated: 2026-11-05T12:00-07:00"), "{page}");
+        assert!(page.contains("<h2>Current state</h2>"));
+        assert!(page.contains("Done &amp; dusted."), "{page}");
+        assert!(!page.contains("<script>"), "raw html is text: {page}");
+        assert!(page.contains("checked"), "task lists render: {page}");
+        assert!(page.contains("href=\"/\""), "a way back to the board");
+        assert!(
+            !page.contains("http-equiv=\"refresh\""),
+            "a note doesn't reload under the reader"
+        );
+        // No frontmatter: the whole text is the body.
+        assert!(note_page("# Bare\n\ntext\n", Theme::Dark).contains("<h1>Bare</h1>"));
     }
 
     #[test]

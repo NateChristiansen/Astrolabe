@@ -42,10 +42,36 @@ fn notes_here() -> Result<(Repos, Notes), String> {
 }
 
 /// The one repo note this folder belongs to, for a new effort.
-fn repo_of(notes: &Notes, registry: &Repos, cwd: &Path) -> Result<String, String> {
+fn repo_of(
+    notes: &Notes,
+    registry: &Repos,
+    cwd: &Path,
+    wanted: Option<&str>,
+) -> Result<String, String> {
     let here = activate::common_dir(cwd).ok_or_else(|| {
         format!("this session's folder {} isn't in a git repo, so the effort can't say which repo to work out of", cwd.display())
     })?;
+    // The notes checkout is the owner's seat, about every repo: the lead says which one the
+    // work is for, since the folder can't.
+    if activate::in_notes(cwd) {
+        let Some(name) = wanted else {
+            return Err("this session runs in the notes checkout, the owner's seat, so the effort can't take its repo from the folder: --repo <name> names the repo the work is for, as its note in knowledge/repos names it".to_owned());
+        };
+        activate::check_repo_name(name)?;
+        if registry.checkout(name).is_none()
+            && activate::note_remotes(&notes.root, name)?.is_empty()
+        {
+            return Err(format!(
+                "--repo {name:?} is neither a repo note with a remote (knowledge/repos/{name}.md) nor registered on this machine; `astrolabe repo add {name}`, run from a folder of that repo, adds it"
+            ));
+        }
+        return Ok(name.to_owned());
+    }
+    if let Some(name) = wanted {
+        return Err(format!(
+            "--repo is for the notes checkout, where the folder says nothing; here the repo is this folder's, so drop --repo {name:?}"
+        ));
+    }
     let mut names = activate::repo_names(&notes.root, registry, cwd, &here)?;
     names.retain(|n| n != crate::registry::AGENT);
     match names.as_slice() {
@@ -213,7 +239,7 @@ fn new_inner(
         &AUTHORITIES,
     )?;
     let (registry, notes) = notes_here()?;
-    let repo = repo_of(&notes, &registry, cwd)?;
+    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let dir = notes.state.clone();
     let _held = notes.lock()?;
     // Leftovers first: one of them may be this very call, interrupted.
@@ -657,7 +683,7 @@ fn journal_inner(
             "this session has effort {n}; its journal line goes on the effort: `astrolabe effort save --journal \"…\"`"
         ));
     }
-    let repo = repo_of(&notes, &registry, cwd)?;
+    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let _held = notes.lock()?;
     let leftovers = notes.reconcile();
     if !leftovers.is_empty() {
