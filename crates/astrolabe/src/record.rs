@@ -161,6 +161,8 @@ fn shift_plan_headings(plan: &str) -> (String, bool) {
     (out, true)
 }
 
+/// The save's stamp. The repo facts are the session folder's; from the notes checkout they
+/// would be the notes' own, which say nothing about the work, so there they're left blank.
 fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&RepoFacts>) {
     file.set("updated", &notes::local_stamp());
     file.set(
@@ -168,15 +170,27 @@ fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&Re
         &format!("{} · {provider}", notes::machine_name()),
     );
     file.set("session", session);
-    if let Some(f) = facts {
-        file.set("branch", &f.branch);
-        file.set("head", &f.head);
-        file.set(
-            "unpushed",
-            &f.unpushed.map_or("unknown".to_owned(), |n| n.to_string()),
-        );
-        file.set("dirty", if f.dirty { "true" } else { "false" });
+    match facts {
+        Some(f) => {
+            file.set("branch", &f.branch);
+            file.set("head", &f.head);
+            file.set(
+                "unpushed",
+                &f.unpushed.map_or("unknown".to_owned(), |n| n.to_string()),
+            );
+            file.set("dirty", if f.dirty { "true" } else { "false" });
+        }
+        None => {
+            for key in ["branch", "head", "unpushed", "dirty"] {
+                file.set(key, "");
+            }
+        }
     }
+}
+
+/// The facts for a stamp: none from the notes checkout.
+fn stamp_facts<'a>(cwd: &Path, facts: Option<&'a RepoFacts>) -> Option<&'a RepoFacts> {
+    (!activate::in_notes(cwd)).then_some(facts).flatten()
 }
 
 fn line_id(key: &str, n: usize) -> String {
@@ -299,7 +313,12 @@ fn new_inner(
     ] {
         file.set(k, v);
     }
-    stamp(&mut file, session, provider, facts.as_ref());
+    stamp(
+        &mut file,
+        session,
+        provider,
+        stamp_facts(cwd, facts.as_ref()),
+    );
     let text = file.render();
     // The session's one probe token, so the proof from session start carries in.
     let token = activate::session_token(session);
@@ -587,7 +606,12 @@ fn save_inner(
         })
         .into_iter()
         .collect();
-    stamp(&mut file, session, provider, facts.as_ref());
+    stamp(
+        &mut file,
+        session,
+        provider,
+        stamp_facts(cwd, facts.as_ref()),
+    );
     let text = file.render();
     let now = notes::now_ms();
     let mut next_state = state.clone();

@@ -1087,7 +1087,7 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
     assert!(mac.bash("s1", "astrolabe journal <<'ASTROLABE'\nWalk is 3.0 and sprint 4.8, in the player motor.\nASTROLABE\n").1);
     assert_eq!(mac.journal_today().lines().count(), 2);
     let (out, ok) = mac.bash("s1", "astrolabe journal --title x");
-    assert!(!ok && out.contains("no flags"), "{out}");
+    assert!(!ok && out.contains("only --repo"), "{out}");
     let (out, ok) = mac.bash("s1", "astrolabe journal");
     assert!(!ok && out.contains("needs the sentence"), "{out}");
     // No hook: the plain command explains itself like an effort command does.
@@ -1666,6 +1666,58 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         "{}",
         mac.effort_text(1)
     );
+    // The seat's own saves commit under the session; that isn't work moving, so no nudge.
+    let stop = || json!({"session_id": "n1", "cwd": notes, "stop_hook_active": false, "last_assistant_message": "done"});
+    assert!(
+        mac.hook_json("stop", stop()).is_none(),
+        "a create is no work"
+    );
+    assert!(
+        mac.bash_from(
+            "n1",
+            &notes,
+            "astrolabe effort save <<'ASTROLABE'\nOne.\n\nTwo.\n\nThree.\nASTROLABE\n",
+            None
+        )
+        .1
+    );
+    assert!(mac.hook_json("stop", stop()).is_none(), "a save is no work");
+    write(
+        &notes.join("knowledge/owner.md"),
+        "OWNER-TEXT edited by hand",
+    );
+    assert!(
+        mac.hook_json("stop", stop()).is_some(),
+        "a hand edit in the notes is"
+    );
+    assert!(mac.hook_json("stop", stop()).is_none(), "said once");
+    // A finding with no effort names its repo the same way, from another session.
+    let (out, ok) = mac.bash_from("n2", &notes, "astrolabe journal \"Found a thing.\"", None);
+    assert!(!ok && out.contains("--repo <name>"), "{out}");
+    let (out, ok) = mac.bash_from(
+        "n2",
+        &notes,
+        "astrolabe journal --repo demo \"Found a thing.\"",
+        None,
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.journal_today().contains("Found a thing. <!-- demo "),
+        "{}",
+        mac.journal_today()
+    );
+    let (out, ok) = mac.bash_from("n2", &notes, "astrolabe journal --tick x \"No.\"", None);
+    assert!(!ok && out.contains("only --repo"), "{out}");
+    // Stamped by the work's repo, not the notes': the seat's branch and head say nothing.
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("branch: \"\"") || text.contains("branch:\n") || text.contains("branch: ''"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("head: ") || text.contains("head: \"\"") || text.contains("head: ''"),
+        "{text}"
+    );
     // In the repo's own folder the folder says which, so --repo is refused there.
     let (out, ok) = mac.bash(
         "s1",
@@ -1699,6 +1751,43 @@ fn a_dirty_notes_checkout_still_pulls() {
         "the hand edit survived the pull"
     );
     assert!(git(&pc.notes, &["stash", "list"]).trim().is_empty());
+    // An edit that clashes with what arrives: the tree takes what was pulled, the edit sits
+    // in a stash named in the status until it's gone, and a save commits no marker.
+    write(
+        &mac.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT from the mac",
+    );
+    git(&mac.notes, &["commit", "-qam", "owner"]);
+    git(&mac.notes, &["push", "-q"]);
+    write(
+        &pc.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT clashing by hand",
+    );
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT from the mac"
+    );
+    assert!(git(&pc.notes, &["status", "--porcelain"]).trim().is_empty());
+    let stash = git(&pc.notes, &["stash", "list", "--format=%H"]);
+    let id = stash.trim();
+    assert_eq!(id.len(), 40, "{stash}");
+    assert!(git(&pc.notes, &["stash", "show", "-p", id]).contains("+OWNER-TEXT clashing by hand"));
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert!(
+        status.contains("knowledge/owner.md")
+            && status.contains(&format!("git stash apply {}", &id[..7])),
+        "{status}"
+    );
+    assert!(pc.bash("p1", NEW).1, "a save still lands");
+    assert!(!git(&pc.notes, &["show", "HEAD", "--stat"]).contains("owner.md"));
+    // Once the owner has taken the stash, the status stops naming it.
+    git(&pc.notes, &["stash", "drop", "-q"]);
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert!(!status.contains("stash"), "{status}");
 }
 
 #[test]

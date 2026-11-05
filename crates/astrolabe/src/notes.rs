@@ -301,7 +301,8 @@ impl Notes {
     /// Brings the checkout up to date when online, under the lock. A rebase conflict is
     /// aborted and recorded as diverged: local work is kept, nothing is merged unseen. Hand
     /// edits in the tree (the owner's seat is often mid-edit) are stashed around the rebase;
-    /// one that won't reapply stays in the stash and is reported, never lost.
+    /// one that won't reapply stays in the stash, named by id until it's gone, and the tree
+    /// is set back to what was pulled, so no save commits a conflict marker.
     pub fn pull(&self) -> Pull {
         if !self.has_remote() {
             return Pull::Offline("no remote".to_owned());
@@ -321,14 +322,11 @@ impl Notes {
             return Pull::Offline(why);
         }
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let stashes_before = self.stashes();
         match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
             Ok(_) => {
                 self.clear_sync("diverged");
-                let stashed = self.git(&["stash", "list"]).unwrap_or_default();
-                match stashed.lines().find(|l| l.contains("autostash")) {
-                    Some(line) => self.record_sync("stash", line),
-                    None => self.clear_sync("stash"),
-                }
+                self.keep_stash(&stashes_before);
                 self.fix_duplicate();
                 // Every pull, not only a sync's: a pickup's pull merges day files too. A
                 // failure is recorded, not hidden: the next status and session text say so.
@@ -351,6 +349,43 @@ impl Notes {
                 self.redraw();
                 Pull::Diverged(why)
             }
+        }
+    }
+
+    /// The stash entries, one `<id> <subject>` line each.
+    fn stashes(&self) -> Vec<String> {
+        self.git(&["stash", "list", "--format=%H %gs"])
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// After a rebase: a stash git created for the hand edits and couldn't reapply (it leaves
+    /// the conflict in the tree and the edits in the stash) is recorded by id and the tree
+    /// reset to the pulled state; the record clears once that stash is gone.
+    fn keep_stash(&self, before: &[String]) {
+        let unmerged = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])
+            .unwrap_or_default();
+        let kept = self
+            .stashes()
+            .into_iter()
+            .find(|l| !before.contains(l) && l.ends_with(" autostash"));
+        if let Some(line) = kept {
+            let _ = self.git(&["reset", "--quiet", "--hard"]);
+            let id = line.split(' ').next().unwrap_or_default().to_owned();
+            let files: Vec<&str> = unmerged.lines().collect();
+            self.record_sync("stash", &format!("{id} {}", files.join(", ")));
+            return;
+        }
+        let record = self.sync_record();
+        let gone = record["stash"]["why"].as_str().is_none_or(|why| {
+            let id = why.split(' ').next().unwrap_or_default();
+            !self.stashes().iter().any(|l| l.starts_with(id))
+        });
+        if gone {
+            self.clear_sync("stash");
         }
     }
 
@@ -1085,10 +1120,11 @@ impl Notes {
                 None => format!("{unpublished} notes commit(s) not yet pushed."),
             });
         }
-        if let Some(s) = record.get("stash") {
+        if let Some(why) = record["stash"]["why"].as_str() {
+            let (id, files) = why.split_once(' ').unwrap_or((why, ""));
+            let short: String = id.chars().take(7).collect();
             lines.push(format!(
-                "Hand edits in the notes checkout were stashed for a pull and didn't reapply cleanly ({}); `git stash pop` there brings them back.",
-                s["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
+                "Hand edits in the notes checkout ({files}) didn't reapply after a pull and sit in stash {short}; `git stash apply {short}` there brings them back, then `git stash drop` once they're in.",
             ));
         }
         if let Some(t) = record.get("tidy-failed") {
@@ -1139,7 +1175,9 @@ pub struct RepoFacts {
     pub unpushed: Option<u32>,
     pub dirty: bool,
     /// HEAD, the content of `git diff HEAD` and the untracked files' contents, hashed: the
-    /// same tree gives the same print, and a second edit to a dirty file changes it.
+    /// same tree gives the same print, and a second edit to a dirty file changes it. In the
+    /// notes checkout HEAD is left out, since there every save and pull moves it by the
+    /// plugin's own hand; hand edits and new files still count.
     pub fingerprint: String,
 }
 
@@ -1160,7 +1198,9 @@ impl RepoFacts {
         let diff = git(&["diff", "HEAD"]).unwrap_or_default();
         use sha2::{Digest, Sha256};
         let mut print = Sha256::new();
-        print.update(head.as_bytes());
+        if !crate::activate::in_notes(cwd) {
+            print.update(head.as_bytes());
+        }
         print.update(diff.as_bytes());
         for line in status.lines().filter(|l| l.starts_with("?? ")) {
             let file = cwd.join(&line[3..]);

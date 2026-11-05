@@ -268,7 +268,7 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
 /// Markdown rendered. Raw HTML in the note is shown as text, since the note is written by
 /// agents and the page runs in the owner's browser.
 fn note_page(text: &str, theme: Theme) -> String {
-    use pulldown_cmark::{Event, Options, Parser, html};
+    use pulldown_cmark::{Event, Options, Parser, Tag, html};
     let text = text.replace("\r\n", "\n");
     let (front, body) = match text.strip_prefix("---\n").and_then(|rest| {
         rest.find("\n---\n")
@@ -306,12 +306,43 @@ fn note_page(text: &str, theme: Theme) -> String {
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let events = Parser::new_ext(body, options).map(|event| match event {
         Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
+        // A link may name a page or a mail address, never a script or a file.
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: if plain_url(&dest_url) {
+                dest_url
+            } else {
+                "#".into()
+            },
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: if plain_url(&dest_url) {
+                dest_url
+            } else {
+                "#".into()
+            },
+            title,
+            id,
+        }),
         other => other,
     });
     let mut rendered = String::new();
     html::push_html(&mut rendered, events);
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>{}</title>\n<style>{}{STYLE}{NOTE_STYLE}</style></head><body>\n<nav><a href=\"/\">&larr; board</a><span class=\"props\">{}</span></nav>\n<article>\n{rendered}</article>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src http: https: data:; form-action 'none'\">\n<title>{}</title>\n<style>{}{STYLE}{NOTE_STYLE}</style></head><body>\n<nav><a href=\"/\">&larr; board</a><span class=\"props\">{}</span></nav>\n<article>\n{rendered}</article>\n</body></html>\n",
         match theme {
             Theme::Auto => "light dark",
             Theme::Light => "light",
@@ -321,6 +352,21 @@ fn note_page(text: &str, theme: Theme) -> String {
         palette(theme),
         props.join(" · "),
     )
+}
+
+/// A link destination the note page may carry: relative, or http, https or mailto. Anything
+/// with another scheme (javascript, data, file, vbscript) is not.
+fn plain_url(url: &str) -> bool {
+    let url = url.trim_matches(|c: char| c.is_whitespace() || c.is_control());
+    let scheme_end = url.find(':');
+    let first_break = url.find(['/', '?', '#']).unwrap_or(url.len());
+    match scheme_end {
+        Some(end) if end < first_break => {
+            let scheme = url[..end].to_ascii_lowercase();
+            matches!(scheme.as_str(), "http" | "https" | "mailto")
+        }
+        _ => true,
+    }
 }
 
 /// Percent-decoding of a path segment, the inverse of `percent`; None for a malformed escape
@@ -835,6 +881,30 @@ mod tests {
         );
         // No frontmatter: the whole text is the body.
         assert!(note_page("# Bare\n\ntext\n", Theme::Dark).contains("<h1>Bare</h1>"));
+        // Links keep to pages and mail; a script or file link loses its destination.
+        let links = note_page(
+            "[a](javascript:alert(1)) [b](JAVASCRIPT:x) [c](&#106;avascript:y) [d](vbscript:z) [e](file:///etc/passwd) [f](data:text/html,x) ![g](javascript:w) [h](https://example.com/x?y#z) [i](mailto:o@example.com) [j](/efforts/0002-x.md) [k](other.md) [l](a/b:c)\n",
+            Theme::Auto,
+        );
+        assert!(
+            !links.to_ascii_lowercase().contains("javascript:"),
+            "{links}"
+        );
+        for bad in ["vbscript:", "file:", "data:text"] {
+            assert!(!links.contains(bad), "{bad}: {links}");
+        }
+        assert_eq!(links.matches("href=\"#\"").count(), 6, "{links}");
+        assert!(links.contains("src=\"#\""), "{links}");
+        for good in [
+            "href=\"https://example.com/x?y#z\"",
+            "href=\"mailto:o@example.com\"",
+            "href=\"/efforts/0002-x.md\"",
+            "href=\"other.md\"",
+            "href=\"a/b:c\"",
+        ] {
+            assert!(links.contains(good), "{good}: {links}");
+        }
+        assert!(links.contains("Content-Security-Policy"), "{links}");
     }
 
     #[test]

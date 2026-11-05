@@ -32,8 +32,6 @@ pub const NEW_FLAGS: [&str; 7] = [
     "initiative",
     "priority",
 ];
-/// From the notes checkout a finding names the repo it's about, as `effort new` does.
-pub const JOURNAL_FLAGS: [&str; 1] = ["repo"];
 pub const SAVE_FLAGS: [&str; 9] = [
     "status",
     "decision",
@@ -86,27 +84,31 @@ impl EffortCommand {
                 None => return Err("`effort` needs a verb: new or save".to_owned()),
             },
             Some("journal") => {
-                // The sentence as one quoted word, or in the body; never both.
+                // The sentence as one quoted word, or in the body; never both. From the
+                // notes checkout, --repo <name> says which repo the finding is about.
                 let mut body = body;
-                if let Some(sentence) = words.next_word()? {
-                    if sentence.starts_with("--") {
-                        return Err(
-                            "`journal` takes no flags: the sentence alone, quoted, or in a body"
-                                .to_owned(),
-                        );
+                let mut flags = Vec::new();
+                while let Some(word) = words.next_word()? {
+                    if let Some(key) = word.strip_prefix("--") {
+                        if key != "repo" {
+                            return Err(format!(
+                                "--{key} isn't a flag of `journal`; it takes only --repo <name>, with the sentence quoted or in a body"
+                            ));
+                        }
+                        let value = words
+                            .next_word()?
+                            .filter(|v| !v.starts_with("--"))
+                            .ok_or("--repo needs a value")?;
+                        flags.push(("repo".to_owned(), value));
+                        continue;
                     }
                     if body.is_some() {
                         return Err(
-                            "`journal` takes the sentence once: quoted, or in a body, not both"
+                            "`journal` takes the sentence once, quoted whole, or in a body, not both"
                                 .to_owned(),
                         );
                     }
-                    body = Some(sentence);
-                }
-                if words.next_word()?.is_some() {
-                    return Err(
-                        "`journal` takes one quoted sentence; quote the whole of it".to_owned()
-                    );
+                    body = Some(word);
                 }
                 let text = body.as_deref().map(str::trim).unwrap_or_default();
                 if text.is_empty() {
@@ -117,7 +119,7 @@ impl EffortCommand {
                 }
                 return Ok(Self {
                     verb: "journal".to_owned(),
-                    flags: Vec::new(),
+                    flags,
                     body: Some(text.to_owned()),
                 });
             }
@@ -139,8 +141,6 @@ impl EffortCommand {
             }
             let allowed: &[&str] = if verb == "new" {
                 &NEW_FLAGS
-            } else if verb == "journal" {
-                &JOURNAL_FLAGS
             } else {
                 &SAVE_FLAGS
             };
