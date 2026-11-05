@@ -1682,6 +1682,32 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         .1
     );
     assert!(mac.hook_json("stop", stop()).is_none(), "a save is no work");
+    // A journal edited by hand nudges once; the save that then commits it doesn't.
+    let day = notes
+        .join("journal")
+        .join(format!("{}.md", chrono::Local::now().format("%Y-%m-%d")));
+    write(&day, "- Hand line.\n");
+    assert!(
+        mac.hook_json("stop", stop()).is_some(),
+        "a hand edit is work"
+    );
+    assert!(
+        mac.bash_from(
+            "n1",
+            &notes,
+            "astrolabe effort save <<'ASTROLABE'\nOne.\n\nTwo.\n\nThree more.\nASTROLABE\n",
+            None
+        )
+        .1
+    );
+    assert!(
+        git(&notes, &["status", "--porcelain"]).trim().is_empty(),
+        "the save committed the hand edit"
+    );
+    assert!(
+        mac.hook_json("stop", stop()).is_none(),
+        "its own commit isn't work"
+    );
     write(
         &notes.join("knowledge/owner.md"),
         "OWNER-TEXT edited by hand",
@@ -1782,8 +1808,47 @@ fn a_dirty_notes_checkout_still_pulls() {
     );
     assert!(pc.bash("p1", NEW).1, "a save still lands");
     assert!(!git(&pc.notes, &["show", "HEAD", "--stat"]).contains("owner.md"));
-    // Once the owner has taken the stash, the status stops naming it.
-    git(&pc.notes, &["stash", "drop", "-q"]);
+    // Two clashes before the owner takes either: both stashes named, each until it's gone.
+    write(
+        &mac.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT from the mac again",
+    );
+    git(&mac.notes, &["commit", "-qam", "owner again"]);
+    git(&mac.notes, &["push", "-q"]);
+    write(
+        &pc.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT clashing twice",
+    );
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert_eq!(status.matches("didn't reapply").count(), 2, "{status}");
+    assert!(!status.contains("git stash drop"), "{status}");
+    // An index left unmerged by hand refuses every write until it's resolved.
+    git(&pc.notes, &["checkout", "-q", "-b", "side"]);
+    write(&pc.notes.join("knowledge/owner.md"), "OWNER-TEXT side");
+    git(&pc.notes, &["commit", "-qam", "side"]);
+    git(&pc.notes, &["checkout", "-q", "main"]);
+    write(&pc.notes.join("knowledge/owner.md"), "OWNER-TEXT main");
+    git(&pc.notes, &["commit", "-qam", "main"]);
+    let _ = Command::new("git")
+        .args(["merge", "side"])
+        .current_dir(&pc.notes)
+        .output()
+        .unwrap();
+    assert!(git(&pc.notes, &["diff", "--name-only", "--diff-filter=U"]).contains("owner.md"));
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort save <<'ASTROLABE'\nOne.\n\nTwo.\n\nThree.\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("unmerged files (knowledge/owner.md)"),
+        "{out}"
+    );
+    git(&pc.notes, &["merge", "--abort"]);
+    git(&pc.notes, &["reset", "-q", "--hard", "@{upstream}"]);
+    // Once the owner has taken the stashes, the status stops naming them.
+    git(&pc.notes, &["stash", "clear"]);
     let (out, ok) = pc.sync();
     assert!(ok, "{out}");
     let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");

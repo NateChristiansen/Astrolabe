@@ -326,7 +326,11 @@ impl Notes {
         match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
             Ok(_) => {
                 self.clear_sync("diverged");
-                self.keep_stash(&stashes_before);
+                if let Err(why) = self.keep_stash(&stashes_before) {
+                    self.record_sync("diverged", &why);
+                    self.redraw();
+                    return Pull::Diverged(why);
+                }
                 self.fix_duplicate();
                 // Every pull, not only a sync's: a pickup's pull merges day files too. A
                 // failure is recorded, not hidden: the next status and session text say so.
@@ -362,31 +366,55 @@ impl Notes {
     }
 
     /// After a rebase: a stash git created for the hand edits and couldn't reapply (it leaves
-    /// the conflict in the tree and the edits in the stash) is recorded by id and the tree
-    /// reset to the pulled state; the record clears once that stash is gone.
-    fn keep_stash(&self, before: &[String]) {
+    /// the conflict in the tree and the edits in the stash) is recorded by id, one line per
+    /// stash still there, and the tree reset to the pulled state. A reset that fails is an
+    /// error, since the next save would stage the markers.
+    fn keep_stash(&self, before: &[String]) -> Result<(), String> {
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .unwrap_or_default();
-        let kept = self
-            .stashes()
-            .into_iter()
+        let now = self.stashes();
+        let new = now
+            .iter()
             .find(|l| !before.contains(l) && l.ends_with(" autostash"));
-        if let Some(line) = kept {
-            let _ = self.git(&["reset", "--quiet", "--hard"]);
-            let id = line.split(' ').next().unwrap_or_default().to_owned();
+        let mut kept: Vec<String> = self.sync_record()["stash"]["why"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| {
+                let id = l.split(' ').next().unwrap_or_default();
+                !id.is_empty() && now.iter().any(|s| s.starts_with(id))
+            })
+            .map(str::to_owned)
+            .collect();
+        if let Some(line) = new {
+            self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
+                format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
+            })?;
+            let id = line.split(' ').next().unwrap_or_default();
             let files: Vec<&str> = unmerged.lines().collect();
-            self.record_sync("stash", &format!("{id} {}", files.join(", ")));
-            return;
+            kept.push(format!("{id} {}", files.join(", ")));
         }
-        let record = self.sync_record();
-        let gone = record["stash"]["why"].as_str().is_none_or(|why| {
-            let id = why.split(' ').next().unwrap_or_default();
-            !self.stashes().iter().any(|l| l.starts_with(id))
-        });
-        if gone {
+        if kept.is_empty() {
             self.clear_sync("stash");
+        } else {
+            self.record_sync("stash", &kept.join("\n"));
         }
+        Ok(())
+    }
+
+    /// Files the index holds unmerged: a save can't stage those, so nothing is written.
+    fn refuse_unmerged(&self) -> Result<(), String> {
+        let unmerged = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])
+            .unwrap_or_default();
+        if unmerged.trim().is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "the notes checkout has unmerged files ({}); resolve them there first. Nothing was written",
+            unmerged.trim().replace('\n', ", ")
+        ))
     }
 
     /// The highest effort number on disk plus one.
@@ -646,6 +674,7 @@ impl Notes {
     /// already done, so applying twice is applying once. Once committed, the files are never
     /// written again, only the state files: a newer save may have landed since.
     pub fn apply(&self, op: &Op) -> Result<(), String> {
+        self.refuse_unmerged()?;
         let mut op = op.clone();
         if let Ok(bytes) = std::fs::read(self.intent_path(&op.key))
             && let Ok(saved) = serde_json::from_slice::<Op>(&bytes)
@@ -1120,11 +1149,11 @@ impl Notes {
                 None => format!("{unpublished} notes commit(s) not yet pushed."),
             });
         }
-        if let Some(why) = record["stash"]["why"].as_str() {
-            let (id, files) = why.split_once(' ').unwrap_or((why, ""));
+        for entry in record["stash"]["why"].as_str().unwrap_or_default().lines() {
+            let (id, files) = entry.split_once(' ').unwrap_or((entry, ""));
             let short: String = id.chars().take(7).collect();
             lines.push(format!(
-                "Hand edits in the notes checkout ({files}) didn't reapply after a pull and sit in stash {short}; `git stash apply {short}` there brings them back, then `git stash drop` once they're in.",
+                "Hand edits in the notes checkout ({files}) didn't reapply after a pull and sit in stash {short}; `git stash apply {short}` there brings them back, and `git stash list` shows which entry to drop once they're in.",
             ));
         }
         if let Some(t) = record.get("tidy-failed") {
