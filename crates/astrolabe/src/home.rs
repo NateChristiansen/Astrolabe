@@ -179,6 +179,8 @@ fn handle(notes: &Notes, mut stream: TcpStream, port: u16) {
     if !head_only {
         let _ = stream.write_all(body.as_bytes());
     }
+    // A close with no FIN first reads as a reset on Windows; say the answer is whole.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 /// The request head, read until its blank line within one deadline for the whole of it; None

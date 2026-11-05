@@ -1902,14 +1902,33 @@ fn the_board_is_served_fresh_on_localhost() {
         .and_then(|u| u.strip_suffix('/'))
         .unwrap_or_else(|| panic!("{url}"))
         .to_owned();
+    // One request; a connection the runner's stack resets before any byte arrives (seen
+    // once on Windows CI) is tried again, since that's the runner, not the server.
     let get = |target: &str, host: &str| {
-        let mut s = std::net::TcpStream::connect(&addr).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        s.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
-            .unwrap();
-        let mut out = String::new();
-        s.read_to_string(&mut out).unwrap();
-        out
+        let mut last = String::new();
+        for _ in 0..3 {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            s.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut out = String::new();
+            match s.read_to_string(&mut out) {
+                Ok(_) => return out,
+                Err(e)
+                    if out.is_empty()
+                        && matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                        ) =>
+                {
+                    last = format!("{e}");
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => panic!("{e}: {out}"),
+            }
+        }
+        panic!("reset three times: {last}")
     };
     let page = get("/", &addr);
     assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
