@@ -536,6 +536,7 @@ fn save_inner(
             file.tick(label, false)?;
         }
     }
+    let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
     if let Some(w) = waits_for {
         file.set("waits_for", w);
     }
@@ -588,7 +589,10 @@ fn save_inner(
         cwd: Some(crate::hook::comparable(cwd)),
     };
     notes.apply(&op)?;
-    let state_changed = status.as_deref().is_some_and(|s| s != before);
+    // A new waits-for is a state change the other machine must see: effort 6 went from
+    // "merge" to "playtest" with status still blocked and sat unpushed for nine hours.
+    let state_changed = status.as_deref().is_some_and(|s| s != before)
+        || file.prop("waits_for").unwrap_or("") != waits_before;
     if state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS {
         notes.spawn_sync();
     }

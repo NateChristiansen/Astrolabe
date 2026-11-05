@@ -24,6 +24,8 @@ const BACKOFF_MS: i64 = 5 * 60 * 1000;
 /// A push is batched: at a state change, at session end, at start, or this long after the last.
 pub const PUSH_EVERY_MS: i64 = 10 * 60 * 1000;
 const INTENTS: &str = "ops";
+/// Touched when a detached sync is asked for; its mtime throttles the Stop hook's asks.
+const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
@@ -907,8 +909,12 @@ impl Notes {
     /// Runs `astrolabe notes sync` as its own process, so a hook or a save returns at once and
     /// the push survives the app closing.
     pub fn spawn_sync(&self) {
-        // Tests run syncs in order themselves.
+        // Noted in a file of its own (its mtime), so a turn end doesn't ask again while this
+        // one is still on its way, and nothing here rewrites the sync record unlocked.
+        let _ = write_text(&self.state.join(ASKED), "");
+        // Tests run syncs in order themselves; a marker says one was asked for.
         if std::env::var_os("ASTROLABE_NO_DETACHED_SYNC").is_some() {
+            let _ = write_text(&self.state.join("sync-requested"), "");
             return;
         }
         let Ok(exe) = std::env::current_exe() else {
@@ -983,7 +989,7 @@ impl Notes {
     }
 
     /// Milliseconds left of a backoff after a timed-out network call, if any.
-    fn backing_off(&self) -> Option<i64> {
+    pub fn backing_off(&self) -> Option<i64> {
         let until = self.sync_record()["backoff_until_ms"].as_i64()?;
         let left = until - now_ms();
         (left > 0).then_some(left)
@@ -1016,6 +1022,15 @@ impl Notes {
             record.as_object_mut().map(|o| o.remove(what));
         }
         let _ = write_text(&self.state.join(SYNC), &record.to_string());
+    }
+
+    /// When a detached sync was last asked for, as epoch milliseconds; 0 when never.
+    pub fn last_request_ms(&self) -> i64 {
+        std::fs::metadata(self.state.join(ASKED))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_millis() as i64)
     }
 
     pub fn last_push_ms(&self) -> i64 {

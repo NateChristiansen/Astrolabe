@@ -52,6 +52,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         return None;
     }
     let dir = state_dir()?;
+    push_due();
     let cwd = input["cwd"]
         .as_str()
         .map(PathBuf::from)
@@ -142,6 +143,27 @@ pub fn at_end(session: &str) {
     }
     let _ = std::fs::remove_file(mark_path(&dir, session));
     push_pending();
+}
+
+/// A detached push once the batching window has passed with commits origin lacks. Every turn
+/// end checks, because a session that saves and then sits open never reaches SessionEnd.
+pub fn push_due() {
+    let Some(dir) = state_dir() else { return };
+    let Ok(root) = crate::activate::notes_root() else {
+        return;
+    };
+    let notes = Notes::new(root, dir);
+    let now = notes::now_ms();
+    // One request at a time: a sync asked for in the last minute is still running or
+    // waiting on the lock, and a timed-out one has set its own backoff. An ask stamped in
+    // the future (a clock set back) counts as old.
+    if now - notes.last_push_ms() > notes::PUSH_EVERY_MS
+        && !(0..=notes::RECENT_MS).contains(&(now - notes.last_request_ms()))
+        && notes.backing_off().is_none()
+        && notes.unpublished() > 0
+    {
+        notes.spawn_sync();
+    }
 }
 
 /// A detached push when notes have commits origin lacks, or writes left unfinished.

@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--theme auto|light|dark]|notes <sync|status>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark]|notes <sync|status>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,11 +66,18 @@ fn main() {
         }
         ["home", rest @ ..] => {
             let mut open = false;
+            let mut serve = false;
+            let mut port = astrolabe::home::SERVE_PORT;
             let mut theme = None;
             let mut words = rest.iter();
             while let Some(word) = words.next() {
                 match *word {
                     "--open" => open = true,
+                    "--serve" => serve = true,
+                    "--port" => match words.next().and_then(|w| w.parse().ok()) {
+                        Some(p) => port = p,
+                        None => fail("--port takes a number"),
+                    },
                     "--theme" => {
                         match words.next().and_then(|w| astrolabe::home::Theme::parse(w)) {
                             Some(t) => theme = Some(t),
@@ -87,10 +94,22 @@ fn main() {
                     {
                         fail(&why);
                     }
+                    if serve {
+                        match astrolabe::home::listen(port) {
+                            Ok((listener, url)) => {
+                                println!("{url}");
+                                if open && let Err(why) = open_in_browser(&url) {
+                                    fail(&why);
+                                }
+                                astrolabe::home::serve(&notes, listener);
+                            }
+                            Err(why) => fail(&why),
+                        }
+                    }
                     match notes.board() {
                         Ok(path) => {
                             println!("{}", path.display());
-                            if open && let Err(why) = open_in_browser(&path) {
+                            if open && let Err(why) = open_in_browser(&path.display().to_string()) {
                                 fail(&why);
                             }
                         }
@@ -237,7 +256,7 @@ fn notes_here() -> std::result::Result<astrolabe::notes::Notes, String> {
 }
 
 /// The default browser, as the desktop opens a file.
-fn open_in_browser(path: &Path) -> std::result::Result<(), String> {
+fn open_in_browser(path: &str) -> std::result::Result<(), String> {
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg(path);

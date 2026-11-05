@@ -124,9 +124,10 @@ impl Machine {
         self.dir.0.join("state")
     }
 
-    fn run(&self, cwd: &Path, args: &[&str], stdin: &str) -> (String, bool) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
-            .args(args)
+    /// The binary with this machine's environment, for a caller that spawns it itself.
+    fn command(&self, cwd: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        cmd.args(args)
             .current_dir(cwd)
             .env(DATA_DIR_VAR, self.dir.0.join("data"))
             .env(STATE_VAR, self.state())
@@ -138,7 +139,13 @@ impl Machine {
             .env("GIT_AUTHOR_NAME", "T")
             .env("GIT_AUTHOR_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_NAME", "T")
-            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com");
+        cmd
+    }
+
+    fn run(&self, cwd: &Path, args: &[&str], stdin: &str) -> (String, bool) {
+        let mut child = self
+            .command(cwd, args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1118,6 +1125,54 @@ impl Machine {
             .then(|| serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out}")))
     }
 
+    /// Whether a detached push was asked for since the last look, and forgets it.
+    fn sync_requested(&self) -> bool {
+        let marker = self.state().join("sync-requested");
+        let was = marker.exists();
+        let _ = std::fs::remove_file(marker);
+        was
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+
+    /// Edits one field of the sync record, keeping the rest.
+    fn set_sync(&self, key: &str, value: Value) {
+        let path = self.state().join("sync.json");
+        let mut record: Value = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| json!({}));
+        record[key] = value;
+        std::fs::write(path, record.to_string()).unwrap();
+    }
+
+    fn set_last_push(&self, ago_ms: i64) {
+        self.set_sync("pushed_ms", (Self::now_ms() - ago_ms).into());
+    }
+
+    /// Stamps the last ask into the future, as a clock set back would.
+    fn ask_from_the_future(&self) {
+        let path = self.state().join("sync-asked");
+        std::fs::write(&path, "").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+
+    /// Forgets the last ask, so the next eligible turn end asks again.
+    fn forget_ask(&self) {
+        let _ = std::fs::remove_file(self.state().join("sync-asked"));
+    }
+
     fn stop(&self, session: &str, active: bool, codex: bool) -> Option<Value> {
         let mut input = json!({"session_id": session, "cwd": self.demo, "stop_hook_active": active, "last_assistant_message": "done"});
         if codex {
@@ -1501,4 +1556,213 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     );
     let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
     assert!(status.contains("home.html is tracked"), "{status}");
+}
+
+#[test]
+fn a_quiet_session_still_pushes_and_a_new_wait_is_a_state_change() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let _ = mac.sync_requested();
+    // Same status, a new question for the owner: the other machine must see it.
+    mac.set_last_push(0);
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: merge it\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
+    assert!(mac.sync_requested(), "a status change asks for a push");
+    mac.set_last_push(0);
+    assert!(mac.bash("s1", "astrolabe effort save --waits-for \"owner: playtest it\" <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nPlaytest.\nASTROLABE\n").1);
+    assert!(mac.sync_requested(), "a new waits-for asks for a push");
+    mac.set_last_push(0);
+    assert!(mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nStill the playtest.\nASTROLABE\n").1);
+    assert!(
+        !mac.sync_requested(),
+        "a plain checkpoint inside the window waits"
+    );
+    // The session sits open with commits unpublished: a turn end inside the window does
+    // nothing, one past it pushes.
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(!mac.sync_requested());
+    mac.set_last_push(11 * 60 * 1000);
+    mac.forget_ask();
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(
+        mac.sync_requested(),
+        "the Stop hook pushes once the window has passed"
+    );
+    // Asked a moment ago: that one is still on its way, so the next turn end doesn't ask.
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(!mac.sync_requested(), "one ask at a time");
+    // A save's own ask counts the same.
+    mac.forget_ask();
+    assert!(mac.bash("s1", "astrolabe effort save --status active <<'ASTROLABE'\nBack on it.\n\nNo choice.\n\nMore.\nASTROLABE\n").1);
+    assert!(mac.sync_requested());
+    mac.set_last_push(11 * 60 * 1000);
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(!mac.sync_requested(), "the save just asked");
+    // Backing off after a timed-out network call: no ask until it ends.
+    mac.forget_ask();
+    mac.set_sync("backoff_until_ms", (Machine::now_ms() + 60_000).into());
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(!mac.sync_requested(), "backing off");
+    mac.set_sync("backoff_until_ms", (Machine::now_ms() - 1).into());
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(mac.sync_requested(), "the backoff ended");
+    // An ask stamped in the future never holds the next one back.
+    mac.ask_from_the_future();
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(mac.sync_requested(), "a future stamp counts as old");
+    // Nothing unpublished: nothing to push, however old the last one.
+    assert!(mac.run(&mac.notes, &["notes", "sync"], "").1);
+    mac.set_last_push(11 * 60 * 1000);
+    mac.forget_ask();
+    let _ = mac.sync_requested();
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(!mac.sync_requested());
+}
+
+/// A child killed and reaped however the test ends.
+struct Kill(std::process::Child);
+impl Drop for Kill {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn the_board_is_served_fresh_on_localhost() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::Duration;
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let mut child = Kill(
+        mac.command(&mac.notes, &["home", "--serve", "--port", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut url = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut url);
+        let _ = tx.send(url);
+    });
+    let url = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the server names its URL on start");
+    let addr = url
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|u| u.strip_suffix('/'))
+        .unwrap_or_else(|| panic!("{url}"))
+        .to_owned();
+    let get = |target: &str, host: &str| {
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+            .unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out
+    };
+    let page = get("/", &addr);
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    assert!(page.contains("Cache-Control: no-store"));
+    assert!(
+        page.contains("content=\"5\""),
+        "served pages reload every 5 s"
+    );
+    assert!(column(&page, "active").contains("Smooth ink"));
+    // The card links through the server, since a browser refuses file links from a page.
+    assert!(page.contains("href=\"/efforts/0001-"), "{page}");
+    let link = page
+        .split("href=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned();
+    let note = get(&link, &addr);
+    assert!(
+        note.starts_with("HTTP/1.1 200 OK\r\n") && note.contains("text/plain"),
+        "{note}"
+    );
+    assert!(note.contains("# 0001 Smooth ink"), "{note}");
+    // Drawn per request: a save shows on the next fetch with no redraw of the file.
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
+    let page = get("/", &addr);
+    assert!(column(&page, "needs").contains("which cap?"), "{page}");
+    assert!(get("/favicon.ico", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/efforts/C:owner.md", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/efforts/..%2Fknowledge%2Fowner.md", &addr).starts_with("HTTP/1.1 404"));
+    // HEAD gets the headers and no body.
+    let mut s = std::net::TcpStream::connect(&addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(format!("HEAD / HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    assert!(
+        out.starts_with("HTTP/1.1 200 OK") && out.ends_with("\r\n\r\n"),
+        "{out}"
+    );
+    assert!(get("/efforts/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
+    assert!(
+        get("/", "evil.example:80").starts_with("HTTP/1.1 421"),
+        "another host gets nothing"
+    );
+    // A connection that says nothing gets a bad-request reply, not a hung server.
+    let mut quiet = std::net::TcpStream::connect(&addr).unwrap();
+    quiet
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    quiet.write_all(b"GET / HTTP/1.1\r\n").unwrap();
+    quiet.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut out = String::new();
+    quiet.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+    assert!(
+        get("/", &addr).starts_with("HTTP/1.1 200"),
+        "still serving after a bad request"
+    );
+    // A head that never ends and outgrows the bound is refused, not buffered.
+    let mut big = std::net::TcpStream::connect(&addr).unwrap();
+    big.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let _ = big.write_all(format!("GET / HTTP/1.1\r\nX: {}\r\n", "y".repeat(20_000)).as_bytes());
+    let mut out = String::new();
+    let _ = big.read_to_string(&mut out);
+    assert!(out.starts_with("HTTP/1.1 400"), "{out}");
+    // Past the handler cap an idle connection is told to come back, and the rest still serve
+    // once the idle ones go.
+    let idle: Vec<_> = (0..32)
+        .map(|_| std::net::TcpStream::connect(&addr).unwrap())
+        .collect();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut out = String::new();
+    while !out.starts_with("HTTP/1.1 503") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no 503 past the cap: {out}"
+        );
+        let mut extra = std::net::TcpStream::connect(&addr).unwrap();
+        extra
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        out.clear();
+        let _ = extra.read_to_string(&mut out);
+    }
+    drop(idle);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !get("/", &addr).starts_with("HTTP/1.1 200") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not serving again after the idle ones left"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }

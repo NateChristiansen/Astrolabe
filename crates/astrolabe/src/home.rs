@@ -5,7 +5,12 @@
 use crate::notes::{self, Notes};
 use chrono::{DateTime, FixedOffset};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 pub const FILE: &str = "home.html";
 /// The machine's theme choice, beside the sync record in the state folder.
@@ -56,6 +61,11 @@ pub fn set_theme(notes: &Notes, theme: Theme) -> Result<(), String> {
 }
 /// Done and abandoned efforts stay on the board this long after their last save.
 const DONE_DAYS: i64 = 14;
+/// How often the file reloads itself in a browser, and how often the served page does.
+const FILE_REFRESH_SECS: u32 = 60;
+const SERVE_REFRESH_SECS: u32 = 5;
+/// The port `astrolabe home --serve` takes unless told otherwise.
+pub const SERVE_PORT: u16 = 4747;
 const SENTENCE_CHARS: usize = 160;
 
 /// Renders and writes the board; the path written, or why not. Under the caller's lock.
@@ -100,8 +110,203 @@ impl Card<'_> {
     }
 }
 
+/// Binds the board's localhost listener; the URL is printed before serving starts.
+pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("could not listen on 127.0.0.1:{port}: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("could not read the listener's address: {e}"))?
+        .port();
+    Ok((listener, format!("http://127.0.0.1:{port}/")))
+}
+
+/// Serves the board, drawn fresh for every request, until the process is stopped. For a viewer
+/// that never reloads a file (the Claude app's pane) and so the ages on the cards stay right.
+/// One thread per connection, since browsers hold idle connections open; past the cap a
+/// connection is told to come back.
+pub fn serve(notes: &Notes, listener: TcpListener) {
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let busy = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        if busy.load(Ordering::SeqCst) >= HANDLERS {
+            let _ = stream.write_all(BUSY);
+            continue;
+        }
+        let notes = Notes::new(notes.root.clone(), notes.state.clone());
+        let count = Arc::clone(&busy);
+        count.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new().spawn(move || {
+            handle(&notes, stream, port);
+            count.fetch_sub(1, Ordering::SeqCst);
+        });
+        if spawned.is_err() {
+            busy.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+const HANDLERS: usize = 32;
+const BUSY: &[u8] =
+    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const REQUEST_BOUND: usize = 16 * 1024;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
+
+fn handle(notes: &Notes, mut stream: TcpStream, port: u16) {
+    let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let (status, kind, body, head_only) = match request(&mut stream) {
+        Some(head) => {
+            let head_only = head.split_whitespace().next() == Some("HEAD");
+            let (status, kind, body) = answer(notes, &head, port);
+            (status, kind, body, head_only)
+        }
+        None => (
+            "400 Bad Request",
+            "text/plain",
+            "bad request\n".to_owned(),
+            false,
+        ),
+    };
+    let _ = stream.write_all(
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    if !head_only {
+        let _ = stream.write_all(body.as_bytes());
+    }
+}
+
+/// The request head, read until its blank line within one deadline for the whole of it; None
+/// when it never comes or outgrows the bound.
+fn request(stream: &mut TcpStream) -> Option<String> {
+    let started = Instant::now();
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let left = REQUEST_DEADLINE.checked_sub(started.elapsed())?;
+        let _ = stream.set_read_timeout(Some(left.max(Duration::from_millis(1))));
+        let n = stream.read(&mut buf).ok()?;
+        if n == 0 {
+            return None;
+        }
+        head.extend_from_slice(&buf[..n]);
+        if head.len() > REQUEST_BOUND {
+            return None;
+        }
+        if let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            return Some(String::from_utf8_lossy(&head[..end]).into_owned());
+        }
+    }
+}
+
+/// One response: the board at `/`, an effort's text at its own path, nothing anywhere else.
+/// Only a request addressed to this loopback port is answered, so a page on another origin
+/// that reaches the socket by a rebound name gets nothing.
+fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, String) {
+    let mut lines = head.lines();
+    let mut words = lines.next().unwrap_or_default().split_whitespace();
+    let (method, target, version) = (words.next(), words.next(), words.next());
+    if !matches!(method, Some("GET" | "HEAD")) || !version.is_some_and(|v| v.starts_with("HTTP/1."))
+    {
+        return ("400 Bad Request", "text/plain", "bad request\n".to_owned());
+    }
+    let host = lines
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| v.trim().to_ascii_lowercase());
+    let mut ours = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    if port == 80 {
+        // A browser leaves the default port out.
+        ours.extend(["127.0.0.1".to_owned(), "localhost".to_owned()]);
+    }
+    if !host.is_some_and(|h| ours.contains(&h)) {
+        return (
+            "421 Misdirected Request",
+            "text/plain",
+            "not for this host\n".to_owned(),
+        );
+    }
+    let target = target.unwrap_or("/");
+    let path = target.split('?').next().unwrap_or("/");
+    if path == "/" {
+        let rows = crate::record::rows_in(notes, None, true);
+        let page = page(
+            &rows,
+            &notes.root,
+            notes::now_ms(),
+            theme(notes),
+            SERVE_REFRESH_SECS,
+            Links::Served,
+        );
+        return ("200 OK", "text/html", page);
+    }
+    // An effort file by its own name: one plain path component, nothing a join could carry
+    // elsewhere (a slash, a dot-dot, a drive letter's colon).
+    if let Some(name) = path.strip_prefix("/efforts/")
+        && let Some(name) = decode(name)
+        && name.ends_with(".md")
+        && !name.contains([':', '/', '\\'])
+        && !name.contains("..")
+        && Path::new(&name).components().count() == 1
+        && matches!(
+            Path::new(&name).components().next(),
+            Some(Component::Normal(_))
+        )
+        && let Ok(text) = std::fs::read_to_string(notes.root.join("efforts").join(&name))
+    {
+        return ("200 OK", "text/plain", text);
+    }
+    ("404 Not Found", "text/plain", "nothing here\n".to_owned())
+}
+
+/// Percent-decoding of a path segment, the inverse of `percent`; None for a malformed escape
+/// or bytes that aren't UTF-8.
+fn decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Where a card's title points: the effort file on disk, or the same file through the server
+/// (a browser refuses a file link from an http page).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Links {
+    File,
+    Served,
+}
+
 /// The page, as text. `now_ms` is passed in so a test can fix the clock.
 pub fn render(rows: &Value, root: &Path, now_ms: i64, theme: Theme) -> String {
+    page(rows, root, now_ms, theme, FILE_REFRESH_SECS, Links::File)
+}
+
+fn page(
+    rows: &Value,
+    root: &Path,
+    now_ms: i64,
+    theme: Theme,
+    refresh_secs: u32,
+    links: Links,
+) -> String {
     let cards: Vec<Card> = rows["efforts"]
         .as_array()
         .map(|a| a.iter())
@@ -154,7 +359,7 @@ pub fn render(rows: &Value, root: &Path, now_ms: i64, theme: Theme) -> String {
         } else {
             column
                 .iter()
-                .map(|c| card_html(c, root, now_ms))
+                .map(|c| card_html(c, root, now_ms, links))
                 .collect::<String>()
         };
         let heading = format!(
@@ -228,7 +433,7 @@ pub fn render(rows: &Value, root: &Path, now_ms: i64, theme: Theme) -> String {
     }
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>Astrolabe home</title>\n<style>{}{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"{refresh_secs}\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>Astrolabe home</title>\n<style>{}{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
         match theme {
             Theme::Auto => "light dark",
             Theme::Light => "light",
@@ -254,7 +459,7 @@ fn palette(theme: Theme) -> String {
 const LIGHT: &str = "color-scheme:light dark;--bg:#faf9f5;--card:#ffffff;--ink:#2b2a26;--mute:#807d75;--line:#ebe8e1;--accent:#b8613b;--needs:#faf0e8;--tag:#f0eee8;--shadow:0 1px 2px rgba(60,50,30,.06);--high-bg:#f3dccd;--high-ink:#7a3a16;--urgent-bg:#efc4c4;--urgent-ink:#7a1616";
 const DARK: &str = "color-scheme:dark;--bg:#1b1b19;--card:#262623;--ink:#ece9e2;--mute:#9b988f;--line:#36352f;--accent:#e08a5a;--needs:#33271f;--tag:#2f3138;--shadow:none;--high-bg:#4a2e1e;--high-ink:#f0b28a;--urgent-bg:#4a2020;--urgent-ink:#f0a0a0";
 
-fn card_html(card: &Card, root: &Path, now_ms: i64) -> String {
+fn card_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> String {
     let mut bits = Vec::new();
     let initiative = tag(card.text("initiative"));
     if !initiative.is_empty() {
@@ -290,6 +495,7 @@ fn card_html(card: &Card, root: &Path, now_ms: i64) -> String {
         format!("<p class=\"waits\">{}</p>\n", esc(shown))
     };
     let href = match card.row["file"].as_str() {
+        Some(file) if links == Links::Served => format!("/{}", percent(file)),
         Some(file) => file_url(&root.join(file)),
         None => "#".to_owned(),
     };
@@ -318,15 +524,21 @@ fn file_url(path: &Path) -> String {
     if !text.starts_with('/') {
         url.push('/');
     }
+    url + &percent(&text)
+}
+
+/// Percent-encodes everything but the unreserved characters, `/` and `:`.
+fn percent(text: &str) -> String {
+    let mut out = String::new();
     for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
-                url.push(byte as char)
+                out.push(byte as char)
             }
-            _ => url.push_str(&format!("%{byte:02X}")),
+            _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
-    url
+    out
 }
 
 /// `2026-11-04T16:30-07:00`, the stamp saves write, as epoch milliseconds.
@@ -533,6 +745,17 @@ mod tests {
         assert!(light.contains("--bg:#faf9f5") && !light.contains("--bg:#1b1b19"));
         assert_eq!(Theme::parse("system"), Some(Theme::Auto));
         assert_eq!(Theme::parse("blue"), None);
+    }
+
+    #[test]
+    fn served_names_round_trip() {
+        assert_eq!(
+            decode(&percent("0001-caf\u{e9} b.md")).as_deref(),
+            Some("0001-caf\u{e9} b.md")
+        );
+        assert_eq!(decode("a%2"), None);
+        assert_eq!(decode("%ff"), None);
+        assert_eq!(decode("%+A"), None);
     }
 
     #[test]
