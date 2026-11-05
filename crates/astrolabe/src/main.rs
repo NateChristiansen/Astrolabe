@@ -65,7 +65,7 @@ fn main() {
             }
         }
         ["home", rest @ ..] if rest.is_empty() || rest == ["--open"] => match notes_here() {
-            Ok(notes) => match astrolabe::home::write(&notes) {
+            Ok(notes) => match notes.board() {
                 Ok(path) => {
                     println!("{}", path.display());
                     if rest == ["--open"]

@@ -1447,7 +1447,7 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
         "{out}"
     );
     assert!(board.exists());
-    // The other machine draws its own copy when the saves arrive.
+    // The other machine redraws its own copy when the saves arrive.
     assert!(mac.sync().1);
     let pc = world.machine("pc");
     assert!(!pc.notes.join("home.html").exists());
@@ -1455,4 +1455,21 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
     assert!(column(&page, "done").contains("Smooth ink"));
     assert_eq!(git(&pc.notes, &["status", "--porcelain"]).trim(), "");
+    assert!(mac.bash("s1", "astrolabe effort save --status active <<'ASTROLABE'\nBack on it.\n\nNothing chosen.\n\nOne more pass.\nASTROLABE\n").1);
+    assert!(mac.sync().1);
+    assert!(pc.sync().1);
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(column(&page, "active").contains("Smooth ink"), "{page}");
+    assert!(!column(&page, "done").contains("Smooth ink"));
+    // A tracked board is left alone and said so.
+    std::fs::write(pc.notes.join("home.html"), "mine").unwrap();
+    git(&pc.notes, &["add", "-f", "home.html"]);
+    git(&pc.notes, &["commit", "-qm", "tracked board"]);
+    assert!(pc.sync().1);
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join("home.html")).unwrap(),
+        "mine"
+    );
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert!(status.contains("home.html is tracked"), "{status}");
 }

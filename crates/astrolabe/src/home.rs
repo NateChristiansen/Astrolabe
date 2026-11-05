@@ -12,8 +12,16 @@ pub const FILE: &str = "home.html";
 const DONE_DAYS: i64 = 14;
 const SENTENCE_CHARS: usize = 160;
 
-/// Renders and writes the board; the path written, or why not.
+/// Renders and writes the board; the path written, or why not. Under the caller's lock.
 pub fn write(notes: &Notes) -> Result<PathBuf, String> {
+    if notes
+        .git(&["ls-files", "--", FILE])
+        .is_ok_and(|out| !out.trim().is_empty())
+    {
+        return Err(format!(
+            "{FILE} is tracked in the notes repo, so it isn't overwritten; run `git rm --cached {FILE}` there and the board is drawn at the next save"
+        ));
+    }
     let rows = crate::record::rows_in(notes, None, true);
     let path = notes.root.join(FILE);
     notes::write_text(&path, &render(&rows, &notes.root, notes::now_ms()))?;
@@ -215,7 +223,7 @@ fn card_html(card: &Card, root: &Path, now_ms: i64) -> String {
         format!("<p class=\"waits\">{}</p>\n", esc(shown))
     };
     let href = match card.row["file"].as_str() {
-        Some(file) => format!("file://{}", root.join(file).display()),
+        Some(file) => file_url(&root.join(file)),
         None => "#".to_owned(),
     };
     format!(
@@ -227,6 +235,31 @@ fn card_html(card: &Card, root: &Path, now_ms: i64) -> String {
         bits.join(" "),
         esc(&first_sentence(card.text("next"))),
     )
+}
+
+/// A `file:///` link a browser follows: forward slashes, a Windows drive after the root,
+/// the `\\?\` of a canonical Windows path dropped, everything but unreserved characters
+/// percent-encoded.
+fn file_url(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text
+        .strip_prefix("\\\\?\\UNC\\")
+        .map(|rest| format!("\\\\{rest}"))
+        .unwrap_or_else(|| text.trim_start_matches("\\\\?\\").to_owned());
+    let text = text.replace('\\', "/");
+    let mut url = String::from("file://");
+    if !text.starts_with('/') {
+        url.push('/');
+    }
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
+                url.push(byte as char)
+            }
+            _ => url.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    url
 }
 
 /// `2026-11-04T16:30-07:00`, the stamp saves write, as epoch milliseconds.
@@ -419,5 +452,25 @@ mod tests {
         assert_eq!(age(50 * 3_600_000), "2 d");
         assert_eq!(stamp_ms("2026-11-05T12:00-07:00"), Some(1_793_905_200_000));
         assert_eq!(stamp_ms("nope"), None);
+    }
+
+    #[test]
+    fn file_links() {
+        assert_eq!(
+            file_url(Path::new("/Users/n/My Notes/efforts/1-a#b.md")),
+            "file:///Users/n/My%20Notes/efforts/1-a%23b.md"
+        );
+        assert_eq!(
+            file_url(Path::new("/n/caf\u{e9}.md")),
+            "file:///n/caf%C3%A9.md"
+        );
+        assert_eq!(
+            file_url(Path::new("C:\\Users\\n\\notes\\x.md")),
+            "file:///C:/Users/n/notes/x.md"
+        );
+        assert_eq!(
+            file_url(Path::new("\\\\?\\C:\\n\\x.md")),
+            "file:///C:/n/x.md"
+        );
     }
 }

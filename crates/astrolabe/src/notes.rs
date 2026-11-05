@@ -315,6 +315,7 @@ impl Notes {
             }
             return Pull::Offline(why);
         }
+        let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         match self.git(&["rebase", "--quiet", "@{upstream}"]) {
             Ok(_) => {
                 self.clear_sync("diverged");
@@ -326,7 +327,9 @@ impl Notes {
                     Err(why) => self.record_sync("tidy-failed", &why),
                 }
                 // Another machine's saves just arrived; the board shows them.
-                self.redraw();
+                if self.git(&["rev-parse", "HEAD"]).unwrap_or_default() != before {
+                    self.redraw();
+                }
                 Pull::Pulled
             }
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
@@ -574,10 +577,12 @@ impl Notes {
             op.result = Some(result.to_owned());
             let _ = write_text(&path, &serde_json::to_string(&op).unwrap_or_default());
         }
+        self.redraw();
     }
 
     pub fn forget(&self, key: &str) {
         let _ = std::fs::remove_file(self.intent_path(key));
+        self.redraw();
     }
 
     /// A recent op for this command in this folder: finished (its result) or still going.
@@ -649,15 +654,27 @@ impl Notes {
             write_text(&path, &tidy_journal(&text))?;
         }
         self.ensure_attributes()?;
-        self.ensure_ignored()?;
+        // The board's ignore line rides along with the save that first needs it; a failure
+        // there is the board's problem, never the save's.
+        let ignore_added = match self.ensure_ignored() {
+            Ok(added) => added,
+            Err(why) => {
+                self.record_sync("board-failed", &why);
+                false
+            }
+        };
         // Only what exists: a first effort with no journal line yet has no journal folder.
         let mut status = vec!["status", "--porcelain", "--"];
         let mut add = vec!["add", "-A", "--"];
-        for path in ["efforts", "journal", ".gitattributes", ".gitignore"] {
+        for path in ["efforts", "journal", ".gitattributes"] {
             if self.root.join(path).exists() {
                 status.push(path);
                 add.push(path);
             }
+        }
+        if ignore_added {
+            status.push(".gitignore");
+            add.push(".gitignore");
         }
         let changed = self.git(&status)?;
         if !changed.trim().is_empty() {
@@ -684,28 +701,42 @@ impl Notes {
         for (path, state) in &op.states {
             write_text(path, &state.to_string())?;
         }
-        self.redraw();
         Ok(())
     }
 
-    /// The board follows every change to the checkout. A failure is recorded for the
-    /// status and session text, never a failed save.
+    /// The board follows every change to the checkout, drawn once the change is whole:
+    /// after an op's result is recorded, after a pull that brought commits, after a sync.
+    /// Under the caller's lock. A failure is recorded for the status and session text,
+    /// never raised: the notes are the record, the board is a view of them.
     pub fn redraw(&self) {
-        match crate::home::write(self) {
+        let drawn = self.ensure_ignored().and_then(|_| crate::home::write(self));
+        match drawn {
             Ok(_) => self.clear_sync("board-failed"),
             Err(why) => self.record_sync("board-failed", &why),
         }
     }
 
-    /// The board is drawn per machine, so it stays out of git.
-    fn ensure_ignored(&self) -> Result<(), String> {
+    /// The board, redrawn by hand: `astrolabe home`.
+    pub fn board(&self) -> Result<PathBuf, String> {
+        let _held = self.lock()?;
+        self.ensure_ignored()?;
+        crate::home::write(self)
+    }
+
+    /// The board is drawn per machine, so it stays out of git. Whether the line was added
+    /// now, so the save that added it can commit it; an unreadable file is left alone.
+    fn ensure_ignored(&self) -> Result<bool, String> {
         let path = self.root.join(".gitignore");
-        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        let have = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
         if have
             .lines()
             .any(|l| l.trim() == crate::home::FILE || l.trim() == format!("/{}", crate::home::FILE))
         {
-            return Ok(());
+            return Ok(false);
         }
         let mut text = have;
         if !text.is_empty() && !text.ends_with('\n') {
@@ -713,7 +744,8 @@ impl Notes {
         }
         text.push_str(crate::home::FILE);
         text.push('\n');
-        write_text(&path, &text)
+        write_text(&path, &text)?;
+        Ok(true)
     }
 
     /// The journal merges by union, so two machines appending the same day never conflict.
@@ -767,6 +799,7 @@ impl Notes {
         match pushed {
             Ok(_) => {
                 self.record_pushed();
+                self.redraw();
                 let mut text = "pushed".to_owned();
                 if !leftovers.is_empty() {
                     text += &format!("; leftover intents failed: {}", leftovers.join("; "));
@@ -781,6 +814,7 @@ impl Notes {
                 if why.contains("took over") {
                     self.record_backoff();
                 }
+                self.redraw();
                 Err(format!("push failed: {why}"))
             }
         }
@@ -1038,7 +1072,11 @@ impl Notes {
                     .unwrap_or_default()
             ));
         }
-        let intents = self.intents().len();
+        let intents = self
+            .intents()
+            .iter()
+            .filter(|op| op.result.is_none())
+            .count();
         if intents > 0 {
             lines.push(format!(
                 "{intents} notes write(s) left unfinished; `astrolabe notes sync` finishes them."
