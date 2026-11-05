@@ -1914,6 +1914,18 @@ fn the_board_is_served_fresh_on_localhost() {
             let mut out = String::new();
             match s.read_to_string(&mut out) {
                 Ok(_) => return out,
+                // A saturated listener can close with the request still unread.
+                // Keep its status for the recovery poll even if Windows resets the connection.
+                Err(e)
+                    if out.starts_with("HTTP/1.1 503 Service Unavailable\r\n")
+                        && matches!(
+                            e.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                        ) =>
+                {
+                    return out;
+                }
                 Err(e)
                     if out.is_empty()
                         && matches!(
