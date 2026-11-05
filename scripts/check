@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# The Rust checks CI runs first, so a push is never red for something a minute here catches:
-# format, clippy with warnings denied, the test suites. Run before every push.
+# The same checks as CI: format, clippy with warnings denied, every test suite.
+# Run before every commit and push.
 set -eu
 cd "$(dirname "$0")/.."
 cargo fmt --check

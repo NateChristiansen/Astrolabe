@@ -1,6 +1,5 @@
 [workspace]
-members = ["crates/protocol", "crates/astrolabe"]
-exclude = ["app/src-tauri"]
+members = ["crates/astrolabe"]
 resolver = "3"
 
 [workspace.package]

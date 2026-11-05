@@ -3,7 +3,6 @@
 mod common;
 
 use astrolabe::activate::{EFFORT_VAR, STATE_VAR};
-use astrolabe::layer::DATA_DIR_VAR;
 use common::TempDir;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -124,7 +123,6 @@ impl Fixture {
         command
             .args(args)
             .current_dir(cwd)
-            .env(DATA_DIR_VAR, self.dir.0.join("data"))
             .env(STATE_VAR, self.state())
             .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
             .env_remove(EFFORT_VAR)
@@ -848,7 +846,7 @@ fn the_plugin_keeps_its_repos_and_denials_in_its_state_folder() {
     }
     let elsewhere = f.dir.0.join("empty-data");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let away = [(DATA_DIR_VAR, elsewhere.to_str().unwrap())];
+    let away = [("ASTROLABE_DATA_DIR", elsewhere.to_str().unwrap())];
     let input = json!({"session_id": "s1", "cwd": f.demo, "source": "startup"});
     let (out, _) = f.run(
         &f.demo,
@@ -1161,7 +1159,6 @@ fn simultaneous_repo_adds_both_land() {
         let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
         command
             .args(["repo", "add", name, checkout.to_str().unwrap()])
-            .env(DATA_DIR_VAR, f.dir.0.join("data"))
             .env(STATE_VAR, f.state())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -1236,7 +1233,6 @@ fn a_repo_add_the_plugin_cant_record_says_so_and_rerunning_fixes_it() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
     let out = command
         .args(["repo", "add", "late", f.other.to_str().unwrap()])
-        .env(DATA_DIR_VAR, f.dir.0.join("data"))
         .env(STATE_VAR, f.state())
         .output()
         .unwrap();
@@ -1267,11 +1263,6 @@ fn a_bad_repo_name_is_refused_before_anything_is_written() {
         &[],
     );
     assert!(!ok);
-    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
-    assert!(
-        registry.checkout("../x").is_err(),
-        "not in the database either"
-    );
     assert!(!f.state().join("x.json").exists() && !f.state().join("repos/../x.json").exists());
 }
 
@@ -1447,11 +1438,6 @@ fn repo_add_from_a_folder_with_a_remote_writes_a_note_and_no_record() {
         !f.state().join("repos/game.json").exists(),
         "no registry entry"
     );
-    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
-    assert!(
-        registry.checkout("game").is_err(),
-        "nor in the database, from a bare folder"
-    );
     let status = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(f.notes())
@@ -1466,7 +1452,7 @@ fn repo_add_from_a_folder_with_a_remote_writes_a_note_and_no_record() {
             .unwrap()
             .contains("pick up 80")
     );
-    // Named with its checkout: still the note, and the database as before.
+    // Naming a checkout explicitly still uses the remote note, with no local record.
     let (out, ok) = f.run(
         &f.demo,
         &["repo", "add", "game", game.to_str().unwrap()],
@@ -1475,13 +1461,11 @@ fn repo_add_from_a_folder_with_a_remote_writes_a_note_and_no_record() {
     );
     assert!(
         ok && out.contains("already lists git@example.com:team/game.git")
-            && out.contains("nothing was written")
-            && out.contains("Also recorded game"),
+            && out.contains("nothing was written"),
         "{out}"
     );
     assert!(!f.state().join("repos/game.json").exists());
-    let registry = astrolabe::registry::Registry::open(&f.dir.0.join("data/astrolabe.db")).unwrap();
-    assert!(registry.checkout("game").is_ok());
+    assert!(!f.dir.0.join("data").exists(), "no retired app database");
 }
 
 #[test]
@@ -1899,7 +1883,6 @@ impl Fixture {
         let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
             .args(["hook", "pre-command", "--if-active"])
             .current_dir(&self.demo)
-            .env(DATA_DIR_VAR, self.dir.0.join("data"))
             .env(STATE_VAR, self.state())
             .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
             .env_remove(EFFORT_VAR)
@@ -2018,7 +2001,6 @@ fn input_trickling_past_the_deadline_is_blocked_as_unreadable() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
         .args(["hook", "pre-command", "--if-active"])
         .current_dir(&f.demo)
-        .env(DATA_DIR_VAR, f.dir.0.join("data"))
         .env(STATE_VAR, f.state())
         .env("ASTROLABE_HOOK_STDIN_DEADLINE_MS", "600")
         .stdin(Stdio::piped())
@@ -2049,4 +2031,39 @@ fn input_trickling_past_the_deadline_is_blocked_as_unreadable() {
     );
     assert!(took < std::time::Duration::from_secs(4), "{took:?}");
     let _ = writer.join();
+}
+
+#[test]
+fn only_gated_plugin_hooks_are_available() {
+    let f = Fixture::new();
+    for event in [
+        "session-start",
+        "pre-command",
+        "post-tool",
+        "stop",
+        "session-end",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(["hook", event])
+            .current_dir(&f.demo)
+            .env(STATE_VAR, f.state())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "plain hook {event} must be refused"
+        );
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("hook <event> --if-active"));
+    }
+    let (help, ok) = f.run(&f.demo, &["--help"], "", &[]);
+    assert!(ok);
+    for retired in ["init", "doctor", "serve [--db", "where", "mcp"] {
+        assert!(
+            !help.contains(retired),
+            "retired command in help: {retired}"
+        );
+    }
 }

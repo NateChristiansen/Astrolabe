@@ -1,5 +1,18 @@
 # Decisions
 
+The plugin replaced the previous product on 2026-11-03. Its choices come first; the product's decisions follow, kept as records.
+
+- Keep the owner's notes in a separate private Git repo, read at run time, so sessions and machines share the same record without personal content in this repo.
+- Use the plugin's machine state folder for repo bindings and guard denials, so hooks and terminal commands read the same records across clients.
+- Use standard-library command routing for the small CLI, serde/serde_json for hook input and state, and Markdown files for effort records.
+- Keep only the gated hook entry point. The owner's machine switch decides whether hooks do anything; loading an effort supplies context and settings to that session.
+- Treat the command guard as an accident guard. Prove interception in each session with an allowed control and a denied probe; never claim that it covers file edits or other tools.
+- Keep the existing privacy policy: no string-matching content scrubbers in this repo. Private content stays in the separate notes checkout; secrets rely on the forge's secret scanning and push protection.
+
+## Superseded 2026-11-05 by the plugin
+
+The product these served (the Tauri app, the core, the ACP adapters, the per-machine store) was removed in effort 7; each is superseded by the plugin's choices above.
+
 - Keep phase 0 to contracts and scaffolding; adapters, persistence, MCP, pairing, and orchestration wait for phase 1a or later.
 - Use a Rust 2024 workspace with serde/serde_json for the shared wire format and schemars for JSON Schema derived from Rust types.
 - Use a tagged envelope enum to bind each kind to its payload; BTreeMap extension fields retain unknown fields with deterministic ordering.
@@ -14,9 +27,3 @@
 - Use rusqlite with bundled SQLite for the per-machine store: one embedded file, no system library to differ between Mac and Windows; the existing no-CLI-dependency decision stands, and arguments remain a standard-library match.
 - Use serde_json in the core because agent updates arrive as JSON-RPC and only some fields matter; ACP types stay untyped until a driver consumes them.
 - Use no app-dirs, signal or process crates: the OS data dir is two environment variables, every state change commits so `serve` needs no shutdown handler, the standard library's file lock excludes a second core, and liveness comes from `ps` or `tasklist`.
-- Keep explicit notes in a separate private agent repo; disable client automatic memory generation/use in the seed, and leave MCP placeholders unwired.
-
-The seed uses client configuration locations to disable automatic memory and
-leave the agent client server disabled. It is a template, not a client install
-or a validated running integration. Client and adapter integration belongs to
-phase 1a.

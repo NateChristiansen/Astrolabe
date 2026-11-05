@@ -3,7 +3,6 @@
 mod common;
 
 use astrolabe::activate::STATE_VAR;
-use astrolabe::layer::DATA_DIR_VAR;
 use common::TempDir;
 use serde_json::{Value, json};
 use std::io::Write;
@@ -129,7 +128,6 @@ impl Machine {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
         cmd.args(args)
             .current_dir(cwd)
-            .env(DATA_DIR_VAR, self.dir.0.join("data"))
             .env(STATE_VAR, self.state())
             .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
             .env("ASTROLABE_MACHINE", self.name)

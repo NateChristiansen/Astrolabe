@@ -61,9 +61,8 @@ const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this co
 pub(crate) const STILL_ON: &str = "Astrolabe is still on for this machine: the guard still runs in this session, and the owner and voice notes from session start still apply. Only this effort's context and settings are missing.";
 /// The machine switch's file in the state folder. Present means on.
 const SWITCH: &str = "on";
-/// The notes checkout and repos by name, in the state folder. Not the AppData database: a
-/// packaged Windows app reads AppData from its own private copy, so it would miss a repo added
-/// from a terminal.
+/// The notes checkout and local repos by name, in the state folder shared by hooks and
+/// terminal commands.
 /// One file per repo, `repos/<name>.json`: each add replaces only its own record, so two at
 /// once can't lose each other's.
 const REPOS: &str = "repos";
@@ -110,8 +109,7 @@ impl Repos {
     }
 }
 
-/// `astrolabe repo add` for the plugin, beside the database entry the notes repo's own layer
-/// reads. This record is the plugin's authority.
+/// `astrolabe repo add` for local bindings. This record is the plugin's authority.
 pub fn add_repo(name: &str, checkout: &Path) -> Result<(), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
     check_repo_name(name)?;

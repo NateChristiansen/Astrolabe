@@ -1,19 +1,5 @@
 # Version pins
 
-| Tool | Baseline | Enforcement |
-| --- | --- | --- |
-| Rust | 1.99.1, edition 2024 | rust-toolchain.toml; crate rust-version 1.99 |
-| Node | 26.x | package engines and CI |
-| pnpm | 11 (11.0.9) | app/package.json and CI |
-| Tauri Rust | 2.12.5 | exact Cargo dependency and desktop lockfile |
-| tauri-build | 2.7.4 | exact build dependency and desktop lockfile |
-| Tauri CLI | 2.12.4 | exact package dependency and pnpm lockfile |
-| @agentclientprotocol/claude-agent-acp | 0.99.1 | adapters/package.json and lockfile |
-| @agentclientprotocol/codex-acp | 2.5.0 | adapters/package.json and lockfile |
-| Claude Code | 2.1.316 | user-installed; doctor reports it (step 5) |
-| codex-cli | 0.166.0 | user-installed; doctor reports it (step 5) |
+Rust 1.99.1, edition 2024, is pinned by `rust-toolchain.toml` and installed in CI. The crate requires Rust 1.99. Rust dependencies are recorded in the workspace's `Cargo.lock`; checks use `--locked`.
 
-Client update checks stay off in everything Astrolabe launches.
-
-Rust and JavaScript transitive versions are recorded in their checked-in lockfiles.
-The blank app does not need the Tauri JavaScript API package.
+Claude Code and Codex are installed and authenticated by the owner. The plugin does not install, pin or launch either client. Each client must support the plugin hooks in [the plugin manifest](../plugin/astrolabe/hooks/hooks.json).

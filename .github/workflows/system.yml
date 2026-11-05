@@ -1,19 +1,8 @@
 name: One system
-# The whole of CI for one system, called once per system by ci.yml, because `needs` works on a
-# whole matrix: this way packaging waits on its own system's check and control and no other.
 on:
   workflow_call:
     inputs:
       os:
-        type: string
-        required: true
-      targets:
-        type: string
-        required: true
-      bundle:
-        type: string
-        required: true
-      artifact:
         type: string
         required: true
 permissions:
@@ -25,122 +14,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26.x
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.0.9
       - name: Install pinned Rust
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            app/src-tauri -> target
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
-      - run: cargo run --locked -p protocol --bin export-schemas
-      - run: git diff --exit-code -- protocol/schemas
-      - run: pnpm --dir adapters install --frozen-lockfile --ignore-scripts
-      - run: pnpm --dir app install --frozen-lockfile
-      - run: pnpm --dir app generate:protocol
-      - run: git diff --exit-code -- app/src/protocol
-      - run: pnpm --dir app typecheck
-      - run: pnpm --dir app build
-      - run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --check
-      - run: cargo check --manifest-path app/src-tauri/Cargo.toml --locked
-      - run: node --test scripts/seed.test.cjs
-      - run: node --test scripts/scrub-codex.test.cjs
-      - run: node --test app/scripts/problem.test.mjs
-      - run: node --test app/scripts/quit.test.mjs
-      - run: node --test app/scripts/control-tools.test.mjs
-  control:
-    needs: check
-    runs-on: ${{ inputs.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26.x
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.0.9
-      - name: Install pinned Rust
-        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            app/src-tauri -> target
-      - run: pnpm --dir app install --frozen-lockfile
-      - run: node scripts/test-control.mjs build
-      - run: cargo clippy --manifest-path app/src-tauri/Cargo.toml --locked --features test-control --all-targets -- -D warnings
-      - name: The scan finds the marker in a test build, so a pass on a normal build means something
-        run: node scripts/test-control.mjs present app/src-tauri/target/debug/astrolabe-desktop${{ runner.os == 'Windows' && '.exe' || '' }}
-      - name: Drive the real window through the channel
-        run: node --test scripts/control-drive.test.mjs
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: control-shots-${{ inputs.os }}
-          path: control-shots/
-          if-no-files-found: warn
-  package:
-    needs: [check, control]
-    runs-on: ${{ inputs.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26.x
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.0.9
-      - name: Install pinned Rust
-        run: rustup toolchain install 1.99.1 --profile minimal
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-            app/src-tauri -> target
-      - run: pnpm --dir app install --frozen-lockfile
-      - run: cargo build --release --locked -p astrolabe
-      - name: Put the core where the bundler looks
+      - name: Format, lint and test
         shell: bash
-        run: |
-          triple=$(rustc -vV | sed -n 's/^host: //p')
-          mkdir -p app/src-tauri/binaries
-          cp "target/release/astrolabe$(rustc --print cfg | grep -q windows && echo .exe)" "app/src-tauri/binaries/astrolabe-$triple$(rustc --print cfg | grep -q windows && echo .exe)"
-      - name: Build unsigned
-        shell: bash
-        run: |
-          pnpm --dir app tauri build --config '{"bundle":{"active":true,"targets":${{ inputs.targets }},"externalBin":["binaries/astrolabe"]}}'
-      - name: Installer and uninstaller leave the data folder alone
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Select-String -Path app/src-tauri/target/release/nsis/x64/installer.nsi -Pattern 'PRODUCTNAME "|LOCALAPPDATA|RmDir|RMDir'
-          ./scripts/check-installer.ps1 -Installer (Get-ChildItem "${{ inputs.bundle }}/*.exe")[0].FullName
-      - name: Archive the Mac app, as an upload would lose its permissions
-        if: runner.os == 'macOS'
-        run: tar -czf "${{ inputs.bundle }}/Astrolabe-mac.tgz" -C "${{ inputs.bundle }}" Astrolabe.app
-      - name: No test control in what is packaged, Mac
-        if: runner.os == 'macOS'
-        run: |
-          mkdir unpacked && tar -xzf "${{ inputs.bundle }}/Astrolabe-mac.tgz" -C unpacked
-          node scripts/test-control.mjs absent unpacked app/dist
-      - name: No test control in what is packaged, Windows
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          7z x -y -ounpacked ${{ inputs.bundle }}/*.exe > /dev/null
-          node scripts/test-control.mjs absent unpacked app/dist
-      - uses: actions/upload-artifact@v7
-        with:
-          name: astrolabe-smoke-${{ inputs.os }}
-          path: |
-            ${{ inputs.bundle }}/${{ inputs.artifact }}
-            adapters/package.json
-            adapters/pnpm-lock.yaml
+        run: scripts/check

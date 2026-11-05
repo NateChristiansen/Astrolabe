@@ -1,12 +1,5 @@
 /target/
-/app/src-tauri/target/
-/app/src-tauri/gen/
-/app/node_modules/
-/adapters/node_modules/
-/app/dist/
 .DS_Store
 *.local
 .env
 .env.*
-app/src-tauri/binaries/
-control-shots/
