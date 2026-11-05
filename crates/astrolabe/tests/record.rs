@@ -1425,9 +1425,16 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let page = std::fs::read_to_string(&board).expect("the board is written at effort new");
     assert!(column(&page, "active").contains("Smooth ink"), "{page}");
     assert!(page.contains("<span class=\"repo\">demo</span>"));
-    // Ignored and the ignore line committed, so the board never reaches origin.
+    // Excluded in the checkout's own exclude file, so the board never reaches origin and
+    // nothing is committed or left dirty for it.
     assert_eq!(git(&mac.notes, &["status", "--porcelain"]).trim(), "");
-    assert!(git(&mac.notes, &["show", "HEAD:.gitignore"]).contains("home.html"));
+    assert!(!mac.notes.join(".gitignore").exists());
+    let exclude = git(&mac.notes, &["rev-parse", "--git-path", "info/exclude"]);
+    assert!(
+        std::fs::read_to_string(mac.notes.join(exclude.trim()))
+            .unwrap()
+            .contains("/home.html")
+    );
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = std::fs::read_to_string(&board).unwrap();
     let needs = column(&page, "needs");

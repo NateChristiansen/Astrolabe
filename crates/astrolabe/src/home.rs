@@ -14,10 +14,8 @@ const SENTENCE_CHARS: usize = 160;
 
 /// Renders and writes the board; the path written, or why not. Under the caller's lock.
 pub fn write(notes: &Notes) -> Result<PathBuf, String> {
-    if notes
-        .git(&["ls-files", "--", FILE])
-        .is_ok_and(|out| !out.trim().is_empty())
-    {
+    // A git error is no licence to overwrite.
+    if !notes.git(&["ls-files", "--", FILE])?.trim().is_empty() {
         return Err(format!(
             "{FILE} is tracked in the notes repo, so it isn't overwritten; run `git rm --cached {FILE}` there and the board is drawn at the next save"
         ));
