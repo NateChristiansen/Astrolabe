@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open]|notes <sync|status>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--theme auto|light|dark]|notes <sync|status>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,20 +64,42 @@ fn main() {
                 Err(why) => fail(&why),
             }
         }
-        ["home", rest @ ..] if rest.is_empty() || rest == ["--open"] => match notes_here() {
-            Ok(notes) => match notes.board() {
-                Ok(path) => {
-                    println!("{}", path.display());
-                    if rest == ["--open"]
-                        && let Err(why) = open_in_browser(&path)
+        ["home", rest @ ..] => {
+            let mut open = false;
+            let mut theme = None;
+            let mut words = rest.iter();
+            while let Some(word) = words.next() {
+                match *word {
+                    "--open" => open = true,
+                    "--theme" => {
+                        match words.next().and_then(|w| astrolabe::home::Theme::parse(w)) {
+                            Some(t) => theme = Some(t),
+                            None => fail("--theme takes auto, light or dark"),
+                        }
+                    }
+                    _ => usage(),
+                }
+            }
+            match notes_here() {
+                Ok(notes) => {
+                    if let Some(theme) = theme
+                        && let Err(why) = astrolabe::home::set_theme(&notes, theme)
                     {
                         fail(&why);
                     }
+                    match notes.board() {
+                        Ok(path) => {
+                            println!("{}", path.display());
+                            if open && let Err(why) = open_in_browser(&path) {
+                                fail(&why);
+                            }
+                        }
+                        Err(why) => fail(&why),
+                    }
                 }
                 Err(why) => fail(&why),
-            },
-            Err(why) => fail(&why),
-        },
+            }
+        }
         ["notes", "sync"] => match notes_here() {
             Ok(notes) => match notes.sync() {
                 Ok(text) => println!("{text}"),

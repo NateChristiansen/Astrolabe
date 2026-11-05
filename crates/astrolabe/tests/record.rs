@@ -1474,6 +1474,22 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     assert!(!ok && out.contains("overrides the exclude file"), "{out}");
     std::fs::remove_file(pc.notes.join(".gitignore")).unwrap();
     assert!(pc.run(&pc.notes, &["home"], "").1);
+    // A fixed theme is kept per machine and carried by every later draw.
+    let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "dark"], "");
+    assert!(ok, "{out}");
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(page.contains("content=\"dark\"") && !page.contains("prefers-color-scheme"));
+    assert!(pc.sync().1);
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(page.contains("content=\"dark\""));
+    let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "blue"], "");
+    assert!(!ok && out.contains("auto, light or dark"), "{out}");
+    assert!(pc.run(&pc.notes, &["home", "--theme", "auto"], "").1);
+    assert!(
+        std::fs::read_to_string(pc.notes.join("home.html"))
+            .unwrap()
+            .contains("prefers-color-scheme")
+    );
     // A tracked board is left alone and said so.
     std::fs::write(pc.notes.join("home.html"), "mine").unwrap();
     git(&pc.notes, &["add", "-f", "home.html"]);

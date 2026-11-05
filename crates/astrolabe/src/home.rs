@@ -8,6 +8,52 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "home.html";
+/// The machine's theme choice, beside the sync record in the state folder.
+const THEME_FILE: &str = "home.json";
+
+/// Which palette the page carries: the system's choice, or one fixed for a viewer that
+/// can't ask (the Claude app's file pane always renders light).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Theme {
+    Auto,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn parse(word: &str) -> Option<Theme> {
+        match word {
+            "auto" | "system" => Some(Theme::Auto),
+            "light" => Some(Theme::Light),
+            "dark" => Some(Theme::Dark),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Theme::Auto => "auto",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+}
+
+/// The saved theme, `auto` when none or unreadable.
+pub fn theme(notes: &Notes) -> Theme {
+    std::fs::read_to_string(notes.state.join(THEME_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["theme"].as_str().and_then(Theme::parse))
+        .unwrap_or(Theme::Auto)
+}
+
+pub fn set_theme(notes: &Notes, theme: Theme) -> Result<(), String> {
+    notes::write_text(
+        &notes.state.join(THEME_FILE),
+        &serde_json::json!({ "theme": theme.name() }).to_string(),
+    )
+}
 /// Done and abandoned efforts stay on the board this long after their last save.
 const DONE_DAYS: i64 = 14;
 const SENTENCE_CHARS: usize = 160;
@@ -22,7 +68,10 @@ pub fn write(notes: &Notes) -> Result<PathBuf, String> {
     }
     let rows = crate::record::rows_in(notes, None, true);
     let path = notes.root.join(FILE);
-    notes::write_text(&path, &render(&rows, &notes.root, notes::now_ms()))?;
+    notes::write_text(
+        &path,
+        &render(&rows, &notes.root, notes::now_ms(), theme(notes)),
+    )?;
     Ok(path)
 }
 
@@ -52,7 +101,7 @@ impl Card<'_> {
 }
 
 /// The page, as text. `now_ms` is passed in so a test can fix the clock.
-pub fn render(rows: &Value, root: &Path, now_ms: i64) -> String {
+pub fn render(rows: &Value, root: &Path, now_ms: i64, theme: Theme) -> String {
     let cards: Vec<Card> = rows["efforts"]
         .as_array()
         .map(|a| a.iter())
@@ -179,11 +228,31 @@ pub fn render(rows: &Value, root: &Path, now_ms: i64) -> String {
     }
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\">\n<title>Astrolabe home</title>\n<style>{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>Astrolabe home</title>\n<style>{}{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
+        match theme {
+            Theme::Auto => "light dark",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        },
+        palette(theme),
         esc(rows["today"].as_str().unwrap_or_default()),
         esc(&sync),
     )
 }
+
+/// The colour tokens: both palettes behind the system's choice, or one fixed.
+fn palette(theme: Theme) -> String {
+    match theme {
+        Theme::Auto => {
+            format!(":root{{{LIGHT}}}@media(prefers-color-scheme:dark){{:root{{{DARK}}}}}\n")
+        }
+        Theme::Light => format!(":root{{{LIGHT}}}\n"),
+        Theme::Dark => format!(":root{{{DARK}}}\n"),
+    }
+}
+
+const LIGHT: &str = "color-scheme:light dark;--bg:#faf9f5;--card:#ffffff;--ink:#2b2a26;--mute:#807d75;--line:#ebe8e1;--accent:#b8613b;--needs:#faf0e8;--tag:#f0eee8;--shadow:0 1px 2px rgba(60,50,30,.06);--high-bg:#f3dccd;--high-ink:#7a3a16;--urgent-bg:#efc4c4;--urgent-ink:#7a1616";
+const DARK: &str = "color-scheme:dark;--bg:#1b1b19;--card:#262623;--ink:#ece9e2;--mute:#9b988f;--line:#36352f;--accent:#e08a5a;--needs:#33271f;--tag:#2f3138;--shadow:none;--high-bg:#4a2e1e;--high-ink:#f0b28a;--urgent-bg:#4a2020;--urgent-ink:#f0a0a0";
 
 fn card_html(card: &Card, root: &Path, now_ms: i64) -> String {
     let mut bits = Vec::new();
@@ -327,8 +396,6 @@ fn esc(text: &str) -> String {
 }
 
 const STYLE: &str = r#"
-:root{color-scheme:light dark;--bg:#faf9f5;--card:#ffffff;--ink:#2b2a26;--mute:#807d75;--line:#ebe8e1;--accent:#b8613b;--needs:#faf0e8;--tag:#f0eee8;--shadow:0 1px 2px rgba(60,50,30,.06)}
-@media(prefers-color-scheme:dark){:root{--bg:#1b1b19;--card:#262623;--ink:#ece9e2;--mute:#9b988f;--line:#36352f;--accent:#e08a5a;--needs:#33271f;--tag:#2f3138;--shadow:none}}
 *{box-sizing:border-box}body{margin:0;padding:24px 28px;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:18px;margin-bottom:20px}header h1{font-size:20px;margin:0;font-weight:600}header .counts,header .sync{color:var(--mute)}
 .board{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;align-items:start}
@@ -338,7 +405,7 @@ header{display:flex;flex-wrap:wrap;align-items:baseline;gap:18px;margin-bottom:2
 .card.done{opacity:.65}.card h3{font-size:15px;margin:0 0 6px;font-weight:600}.card h3 a{color:inherit;text-decoration:none}.card h3 a:hover{text-decoration:underline}
 .num{color:var(--mute);font-weight:400;font-variant-numeric:tabular-nums}
 .meta{margin:0 0 6px;display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--mute)}.tag,.repo,.pri,.pieces,.nostatus{padding:1px 7px;border-radius:999px;background:var(--tag)}
-.pri.high{background:#f3dccd;color:#7a3a16}.pri.urgent{background:#efc4c4;color:#7a1616}@media(prefers-color-scheme:dark){.pri.high{background:#4a2e1e;color:#f0b28a}.pri.urgent{background:#4a2020;color:#f0a0a0}}.age{margin-left:auto}
+.pri.high{background:var(--high-bg);color:var(--high-ink)}.pri.urgent{background:var(--urgent-bg);color:var(--urgent-ink)}.age{margin-left:auto}
 .next{margin:0}.waits{margin:0 0 6px;color:var(--accent)}.empty{color:var(--mute);font-style:italic}
 details summary{list-style:none;cursor:pointer}details summary h2{display:inline}
 footer{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}footer h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:0 0 8px}
@@ -391,7 +458,7 @@ mod tests {
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
         });
-        let page = render(&rows, Path::new("/n"), NOW);
+        let page = render(&rows, Path::new("/n"), NOW, Theme::Auto);
         assert!(page.contains("A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;"));
         assert!(!page.contains("<b>&</b>"));
         let needs = section(&page, "needs");
@@ -429,7 +496,7 @@ mod tests {
     #[test]
     fn empty_board_and_warnings() {
         let rows = json!({"today": "2026-11-05", "efforts": [], "journal_lines": [], "notes": ["2 notes commit(s) not yet pushed."]});
-        let page = render(&rows, Path::new("/n"), NOW);
+        let page = render(&rows, Path::new("/n"), NOW, Theme::Auto);
         assert!(page.contains("class=\"sync\">2 notes commit(s) not yet pushed.<"));
         assert!(page.contains("nothing yet today"));
         assert!(page.contains("no initiatives named"));
@@ -450,6 +517,22 @@ mod tests {
         assert_eq!(age(50 * 3_600_000), "2 d");
         assert_eq!(stamp_ms("2026-11-05T12:00-07:00"), Some(1_793_905_200_000));
         assert_eq!(stamp_ms("nope"), None);
+    }
+
+    #[test]
+    fn themes() {
+        let rows = json!({"today": "2026-11-05", "efforts": [], "journal_lines": [], "notes": []});
+        let auto = render(&rows, Path::new("/n"), NOW, Theme::Auto);
+        assert!(
+            auto.contains("content=\"light dark\"") && auto.contains("prefers-color-scheme:dark")
+        );
+        let dark = render(&rows, Path::new("/n"), NOW, Theme::Dark);
+        assert!(dark.contains("content=\"dark\"") && !dark.contains("prefers-color-scheme"));
+        assert!(dark.contains("--bg:#1b1b19") && !dark.contains("--bg:#faf9f5"));
+        let light = render(&rows, Path::new("/n"), NOW, Theme::Light);
+        assert!(light.contains("--bg:#faf9f5") && !light.contains("--bg:#1b1b19"));
+        assert_eq!(Theme::parse("system"), Some(Theme::Auto));
+        assert_eq!(Theme::parse("blue"), None);
     }
 
     #[test]
