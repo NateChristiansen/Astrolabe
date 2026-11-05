@@ -13,7 +13,7 @@ scripts/check
 cargo build --release --locked -p astrolabe
 ```
 
-`scripts/check` runs formatting, clippy with warnings denied, and every test suite. Run it before each commit. CI runs the same checks on macOS and Windows.
+`scripts/check` runs formatting, clippy with warnings denied, and every test suite. It uses Node.js for the Git landing tests. Run it before each commit. CI runs the same checks on macOS and Windows.
 
 ## Setup
 

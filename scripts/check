@@ -6,4 +6,5 @@ cd "$(dirname "$0")/.."
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+node --test scripts/land.test.mjs
 echo "check: clean"
