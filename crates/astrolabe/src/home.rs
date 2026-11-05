@@ -474,16 +474,10 @@ fn page(
             titles[i],
             column.len()
         );
-        if keys[i] == "done" {
-            board += &format!(
-                "<section class=\"col done\"><details><summary>{heading}</summary>\n{body}</details></section>\n"
-            );
-        } else {
-            board += &format!(
-                "<section class=\"col {}\">{heading}\n{body}</section>\n",
-                keys[i]
-            );
-        }
+        board += &format!(
+            "<section class=\"col {}\">{heading}\n{body}</section>\n",
+            keys[i]
+        );
     }
 
     let active = columns[1].len() + columns[0].iter().filter(|c| c.status() == "active").count();
@@ -528,15 +522,20 @@ fn page(
             entry.0 += 1;
         }
     }
+    // An initiative is listed while an effort of its is open; one whose efforts have all
+    // closed has had its say and leaves the board with them.
     let mut initiative_lines = String::new();
     for (name, (open, done)) in &initiatives {
+        if *open == 0 {
+            continue;
+        }
         initiative_lines += &format!(
             "<li><span class=\"tag\">{}</span> {open} open, {done} done</li>\n",
             esc(name)
         );
     }
     if initiative_lines.is_empty() {
-        initiative_lines = "<li class=\"empty\">no initiatives named</li>\n".to_owned();
+        initiative_lines = "<li class=\"empty\">nothing open</li>\n".to_owned();
     }
 
     format!(
@@ -734,7 +733,6 @@ header{display:flex;flex-wrap:wrap;align-items:baseline;gap:18px;margin-bottom:2
 .meta{margin:0 0 6px;display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--mute)}.tag,.repo,.pri,.pieces,.nostatus{padding:1px 7px;border-radius:999px;background:var(--tag)}
 .pri.high{background:var(--high-bg);color:var(--high-ink)}.pri.urgent{background:var(--urgent-bg);color:var(--urgent-ink)}.age{margin-left:auto}
 .next{margin:0}.waits{margin:0 0 6px;color:var(--accent)}.empty{color:var(--mute);font-style:italic}
-details summary{list-style:none;cursor:pointer}details summary h2{display:inline}
 footer{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}footer h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:0 0 8px}
 footer ul{margin:0;padding-left:18px}footer li{margin-bottom:6px}
 "#;
@@ -779,7 +777,7 @@ mod tests {
                 row(5, "proposed", json!({})),
                 row(6, "", json!({"updated": null})),
                 row(7, "done", json!({"updated": "2026-11-02T09:00-07:00"})),
-                row(8, "done", json!({"updated": "2026-10-10T09:00-07:00"})),
+                row(8, "done", json!({"updated": "2026-10-10T09:00-07:00", "initiative": "[[finished]]"})),
                 row(9, "active", json!({"priority": "high", "pieces": {"done": 2, "total": 5}, "initiative": "[[agent-tooling]]", "next": "**Next:** Measure it. Then decide."})),
             ],
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
@@ -818,6 +816,14 @@ mod tests {
         assert!(page.contains("notes in sync"));
         assert!(page.contains("<li>Finished &lt;it&gt;. <span class=\"num\">0001</span></li>"));
         assert!(page.contains(">agent-tooling</span> 1 open, 0 done<"));
+        assert!(
+            !page.contains("finished"),
+            "an initiative with nothing open is off the board"
+        );
+        assert!(
+            !page.contains("<details"),
+            "done is a column like the others, open"
+        );
     }
 
     #[test]
@@ -826,7 +832,7 @@ mod tests {
         let page = render(&rows, Path::new("/n"), NOW, Theme::Auto);
         assert!(page.contains("class=\"sync\">2 notes commit(s) not yet pushed.<"));
         assert!(page.contains("nothing yet today"));
-        assert!(page.contains("no initiatives named"));
+        assert!(page.contains("nothing open"));
         assert_eq!(page.matches("class=\"empty\">nothing<").count(), 6);
     }
 
