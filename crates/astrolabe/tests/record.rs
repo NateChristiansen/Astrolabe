@@ -1404,3 +1404,55 @@ fn a_retried_create_after_switching_efforts_names_the_effort_it_made() {
         2
     );
 }
+
+/// One column of the board page, from its heading to the next column.
+fn column<'a>(page: &'a str, key: &str) -> &'a str {
+    let start = page
+        .find(&format!("class=\"col {key}\""))
+        .unwrap_or_else(|| panic!("no column {key} in the board"));
+    let end = page[start + 1..]
+        .find("<section")
+        .map_or(page.len(), |i| start + 1 + i);
+    &page[start..end]
+}
+
+#[test]
+fn the_board_follows_every_save_and_stays_out_of_git() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let board = mac.notes.join("home.html");
+    let page = std::fs::read_to_string(&board).expect("the board is written at effort new");
+    assert!(column(&page, "active").contains("Smooth ink"), "{page}");
+    assert!(page.contains("<span class=\"repo\">demo</span>"));
+    // Ignored and the ignore line committed, so the board never reaches origin.
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]).trim(), "");
+    assert!(git(&mac.notes, &["show", "HEAD:.gitignore"]).contains("home.html"));
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
+    let page = std::fs::read_to_string(&board).unwrap();
+    let needs = column(&page, "needs");
+    assert!(needs.contains("Smooth ink") && needs.contains("class=\"waits\">which cap?<"));
+    assert!(!column(&page, "active").contains("Smooth ink"));
+    assert!(mac.bash("s1", "astrolabe effort save --status done --journal \"Smoothed the ink.\" <<'ASTROLABE'\nDone.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n").1);
+    let page = std::fs::read_to_string(&board).unwrap();
+    assert!(column(&page, "done").contains("Smooth ink"));
+    assert!(page.contains("<li>Smoothed the ink. <span class=\"num\">0001</span></li>"));
+    // The plain command redraws and names the file.
+    std::fs::remove_file(&board).unwrap();
+    let (out, ok) = mac.run(&mac.notes, &["home"], "");
+    assert!(ok, "{out}");
+    // The registered checkout may be the canonical path of the one the test knows.
+    assert!(
+        out.trim().ends_with("home.html") && Path::new(out.trim()).exists(),
+        "{out}"
+    );
+    assert!(board.exists());
+    // The other machine draws its own copy when the saves arrive.
+    assert!(mac.sync().1);
+    let pc = world.machine("pc");
+    assert!(!pc.notes.join("home.html").exists());
+    assert!(pc.sync().1);
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(column(&page, "done").contains("Smooth ink"));
+    assert_eq!(git(&pc.notes, &["status", "--porcelain"]).trim(), "");
+}

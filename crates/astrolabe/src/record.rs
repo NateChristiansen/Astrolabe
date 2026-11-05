@@ -771,6 +771,11 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
 pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
     let (_registry, root) = activate::notes_and_repos()?;
     let notes = Notes::new(root, state_dir().unwrap_or_default());
+    Ok(rows_in(&notes, repo, all).to_string())
+}
+
+/// The same rows from a checkout already in hand: what the board is drawn from.
+pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Value {
     let mut rows = Vec::new();
     for (_, name) in notes.numbers() {
         let path = notes.root.join("efforts").join(&name);
@@ -807,11 +812,10 @@ pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
     let (day, _) = notes::local_day_time();
     let journal = std::fs::read_to_string(notes.root.join("journal").join(format!("{day}.md")))
         .unwrap_or_default();
-    Ok(json!({
+    json!({
         "efforts": rows, "today": day, "journal": journal,
         "journal_lines": notes::parse_journal(&journal), "notes": notes.warnings(),
     })
-    .to_string())
 }
 
 /// Before a pickup: the notes brought up to date, so the effort read is the published one.

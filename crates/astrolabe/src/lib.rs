@@ -9,6 +9,7 @@ mod engine;
 mod error;
 pub mod events;
 pub mod guard;
+pub mod home;
 pub mod hook;
 mod host;
 pub mod init;

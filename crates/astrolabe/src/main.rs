@@ -3,7 +3,7 @@ use astrolabe::{Result, doctor, init};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|notes <sync|status>|mcp>";
+const USAGE: &str = "Usage: astrolabe <--version|init [<path>]|init --clone <url> [<path>]|doctor <inspect|apply|install|adapters|remove|verify [<repo>]>|repo add <name> [<checkout>]|serve [--db <path>]|where|hook <event> [--if-active]|on|off|status|activate <--effort <n>|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open]|notes <sync|status>|mcp>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,6 +64,20 @@ fn main() {
                 Err(why) => fail(&why),
             }
         }
+        ["home", rest @ ..] if rest.is_empty() || rest == ["--open"] => match notes_here() {
+            Ok(notes) => match astrolabe::home::write(&notes) {
+                Ok(path) => {
+                    println!("{}", path.display());
+                    if rest == ["--open"]
+                        && let Err(why) = open_in_browser(&path)
+                    {
+                        fail(&why);
+                    }
+                }
+                Err(why) => fail(&why),
+            },
+            Err(why) => fail(&why),
+        },
         ["notes", "sync"] => match notes_here() {
             Ok(notes) => match notes.sync() {
                 Ok(text) => println!("{text}"),
@@ -198,6 +212,31 @@ fn notes_here() -> std::result::Result<astrolabe::notes::Notes, String> {
         astrolabe::activate::state_dir().ok_or("Astrolabe has no home folder for its state")?;
     let root = astrolabe::activate::notes_root()?;
     Ok(astrolabe::notes::Notes::new(root, dir))
+}
+
+/// The default browser, as the desktop opens a file.
+fn open_in_browser(path: &Path) -> std::result::Result<(), String> {
+    let mut cmd = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", "start", ""]).arg(path);
+        c
+    } else {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    let status = cmd
+        .status()
+        .map_err(|e| format!("could not open a browser: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the browser launcher exited with {status}"))
+    }
 }
 
 /// What was piped in, if anything: a terminal is left alone.

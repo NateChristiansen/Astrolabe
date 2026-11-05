@@ -325,6 +325,8 @@ impl Notes {
                     Ok(()) => self.clear_sync("tidy-failed"),
                     Err(why) => self.record_sync("tidy-failed", &why),
                 }
+                // Another machine's saves just arrived; the board shows them.
+                self.redraw();
                 Pull::Pulled
             }
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
@@ -647,10 +649,11 @@ impl Notes {
             write_text(&path, &tidy_journal(&text))?;
         }
         self.ensure_attributes()?;
+        self.ensure_ignored()?;
         // Only what exists: a first effort with no journal line yet has no journal folder.
         let mut status = vec!["status", "--porcelain", "--"];
         let mut add = vec!["add", "-A", "--"];
-        for path in ["efforts", "journal", ".gitattributes"] {
+        for path in ["efforts", "journal", ".gitattributes", ".gitignore"] {
             if self.root.join(path).exists() {
                 status.push(path);
                 add.push(path);
@@ -681,7 +684,36 @@ impl Notes {
         for (path, state) in &op.states {
             write_text(path, &state.to_string())?;
         }
+        self.redraw();
         Ok(())
+    }
+
+    /// The board follows every change to the checkout. A failure is recorded for the
+    /// status and session text, never a failed save.
+    pub fn redraw(&self) {
+        match crate::home::write(self) {
+            Ok(_) => self.clear_sync("board-failed"),
+            Err(why) => self.record_sync("board-failed", &why),
+        }
+    }
+
+    /// The board is drawn per machine, so it stays out of git.
+    fn ensure_ignored(&self) -> Result<(), String> {
+        let path = self.root.join(".gitignore");
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        if have
+            .lines()
+            .any(|l| l.trim() == crate::home::FILE || l.trim() == format!("/{}", crate::home::FILE))
+        {
+            return Ok(());
+        }
+        let mut text = have;
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(crate::home::FILE);
+        text.push('\n');
+        write_text(&path, &text)
     }
 
     /// The journal merges by union, so two machines appending the same day never conflict.
@@ -993,6 +1025,17 @@ impl Notes {
             lines.push(format!(
                 "A journal tidy after a merge failed ({}); the day file may show two lines for one effort until the next save.",
                 t["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
+            ));
+        }
+        if let Some(b) = record.get("board-failed") {
+            lines.push(format!(
+                "The board (home.html) could not be written ({}); it's redrawn at the next save.",
+                b["why"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
             ));
         }
         let intents = self.intents().len();
