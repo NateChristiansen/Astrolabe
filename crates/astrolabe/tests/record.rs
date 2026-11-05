@@ -1468,6 +1468,12 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
     assert!(column(&page, "active").contains("Smooth ink"), "{page}");
     assert!(!column(&page, "done").contains("Smooth ink"));
+    // An ignore rule that unignores it stops the draw, and says so.
+    std::fs::write(pc.notes.join(".gitignore"), "!home.html\n").unwrap();
+    let (out, ok) = pc.run(&pc.notes, &["home"], "");
+    assert!(!ok && out.contains("overrides the exclude file"), "{out}");
+    std::fs::remove_file(pc.notes.join(".gitignore")).unwrap();
+    assert!(pc.run(&pc.notes, &["home"], "").1);
     // A tracked board is left alone and said so.
     std::fs::write(pc.notes.join("home.html"), "mine").unwrap();
     git(&pc.notes, &["add", "-f", "home.html"]);

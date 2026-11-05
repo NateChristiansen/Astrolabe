@@ -733,16 +733,27 @@ impl Notes {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let line = format!("/{}", crate::home::FILE);
-        if have.lines().any(|l| l.trim() == line) {
-            return Ok(());
-        }
-        let mut text = have;
-        if !text.is_empty() && !text.ends_with('\n') {
+        if !have.lines().any(|l| l.trim() == line) {
+            let mut text = have;
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&line);
             text.push('\n');
+            write_text(&path, &text)?;
         }
-        text.push_str(&line);
-        text.push('\n');
-        write_text(&path, &text)
+        // A `.gitignore` negation outranks the exclude file; then the board isn't drawn,
+        // because an unignored board is one `git add .` from origin.
+        if self
+            .git(&["check-ignore", "-q", "--no-index", "--", crate::home::FILE])
+            .is_err()
+        {
+            return Err(format!(
+                "{} isn't ignored in the notes checkout (a .gitignore rule overrides the exclude file), so it isn't drawn; drop that rule and the board is drawn at the next save",
+                crate::home::FILE
+            ));
+        }
+        Ok(())
     }
 
     /// The journal merges by union, so two machines appending the same day never conflict.
