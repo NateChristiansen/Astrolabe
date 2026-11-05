@@ -247,19 +247,19 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
         );
         return ("200 OK", "text/html", page);
     }
-    // An effort file by its own name: one plain path component, nothing a join could carry
-    // elsewhere (a slash, a dot-dot, a drive letter's colon).
-    if let Some(name) = path.strip_prefix("/efforts/")
-        && let Some(name) = decode(name)
-        && name.ends_with(".md")
-        && !name.contains([':', '/', '\\'])
-        && !name.contains("..")
-        && Path::new(&name).components().count() == 1
-        && matches!(
-            Path::new(&name).components().next(),
-            Some(Component::Normal(_))
-        )
-        && let Ok(text) = std::fs::read_to_string(notes.root.join("efforts").join(&name))
+    // A note by its path from the checkout root: plain components only, nothing a join could
+    // carry elsewhere (a dot-dot, a drive letter's colon, a backslash), and `.md` at the end.
+    if let Some(rel) = path.strip_prefix('/')
+        && let Some(rel) = decode(rel)
+        && rel.ends_with(".md")
+        && !rel.contains([':', '\\'])
+        && !rel
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.'))
+        && Path::new(&rel)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+        && let Ok(text) = std::fs::read_to_string(notes.root.join(&rel))
     {
         return ("200 OK", "text/html", note_page(&text, theme(notes)));
     }

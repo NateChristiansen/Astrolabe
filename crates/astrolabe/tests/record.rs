@@ -9,6 +9,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// An effort file on today's month shelf, where `effort new` files it.
+fn shelf(name: &str) -> String {
+    let (day, _) = astrolabe::notes::local_day_time();
+    format!("{}/{name}", astrolabe::notes::effort_dir(&day))
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
@@ -269,24 +275,17 @@ impl Machine {
     }
 
     fn effort_text(&self, n: u32) -> String {
-        let dir = self.notes.join("efforts");
-        let name = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .find(|f| f.starts_with(&format!("{n:04}-")))
-            .unwrap_or_else(|| panic!("no effort {n} in {}", dir.display()));
-        std::fs::read_to_string(dir.join(name)).unwrap()
+        let (_, rel) = astrolabe::notes::effort_files(&self.notes)
+            .into_iter()
+            .find(|(m, _)| *m == n)
+            .unwrap_or_else(|| panic!("no effort {n} under {}", self.notes.display()));
+        std::fs::read_to_string(self.notes.join(rel)).unwrap()
     }
 
     fn journal_today(&self) -> String {
-        let dir = self.notes.join("journal");
-        std::fs::read_dir(&dir)
-            .ok()
+        astrolabe::notes::md_files(&self.notes, "journal")
             .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .map(|rel| std::fs::read_to_string(self.notes.join(rel)).unwrap())
             .collect()
     }
 
@@ -333,13 +332,14 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     );
     assert!(!ok && out.contains("no **Label:** lines"), "{out}");
     assert_eq!(mac.log().lines().count(), before);
-    assert!(!mac.notes.join("efforts/0001-nope.md").exists());
+    assert!(!mac.notes.join(shelf("0001-nope.md")).exists());
     let (out, ok) = mac.bash("s1", NEW);
     assert!(ok, "{out}");
     assert!(
-        out.contains(
-            "Effort 1 created as efforts/0001-smooth-ink.md, status active, bound to this session"
-        ),
+        out.contains(&format!(
+            "Effort 1 created as {}, status active, bound to this session",
+            shelf("0001-smooth-ink.md")
+        )),
         "{out}"
     );
     assert!(
@@ -651,7 +651,7 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The owner edits the note by hand.
-    let path = mac.notes.join("efforts/0001-smooth-ink.md");
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
     let edited = std::fs::read_to_string(&path)
         .unwrap()
         .replace("smooth the ink", "OWNER EDIT smooth the ink");
@@ -741,7 +741,7 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
         git(&pc.notes, &["status"])
     );
     assert!(
-        pc.notes.join("efforts/0004-pc-three.md").exists(),
+        pc.notes.join(shelf("0004-pc-three.md")).exists(),
         "{:?}",
         std::fs::read_dir(pc.notes.join("efforts"))
             .unwrap()
@@ -749,7 +749,7 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
             .map(|e| e.file_name())
             .collect::<Vec<_>>()
     );
-    assert!(!pc.notes.join("efforts/0003-pc-three.md").exists());
+    assert!(!pc.notes.join(shelf("0003-pc-three.md")).exists());
     assert!(pc.effort_text(4).contains("# 0004 PC three"));
     assert!(
         pc.effort_text(4).contains("renumbered from 0003"),
@@ -766,10 +766,10 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     let state: Value =
         serde_json::from_slice(&std::fs::read(pc.state().join("p2.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "4");
-    assert_eq!(state["file"], "efforts/0004-pc-three.md");
+    assert_eq!(state["file"], shelf("0004-pc-three.md"));
     // And the Mac sees it after its own pull, with the journal's day file merged by union.
     assert!(mac.sync().1);
-    assert!(mac.notes.join("efforts/0004-pc-three.md").exists());
+    assert!(mac.notes.join(shelf("0004-pc-three.md")).exists());
     let journal = mac.journal_today();
     assert!(
         journal.contains("Mac three's line <!-- 0003 mac ")
@@ -846,7 +846,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
     // A crash after the file write, before the commit: the file is there, nothing committed,
     // the intent remains.
     let intent = json!({
-        "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("smooth the ink", "CRASHED smooth the ink")]],
+        "key": "crashed-key", "files": [[shelf("0001-smooth-ink.md"), std::fs::read_to_string(mac.notes.join(shelf("0001-smooth-ink.md"))).unwrap().replace("smooth the ink", "CRASHED smooth the ink")]],
         // The first journal shape, as an intent written by the build before this one.
         "renames": [], "journal": [{"id": "crashed-key0", "kind": "decision", "effort": "0001", "title": "Smooth ink", "text": "crash line", "machine": "mac", "provider": "claude", "time": "01:00", "day": "2026-01-01"}],
         "message": "0001: checkpoint", "base": null, "states": []
@@ -856,7 +856,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
         &intent.to_string(),
     );
     std::fs::write(
-        mac.notes.join("efforts/0001-smooth-ink.md"),
+        mac.notes.join(shelf("0001-smooth-ink.md")),
         intent["files"][0][1].as_str().unwrap(),
     )
     .unwrap();
@@ -880,7 +880,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
         "{log}"
     );
     assert!(
-        std::fs::read_to_string(mac.notes.join("journal/2026-01-01.md"))
+        std::fs::read_to_string(mac.notes.join(astrolabe::notes::journal_file("2026-01-01")))
             .unwrap()
             .contains("crash line")
     );
@@ -1314,7 +1314,7 @@ fn review_fixes_hold() {
         "{out}"
     );
     // Nested decision text survives a save.
-    let path = mac.notes.join("efforts/0001-smooth-ink.md");
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
     let text =
         std::fs::read_to_string(&path).unwrap() + "  nested detail under the last decision\n";
     std::fs::write(&path, &text).unwrap();
@@ -1644,7 +1644,7 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
     let notes = mac.notes.clone();
     let (out, ok) = mac.bash_from("n1", &notes, NEW, None);
     assert!(!ok && out.contains("--repo <name>"), "{out}");
-    assert!(!notes.join("efforts/0001-smooth-ink.md").exists());
+    assert!(!notes.join(shelf("0001-smooth-ink.md")).exists());
     let (out, ok) = mac.bash_from(
         "n1",
         &notes,
@@ -1784,7 +1784,7 @@ fn a_dirty_notes_checkout_still_pulls() {
     let (out, ok) = pc.sync();
     assert!(ok, "{out}");
     assert!(
-        pc.notes.join("efforts/0001-smooth-ink.md").exists(),
+        pc.notes.join(shelf("0001-smooth-ink.md")).exists(),
         "the Mac's effort arrived"
     );
     assert_eq!(
@@ -1951,7 +1951,7 @@ fn the_board_is_served_fresh_on_localhost() {
     );
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card links through the server, since a browser refuses file links from a page.
-    assert!(page.contains("href=\"/efforts/0001-"), "{page}");
+    assert!(page.contains("href=\"/efforts/"), "{page}");
     let link = page
         .split("href=\"")
         .nth(1)
@@ -1985,7 +1985,11 @@ fn the_board_is_served_fresh_on_localhost() {
         "{out}"
     );
     assert!(get("/efforts/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
-    assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
+    // Any note by its path is a page, since the board is where the owner reads them; a
+    // dot folder (the plugin's own state, an app's config) is not.
+    assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 200"));
+    assert!(get("/.git/config", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/.agents/x.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(
         get("/", "evil.example:80").starts_with("HTTP/1.1 421"),
         "another host gets nothing"

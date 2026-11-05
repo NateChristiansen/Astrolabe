@@ -244,21 +244,27 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
         (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
     let prefix = format!("{n:04}-");
     let dir = notes.join("efforts");
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let names: Vec<String> = (entries.flatten())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with(&prefix) && name.ends_with(".md"))
+    if !dir.is_dir() {
+        return Err(format!("{}: no such folder", dir.display()));
+    }
+    let names: Vec<String> = crate::notes::effort_files(notes)
+        .into_iter()
+        .filter(|(m, _)| *m == n)
+        .map(|(_, rel)| rel)
         .collect();
-    let [name] = names.as_slice() else {
+    let [file] = names.as_slice() else {
         return Err(match names.len() {
             0 => format!(
-                "no effort {n}: no efforts/{prefix}*.md in {}",
+                "no effort {n}: no {prefix}*.md under efforts/ in {}",
                 notes.display()
             ),
-            _ => format!("more than one efforts/{prefix}*.md: {}", names.join(", ")),
+            _ => format!(
+                "more than one {prefix}*.md under efforts/: {}",
+                names.join(", ")
+            ),
         });
     };
-    let file = format!("efforts/{name}");
+    let file = file.clone();
     let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
     let hash = crate::notes::hash(&text);
     let text = text.replace("\r\n", "\n");
@@ -304,7 +310,10 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     });
     Ok(Effort {
         number: n.to_string(),
-        title: title.unwrap_or(name).trim().to_owned(),
+        title: title
+            .unwrap_or_else(|| file.rsplit('/').next().unwrap_or(&file))
+            .trim()
+            .to_owned(),
         repos,
         involvement: one_of("involvement", &INVOLVEMENT)?,
         authority: one_of("authority", &AUTHORITY)?,
@@ -1845,25 +1854,18 @@ fn active_efforts(
         return Ok((repos, Vec::new()));
     }
     let dir = notes.join("efforts");
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !dir.is_dir() {
+        return Err(format!("{}: no such folder", dir.display()));
+    }
     let mut efforts: Vec<Offer> = Vec::new();
     let unreadable = |what: String| {
         format!("the efforts for this repo can't all be read ({what}), so none is listed")
     };
-    for entry in entries {
-        let entry = entry.map_err(|e| unreadable(format!("{}: {e}", dir.display())))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            return Err(unreadable(format!(
-                "a name in {} that isn't text",
-                dir.display()
-            )));
-        };
+    for (_, rel) in crate::notes::effort_files(notes) {
+        let name = rel.rsplit('/').next().unwrap_or(&rel).to_owned();
         let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() || !name.ends_with(".md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(dir.join(&name))
-            .map_err(|e| unreadable(format!("efforts/{name}: {e}")))?
+        let text = std::fs::read_to_string(notes.join(&rel))
+            .map_err(|e| unreadable(format!("{rel}: {e}")))?
             .replace("\r\n", "\n");
         let props = frontmatter(&text);
         let get = |key: &str| {
