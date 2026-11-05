@@ -1708,6 +1708,24 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         mac.hook_json("stop", stop()).is_none(),
         "its own commit isn't work"
     );
+    // A save cut off between its commit and its state: the replay takes the baseline
+    // again too, so the commit it carried never nudges.
+    let state_path = mac.state().join("n1.json");
+    let mut stale: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    stale["baseline"] = "stale".into();
+    let intent = json!({
+        "key": "cut-key", "files": [], "renames": [], "journal": [], "message": "0001: checkpoint",
+        "base": null, "states": [[state_path, stale]], "committed": true, "rebaseline": notes,
+    });
+    write(&mac.state().join("ops/cut-key.json"), &intent.to_string());
+    let (out, ok) = mac.run(&notes, &["notes", "sync"], "");
+    assert!(ok, "{out}");
+    let replayed: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    assert_ne!(replayed["baseline"], "stale", "{replayed}");
+    assert!(
+        mac.hook_json("stop", stop()).is_none(),
+        "the replayed save isn't work"
+    );
     write(
         &notes.join("knowledge/owner.md"),
         "OWNER-TEXT edited by hand",

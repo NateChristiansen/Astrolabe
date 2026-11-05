@@ -227,6 +227,11 @@ pub struct Op {
     /// The folder the command ran in, with the digest.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The notes checkout itself, when the command ran there: the states' nudge baseline is
+    /// taken again as they're written, after the commit, since that commit is in the folder
+    /// the fingerprint reads. Kept in the intent so a replay does the same.
+    #[serde(default)]
+    pub rebaseline: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,17 +393,20 @@ impl Notes {
             .map(str::to_owned)
             .collect();
         if let Some(line) = new {
-            self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
-                format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
-            })?;
             let id = line.split(' ').next().unwrap_or_default();
             let files: Vec<&str> = unmerged.lines().collect();
             kept.push(format!("{id} {}", files.join(", ")));
         }
+        // Recorded before the reset, so a reset that fails still leaves the stash named.
         if kept.is_empty() {
             self.clear_sync("stash");
         } else {
             self.record_sync("stash", &kept.join("\n"));
+        }
+        if new.is_some() {
+            self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
+                format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
+            })?;
         }
         Ok(())
     }
@@ -518,6 +526,7 @@ impl Notes {
             digest: None,
             result: None,
             cwd: None,
+            rebaseline: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
         for entry in std::fs::read_dir(&self.state)
@@ -684,10 +693,7 @@ impl Notes {
         }
         self.save_intent(&op)?;
         if op.committed {
-            for (path, state) in &op.states {
-                write_text(path, &state.to_string())?;
-            }
-            return Ok(());
+            return self.write_states(&op);
         }
         for (from, to) in &op.renames {
             let (from, to) = (self.root.join(from), self.root.join(to));
@@ -759,7 +765,21 @@ impl Notes {
         for (rel, _) in &op.files {
             self.clear_stale(rel);
         }
+        self.write_states(&op)
+    }
+
+    /// The session states, once the notes are committed; from the notes checkout with the
+    /// baseline as the tree is now.
+    fn write_states(&self, op: &Op) -> Result<(), String> {
+        let print = op
+            .rebaseline
+            .as_deref()
+            .map(|cwd| RepoFacts::read(cwd).map(|f| f.fingerprint));
         for (path, state) in &op.states {
+            let mut state = state.clone();
+            if let Some(print) = &print {
+                state["baseline"] = print.clone().into();
+            }
             write_text(path, &state.to_string())?;
         }
         Ok(())
@@ -1053,6 +1073,7 @@ impl Notes {
             digest: None,
             result: None,
             cwd: None,
+            rebaseline: None,
         };
         self.apply(&op)?;
         self.forget(&key);

@@ -189,15 +189,9 @@ fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&Re
 }
 
 /// From the notes checkout the save's own commit changes what the fingerprint sees (a journal
-/// edited by hand is committed with it), so the nudge's baseline is taken again after it.
-fn rebaseline_in_seat(dir: &Path, session: &str, cwd: &Path) {
-    if !activate::in_notes(cwd) {
-        return;
-    }
-    if let Ok(Some(mut state)) = read_state(dir, session) {
-        state["baseline"] = RepoFacts::read(cwd).map(|f| f.fingerprint).into();
-        let _ = notes::write_text(&state_path(dir, session), &state.to_string());
-    }
+/// edited by hand is committed with it), so the op takes the nudge's baseline again after it.
+fn rebaseline(cwd: &Path) -> Option<PathBuf> {
+    activate::in_notes(cwd).then(|| cwd.to_path_buf())
 }
 
 /// The facts for a stamp: none from the notes checkout.
@@ -354,9 +348,9 @@ fn new_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
-    rebaseline_in_seat(&dir, session, cwd);
     notes.spawn_sync();
     let activation = activate::switch_on(
         &dir,
@@ -650,9 +644,9 @@ fn save_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
-    rebaseline_in_seat(&dir, session, cwd);
     // A new waits-for is a state change the other machine must see: effort 6 went from
     // "merge" to "playtest" with status still blocked and sat unpushed for nine hours.
     let state_changed = status.as_deref().is_some_and(|s| s != before)
@@ -755,6 +749,7 @@ fn journal_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: None,
     };
     notes.apply(&op)?;
     if notes::now_ms() - notes.last_push_ms() > notes::PUSH_EVERY_MS {
