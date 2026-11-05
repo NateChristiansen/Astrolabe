@@ -179,7 +179,7 @@ pub fn render(rows: &Value, root: &Path, now_ms: i64) -> String {
     }
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Astrolabe home</title>\n<style>{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"light dark\">\n<title>Astrolabe home</title>\n<style>{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
         esc(rows["today"].as_str().unwrap_or_default()),
         esc(&sync),
     )
@@ -327,18 +327,18 @@ fn esc(text: &str) -> String {
 }
 
 const STYLE: &str = r#"
-:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--mute:#6b6a66;--line:#e4e2dc;--accent:#b5562a;--needs:#fff3e8;--tag:#eef0f5}
-@media(prefers-color-scheme:dark){:root{--bg:#1b1b19;--card:#262623;--ink:#ece9e2;--mute:#9b988f;--line:#36352f;--accent:#e08a5a;--needs:#33271f;--tag:#2f3138}}
+:root{color-scheme:light dark;--bg:#faf9f5;--card:#ffffff;--ink:#2b2a26;--mute:#807d75;--line:#ebe8e1;--accent:#b8613b;--needs:#faf0e8;--tag:#f0eee8;--shadow:0 1px 2px rgba(60,50,30,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#1b1b19;--card:#262623;--ink:#ece9e2;--mute:#9b988f;--line:#36352f;--accent:#e08a5a;--needs:#33271f;--tag:#2f3138;--shadow:none}}
 *{box-sizing:border-box}body{margin:0;padding:24px 28px;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:18px;margin-bottom:20px}header h1{font-size:20px;margin:0;font-weight:600}header .counts,header .sync{color:var(--mute)}
 .board{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;align-items:start}
 .col h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:0 0 10px}.count{font-weight:400;opacity:.7}
 .col.needs h2{color:var(--accent)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px}.col.needs .card{background:var(--needs);border-color:transparent}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;box-shadow:var(--shadow)}.col.needs .card{background:var(--needs);border-color:transparent}
 .card.done{opacity:.65}.card h3{font-size:15px;margin:0 0 6px;font-weight:600}.card h3 a{color:inherit;text-decoration:none}.card h3 a:hover{text-decoration:underline}
 .num{color:var(--mute);font-weight:400;font-variant-numeric:tabular-nums}
 .meta{margin:0 0 6px;display:flex;flex-wrap:wrap;gap:6px;font-size:12px;color:var(--mute)}.tag,.repo,.pri,.pieces,.nostatus{padding:1px 7px;border-radius:999px;background:var(--tag)}
-.pri.high{background:#f7d9c5;color:#7a3a16}.pri.urgent{background:#f2b8b8;color:#7a1616}.age{margin-left:auto}
+.pri.high{background:#f3dccd;color:#7a3a16}.pri.urgent{background:#efc4c4;color:#7a1616}@media(prefers-color-scheme:dark){.pri.high{background:#4a2e1e;color:#f0b28a}.pri.urgent{background:#4a2020;color:#f0a0a0}}.age{margin-left:auto}
 .next{margin:0}.waits{margin:0 0 6px;color:var(--accent)}.empty{color:var(--mute);font-style:italic}
 details summary{list-style:none;cursor:pointer}details summary h2{display:inline}
 footer{display:grid;grid-template-columns:2fr 1fr;gap:24px;margin-top:28px;padding-top:18px;border-top:1px solid var(--line)}footer h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:0 0 8px}
