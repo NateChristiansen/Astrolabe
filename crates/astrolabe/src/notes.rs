@@ -5,7 +5,7 @@
 //! writer. Each write is first planned whole as an `Op` and saved as an intent file, then
 //! applied idempotently, so a crash between steps leaves an intent the next lock holder
 //! finishes from what's on disk, and a retry of the same command doesn't commit twice.
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -435,19 +435,10 @@ impl Notes {
             + 1
     }
 
-    /// Every `efforts/NNNN-*.md` as number and file name.
+    /// Every effort file as number and path from the checkout root, wherever it sits under
+    /// `efforts/`: the month shelf of its creation, or the root for one from before shelves.
     pub fn numbers(&self) -> Vec<(u32, String)> {
-        let dir = self.root.join("efforts");
-        let mut found = Vec::new();
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let number = name.split('-').next().and_then(|n| n.parse::<u32>().ok());
-            if let (Some(n), true) = (number, name.ends_with(".md")) {
-                found.push((n, name));
-            }
-        }
-        found.sort();
-        found
+        effort_files(&self.root)
     }
 
     /// Two files with one number, after a pull: the newer (by its `created` property, then
@@ -455,8 +446,8 @@ impl Notes {
     pub fn duplicate(&self) -> Option<(String, String, u32)> {
         let numbers = self.numbers();
         let dup = numbers.windows(2).find(|w| w[0].0 == w[1].0)?;
-        let created = |name: &str| {
-            std::fs::read_to_string(self.root.join("efforts").join(name))
+        let created = |rel: &str| {
+            std::fs::read_to_string(self.root.join(rel))
                 .ok()
                 .and_then(|t| crate::effort::EffortFile::parse(&t).ok())
                 .and_then(|f| f.prop("created").map(str::to_owned))
@@ -465,20 +456,19 @@ impl Notes {
         let (a, b) = (&dup[0].1, &dup[1].1);
         let newer = if created(a) > created(b) { a } else { b };
         let next = numbers.last().map_or(1, |(n, _)| n + 1);
-        let new_name = format!(
-            "{next:04}-{}",
-            newer.split_once('-').map_or("x.md", |x| x.1)
+        let (dir, name) = newer.rsplit_once('/').unwrap_or(("efforts", newer));
+        let new_rel = format!(
+            "{dir}/{next:04}-{}",
+            name.split_once('-').map_or("x.md", |x| x.1)
         );
-        Some((newer.clone(), new_name, next))
+        Some((newer.clone(), new_rel, next))
     }
 
     /// Two efforts with one number after a pull: the newer is renumbered to the next free
     /// number, its title and any session bound to it follow, and a journal line says so, so
     /// earlier lines still resolve. Offline creation on two machines is why this can happen.
     pub fn fix_duplicate(&self) -> Option<String> {
-        let (old_name, new_name, next) = self.duplicate()?;
-        let old_rel = format!("efforts/{old_name}");
-        let new_rel = format!("efforts/{new_name}");
+        let (old_rel, new_rel, next) = self.duplicate()?;
         let text = std::fs::read_to_string(self.root.join(&old_rel)).ok()?;
         let mut file = crate::effort::EffortFile::parse(&text).ok()?;
         let old_number = file.number().unwrap_or(0);
@@ -501,17 +491,12 @@ impl Notes {
             format!("<!-- {old_number:04} {writer} "),
             format!("<!-- {next:04} {writer} "),
         );
-        for entry in std::fs::read_dir(self.root.join("journal"))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+        for rel in md_files(&self.root, "journal") {
+            let Ok(text) = std::fs::read_to_string(self.root.join(&rel)) else {
                 continue;
             };
             if text.contains(&from) {
-                files.push((format!("journal/{name}"), text.replace(&from, &to)));
+                files.push((rel, text.replace(&from, &to)));
             }
         }
         let mut op = Op {
@@ -581,8 +566,8 @@ impl Notes {
         let files = self.git(&["show", "--name-only", "--format=", sha]).ok()?;
         files
             .lines()
-            .filter_map(|f| f.strip_prefix("efforts/"))
-            .find_map(|f| f.split('-').next()?.parse().ok())
+            .filter(|f| f.starts_with("efforts/"))
+            .find_map(|f| f.rsplit('/').next()?.split('-').next()?.parse().ok())
     }
 
     /// Lock, finish leftovers, pull: what a pickup does before reading.
@@ -708,7 +693,7 @@ impl Notes {
             }
         }
         for line in &op.journal {
-            let path = self.root.join("journal").join(format!("{}.md", line.day));
+            let path = self.root.join(journal_file(&line.day));
             let have = std::fs::read_to_string(&path).unwrap_or_default();
             if have.contains(&format!("e:{} ", line.id)) {
                 continue;
@@ -793,6 +778,8 @@ impl Notes {
         if let Err(why) = self.draw() {
             self.record_sync("board-failed", &why);
         }
+        // Every change is a chance to have the home up, so the owner never starts it.
+        crate::home::ensure_serving(self);
     }
 
     /// The board, redrawn by hand: `astrolabe home`.
@@ -853,9 +840,11 @@ impl Notes {
     fn ensure_attributes(&self) -> Result<(), String> {
         let path = self.root.join(".gitattributes");
         let have = std::fs::read_to_string(&path).unwrap_or_default();
+        // The day files sit on month shelves, so the rule reaches every depth; an older
+        // `journal/*.md` line is left as it is, harmless.
         if have
             .lines()
-            .any(|l| l.trim_start().starts_with("journal/") && l.contains("merge=union"))
+            .any(|l| l.trim_start().starts_with("journal/**") && l.contains("merge=union"))
         {
             return Ok(());
         }
@@ -863,7 +852,7 @@ impl Notes {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        text.push_str("journal/*.md merge=union\n");
+        text.push_str("journal/**/*.md merge=union\n");
         write_text(&path, &text)
     }
 
@@ -1008,14 +997,20 @@ impl Notes {
             let _ = write_text(&self.state.join("sync-requested"), "");
             return;
         }
+        self.spawn_detached(&["notes", "sync"], "sync.log");
+    }
+
+    /// Runs this program again with `args`, in the notes checkout, as its own process that
+    /// outlives the caller, its output appended to `log` in the state folder.
+    pub fn spawn_detached(&self, args: &[&str], log: &str) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        let log = self.state.join("sync.log");
+        let log = self.state.join(log);
         let out = File::options().create(true).append(true).open(&log).ok();
         let err = File::options().create(true).append(true).open(&log).ok();
         let mut cmd = Command::new(exe);
-        cmd.args(["notes", "sync"])
+        cmd.args(args)
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(out.map_or(Stdio::null(), Stdio::from))
@@ -1040,18 +1035,13 @@ impl Notes {
     /// and committed, so the file the owner reads has one.
     fn tidy_after_merge(&self) -> Result<(), String> {
         let mut files = Vec::new();
-        for entry in std::fs::read_dir(self.root.join("journal"))
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+        for rel in md_files(&self.root, "journal") {
+            let Ok(text) = std::fs::read_to_string(self.root.join(&rel)) else {
                 continue;
             };
             let tidied = tidy_journal(&text);
             if tidied != text {
-                files.push((format!("journal/{name}"), tidied));
+                files.push((rel, tidied));
             }
         }
         if files.is_empty() {
@@ -1312,6 +1302,62 @@ pub fn machine_name() -> String {
 }
 
 /// Local day and time, in the owner's zone: a UTC date once fell on the next day.
+/// Where an effort created on `day` (`2026-11-05`) is filed: `efforts/2026/11-November`.
+/// The shelf is the month it started, which never changes, so the file never moves and
+/// every link to it holds. A day that doesn't parse files at the root.
+pub fn effort_dir(day: &str) -> String {
+    match NaiveDate::parse_from_str(day, "%Y-%m-%d") {
+        Ok(d) => format!("efforts/{}", d.format("%Y/%m-%B")),
+        Err(_) => "efforts".to_owned(),
+    }
+}
+
+/// The journal's day file: `journal/2026/11-November/05-Thursday.md`.
+pub fn journal_file(day: &str) -> String {
+    match NaiveDate::parse_from_str(day, "%Y-%m-%d") {
+        Ok(d) => format!("journal/{}.md", d.format("%Y/%m-%B/%d-%A")),
+        Err(_) => format!("journal/{day}.md"),
+    }
+}
+
+/// Every `.md` under `top` in the checkout, as paths from the root with `/` between parts,
+/// sorted. Folders starting with a dot are skipped, and the walk stops four levels down,
+/// because the shelves are two deep and anything deeper isn't the plugin's.
+pub fn md_files(root: &Path, top: &str) -> Vec<String> {
+    fn walk(dir: &Path, rel: &str, depth: u8, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let here = format!("{rel}/{name}");
+            if path.is_dir() {
+                if depth < 4 && !name.starts_with('.') {
+                    walk(&path, &here, depth + 1, out);
+                }
+            } else if name.ends_with(".md") {
+                out.push(here);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&root.join(top), top, 0, &mut out);
+    out.sort();
+    out
+}
+
+/// Every effort file as number and path from the root, in number order.
+pub fn effort_files(root: &Path) -> Vec<(u32, String)> {
+    let mut found: Vec<(u32, String)> = md_files(root, "efforts")
+        .into_iter()
+        .filter_map(|rel| {
+            let name = rel.rsplit('/').next()?;
+            let n = name.split('-').next()?.parse::<u32>().ok()?;
+            Some((n, rel))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 pub fn local_day_time() -> (String, String) {
     let now = Local::now();
     (

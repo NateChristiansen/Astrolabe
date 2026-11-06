@@ -50,7 +50,7 @@ const AUTHORITY: [(&str, &str); 3] = [
 ];
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. From the notes checkout, the owner's seat, any effort loads whatever its repo, and `effort new` and `astrolabe journal` there need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path and only for the thing the owner has to open. The first sentence says the state in plain words; the second paragraph gives each choice with its reason; the last says what's next and what isn't checked. Numbers only when they're the result (\"200 ms instead of 310\"), never the evidence trail (no p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nA choice that leaves Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state paragraphs. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one line per effort per day, as they would say it (past tense, plain words, what changed, and why when the why matters; no evidence counts, no lane or hook talk), about 25 words, two sentences at most, like \"Deck guests see drawn pieces 200 ms late now, down from 310, by skipping the GPU readback. Dropped the stand-in and send-ahead.\" Name what changed in the game's own terms, not the level or file where you met it: a change to every tool press is \"tool presses\", not \"tool presses on Hot Wheels\". Where it stands (merged, blocked, waiting on a playtest) is the effort's status and --waits-for, already on the board, so it never goes in the line. Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request. The owner's board is home.html at the notes checkout root, redrawn at every save and sync; `astrolabe home --open` opens it, `astrolabe home --serve --open` serves it live on localhost with each note as a page (for the Claude app's pane, which never reloads a file), and `--theme dark` fixes the palette for a viewer that always renders light.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument, or piped in with `'@ | astrolabe effort new …`):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nThen say your reading in one line (involvement · authority · one piece or multi-step) and proceed; add --involvement <autonomous | check in at plan | each step> or --authority <read | edit | push> only when the owner's words say so, and --initiative <name> only when the owner names one. From the notes checkout, the owner's seat, any effort loads whatever its repo, and `effort new` and `astrolabe journal` there need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone. If another agent dispatched you under its effort, run `astrolabe activate --effort <n> --worker` first and write nothing to the notes: the dispatcher reports for you. Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path and only for the thing the owner has to open. The first sentence says the state in plain words; the second paragraph gives each choice with its reason; the last says what's next and what isn't checked. Numbers only when they're the result (\"200 ms instead of 310\"), never the evidence trail (no p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nA choice that leaves Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state paragraphs. Work with more than one piece keeps them as a `## Pieces` checklist in the effort, not as efforts of their own: `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. The journal is the owner's history, read days later: one line per effort per day, as they would say it (past tense, plain words, what changed, and why when the why matters; no evidence counts, no lane or hook talk), about 25 words, two sentences at most, like \"Deck guests see drawn pieces 200 ms late now, down from 310, by skipping the GPU readback. Dropped the stand-in and send-ahead.\" Name what changed in the game's own terms, not the level or file where you met it: a change to every tool press is \"tool presses\", not \"tool presses on Hot Wheels\". Where it stands (merged, blocked, waiting on a playtest) is the effort's status and --waits-for, already on the board, so it never goes in the line. Pass --journal on the save that finishes something worth telling, or on the save before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch into one line, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request. The owner's home is served on this machine at the address `astrolabe home` prints (localhost:4747 unless set), started by the plugin at any change and stopped when idle: the board, the notes tree beside it, each note as a page, following every save. `astrolabe home --open` opens it; `--theme dark` and `--palette iris` set its look per machine. The same page is written as home.html at the notes checkout root for a machine with no server.";
 
 /// Said to a worker on binding: what it may not do, and why.
 pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it creates, saves and journals nothing in the owner's notes, because one session writes an effort's record and the dispatcher reports for its workers. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
@@ -244,21 +244,27 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
         (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
     let prefix = format!("{n:04}-");
     let dir = notes.join("efforts");
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let names: Vec<String> = (entries.flatten())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with(&prefix) && name.ends_with(".md"))
+    if !dir.is_dir() {
+        return Err(format!("{}: no such folder", dir.display()));
+    }
+    let names: Vec<String> = crate::notes::effort_files(notes)
+        .into_iter()
+        .filter(|(m, _)| *m == n)
+        .map(|(_, rel)| rel)
         .collect();
-    let [name] = names.as_slice() else {
+    let [file] = names.as_slice() else {
         return Err(match names.len() {
             0 => format!(
-                "no effort {n}: no efforts/{prefix}*.md in {}",
+                "no effort {n}: no {prefix}*.md under efforts/ in {}",
                 notes.display()
             ),
-            _ => format!("more than one efforts/{prefix}*.md: {}", names.join(", ")),
+            _ => format!(
+                "more than one {prefix}*.md under efforts/: {}",
+                names.join(", ")
+            ),
         });
     };
-    let file = format!("efforts/{name}");
+    let file = file.clone();
     let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
     let hash = crate::notes::hash(&text);
     let text = text.replace("\r\n", "\n");
@@ -304,7 +310,10 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     });
     Ok(Effort {
         number: n.to_string(),
-        title: title.unwrap_or(name).trim().to_owned(),
+        title: title
+            .unwrap_or_else(|| file.rsplit('/').next().unwrap_or(&file))
+            .trim()
+            .to_owned(),
         repos,
         involvement: one_of("involvement", &INVOLVEMENT)?,
         authority: one_of("authority", &AUTHORITY)?,
@@ -1529,6 +1538,12 @@ pub fn gate(event: &str) {
         "session-start" if !child => {
             // Anything an earlier session left unpublished goes now, in the background.
             let _ = std::panic::catch_unwind(crate::nudge::push_pending);
+            // And the home is up, so the owner's board is there before they look.
+            let _ = std::panic::catch_unwind(|| {
+                if let Ok((_, notes)) = crate::record::notes_here() {
+                    crate::home::ensure_serving(&notes);
+                }
+            });
             let text = std::panic::catch_unwind(|| session_start(&input, session?));
             if let Ok(Some(text)) = text {
                 let inner = json!({"hookEventName": "SessionStart", "additionalContext": text});
@@ -1845,25 +1860,18 @@ fn active_efforts(
         return Ok((repos, Vec::new()));
     }
     let dir = notes.join("efforts");
-    let entries = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !dir.is_dir() {
+        return Err(format!("{}: no such folder", dir.display()));
+    }
     let mut efforts: Vec<Offer> = Vec::new();
     let unreadable = |what: String| {
         format!("the efforts for this repo can't all be read ({what}), so none is listed")
     };
-    for entry in entries {
-        let entry = entry.map_err(|e| unreadable(format!("{}: {e}", dir.display())))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            return Err(unreadable(format!(
-                "a name in {} that isn't text",
-                dir.display()
-            )));
-        };
+    for (_, rel) in crate::notes::effort_files(notes) {
+        let name = rel.rsplit('/').next().unwrap_or(&rel).to_owned();
         let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
-        if digits.is_empty() || !name.ends_with(".md") {
-            continue;
-        }
-        let text = std::fs::read_to_string(dir.join(&name))
-            .map_err(|e| unreadable(format!("efforts/{name}: {e}")))?
+        let text = std::fs::read_to_string(notes.join(&rel))
+            .map_err(|e| unreadable(format!("{rel}: {e}")))?
             .replace("\r\n", "\n");
         let props = frontmatter(&text);
         let get = |key: &str| {

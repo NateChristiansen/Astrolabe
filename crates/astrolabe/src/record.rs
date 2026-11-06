@@ -35,7 +35,7 @@ pub struct Done {
 }
 
 /// The session's notes checkout and state folder, or why not.
-fn notes_here() -> Result<(Repos, Notes), String> {
+pub(crate) fn notes_here() -> Result<(Repos, Notes), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
     let (registry, root) = activate::notes_and_repos()?;
     Ok((registry, Notes::new(root, dir)))
@@ -298,8 +298,8 @@ fn new_inner(
     }
     let pulled = notes.pull();
     let number = notes.next_number();
-    let file_name = format!("efforts/{number:04}-{}.md", slug(title));
     let (day, _) = notes::local_day_time();
+    let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
     let facts = RepoFacts::read(cwd);
     let mut file = EffortFile {
         title: format!("{number} {title}"),
@@ -840,8 +840,8 @@ pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
 /// The same rows from a checkout already in hand: what the board is drawn from.
 pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Value {
     let mut rows = Vec::new();
-    for (_, name) in notes.numbers() {
-        let path = notes.root.join("efforts").join(&name);
+    for (_, rel) in notes.numbers() {
+        let path = notes.root.join(&rel);
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -863,7 +863,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Valu
             .prop("waits_for")
             .is_some_and(|w| w.starts_with("owner:"));
         rows.push(json!({
-            "number": file.number(), "title": file.name(), "file": format!("efforts/{name}"),
+            "number": file.number(), "title": file.name(), "file": rel,
             "status": status, "priority": file.prop("priority"), "initiative": file.prop("initiative"),
             "repo": file.prop("repo"), "waits_for": file.prop("waits_for"), "needs_owner": needs_owner,
             "updated": file.prop("updated"), "saved_by": file.prop("saved_by"),
@@ -873,8 +873,19 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Valu
         }));
     }
     let (day, _) = notes::local_day_time();
-    let journal = std::fs::read_to_string(notes.root.join("journal").join(format!("{day}.md")))
-        .unwrap_or_default();
+    let mut journal =
+        std::fs::read_to_string(notes.root.join(notes::journal_file(&day))).unwrap_or_default();
+    // A day file at the journal root, from before the shelves or from a machine still
+    // writing there, is today's too.
+    if let Ok(flat) = std::fs::read_to_string(notes.root.join("journal").join(format!("{day}.md")))
+    {
+        if !journal.is_empty() && !journal.ends_with('\n') {
+            journal.push('\n');
+        }
+        journal.push_str(&flat);
+        // One line per effort across both, the later one.
+        journal = notes::tidy_journal(&journal);
+    }
     json!({
         "efforts": rows, "today": day, "journal": journal,
         "journal_lines": notes::parse_journal(&journal), "notes": notes.warnings(),

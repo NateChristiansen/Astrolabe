@@ -8,6 +8,10 @@ The plugin replaced the previous product on 2026-11-03. Its choices come first; 
 - Keep only the gated hook entry point. The owner's machine switch decides whether hooks do anything; loading an effort supplies context and settings to that session.
 - Treat the command guard as an accident guard. Prove interception in each session with an allowed control and a denied probe; never claim that it covers file edits or other tools.
 - Keep the existing privacy policy: no string-matching content scrubbers in this repo. Private content stays in the separate notes checkout; secrets rely on the forge's secret scanning and push protection.
+- File efforts and journal days on month shelves by creation date, over flat folders or folders by repo: the creation date never changes, so a file never moves and every link holds, and the board, not the folder, shows status.
+- Serve the owner's home as a page on localhost rather than a Markdown note or an Obsidian base: the owner saw a Markdown sample and found it too plain, and columns, colour and ticking ages need a page; Obsidian stays optional.
+- Start the server lazily from the hooks, one per machine by a lock, stopping when idle, over a login item or a scheduled task: the hooks already run at every change, and a login item is one more thing per machine to install and forget.
+- Have the page re-read itself when the server says the notes changed, rather than push the new board down the stream: the page already draws itself, and one path is less to keep right.
 - Count the notes' lessons on the board and never deliver them to sessions (2026-11-05). Stored experience helps when the store is small, curated and retired one entry at a time, and hurts as an always-loaded archive: instruction following falls with the count of rules, and growing lessons archives go stale and unread. A lesson is an inbox entry that ends as a short rule with its reason, a fix, or nothing, then is deleted; the folder's size is the backlog.
 
 ## Superseded 2026-11-05 by the plugin

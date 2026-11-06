@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark]|notes <sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette ember|iris|slate]|notes <sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -55,15 +55,16 @@ fn main() {
         ["home", rest @ ..] => {
             let mut open = false;
             let mut serve = false;
-            let mut port = astrolabe::home::SERVE_PORT;
+            let mut port: Option<u16> = None;
             let mut theme = None;
+            let mut palette = None;
             let mut words = rest.iter();
             while let Some(word) = words.next() {
                 match *word {
                     "--open" => open = true,
                     "--serve" => serve = true,
                     "--port" => match words.next().and_then(|w| w.parse().ok()) {
-                        Some(p) => port = p,
+                        Some(p) => port = Some(p),
                         None => fail("--port takes a number"),
                     },
                     "--theme" => {
@@ -72,36 +73,60 @@ fn main() {
                             None => fail("--theme takes auto, light or dark"),
                         }
                     }
+                    "--palette" => {
+                        match words
+                            .next()
+                            .and_then(|w| astrolabe::home::Palette::parse(w))
+                        {
+                            Some(p) => palette = Some(p),
+                            None => fail("--palette takes ember, iris or slate"),
+                        }
+                    }
                     _ => usage(),
                 }
             }
             match notes_here() {
                 Ok(notes) => {
-                    if let Some(theme) = theme
-                        && let Err(why) = astrolabe::home::set_theme(&notes, theme)
+                    if (theme.is_some() || palette.is_some())
+                        && let Err(why) = astrolabe::home::set_look(&notes, theme, palette)
                     {
                         fail(&why);
                     }
+                    if let Some(port) = port
+                        && let Err(why) = astrolabe::home::set_port(&notes, port)
+                    {
+                        fail(&why);
+                    }
+                    let port = port.unwrap_or_else(|| astrolabe::home::port(&notes));
                     if serve {
+                        // The machine's one server; a second leaves, naming the first.
+                        let Some(hold) = astrolabe::home::hold(&notes) else {
+                            println!("{}", astrolabe::home::url(&notes));
+                            eprintln!("already serving");
+                            return;
+                        };
                         match astrolabe::home::listen(port) {
                             Ok((listener, url)) => {
                                 println!("{url}");
                                 if open && let Err(why) = open_in_browser(&url) {
                                     fail(&why);
                                 }
-                                astrolabe::home::serve(&notes, listener);
+                                astrolabe::home::serve(&notes, listener, hold, port);
                             }
                             Err(why) => fail(&why),
                         }
                     }
+                    // The file first, then the server if none is up; the address is what
+                    // opens, since the file never reloads under the reader.
                     match notes.board() {
-                        Ok(path) => {
-                            println!("{}", path.display());
-                            if open && let Err(why) = open_in_browser(&path.display().to_string()) {
-                                fail(&why);
-                            }
-                        }
+                        Ok(path) => println!("{}", path.display()),
                         Err(why) => fail(&why),
+                    }
+                    if let Some(url) = astrolabe::home::ensure_serving(&notes) {
+                        println!("{url}");
+                        if open && let Err(why) = open_in_browser(&url) {
+                            fail(&why);
+                        }
                     }
                 }
                 Err(why) => fail(&why),

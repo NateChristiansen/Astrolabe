@@ -9,6 +9,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// An effort file on today's month shelf, where `effort new` files it.
+fn shelf(name: &str) -> String {
+    let (day, _) = astrolabe::notes::local_day_time();
+    format!("{}/{name}", astrolabe::notes::effort_dir(&day))
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
@@ -269,24 +275,17 @@ impl Machine {
     }
 
     fn effort_text(&self, n: u32) -> String {
-        let dir = self.notes.join("efforts");
-        let name = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .find(|f| f.starts_with(&format!("{n:04}-")))
-            .unwrap_or_else(|| panic!("no effort {n} in {}", dir.display()));
-        std::fs::read_to_string(dir.join(name)).unwrap()
+        let (_, rel) = astrolabe::notes::effort_files(&self.notes)
+            .into_iter()
+            .find(|(m, _)| *m == n)
+            .unwrap_or_else(|| panic!("no effort {n} under {}", self.notes.display()));
+        std::fs::read_to_string(self.notes.join(rel)).unwrap()
     }
 
     fn journal_today(&self) -> String {
-        let dir = self.notes.join("journal");
-        std::fs::read_dir(&dir)
-            .ok()
+        astrolabe::notes::md_files(&self.notes, "journal")
             .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| std::fs::read_to_string(e.path()).unwrap())
+            .map(|rel| std::fs::read_to_string(self.notes.join(rel)).unwrap())
             .collect()
     }
 
@@ -333,13 +332,14 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     );
     assert!(!ok && out.contains("no **Label:** lines"), "{out}");
     assert_eq!(mac.log().lines().count(), before);
-    assert!(!mac.notes.join("efforts/0001-nope.md").exists());
+    assert!(!mac.notes.join(shelf("0001-nope.md")).exists());
     let (out, ok) = mac.bash("s1", NEW);
     assert!(ok, "{out}");
     assert!(
-        out.contains(
-            "Effort 1 created as efforts/0001-smooth-ink.md, status active, bound to this session"
-        ),
+        out.contains(&format!(
+            "Effort 1 created as {}, status active, bound to this session",
+            shelf("0001-smooth-ink.md")
+        )),
         "{out}"
     );
     assert!(
@@ -651,7 +651,7 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The owner edits the note by hand.
-    let path = mac.notes.join("efforts/0001-smooth-ink.md");
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
     let edited = std::fs::read_to_string(&path)
         .unwrap()
         .replace("smooth the ink", "OWNER EDIT smooth the ink");
@@ -741,7 +741,7 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
         git(&pc.notes, &["status"])
     );
     assert!(
-        pc.notes.join("efforts/0004-pc-three.md").exists(),
+        pc.notes.join(shelf("0004-pc-three.md")).exists(),
         "{:?}",
         std::fs::read_dir(pc.notes.join("efforts"))
             .unwrap()
@@ -749,7 +749,7 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
             .map(|e| e.file_name())
             .collect::<Vec<_>>()
     );
-    assert!(!pc.notes.join("efforts/0003-pc-three.md").exists());
+    assert!(!pc.notes.join(shelf("0003-pc-three.md")).exists());
     assert!(pc.effort_text(4).contains("# 0004 PC three"));
     assert!(
         pc.effort_text(4).contains("renumbered from 0003"),
@@ -766,10 +766,10 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     let state: Value =
         serde_json::from_slice(&std::fs::read(pc.state().join("p2.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "4");
-    assert_eq!(state["file"], "efforts/0004-pc-three.md");
+    assert_eq!(state["file"], shelf("0004-pc-three.md"));
     // And the Mac sees it after its own pull, with the journal's day file merged by union.
     assert!(mac.sync().1);
-    assert!(mac.notes.join("efforts/0004-pc-three.md").exists());
+    assert!(mac.notes.join(shelf("0004-pc-three.md")).exists());
     let journal = mac.journal_today();
     assert!(
         journal.contains("Mac three's line <!-- 0003 mac ")
@@ -846,7 +846,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
     // A crash after the file write, before the commit: the file is there, nothing committed,
     // the intent remains.
     let intent = json!({
-        "key": "crashed-key", "files": [["efforts/0001-smooth-ink.md", std::fs::read_to_string(mac.notes.join("efforts/0001-smooth-ink.md")).unwrap().replace("smooth the ink", "CRASHED smooth the ink")]],
+        "key": "crashed-key", "files": [[shelf("0001-smooth-ink.md"), std::fs::read_to_string(mac.notes.join(shelf("0001-smooth-ink.md"))).unwrap().replace("smooth the ink", "CRASHED smooth the ink")]],
         // The first journal shape, as an intent written by the build before this one.
         "renames": [], "journal": [{"id": "crashed-key0", "kind": "decision", "effort": "0001", "title": "Smooth ink", "text": "crash line", "machine": "mac", "provider": "claude", "time": "01:00", "day": "2026-01-01"}],
         "message": "0001: checkpoint", "base": null, "states": []
@@ -856,7 +856,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
         &intent.to_string(),
     );
     std::fs::write(
-        mac.notes.join("efforts/0001-smooth-ink.md"),
+        mac.notes.join(shelf("0001-smooth-ink.md")),
         intent["files"][0][1].as_str().unwrap(),
     )
     .unwrap();
@@ -880,7 +880,7 @@ fn an_unfinished_write_is_finished_by_the_next_one_and_a_retry_commits_once() {
         "{log}"
     );
     assert!(
-        std::fs::read_to_string(mac.notes.join("journal/2026-01-01.md"))
+        std::fs::read_to_string(mac.notes.join(astrolabe::notes::journal_file("2026-01-01")))
             .unwrap()
             .contains("crash line")
     );
@@ -1314,7 +1314,7 @@ fn review_fixes_hold() {
         "{out}"
     );
     // Nested decision text survives a save.
-    let path = mac.notes.join("efforts/0001-smooth-ink.md");
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
     let text =
         std::fs::read_to_string(&path).unwrap() + "  nested detail under the last decision\n";
     std::fs::write(&path, &text).unwrap();
@@ -1488,7 +1488,7 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let board = mac.notes.join("home.html");
     let page = std::fs::read_to_string(&board).expect("the board is written at effort new");
     assert!(column(&page, "active").contains("Smooth ink"), "{page}");
-    assert!(page.contains("<span class=\"repo\">demo</span>"));
+    assert!(page.contains("<span class=\"pill repo\">demo</span>"));
     // Excluded in the checkout's own exclude file, so the board never reaches origin and
     // nothing is committed or left dirty for it.
     assert_eq!(git(&mac.notes, &["status", "--porcelain"]).trim(), "");
@@ -1501,22 +1501,36 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     );
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = std::fs::read_to_string(&board).unwrap();
-    let needs = column(&page, "needs");
-    assert!(needs.contains("Smooth ink") && needs.contains("class=\"waits\">which cap?<"));
+    let needs = column(&page, "needsyou");
+    assert!(needs.contains("Smooth ink") && needs.contains("class=\"ask\">which cap?<"));
     assert!(!column(&page, "active").contains("Smooth ink"));
     assert!(mac.bash("s1", "astrolabe effort save --status done --journal \"Smoothed the ink.\" <<'ASTROLABE'\nDone.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n").1);
     let page = std::fs::read_to_string(&board).unwrap();
     assert!(column(&page, "done").contains("Smooth ink"));
-    assert!(page.contains("<li>Smoothed the ink. <span class=\"num\">0001</span></li>"));
+    assert!(
+        page.contains("<span>Smoothed the ink.</span></li>"),
+        "{page}"
+    );
     // The plain command redraws and names the file.
     std::fs::remove_file(&board).unwrap();
     let (out, ok) = mac.run(&mac.notes, &["home"], "");
     assert!(ok, "{out}");
+    let file = out.lines().next().unwrap_or_default().trim();
     // The registered checkout may be the canonical path of the one the test knows.
     assert!(
-        out.trim().ends_with("home.html") && Path::new(out.trim()).exists(),
+        file.ends_with("home.html") && Path::new(file).exists(),
         "{out}"
     );
+    // Then the address, and the server was asked for (a marker stands in for the process
+    // under test).
+    assert!(
+        out.lines()
+            .nth(1)
+            .unwrap_or_default()
+            .starts_with("http://localhost:"),
+        "{out}"
+    );
+    assert!(mac.state().join("home-requested").exists());
     assert!(board.exists());
     // The other machine redraws its own copy when the saves arrive.
     assert!(mac.sync().1);
@@ -1542,10 +1556,20 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "dark"], "");
     assert!(ok, "{out}");
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
-    assert!(page.contains("content=\"dark\"") && !page.contains("prefers-color-scheme"));
+    assert!(page.contains("content=\"dark\"") && page.contains(" data-theme=\"dark\">"));
     assert!(pc.sync().1);
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
     assert!(page.contains("content=\"dark\""));
+    // A palette is kept the same way, beside the theme.
+    let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "iris"], "");
+    assert!(ok, "{out}");
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(
+        page.contains("data-palette=\"iris\" data-theme=\"dark\">"),
+        "{page}"
+    );
+    let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "mauve"], "");
+    assert!(!ok && out.contains("ember, iris or slate"), "{out}");
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "blue"], "");
     assert!(!ok && out.contains("auto, light or dark"), "{out}");
     assert!(pc.run(&pc.notes, &["home", "--theme", "auto"], "").1);
@@ -1644,7 +1668,7 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
     let notes = mac.notes.clone();
     let (out, ok) = mac.bash_from("n1", &notes, NEW, None);
     assert!(!ok && out.contains("--repo <name>"), "{out}");
-    assert!(!notes.join("efforts/0001-smooth-ink.md").exists());
+    assert!(!notes.join(shelf("0001-smooth-ink.md")).exists());
     let (out, ok) = mac.bash_from(
         "n1",
         &notes,
@@ -1784,7 +1808,7 @@ fn a_dirty_notes_checkout_still_pulls() {
     let (out, ok) = pc.sync();
     assert!(ok, "{out}");
     assert!(
-        pc.notes.join("efforts/0001-smooth-ink.md").exists(),
+        pc.notes.join(shelf("0001-smooth-ink.md")).exists(),
         "the Mac's effort arrived"
     );
     assert_eq!(
@@ -1880,6 +1904,7 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(mac.bash("s1", NEW).1);
     let mut child = Kill(
         mac.command(&mac.notes, &["home", "--serve", "--port", "0"])
+            .env("ASTROLABE_HOME_IDLE_SECS", "6")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1902,6 +1927,12 @@ fn the_board_is_served_fresh_on_localhost() {
         .and_then(|u| u.strip_suffix('/'))
         .unwrap_or_else(|| panic!("{url}"))
         .to_owned();
+    // A second server on this machine leaves at once, naming the address.
+    let (out, ok) = mac.run(&mac.notes, &["home", "--serve", "--port", "0"], "");
+    assert!(
+        ok && out.contains("already serving") && out.contains("http://localhost:"),
+        "{out}"
+    );
     // One request; a connection the runner's stack resets before any byte arrives (seen
     // once on Windows CI) is tried again, since that's the runner, not the server.
     let get = |target: &str, host: &str| {
@@ -1946,13 +1977,14 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
     assert!(page.contains("Cache-Control: no-store"));
     assert!(
-        page.contains("content=\"5\""),
-        "served pages reload every 5 s"
+        !page.contains("http-equiv=\"refresh\"") && page.contains("new EventSource('/events')"),
+        "a served page follows the stream instead of reloading: {page}"
     );
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card links through the server, since a browser refuses file links from a page.
-    assert!(page.contains("href=\"/efforts/0001-"), "{page}");
-    let link = page
+    assert!(page.contains("href=\"/efforts/"), "{page}");
+    // The card's own link, past the style sheet and the tree.
+    let link = page[page.find("class=\"card").unwrap()..]
         .split("href=\"")
         .nth(1)
         .unwrap()
@@ -1965,11 +1997,52 @@ fn the_board_is_served_fresh_on_localhost() {
         note.starts_with("HTTP/1.1 200 OK\r\n") && note.contains("text/html"),
         "{note}"
     );
-    assert!(note.contains("<h1>0001 Smooth ink</h1>"), "{note}");
+    assert!(
+        note.contains("<h1 id=\"0001-smooth-ink\">0001 Smooth ink</h1>"),
+        "{note}"
+    );
+    // A page holding the stream hears of a save within a few seconds; meanwhile the stream
+    // says nothing but that it's alive.
+    let mut events = std::net::TcpStream::connect(&addr).unwrap();
+    events
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    events
+        .write_all(format!("GET /events HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut heard = String::new();
+    let mut buf = [0u8; 1024];
+    let n = events.read(&mut buf).unwrap();
+    heard.push_str(&String::from_utf8_lossy(&buf[..n]));
+    assert!(
+        heard.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"),
+        "{heard}"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
     // Drawn per request: a save shows on the next fetch with no redraw of the file.
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = get("/", &addr);
-    assert!(column(&page, "needs").contains("which cap?"), "{page}");
+    assert!(column(&page, "needsyou").contains("which cap?"), "{page}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !heard.contains("event: changed") && std::time::Instant::now() < deadline {
+        match events.read(&mut buf) {
+            Ok(n) if n > 0 => heard.push_str(&String::from_utf8_lossy(&buf[..n])),
+            _ => break,
+        }
+    }
+    assert!(heard.contains("event: changed\ndata: "), "{heard}");
+    drop(events);
+    // Another origin can't hold the stream either.
+    let mut other = std::net::TcpStream::connect(&addr).unwrap();
+    other
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    other
+        .write_all(b"GET /events HTTP/1.1\r\nHost: evil.example:80\r\n\r\n")
+        .unwrap();
+    let mut out = String::new();
+    other.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 421"), "{out}");
     // A lesson in the notes' inbox is counted, listed and served as a page.
     assert!(!page.contains("to triage"), "{page}");
     std::fs::create_dir_all(mac.notes.join("lessons")).unwrap();
@@ -1979,14 +2052,14 @@ fn the_board_is_served_fresh_on_localhost() {
     )
     .unwrap();
     let page = get("/", &addr);
-    assert!(page.contains("1 lesson to triage"), "{page}");
+    assert!(page.contains("<b>1</b> lesson to triage"), "{page}");
     assert!(
         page.contains("href=\"/lessons/2026-11-05-gates.md\">Gates did not stop</a>"),
         "{page}"
     );
     let lesson = get("/lessons/2026-11-05-gates.md", &addr);
     assert!(
-        lesson.starts_with("HTTP/1.1 200 OK\r\n") && lesson.contains("<h1>Gates did not stop</h1>"),
+        lesson.starts_with("HTTP/1.1 200 OK\r\n") && lesson.contains("Gates did not stop"),
         "{lesson}"
     );
     assert!(get("/lessons/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
@@ -2005,7 +2078,11 @@ fn the_board_is_served_fresh_on_localhost() {
         "{out}"
     );
     assert!(get("/efforts/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
-    assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
+    // Any note by its path is a page, since the board is where the owner reads them; a
+    // dot folder (the plugin's own state, an app's config) is not.
+    assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 200"));
+    assert!(get("/.git/config", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/.agents/x.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(
         get("/", "evil.example:80").starts_with("HTTP/1.1 421"),
         "another host gets nothing"
@@ -2059,4 +2136,20 @@ fn the_board_is_served_fresh_on_localhost() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // With nothing asking for a while, the server stops on its own and the lock goes with
+    // it; the next change to the notes starts one again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let exited = loop {
+        if let Ok(Some(status)) = child.0.try_wait() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        exited.is_some_and(|s| s.success()),
+        "the server stops when idle: {exited:?}"
+    );
 }
