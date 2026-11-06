@@ -1470,7 +1470,7 @@ fn a_bad_repo_name_is_refused_before_anything_is_written() {
 }
 
 #[test]
-fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_shells() {
+fn markers_live_where_a_sandboxed_shell_can_write_and_an_effort_load_names_its_shell() {
     let f = Fixture::new();
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok, "{text}");
@@ -1483,9 +1483,9 @@ fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_sh
     let name = probe_dir.file_name().unwrap().to_string_lossy();
     assert!(name.starts_with("astrolabe-probe-"), "{probe}");
     assert!(probe_dir.is_dir(), "made, so the shell's touch works");
-    // Claude on Windows may use Bash or PowerShell, so loading an effort offers both.
+    // Loading an effort names the shell it ran in, so it offers that one's steps only.
     let both = text.contains("For PowerShell:") && text.contains("For the POSIX shell");
-    assert_eq!(both, cfg!(windows), "{text}");
+    assert!(!both, "{text}");
     f.control(&text);
     assert!(f.denies("s1", &f.probe(&text)));
     let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
