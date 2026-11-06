@@ -1,6 +1,6 @@
 # Astrolabe
 
-A plugin for Claude Code and Codex that carries an owner's notes between sessions and machines. It delivers owner and voice files, loads effort context when asked, records work in a separate notes repo, and draws a local board. Its shell hook guards against a fixed set of destructive commands.
+A plugin for Claude Code and Codex that carries an owner's notes between sessions and machines. It delivers owner and voice files, loads effort context when asked, records work in a separate notes repo, and serves the owner's home on the machine: the board, the notes tree and each note as a page. Its shell hook guards against a fixed set of destructive commands.
 
 The repo contains the [plugin](plugin/README.md) and the Rust program its hooks call. Personal notes and machine bindings stay outside this repo.
 
@@ -25,8 +25,8 @@ See the [plugin instructions](plugin/README.md) for installation and the binary 
 - `on`, `off`, `status`: the machine switch, operated by the owner.
 - `activate --effort <number> [--worker]`, `activate --status`, `activate --off`: load effort context for this session, inspect guard proof, or unload the effort.
 - `effort new`, `effort save`, `journal`: record work through the plugin's pre-command hook.
-- `efforts [--repo <name>] [--all]`: list what the board reads as JSON.
-- `home [--open] [--serve [--port <number>]] [--theme auto|light|dark]`: draw or serve the board.
+- `efforts [--repo <name>] [--all]`: list what the home reads as JSON.
+- `home [--open] [--serve] [--port <number>] [--theme auto|light|dark] [--palette ember|iris|slate]`: draw the file, make sure the server is up and print its address; `--serve` runs the server in the foreground.
 - `notes sync`, `notes status`: publish notes or inspect their sync state.
 - `repo add <name> [<checkout>]`: register the notes checkout, record a target repo's remote in its note, or register a local repo without a remote.
 
