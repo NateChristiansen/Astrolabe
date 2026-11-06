@@ -63,12 +63,12 @@ Normally, ask the agent to start work or **pick up 12**. It runs these commands 
 - `astrolabe effort save`: save the current state, with the new text in the command's input.
 - `astrolabe journal "<sentence>"`: record a finding worth keeping without creating an effort. From the notes folder, include `--repo <name>`.
 
-The plugin supplies the agent with the full recording format, including plans, decisions, checklists and journal updates. These commands must run alone so the pre-command hook can handle them. Running the program directly doesn't load or save an effort. See [recording internals](internals.md#recording-work).
+The plugin supplies the agent with the full recording format, including plans, decisions, checklists and journal updates. These commands must run alone so the pre-command hook can handle them. Running the program directly doesn't load or save an effort. See [how recording works](architecture.md#recording-work).
 
 ## Hook entry point
 
 The plugin runs the installed program with `hook <event> --if-active`. It does nothing while the machine switch is off.
 
-The guard checks shell commands supplied to the hook; it can't see file edits or other tools. Each session proves its own hook with an allowed control and a denied probe. Effort settings guide agents and aren't enforced permissions. See [guard details](internals.md#the-shell-guard).
+The guard checks shell commands supplied to the hook; it can't see file edits or other tools. Each session proves its own hook with an allowed control and a denied probe. Effort settings guide agents and aren't enforced permissions. See [guard details](architecture.md#the-shell-guard).
 
 [Installation](../plugin/README.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)

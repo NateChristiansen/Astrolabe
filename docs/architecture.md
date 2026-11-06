@@ -1,6 +1,6 @@
-# How Astrolabe works
+# Architecture
 
-This is the implementation reference. For normal use, start with [installation](../plugin/README.md) or [Using Astrolabe](usage.md).
+This guide explains how the plugin, notes and local board work together. For normal use, start with [installation](../plugin/README.md) or [Using Astrolabe](usage.md).
 
 ## Machine and session state
 
@@ -52,9 +52,9 @@ Personal content lives in the notes checkout and is read at runtime:
 
 - `knowledge/owner.md` and `knowledge/voice.md`: preferences delivered to new sessions.
 - `knowledge/machines.md` and `knowledge/repos/<name>.md`: context delivered with an effort.
-- `efforts/<year>/<month>/NNNN-slug.md`: effort records, stored by creation date so status changes don't move files.
+- `efforts/<year>/<month>/NNNN-slug.md`: effort records, stored by creation date so status changes don't move files or break links.
 - `journal/<year>/<month>/<day>.md`: the owner's history, written by agents rather than generated from tool activity.
-- `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it. Triaged entries are deleted.
+- `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it, so unreviewed observations don't become standing instructions. Triaged entries are deleted.
 - `initiatives/`: notes for groups of related efforts.
 - `.agents/`: material agents write for each other, hidden behind the board's dot-folder toggle.
 
@@ -66,7 +66,7 @@ The notes checkout is registered locally as `agent`. Target repos with remotes a
 
 ## Serving the board
 
-Session starts and notes changes ensure a local server is running. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. The `home` command can set the port, open the browser or run the server in the foreground.
+Session starts and notes changes ensure a local server is running. Starting it from the hooks saves the owner from configuring a separate startup service. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. The `home` command can set the port, open the browser or run the server in the foreground.
 
 The page receives change notifications and refreshes the board, tree or open note in place. It preserves the reader's scroll and navigation. The notes tree groups efforts and journal entries by month, newest first.
 
@@ -88,4 +88,4 @@ The guard doesn't see file edits, MCP calls, input written into an existing shel
 - Instructions already delivered to a running session don't update automatically. Tell the agent about the change or start a fresh session.
 - Synchronizing notes doesn't synchronize project files or reconstruct an unsaved conversation.
 
-[Design decisions](decisions.md) · [Contributing](../CONTRIBUTING.md) · [Command reference](commands.md)
+[Contributing](../CONTRIBUTING.md) · [Command reference](commands.md)

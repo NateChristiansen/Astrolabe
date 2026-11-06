@@ -28,4 +28,4 @@ Setup creates a notes repo and a first effort, “Fill in your notes,” to help
 
 Then read [Using Astrolabe](docs/usage.md) for starting work, choosing when agents check in, and picking up where you left off.
 
-[Command reference](docs/commands.md) · [How it works](docs/internals.md) · [Contributing](CONTRIBUTING.md)
+[Command reference](docs/commands.md) · [How it works](docs/architecture.md) · [Contributing](CONTRIBUTING.md)

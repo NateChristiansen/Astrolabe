@@ -202,6 +202,6 @@ codex plugin remove astrolabe@astrolabe
 codex plugin marketplace remove astrolabe
 ```
 
-Uninstalling leaves your notes, the installed program, and [local machine state](../docs/internals.md#files-and-local-state) in place. Turning it off doesn't erase context already delivered to a session.
+Uninstalling leaves your notes, the installed program, and [local machine state](../docs/architecture.md#files-and-local-state) in place. Turning it off doesn't erase context already delivered to a session.
 
-[Using Astrolabe](../docs/usage.md) · [Command reference](../docs/commands.md) · [Troubleshooting](../docs/troubleshooting.md) · [Internals](../docs/internals.md) · [Project overview](../README.md)
+[Using Astrolabe](../docs/usage.md) · [Command reference](../docs/commands.md) · [Troubleshooting](../docs/troubleshooting.md) · [Architecture](../docs/architecture.md) · [Project overview](../README.md)

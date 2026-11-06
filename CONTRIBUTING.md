@@ -16,12 +16,11 @@ Building alone does not install the plugin. Follow the [installation guide](plug
 ## Project documentation
 
 - [Using Astrolabe](docs/usage.md): the owner's everyday workflow.
-- [Plugin internals](docs/internals.md): hooks, session context, notes, and the local board.
+- [Architecture](docs/architecture.md): hooks, session context, notes, and the local board.
 - [Command reference](docs/commands.md): terminal and agent-session commands.
 - [Versions and compatibility](docs/versions.md): build pins and required app capabilities.
-- [Design decisions](docs/decisions.md): current choices and superseded records.
 - [Icon and colors](assets/branding/README.md): the shared mark and its appearance.
 
 Personal notes and machine bindings stay outside this repository.
 
-When changing behavior, update the guide where a reader uses it. Keep setup steps in the installation guide, everyday tasks in the usage guide, and implementation details in the internals reference.
+When changing behavior, update the guide where a reader uses it. Keep setup steps in the installation guide, everyday tasks in the usage guide, and implementation details in the architecture guide.
