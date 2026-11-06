@@ -30,6 +30,30 @@ fn run(dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+fn receipt(dir: &std::path::Path, bytes: &[u8]) {
+    use sha2::{Digest, Sha256};
+    fs::write(
+        dir.join(".astrolabe-install.json"),
+        serde_json::json!({
+            "format": 1, "version": "0.4.0", "sha256": format!("{:x}", Sha256::digest(bytes))
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+fn backup(dir: &std::path::Path) -> std::path::PathBuf {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".astrolabe-backup-")
+        })
+        .unwrap()
+        .path()
+}
+
 #[test]
 fn fresh_install_and_repeat_preserve_unrelated_files() {
     let temp = TempDir::new();
@@ -47,10 +71,7 @@ fn fresh_install_and_repeat_preserve_unrelated_files() {
             fs::read(dir.join(name())).unwrap(),
             fs::read(binary()).unwrap()
         );
-        assert_eq!(
-            fs::read(dir.join(trial())).unwrap(),
-            fs::read(binary()).unwrap()
-        );
+        assert!(!dir.join(trial()).exists());
         assert_eq!(
             fs::read_to_string(dir.join("notes.md")).unwrap(),
             "my notes"
@@ -69,95 +90,90 @@ fn fresh_install_and_repeat_preserve_unrelated_files() {
 }
 
 #[test]
-fn unmanaged_programs_are_never_replaced_implicitly() {
+fn unreceipted_programs_are_never_replaced() {
     let temp = TempDir::new();
     fs::write(temp.0.join(name()), "some other app").unwrap();
     assert!(!run(&temp.0, &[]).status.success());
-    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
     assert_eq!(
         fs::read_to_string(temp.0.join(name())).unwrap(),
         "some other app"
     );
-    assert!(!temp.0.join(trial()).exists());
 }
 
 #[test]
-fn explicit_trial_migration_keeps_a_backup() {
+fn the_migration_flag_is_gone() {
     let temp = TempDir::new();
-    fs::copy(binary(), temp.0.join(trial())).unwrap();
-    assert!(!run(&temp.0, &[]).status.success());
-    let output = run(&temp.0, &["--migrate-trial"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let backup = fs::read_dir(&temp.0)
-        .unwrap()
-        .flatten()
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with(".astrolabe-backup-")
-        })
-        .unwrap()
-        .path();
-    assert_eq!(
-        fs::read(backup.join(trial())).unwrap(),
-        fs::read(binary()).unwrap()
-    );
+    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert!(!temp.0.join(name()).exists());
 }
 
 #[test]
-fn an_update_replaces_both_managed_names_and_keeps_the_old_bytes() {
-    use sha2::{Digest, Sha256};
+fn an_update_replaces_the_program_and_retires_the_old_copy() {
     let temp = TempDir::new();
     let old = b"a previous managed build";
     fs::write(temp.0.join(name()), old).unwrap();
     fs::write(temp.0.join(trial()), old).unwrap();
-    fs::write(
-        temp.0.join(".astrolabe-install.json"),
-        serde_json::json!({
-            "format": 1, "version": "0.4.0", "sha256": format!("{:x}", Sha256::digest(old))
-        })
-        .to_string(),
-    )
-    .unwrap();
+    receipt(&temp.0, old);
     let output = run(&temp.0, &[]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Retired"));
     assert_eq!(
         fs::read(temp.0.join(name())).unwrap(),
         fs::read(binary()).unwrap()
     );
-    assert_eq!(
-        fs::read(temp.0.join(trial())).unwrap(),
-        fs::read(binary()).unwrap()
-    );
-    let backup = fs::read_dir(&temp.0)
-        .unwrap()
-        .flatten()
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with(".astrolabe-backup-")
-        })
-        .unwrap()
-        .path();
+    assert!(!temp.0.join(trial()).exists());
+    let backup = backup(&temp.0);
     assert_eq!(fs::read(backup.join(name())).unwrap(), old);
     assert_eq!(fs::read(backup.join(trial())).unwrap(), old);
 }
 
 #[test]
-fn modified_managed_program_and_corrupt_receipt_are_not_adopted() {
+fn a_current_install_still_retires_its_old_copy() {
     let temp = TempDir::new();
     assert!(run(&temp.0, &[]).status.success());
+    fs::copy(binary(), temp.0.join(trial())).unwrap();
+    let output = run(&temp.0, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!temp.0.join(trial()).exists());
+    assert_eq!(
+        fs::read(temp.0.join(name())).unwrap(),
+        fs::read(binary()).unwrap()
+    );
+}
+
+#[test]
+fn an_old_copy_that_is_not_the_receipted_build_is_kept() {
+    let temp = TempDir::new();
+    fs::write(temp.0.join(trial()), "an older unreceipted trial build").unwrap();
+    let output = run(&temp.0, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("left in place"));
     fs::write(temp.0.join(trial()), "edited").unwrap();
-    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    let output = run(&temp.0, &[]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("left in place"));
     assert_eq!(fs::read_to_string(temp.0.join(trial())).unwrap(), "edited");
+}
+
+#[test]
+fn modified_program_and_corrupt_receipt_are_not_adopted() {
+    let temp = TempDir::new();
+    assert!(run(&temp.0, &[]).status.success());
+    fs::write(temp.0.join(name()), "edited").unwrap();
+    assert!(!run(&temp.0, &[]).status.success());
+    assert_eq!(fs::read_to_string(temp.0.join(name())).unwrap(), "edited");
     fs::write(temp.0.join(".astrolabe-install.json"), "broken").unwrap();
     assert!(!run(&temp.0, &[]).status.success());
 }
@@ -180,10 +196,10 @@ fn interrupted_install_refuses_to_destroy_recovery_files() {
 
 #[cfg(unix)]
 #[test]
-fn symlinks_are_not_followed_even_during_migration() {
+fn symlinks_are_not_followed() {
     let temp = TempDir::new();
     std::os::unix::fs::symlink(binary(), temp.0.join(name())).unwrap();
-    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert!(!run(&temp.0, &[]).status.success());
     assert!(
         fs::symlink_metadata(temp.0.join(name()))
             .unwrap()
@@ -192,21 +208,37 @@ fn symlinks_are_not_followed_even_during_migration() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlinked_old_copy_is_left_alone() {
+    let temp = TempDir::new();
+    assert!(run(&temp.0, &[]).status.success());
+    std::os::unix::fs::symlink(temp.0.join(name()), temp.0.join(trial())).unwrap();
+    let output = run(&temp.0, &[]);
+    assert!(output.status.success());
+    assert!(
+        fs::symlink_metadata(temp.0.join(trial()))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[cfg(windows)]
 #[test]
-fn a_locked_trial_file_does_not_replace_the_primary() {
+fn a_locked_old_copy_leaves_the_install_as_it_was() {
     use std::os::windows::fs::OpenOptionsExt;
     let temp = TempDir::new();
-    fs::copy(binary(), temp.0.join(name())).unwrap();
-    fs::copy(binary(), temp.0.join(trial())).unwrap();
+    let old = b"a previous managed build";
+    fs::write(temp.0.join(name()), old).unwrap();
+    fs::write(temp.0.join(trial()), old).unwrap();
+    receipt(&temp.0, old);
     let _held = fs::File::options()
         .read(true)
         .share_mode(0)
         .open(temp.0.join(trial()))
         .unwrap();
-    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
-    assert_eq!(
-        fs::read(temp.0.join(name())).unwrap(),
-        fs::read(binary()).unwrap()
-    );
+    assert!(!run(&temp.0, &[]).status.success());
+    assert_eq!(fs::read(temp.0.join(name())).unwrap(), old);
+    assert!(temp.0.join(trial()).exists());
 }

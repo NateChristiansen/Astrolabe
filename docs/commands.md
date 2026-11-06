@@ -50,7 +50,7 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 
 ## Install the program
 
-`install [--migrate-trial] [--dir <folder>]` installs the executable you invoked; it does not download a release or install the plugin. Normal installation uses your user-local bin folder, matching the hooks. `--migrate-trial` explicitly adopts an older unreceipted Astrolabe build. `--dir` is for isolated testing and does not change where the hooks look. See [installation and migration](install.md#migrate-an-existing-installation).
+`install [--dir <folder>]` installs the executable you invoked; it does not download a release or install the plugin. Normal installation uses your user-local bin folder, matching the hooks. It replaces only a program its receipt recorded, and moves the `astrolabe-trial` copy that 0.5.0 also installed into the backup folder. `--dir` is for isolated testing and does not change where the hooks look. See [installation](install.md#1-download-and-install-the-program).
 
 ## Board and notes
 

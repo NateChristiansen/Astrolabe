@@ -35,7 +35,7 @@ The wrappers preserve cargo-dist's license header. They require hash verificatio
 
 ## Review before publication
 
-1. Require green checks and native installer smoke tests on the exact revision for every advertised target. Verify both command names report the release version and failed downloads preserve the previous program.
+1. Require green checks and native installer smoke tests on the exact revision for every advertised target. Verify `astrolabe --version` reports the release version, an update over 0.5.0 retires its `astrolabe-trial` copy, and failed downloads preserve the previous program.
 2. Test the downloaded archives under normal OS protections. The initial pipeline does not sign or notarize executables. Resolve any Gatekeeper, SmartScreen, script-policy, or prerequisite failures before advertising ordinary-user support; do not solve these by disabling OS protections in the installer.
 3. Test the hosted marketplace from the candidate tag in each supported app, including migration from a local marketplace, removal and re-registration at a new tag, hook review, and a fresh session's guard proof. Manifest validation alone does not establish host support. Use disposable app profiles or explicitly approved machines.
 4. Review the installer, archive hashes, versioned catalogs, release notes, and rollback steps. Obtain authorization to push the candidate and run remote CI when needed; obtain authorization to publish the final release. A local preview does not authorize either action.
@@ -44,19 +44,19 @@ Publication is manual after review: create the version tag on the tested revisio
 
 ## Updates and rollback
 
-The program and plugin share a version, but the installer does not modify app configuration. Users update the program, replace the marketplace registration with the new tag, install the matching plugin, review changed hooks, and start a fresh session. The compatibility copy keeps old trial-named hooks callable during this transition; it is not permission to run arbitrary older plugins with newer executables indefinitely.
+The program and plugin share a version, but the installer does not modify app configuration. Users update the program, replace the marketplace registration with the new tag, install the matching plugin, review changed hooks, and start a fresh session.
 
-The install receipt records a format version, release version, and binary hash. Future updates refuse a managed executable whose bytes no longer match. Adopting an unreceipted installation requires `--migrate-trial` and checks both existing programs with `--version`. Symlinks and unrelated files are refused. A successful update retains old files in the printed `.astrolabe-backup-*` folder. Notes and the machine state remain outside this transaction.
+The install receipt records a format version, release version, and binary hash. Future updates refuse a managed executable whose bytes no longer match. An unreceipted `astrolabe`, symlinks and unrelated files are refused. An `astrolabe-trial` copy that matches the receipt is moved into the backup; any other file by that name is left in place. A successful update retains old files in the printed `.astrolabe-backup-*` folder. Notes and the machine state remain outside this transaction.
 
-For a normal rollback, rerun the previous release's installer and register its matching plugin. For the first trial migration, restore the backed-up executable names and previous plugin checkout instead. Keep the backup until the fresh-session check succeeds.
+For a normal rollback, rerun the previous release's installer and register its matching plugin. Keep the backup until the fresh-session check succeeds.
 
 ## Recover an interrupted installation
 
-Close Astrolabe sessions and its board before recovery. If `.astrolabe-install-pending` exists in the install folder, read it: it names the unique backup folder and which files existed before the attempt. The installer refuses another attempt until this is resolved.
+Close Astrolabe sessions and its board before recovery. If `.astrolabe-install-pending` exists in the install folder, read it: it names the unique backup folder and which files were moved there. The installer refuses another attempt until this is resolved.
 
-The managed files are `astrolabe`, `astrolabe-trial`, and `.astrolabe-install.json` (the executable names end in `.exe` on Windows). The backup's top level contains originals that were moved; its `new` folder contains any replacements not yet moved. Do not restore files from `new` as originals.
+The managed files are `astrolabe` and `.astrolabe-install.json`, plus an old `astrolabe-trial` copy being retired (the executable names end in `.exe` on Windows). The backup's top level contains originals that were moved; its `new` folder contains any replacements not yet moved. Do not restore files from `new` as originals.
 
-For each managed file, restore the top-level backup copy when present. If the marker says the file originally existed and there is no backup copy, its original was never moved; leave the destination in place. If the marker says it did not exist, remove only that managed destination file if the failed attempt created it. Once all originals are restored, remove only `.astrolabe-install-pending` and retry. Keep the backup folder until recovery and the fresh-session check succeed. Do not delete notes or the machine-state folder.
+For each file the marker lists, restore the top-level backup copy when present; if there is no backup copy, its original was never moved, so leave the destination in place. For a managed file the marker doesn't list, remove only that destination file if the failed attempt created it. Once all originals are restored, remove only `.astrolabe-install-pending` and retry. Keep the backup folder until recovery and the fresh-session check succeed. Do not delete notes or the machine-state folder.
 
 Ordinary replacement failures attempt this rollback automatically. If rollback itself fails, the error names the recovery files instead of claiming the old installation was restored.
 
