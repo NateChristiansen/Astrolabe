@@ -1,0 +1,459 @@
+use super::*;
+
+#[test]
+fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let start = mac.session_start("s1", "startup");
+    assert!(start.contains("astrolabe effort new"), "{start}");
+    // A labelled goal is refused before the lock and pull: no file, no commit.
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Nope\" <<'ASTROLABE'\n**Goal:** g.\nASTROLABE\n",
+    );
+    assert!(!ok && out.contains("no **Label:** lines"), "{out}");
+    assert_eq!(mac.log().lines().count(), before);
+    assert!(!mac.notes.join(shelf("0001-nope.md")).exists());
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains(&format!(
+            "Effort 1 created as {}, status active, bound to this session",
+            shelf("0001-smooth-ink.md")
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains("involvement check in at plan · authority edit"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Astrolabe is on in this session for effort 1"),
+        "{out}"
+    );
+    let text = mac.effort_text(1);
+    for line in [
+        "status: active",
+        "repo: demo",
+        "involvement: check in at plan",
+        "authority: edit",
+        "saved_by: mac · claude",
+        "branch: main",
+        "dirty: false",
+        "# 0001 Smooth ink",
+        "## Current state\nsmooth the ink across frames, with café in it\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    // Starting is state, not history: no journal line until the agent writes one.
+    assert!(
+        !mac.notes.join("journal").exists(),
+        "{}",
+        mac.journal_today()
+    );
+    assert!(mac.log().starts_with("0001: started\n"), "{}", mac.log());
+    assert!(mac.notes.join(".gitattributes").exists());
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
+    assert_eq!(state["effort"], "1");
+    assert!(state["delivered"].is_string() && state["baseline"].is_string());
+    // The same command typed again with no hook explains itself from the ticket.
+    let (plain, ok) = mac.plain(NEW);
+    assert!(ok, "{plain}");
+    assert!(plain.contains("Effort 1 created"), "{plain}");
+    // A different plain command with no hook is NOT recorded.
+    let (plain, ok) =
+        mac.plain("astrolabe effort new --title \"Other\" <<'ASTROLABE'\ngoal\nASTROLABE\n");
+    assert!(!ok && plain.contains("NOT recorded"), "{plain}");
+    // A subagent can't.
+    let (out, ok) = mac.bash_as("s1", NEW, Some("child-1"));
+    assert!(!ok && out.contains("subagent"), "{out}");
+    // Resume re-injects the effort with its freshness.
+    let resumed = mac.session_start("s1", "resume");
+    assert!(
+        resumed.contains("Last saved by mac · claude at"),
+        "{resumed}"
+    );
+}
+
+#[test]
+fn current_state_and_blocked_status_are_saved() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n**Goal:** g.\n**Done:** half.\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("no **Label:** lines (**Goal:** g.)"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nActive, half done.\n\nNext: the rest.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Current state replaced"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status blocked");
+    assert!(!ok && out.contains("--waits-for"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: should it be X?\""),
+        "{}",
+        mac.effort_text(1)
+    );
+    // Blocked is state: nothing in the journal.
+    assert!(!mac.notes.join("journal").exists());
+}
+
+#[test]
+fn prose_validation_refuses_unsupported_shapes() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    // A long block and a long journal line are refused before anything is written.
+    let long = (0..151).map(|_| "word").collect::<Vec<_>>().join(" ");
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"),
+    );
+    assert!(
+        !ok && out.contains("151 words") && out.contains("under 150"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one\"");
+    assert!(
+        !ok && out.contains("41 words") && out.contains("aim for 25"),
+        "{out}"
+    );
+    // The shapes sessions wrote with the rule alone are refused with what to write instead.
+    for (line, why) in [
+        (
+            "Landed the ink smoothing helper. Merged.",
+            "where the work stands",
+        ),
+        (
+            "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
+            "3 sentences",
+        ),
+        (
+            "Chat replies drift without voice.md at start.",
+            "names a file (voice.md)",
+        ),
+        (
+            "Replies lose the owner's voice without the voice note.",
+            "the owner",
+        ),
+        (
+            "Moved the hook script out of src/hooks/old and it fires again.",
+            "names a file",
+        ),
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(
+            !ok && out.contains(why) && out.contains("Nothing was written"),
+            "{line}: {out}"
+        );
+    }
+    // A name after a full stop, a decimal, a slash between words and a status word inside a
+    // sentence are not those shapes.
+    for line in [
+        "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
+        "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
+        "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(ok, "{line}: {out}");
+    }
+}
+
+#[test]
+fn journal_replacement_keeps_one_line_per_day() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --status blocked --waits-for waiting"
+        )
+        .1
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
+    assert!(
+        ok && out.contains("status done") && out.contains("journal line written"),
+        "{out}"
+    );
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("status: done")
+            && text.contains("waits_for: \"\"")
+            && text.contains("- 20")
+            && text.contains(": X over Y: cheaper"),
+        "{text}"
+    );
+    // The journal holds only the agent's sentence, with a hidden tail.
+    let journal = mac.journal_today();
+    assert!(
+        journal.starts_with(
+            "- Started smoothing the ink; the first frame still jumps. <!-- 0001 mac "
+        ) && journal.lines().count() == 1,
+        "{journal}"
+    );
+    assert_eq!(mac.log().lines().next(), Some("0001: done"));
+    // A later line the same day replaces this writer's earlier one: one per effort per day.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"Finished the ink smoothing: strokes no longer split across frames.\"");
+    assert!(ok, "{out}");
+    let journal = mac.journal_today();
+    assert!(
+        journal.starts_with("- Finished the ink smoothing") && journal.lines().count() == 1,
+        "{journal}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"two\nlines\"");
+    assert!(!ok && out.contains("one line"), "{out}");
+}
+
+#[test]
+fn plan_sources_preserve_section_boundaries() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    // The plan file is read as the user, relative to the session's folder.
+    write(&mac.demo.join("plan.md"), "the plan");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active --plan-file plan.md",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\nthe plan\n"));
+    assert!(mac.journal_today().is_empty());
+    // Codex keeps no plan file: the plan rides in the body under a `## Plan` line, and the
+    // fields above it are the Current state.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nActive: g.\n\nNext: n.\n\n## Plan\n1. first\n2. second\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains("## Plan\n1. first\n2. second\n"), "{text}");
+    assert!(
+        text.contains("## Current state\nActive: g.\n\nNext: n.\n\n## "),
+        "{text}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --plan-file plan.md <<'ASTROLABE'\n## Plan\nagain\nASTROLABE",
+    );
+    assert!(!ok && out.contains("one way"), "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\n1. first\n"));
+    // A heading inside a section would split it on the next read. The plan is the app's
+    // file, so its headings are demoted and said so; an indented one counts, as it's stored
+    // trimmed. Current state and Pieces are refused.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n## Plan\n## Plan\nsecond\nASTROLABE",
+    );
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    assert!(mac.effort_text(1).contains("## Plan\n### Plan\nsecond\n"));
+    write(
+        &mac.demo.join("plan.md"),
+        "  ## Current state\n**Goal:** stolen",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --plan-file plan.md");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Current state\n**Goal:** stolen\n"),
+        "{text}"
+    );
+    assert!(text.contains("## Current state\nActive: g.\n"), "{text}");
+    // The plan sits below Decisions, and a plan file's own `# ` title and its `## ` parts
+    // shift together so the top lands at `###`.
+    write(
+        &mac.demo.join("plan.md"),
+        "# Plan: ink\n\n## Context\nwhy\n### Step 1\n#### sub\n#not a heading\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status proposed --plan-file plan.md --decision \"a over b: c\"",
+    );
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Plan: ink\n\n#### Context\nwhy\n##### Step 1\n###### sub\n#not a heading\n"),
+        "{text}"
+    );
+    assert!(
+        text.find("## Decisions").unwrap() < text.find("## Plan").unwrap(),
+        "{text}"
+    );
+    // A plan written only at `####` lifts to `###`; bold prose in Current state is not a
+    // label.
+    write(&mac.demo.join("plan.md"), "#### Only\n##### deep\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status active --plan-file plan.md <<'ASTROLABE'\n**Done.** Merged the **parser:** cleanup.\n\nNext: n.\nASTROLABE");
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains("## Plan\n### Only\n#### deep\n"), "{text}");
+    assert!(
+        text.contains("## Current state\n**Done.** Merged"),
+        "{text}"
+    );
+    // Only headings change, all by the same step: line endings and an indented line (no
+    // heading to the reader) stay as they were.
+    write(
+        &mac.demo.join("plan.md"),
+        "## Steps\r\n  ## not a heading\r\n### sub\r\n",
+    );
+    // A different command from the one above, or it reads as that call's retry.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status ready --plan-file plan.md",
+    );
+    assert!(ok && out.contains("top level is `###`"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Steps\r\n  ## not a heading\r\n#### sub\n"),
+        "{text:?}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\ng.\n## Decisions\nASTROLABE",
+    );
+    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    write(&mac.demo.join("pieces.md"), "## Pieces\n- [ ] x\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
+    assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\n## Plan\n### Step one\nfirst\n### Step two\nsecond\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status active");
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Plan\n### Step one\nfirst\n### Step two\nsecond\n"),
+        "{text}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save");
+    assert!(!ok && out.contains("nothing to save"), "{out}");
+}
+
+#[test]
+fn pieces_are_matched_by_name_and_survive_saves() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    // Pieces: a checklist the owner reads, ticked by name, counted for the home view.
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick \"Tether\"",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("## Pieces\n- [x] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n"),
+        "{text}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Goo\"");
+    assert!(!ok && out.contains("more than one piece"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Nothing\"");
+    assert!(!ok && out.contains("no piece starts with"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --tick \"Goo at\" --untick \"Goo at speed\"",
+    );
+    assert!(!ok && out.contains("both ticked and unticked"), "{out}");
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --tick \"Goo at\" --untick \"Tether\""
+        )
+        .1
+    );
+    assert!(
+        mac.effort_text(1)
+            .contains("- [ ] Tether cap\n- [x] Goo at speed\n")
+    );
+    // Pieces survive a Current state save.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save <<'ASTROLABE'\nActive: g.\n\nNext: n.\nASTROLABE\n"
+        )
+        .1
+    );
+    assert!(mac.effort_text(1).contains("- [x] Goo at speed"));
+    let (out, ok) = mac.run(&mac.demo, &["efforts", "--all"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["efforts"][0]["pieces"], json!({"done": 1, "total": 3}));
+}
+
+#[test]
+fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The owner edits the note by hand.
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("smooth the ink", "OWNER EDIT smooth the ink");
+    std::fs::write(&path, edited).unwrap();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nMine.\n\nNext: n.\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("changed since it was delivered") && out.contains("OWNER EDIT"),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(1).contains("OWNER EDIT"),
+        "nothing overwritten"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nOWNER EDIT kept, mine too.\n\nNext: n.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
+}
+
+#[test]
+fn nested_decision_details_survive_a_save() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", "astrolabe effort save --decision first").1);
+    // Nested decision text survives a save.
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let text =
+        std::fs::read_to_string(&path).unwrap() + "  nested detail under the last decision\n";
+    std::fs::write(&path, &text).unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"again\"");
+    assert!(!ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"again\"");
+    assert!(ok, "{out}");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("nested detail under the last decision") && saved.contains(": again"),
+        "{saved}"
+    );
+}

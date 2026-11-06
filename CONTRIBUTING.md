@@ -15,6 +15,8 @@ Building alone does not install the plugin. See the [per-machine setup](plugin/R
 
 ## Project documentation
 
+- [Working on the Rust code](docs/rust-code.md): module boundaries, save and resume paths, and compatibility checks.
+
 - [Plugin internals](plugin/README.md): hooks, session context, notes, and the local board.
 - [Command reference](docs/commands.md): terminal and agent-session commands.
 - [Icon and colors](assets/branding/README.md): the shared mark and its appearance.

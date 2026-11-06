@@ -1,31 +1,18 @@
 //! `astrolabe effort new | save` and `astrolabe journal`, done inside the hook: the agent's
 //! words become an effort note, at most one journal line and a commit; the session is bound to the effort; code stamps what it
-//! can observe (time, machine, provider, session, branch, head, unpushed, dirty), because the
-//! audit found agents wrote accurate prose when asked and skipped exactly those fields.
+//! can observe (time, machine, provider, session, branch, head, unpushed, dirty), without asking the agent to reconstruct them.
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
 use crate::effort::{EffortCommand, EffortFile, FORMS, slug};
-use crate::notes::{self, JournalLine, Notes, Op, Pull, RepoFacts};
-use serde_json::{Value, json};
+use crate::notes::{self, JournalLine, Notes, Op, Pull, RECENT_MS, RepoFacts};
+use crate::session::{Field, SessionState};
+use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
-
-const STATUSES: [&str; 6] = [
-    "proposed",
-    "ready",
-    "active",
-    "blocked",
-    "done",
-    "abandoned",
-];
-const INVOLVEMENTS: [&str; 3] = ["autonomous", "check in at plan", "each step"];
-const AUTHORITIES: [&str; 3] = ["read", "edit", "push"];
-/// Past this the owner stops reading; said, never enforced.
-/// Current state is three short paragraphs the owner reads; past this it's a report.
-const CURRENT_WORDS: usize = 150;
-/// A journal line is one or two sentences, aimed at 25 words; past this it rambles.
-const JOURNAL_WORDS: usize = 40;
-/// A ticket or intent this old no longer explains a plain command.
-use crate::notes::RECENT_MS;
+mod validation;
+use validation::{
+    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, one_of, shift_plan_headings,
+    split_plan,
+};
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
 /// state written when it did.
@@ -82,179 +69,6 @@ fn repo_of(
             many.join(", ")
         )),
     }
-}
-
-fn one_of(key: &str, value: &str, allowed: &[&str]) -> Result<String, String> {
-    allowed
-        .contains(&value)
-        .then(|| value.to_owned())
-        .ok_or_else(|| format!("--{key} {value:?} isn't one of {}", allowed.join(", ")))
-}
-
-/// The body as a Current state: plain paragraphs, trimmed. A `**Label:**` line is refused,
-/// because the labelled form read as a form and pushed the text into fragments; a long one
-/// is refused because the owner reads it.
-fn as_current(body: &str) -> Result<String, String> {
-    let current = body.trim().to_owned();
-    let probe = EffortFile {
-        current: current.clone(),
-        ..Default::default()
-    };
-    if let Some(line) = probe.labelled_line() {
-        return Err(format!(
-            "Current state is plain paragraphs now, no **Label:** lines ({line}): where it stands, then what was decided and why, then what's next and what isn't checked. Nothing was written"
-        ));
-    }
-    let words = current.split_whitespace().count();
-    if words > CURRENT_WORDS {
-        return Err(format!(
-            "Current state is {words} words; the owner reads it, so keep it under {CURRENT_WORDS} (three short paragraphs). Nothing was written"
-        ));
-    }
-    Ok(current)
-}
-
-/// Closing words that say where the work stands: the board shows that.
-const STATUS_WORDS: [&str; 9] = [
-    "merged",
-    "landed",
-    "done",
-    "pushed",
-    "shipped",
-    "blocked",
-    "abandoned",
-    "merging",
-    "unmerged",
-];
-
-/// A journal line the owner would write: one or two sentences on the change itself. The
-/// refusals are the shapes sessions wrote with the rule alone (2026-11-05: nine of seventeen
-/// lines); each says what to write instead, as the label-line refusal on Current state does.
-fn check_journal(text: &str) -> Result<(), String> {
-    if text.lines().count() > 1 {
-        return Err("a journal line is one line".to_owned());
-    }
-    let words = text.split_whitespace().count();
-    if words > JOURNAL_WORDS {
-        return Err(format!(
-            "the journal line is {words} words; aim for 25, at most {JOURNAL_WORDS}: what changed, as the owner would say it. Nothing was written"
-        ));
-    }
-    let sentences = journal_sentences(text);
-    if sentences.len() > 2 {
-        return Err(format!(
-            "the journal line is {} sentences; two at most, the change and its why. Nothing was written",
-            sentences.len()
-        ));
-    }
-    if let Some(last) = sentences.last() {
-        let closing: Vec<String> = last
-            .split_whitespace()
-            .map(|w| {
-                w.trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_ascii_lowercase()
-            })
-            .filter(|w| !w.is_empty())
-            .collect();
-        if !closing.is_empty()
-            && closing.len() <= 3
-            && closing
-                .iter()
-                .all(|w| w == "and" || STATUS_WORDS.contains(&w.as_str()))
-        {
-            return Err(format!(
-                "the line ends with \"{}\", which says where the work stands; that's the effort's status, already on the board, so drop it and keep the change. Nothing was written",
-                last.trim()
-            ));
-        }
-    }
-    if let Some(file) = text
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && !"/.~".contains(c)))
-        .find(|w| looks_like_a_file(w))
-    {
-        return Err(format!(
-            "the line names a file ({file}); the owner reads things, not paths, so say what it is. Nothing was written"
-        ));
-    }
-    if text.to_ascii_lowercase().contains("the owner") {
-        return Err(
-            "the line says \"the owner\"; the journal is in their words, so say I or my. Nothing was written"
-                .to_owned(),
-        );
-    }
-    Ok(())
-}
-
-/// Sentences end at a full stop, question or exclamation mark before a space and a capital,
-/// so "Astra. viral-studio" and "about 1.5 s" stay one sentence.
-fn journal_sentences(text: &str) -> Vec<&str> {
-    let b = text.as_bytes();
-    let mut out = Vec::new();
-    let mut start = 0;
-    for i in 0..b.len() {
-        if matches!(b[i], b'.' | b'!' | b'?')
-            && b.get(i + 1) == Some(&b' ')
-            && b.get(i + 2).is_some_and(u8::is_ascii_uppercase)
-        {
-            out.push(&text[start..=i]);
-            start = i + 2;
-        }
-    }
-    if start < text.len() {
-        out.push(&text[start..]);
-    }
-    out
-}
-
-/// A word that is a path or a file name: two slashes, a slash with a dot or a root beside
-/// it, or a code or document extension. "and/or" and "Mac/PC" are words.
-fn looks_like_a_file(word: &str) -> bool {
-    const EXTENSIONS: [&str; 22] = [
-        "md", "rs", "cs", "gd", "js", "mjs", "ts", "json", "toml", "yaml", "yml", "py", "sh",
-        "ps1", "txt", "html", "css", "tscn", "tres", "cfg", "ini", "lock",
-    ];
-    if word.matches('/').count() > 1
-        || (word.contains('/') && (word.contains('.') || word.starts_with(['/', '~', '.'])))
-    {
-        return true;
-    }
-    word.rsplit_once('.').is_some_and(|(name, ext)| {
-        name.chars().last().is_some_and(char::is_alphanumeric) && EXTENSIONS.contains(&ext)
-    })
-}
-
-/// Plan headings shifted together so the top level lands at `###`: the effort file's
-/// sections are read by `## `, and a plan file's own `# ` title would read as a second
-/// document. Lines inside a code fence, line endings and indentation stay as they are.
-fn shift_plan_headings(plan: &str) -> (String, bool) {
-    let level = |l: &str| {
-        let n = l.bytes().take_while(|b| *b == b'#').count();
-        let rest = l[n..].trim_end_matches('\r');
-        (n > 0 && (rest.is_empty() || rest.starts_with(' '))).then_some(n)
-    };
-    // Each line with its heading level, or none inside a code fence.
-    let fenced = crate::effort::fence_mask(plan.split('\n'));
-    let lines: Vec<(&str, Option<usize>)> = plan
-        .split('\n')
-        .zip(fenced)
-        .map(|(l, in_fence)| (l, (!in_fence).then(|| level(l)).flatten()))
-        .collect();
-    let Some(min) = lines.iter().filter_map(|(_, n)| *n).min() else {
-        return (plan.to_owned(), false);
-    };
-    if min == 3 {
-        return (plan.to_owned(), false);
-    }
-    let out = lines
-        .iter()
-        .map(|(l, n)| match n {
-            Some(n) => format!("{}{}", "#".repeat(n + 3 - min), &l[*n..]),
-            None => (*l).to_owned(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (out, true)
 }
 
 /// The save's stamp. The repo facts are the session folder's; from the notes checkout they
@@ -359,7 +173,7 @@ fn new_inner(
     let dir = notes.state.clone();
     let _held = notes.lock()?;
     // Leftovers first: one of them may be this very call, interrupted.
-    let leftovers = notes.reconcile();
+    let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
         return Err(format!(
             "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
@@ -392,7 +206,7 @@ fn new_inner(
             None => Err("this same tool call was already done (a retry); nothing new was written. Run `astrolabe activate --status` to see the session's effort".to_owned()),
         };
     }
-    let pulled = notes.pull();
+    let pulled = crate::application::pull(&notes);
     let number = notes.next_number();
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
@@ -424,12 +238,25 @@ fn new_inner(
     let text = file.render();
     // The session's one probe token, so the proof from session start carries in.
     let token = activate::session_token(session);
-    let state = json!({
-        "session": session, "provider": provider, "effort": number.to_string(), "file": file_name,
-        "repo": repo, "cwd": crate::hook::comparable(cwd), "at_ms": notes::now_ms(), "token": token,
-        "delivered": notes::hash(&text), "baseline": facts.as_ref().map(|f| f.fingerprint.clone()),
-        "last_save_ms": notes::now_ms(), "mark": false, "saves": 0,
-    });
+    let state = SessionState {
+        session: session.to_owned().into(),
+        provider: provider.to_owned().into(),
+        effort: number.to_string().into(),
+        file: file_name.clone().into(),
+        repo: repo.clone().into(),
+        cwd: crate::hook::comparable(cwd).into(),
+        at_ms: notes::now_ms().into(),
+        token: token.into(),
+        delivered: notes::hash(&text).into(),
+        baseline: facts
+            .as_ref()
+            .map(|f| Field::Known(f.fingerprint.clone()))
+            .unwrap_or(Field::Other(Value::Null)),
+        last_save_ms: notes::now_ms().into(),
+        mark: false.into(),
+        saves: 0.into(),
+        ..Default::default()
+    };
     let op = Op {
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
@@ -439,7 +266,7 @@ fn new_inner(
         journal: Vec::new(),
         message: format!("{number:04}: started"),
         base: None,
-        states: vec![(state_path(&dir, session), state)],
+        states: vec![(state_path(&dir, session), state.to_value())],
         committed: false,
         digest: Some(cmd.digest()),
         result: None,
@@ -468,7 +295,7 @@ fn new_inner(
         );
     }
     let text = format!("{head}\n\n{}", activation.text());
-    notes.finish(key, &text);
+    crate::application::finish(&notes, key, &text);
     Ok(text)
 }
 
@@ -483,28 +310,6 @@ pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: 
     }
 }
 
-/// The body apart from a plan it carries after a `## Plan` line: Codex keeps no plan file,
-/// so the plan rides in the one heredoc, below the Current state fields.
-fn split_plan(body: Option<&str>) -> (Option<String>, Option<String>, bool) {
-    let Some(body) = body else {
-        return (None, None, false);
-    };
-    let mut lines = body.lines();
-    let current: Vec<&str> = lines
-        .by_ref()
-        .take_while(|l| l.trim() != "## Plan")
-        .collect();
-    let plan: Vec<&str> = lines.collect();
-    let part = |lines: &[&str]| {
-        let text = lines.join("\n");
-        let text = text.trim();
-        (!text.is_empty()).then(|| text.to_owned())
-    };
-    let marked = body.lines().any(|l| l.trim() == "## Plan");
-    let plan = marked.then(|| part(&plan)).flatten();
-    (part(&current), plan, marked)
-}
-
 fn save_inner(
     cmd: &EffortCommand,
     key: &str,
@@ -517,8 +322,8 @@ fn save_inner(
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
-    let number = state["effort"].as_str().unwrap_or_default().to_owned();
-    let rel = state["file"].as_str().unwrap_or_default().to_owned();
+    let number = state.effort.as_deref().unwrap_or_default().to_owned();
+    let rel = state.file.as_deref().unwrap_or_default().to_owned();
     let status = cmd
         .flag("status")
         .map(|s| one_of("status", s, &STATUSES))
@@ -610,7 +415,7 @@ fn save_inner(
     // Checked before the lock and the hash: a refused body writes nothing either way.
     let current = body.as_deref().map(as_current).transpose()?;
     let _held = notes.lock()?;
-    let leftovers = notes.reconcile();
+    let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
         return Err(format!(
             "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
@@ -622,17 +427,17 @@ fn save_inner(
             "Already saved: this same tool call was done before (a retry), so nothing new was written to effort {number}."
         ));
     }
-    let pulled = notes.pull();
+    let pulled = crate::application::pull(&notes);
     let path = notes.root.join(&rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
     let on_disk_hash = notes::hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
-    let Some(delivered) = state["delivered"].as_str().map(str::to_owned) else {
+    let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
         return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
     };
     if delivered != on_disk_hash {
         // Delivered anew, so the next save from this text goes through.
-        state["delivered"] = on_disk_hash.clone().into();
+        state.delivered.set(on_disk_hash.clone());
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
         let pieces = file
             .pieces()
@@ -719,12 +524,11 @@ fn save_inner(
     let text = file.render();
     let now = notes::now_ms();
     let mut next_state = state.clone();
-    next_state["delivered"] = notes::hash(&text).into();
-    next_state["baseline"] = facts.as_ref().map(|f| f.fingerprint.clone()).into();
-    next_state["last_save_ms"] = now.into();
-    next_state["saves"] = (state["saves"].as_u64().unwrap_or(0) + 1).into();
-    next_state["mark"] = false.into();
-    next_state["acknowledged"] = Value::Null;
+    next_state.saved(
+        notes::hash(&text),
+        facts.as_ref().map(|f| f.fingerprint.clone()),
+        now,
+    );
     let message = match &status {
         Some(s) if *s != before => format!("{:04}: {s}", number.parse::<u32>().unwrap_or(0)),
         _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
@@ -736,7 +540,7 @@ fn save_inner(
         journal,
         message,
         base: Some(on_disk_hash),
-        states: vec![(state_path(&dir, session), next_state)],
+        states: vec![(state_path(&dir, session), next_state.to_value())],
         committed: false,
         digest: Some(cmd.digest()),
         result: None,
@@ -772,7 +576,7 @@ fn save_inner(
     for l in notes_lines {
         head += &format!(" {l}");
     }
-    notes.finish(key, &head);
+    crate::application::finish(&notes, key, &head);
     Ok(head)
 }
 
@@ -807,14 +611,14 @@ fn journal_inner(
     let (registry, notes) = notes_here()?;
     let dir = notes.state.clone();
     let bound = read_state(&dir, session)?;
-    if let Some(n) = bound.as_ref().and_then(|s| s["effort"].as_str()) {
+    if let Some(n) = bound.as_ref().and_then(|s| s.effort.as_deref()) {
         return Err(format!(
             "this session has effort {n}; its journal line goes on the effort: `astrolabe effort save --journal \"…\"`"
         ));
     }
     let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let _held = notes.lock()?;
-    let leftovers = notes.reconcile();
+    let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
         return Err(format!(
             "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
@@ -824,7 +628,7 @@ fn journal_inner(
     if notes.already_applied(key) {
         return Ok("Already written: this same tool call was done before (a retry), so nothing new went in the journal.".to_owned());
     }
-    let pulled = notes.pull();
+    let pulled = crate::application::pull(&notes);
     let (day, _) = notes::local_day_time();
     let op = Op {
         key: key.to_owned(),
@@ -856,7 +660,7 @@ fn journal_inner(
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
     }
-    notes.finish(key, &head);
+    crate::application::finish(&notes, key, &head);
     Ok(head)
 }
 
@@ -931,124 +735,15 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
 pub fn list(repo: Option<&str>, all: bool) -> Result<String, String> {
     let (_registry, root) = activate::notes_and_repos()?;
     let notes = Notes::new(root, state_dir().unwrap_or_default());
-    Ok(rows_in(&notes, repo, all).to_string())
+    serde_json::to_string(&rows_in(&notes, repo, all)).map_err(|e| e.to_string())
 }
 
-/// The same rows from a checkout already in hand: what the board is drawn from.
-pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Value {
-    let mut rows = Vec::new();
-    for (_, rel) in notes.numbers() {
-        let path = notes.root.join(&rel);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(file) = EffortFile::parse(&text) else {
-            continue;
-        };
-        let status = file.prop("status").unwrap_or("");
-        if !all && (status == "done" || status == "abandoned") {
-            continue;
-        }
-        if let Some(r) = repo
-            && !file
-                .prop("repo")
-                .is_some_and(|rs| rs.split(',').any(|x| x.trim() == r))
-        {
-            continue;
-        }
-        let needs_owner = file
-            .prop("waits_for")
-            .is_some_and(|w| w.starts_with("owner:"));
-        rows.push(json!({
-            "number": file.number(), "title": file.name(), "file": rel,
-            "status": status, "priority": file.prop("priority"), "initiative": file.prop("initiative"),
-            "repo": file.prop("repo"), "waits_for": file.prop("waits_for"), "needs_owner": needs_owner,
-            "updated": file.prop("updated"), "saved_by": file.prop("saved_by"),
-            "branch": file.prop("branch"), "unpushed": file.prop("unpushed"), "dirty": file.prop("dirty"),
-            "state": file.first_paragraph(), "next": file.last_paragraph(),
-            "pieces": file.pieces_count().map(|(done, total)| json!({"done": done, "total": total})),
-        }));
-    }
-    let (day, _) = notes::local_day_time();
-    let mut journal =
-        std::fs::read_to_string(notes.root.join(notes::journal_file(&day))).unwrap_or_default();
-    // A day file at the journal root, from before the shelves or from a machine still
-    // writing there, is today's too.
-    if let Ok(flat) = std::fs::read_to_string(notes.root.join("journal").join(format!("{day}.md")))
-    {
-        if !journal.is_empty() && !journal.ends_with('\n') {
-            journal.push('\n');
-        }
-        journal.push_str(&flat);
-        // One line per effort across both, the later one.
-        journal = notes::tidy_journal(&journal);
-    }
-    json!({
-        "efforts": rows, "today": day, "journal": journal,
-        "journal_lines": notes::parse_journal(&journal), "notes": notes.warnings(),
-        "lessons": lessons_in(&notes.root),
-    })
-}
-
-/// The notes' inbox: every `lessons/*.md`, by name, since a triaged lesson is deleted and
-/// the folder holds only what waits. A lesson's title is its first heading, else its file name.
-/// Lessons reach the board and nothing else: never a session.
-pub fn lessons_in(root: &Path) -> Vec<serde_json::Value> {
-    let dir = root.join("lessons");
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".md"))
-        .collect();
-    names.sort();
-    names
-        .iter()
-        .map(|name| {
-            let text = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
-            let title = text
-                .lines()
-                .find_map(|l| l.strip_prefix("# "))
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map_or_else(|| name.trim_end_matches(".md").to_owned(), str::to_owned);
-            json!({"file": format!("lessons/{name}"), "title": title})
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod lessons_tests {
-    use super::lessons_in;
-
-    #[test]
-    fn lessons_are_listed_by_name_with_their_headings() {
-        let root = std::env::temp_dir().join(format!("astrolabe-lessons-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        assert!(lessons_in(&root).is_empty(), "no folder is no lessons");
-        let dir = root.join("lessons");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(".gitkeep"), "").unwrap();
-        std::fs::write(
-            dir.join("2026-11-05-b.md"),
-            "# Rule text reaches a session once\n\nbody\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("2026-11-01-a.md"), "no heading here\n").unwrap();
-        let rows = lessons_in(&root);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["file"], "lessons/2026-11-01-a.md");
-        assert_eq!(rows[0]["title"], "2026-11-01-a");
-        assert_eq!(rows[1]["title"], "Rule text reaches a session once");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-}
+pub use crate::board::{lessons_in, rows_in};
 
 /// Before a pickup: the notes brought up to date, so the effort read is the published one.
 pub fn refresh_notes() -> Option<String> {
     let (_registry, notes) = notes_here().ok()?;
-    let (leftovers, pulled) = notes.refresh();
+    let (leftovers, pulled) = crate::application::refresh(&notes);
     let mut lines = Vec::new();
     match pulled {
         Pull::Pulled => {}
@@ -1062,49 +757,4 @@ pub fn refresh_notes() -> Option<String> {
         ));
     }
     (!lines.is_empty()).then(|| lines.join(" "))
-}
-
-#[cfg(test)]
-mod plan_heading_tests {
-    use super::shift_plan_headings;
-
-    #[test]
-    fn headings_shift_together_and_fences_and_blank_ones_are_handled() {
-        assert_eq!(
-            shift_plan_headings("# T\n\n## A\n### B\n#not\n"),
-            ("### T\n\n#### A\n##### B\n#not\n".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("#### Only\n##### deep"),
-            ("### Only\n#### deep".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("### fine\n```sh\n# comment\n```\n#### sub"),
-            (
-                "### fine\n```sh\n# comment\n```\n#### sub".to_owned(),
-                false
-            )
-        );
-        assert_eq!(
-            shift_plan_headings("## A\n~~~\n# in fence\n~~~\n"),
-            ("### A\n~~~\n# in fence\n~~~\n".to_owned(), true)
-        );
-        // A longer fence isn't closed by a shorter one, nor by the other character.
-        assert_eq!(
-            shift_plan_headings("## A\n````md\n```\n# still in\n~~~\n# still in\n````\n# out"),
-            (
-                "#### A\n````md\n```\n# still in\n~~~\n# still in\n````\n### out".to_owned(),
-                true
-            )
-        );
-        assert_eq!(
-            shift_plan_headings("#\r\n#### Steps\r\n"),
-            ("###\r\n###### Steps\r\n".to_owned(), true)
-        );
-        assert_eq!(
-            shift_plan_headings("no headings"),
-            ("no headings".to_owned(), false)
-        );
-        assert_eq!(shift_plan_headings(""), (String::new(), false));
-    }
 }

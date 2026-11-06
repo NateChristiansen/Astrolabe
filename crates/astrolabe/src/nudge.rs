@@ -25,8 +25,8 @@ pub fn mark(session: &str) {
     let Some(dir) = state_dir() else { return };
     match read_state(&dir, session) {
         Ok(Some(mut state)) => {
-            if state["mark"] != true {
-                state["mark"] = true.into();
+            if !state.mark.is_true() {
+                state.mark.set(true);
                 let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
             }
         }
@@ -59,21 +59,21 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
-        Ok(Some(state)) if state["worker"] == true => return None,
+        Ok(Some(state)) if state.worker.is_true() => return None,
         Ok(Some(mut state)) => {
             let facts = RepoFacts::read(&cwd);
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
-            let baseline = state["baseline"].as_str().map(str::to_owned);
-            let acknowledged = state["acknowledged"].as_str().map(str::to_owned);
+            let baseline = state.baseline.as_deref().map(str::to_owned);
+            let acknowledged = state.acknowledged.as_deref().map(str::to_owned);
             let moved = print.is_some_and(|p| {
                 baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p)
             });
-            let marked = state["mark"] == true;
-            let effort = state["effort"].as_str().unwrap_or_default().to_owned();
+            let marked = state.mark.is_true();
+            let effort = state.effort.as_deref().unwrap_or_default().to_owned();
             if !moved && !marked {
                 // Created and never saved, and a long answer just went by: the findings
                 // are probably in that answer and not in the notes. Once per session.
-                let unsaved = state["saves"].as_u64() == Some(0);
+                let unsaved = state.saves.as_ref().copied() == Some(0);
                 let long = input["last_assistant_message"]
                     .as_str()
                     .is_some_and(|m| m.len() > LONG_ANSWER);
@@ -103,8 +103,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                 ),
             };
             // Said once per state: the print is acknowledged and the mark cleared.
-            state["acknowledged"] = print.into();
-            state["mark"] = false.into();
+            state.acknowledge(print);
             let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
             format!(
                 "Astrolabe: {what}. If that's work worth remembering, replace Current state and run `astrolabe effort save` now (a closed window saves nothing); if nothing changed worth saving, say so and finish. This is the plugin's hook, not the owner: not a request, and no reason to start an effort."
@@ -138,7 +137,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
 pub fn at_end(session: &str) {
     let Some(dir) = state_dir() else { return };
     if let Ok(Some(mut state)) = read_state(&dir, session) {
-        state["closed_ms"] = notes::now_ms().into();
+        state.closed_ms.set(notes::now_ms());
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
     }
     let _ = std::fs::remove_file(mark_path(&dir, session));

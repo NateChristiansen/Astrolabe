@@ -118,7 +118,7 @@ fn main() {
                     }
                     // The file first, then the server if none is up; the address is what
                     // opens, since the file never reloads under the reader.
-                    match notes.board() {
+                    match astrolabe::application::board(&notes) {
                         Ok(path) => println!("{}", path.display()),
                         Err(why) => fail(&why),
                     }
@@ -141,7 +141,7 @@ fn main() {
             Err(why) => fail(&why),
         },
         ["notes", "sync"] => match notes_here() {
-            Ok(notes) => match notes.sync() {
+            Ok(notes) => match astrolabe::application::sync(&notes) {
                 Ok(text) => println!("{text}"),
                 Err(why) => fail(&why),
             },
