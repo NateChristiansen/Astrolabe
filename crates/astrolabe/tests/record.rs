@@ -1488,7 +1488,7 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let board = mac.notes.join("home.html");
     let page = std::fs::read_to_string(&board).expect("the board is written at effort new");
     assert!(column(&page, "active").contains("Smooth ink"), "{page}");
-    assert!(page.contains("<span class=\"repo\">demo</span>"));
+    assert!(page.contains("<span class=\"pill repo\">demo</span>"));
     // Excluded in the checkout's own exclude file, so the board never reaches origin and
     // nothing is committed or left dirty for it.
     assert_eq!(git(&mac.notes, &["status", "--porcelain"]).trim(), "");
@@ -1501,13 +1501,16 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     );
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = std::fs::read_to_string(&board).unwrap();
-    let needs = column(&page, "needs");
-    assert!(needs.contains("Smooth ink") && needs.contains("class=\"waits\">which cap?<"));
+    let needs = column(&page, "needsyou");
+    assert!(needs.contains("Smooth ink") && needs.contains("class=\"ask\">which cap?<"));
     assert!(!column(&page, "active").contains("Smooth ink"));
     assert!(mac.bash("s1", "astrolabe effort save --status done --journal \"Smoothed the ink.\" <<'ASTROLABE'\nDone.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n").1);
     let page = std::fs::read_to_string(&board).unwrap();
     assert!(column(&page, "done").contains("Smooth ink"));
-    assert!(page.contains("<li>Smoothed the ink. <span class=\"num\">0001</span></li>"));
+    assert!(
+        page.contains("<span>Smoothed the ink.</span></li>"),
+        "{page}"
+    );
     // The plain command redraws and names the file.
     std::fs::remove_file(&board).unwrap();
     let (out, ok) = mac.run(&mac.notes, &["home"], "");
@@ -1542,10 +1545,20 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "dark"], "");
     assert!(ok, "{out}");
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
-    assert!(page.contains("content=\"dark\"") && !page.contains("prefers-color-scheme"));
+    assert!(page.contains("content=\"dark\"") && page.contains(" data-theme=\"dark\">"));
     assert!(pc.sync().1);
     let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
     assert!(page.contains("content=\"dark\""));
+    // A palette is kept the same way, beside the theme.
+    let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "iris"], "");
+    assert!(ok, "{out}");
+    let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+    assert!(
+        page.contains("data-palette=\"iris\" data-theme=\"dark\">"),
+        "{page}"
+    );
+    let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "mauve"], "");
+    assert!(!ok && out.contains("ember, iris or slate"), "{out}");
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "blue"], "");
     assert!(!ok && out.contains("auto, light or dark"), "{out}");
     assert!(pc.run(&pc.notes, &["home", "--theme", "auto"], "").1);
@@ -1952,7 +1965,8 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card links through the server, since a browser refuses file links from a page.
     assert!(page.contains("href=\"/efforts/"), "{page}");
-    let link = page
+    // The card's own link, past the style sheet and the tree.
+    let link = page[page.find("class=\"card").unwrap()..]
         .split("href=\"")
         .nth(1)
         .unwrap()
@@ -1965,11 +1979,14 @@ fn the_board_is_served_fresh_on_localhost() {
         note.starts_with("HTTP/1.1 200 OK\r\n") && note.contains("text/html"),
         "{note}"
     );
-    assert!(note.contains("<h1>0001 Smooth ink</h1>"), "{note}");
+    assert!(
+        note.contains("<h1 id=\"0001-smooth-ink\">0001 Smooth ink</h1>"),
+        "{note}"
+    );
     // Drawn per request: a save shows on the next fetch with no redraw of the file.
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = get("/", &addr);
-    assert!(column(&page, "needs").contains("which cap?"), "{page}");
+    assert!(column(&page, "needsyou").contains("which cap?"), "{page}");
     assert!(get("/favicon.ico", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/C:owner.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/..%2Fknowledge%2Fowner.md", &addr).starts_with("HTTP/1.1 404"));

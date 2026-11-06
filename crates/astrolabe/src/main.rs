@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark]|notes <sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette ember|iris|slate]|notes <sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -57,6 +57,7 @@ fn main() {
             let mut serve = false;
             let mut port = astrolabe::home::SERVE_PORT;
             let mut theme = None;
+            let mut palette = None;
             let mut words = rest.iter();
             while let Some(word) = words.next() {
                 match *word {
@@ -72,13 +73,22 @@ fn main() {
                             None => fail("--theme takes auto, light or dark"),
                         }
                     }
+                    "--palette" => {
+                        match words
+                            .next()
+                            .and_then(|w| astrolabe::home::Palette::parse(w))
+                        {
+                            Some(p) => palette = Some(p),
+                            None => fail("--palette takes ember, iris or slate"),
+                        }
+                    }
                     _ => usage(),
                 }
             }
             match notes_here() {
                 Ok(notes) => {
-                    if let Some(theme) = theme
-                        && let Err(why) = astrolabe::home::set_theme(&notes, theme)
+                    if (theme.is_some() || palette.is_some())
+                        && let Err(why) = astrolabe::home::set_look(&notes, theme, palette)
                     {
                         fail(&why);
                     }
