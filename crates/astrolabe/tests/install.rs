@@ -85,7 +85,8 @@ fn fresh_install_and_repeat_preserve_unrelated_files() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
-        concat!("astrolabe ", env!("CARGO_PKG_VERSION"))
+        // A nightly build names its commit too, so compare with the program's own line.
+        astrolabe::update::version_line()
     );
 }
 
