@@ -2153,3 +2153,34 @@ fn the_board_is_served_fresh_on_localhost() {
         "the server stops when idle: {exited:?}"
     );
 }
+
+#[test]
+fn a_command_that_only_names_an_effort_command_runs_as_itself() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = mac.effort_text(1);
+    let journal = mac.journal_today();
+    // Quoted text, a heredoc body and a comment aren't commands the shell runs, so the hook
+    // leaves them to the shell and writes nothing.
+    for (cmd, printed) in [
+        (
+            "echo \"next: astrolabe effort save --status done\"",
+            "next: astrolabe effort save --status done",
+        ),
+        (
+            "cat <<'EOF'\nastrolabe journal \"x\"\nEOF",
+            "astrolabe journal \"x\"",
+        ),
+        ("echo ok # astrolabe effort save", "ok"),
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(ok && out.trim() == printed, "{cmd:?}: {out}");
+    }
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.journal_today(), journal);
+    // Chained after another command, it's still claimed and refused with the forms rather
+    // than run by whatever `astrolabe` is on PATH.
+    let (out, ok) = mac.bash("s1", "true && astrolabe effort save --status done");
+    assert!(!ok && out.contains("Accepted forms"), "{out}");
+}
