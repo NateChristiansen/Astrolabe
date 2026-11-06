@@ -2272,3 +2272,35 @@ fn activation_reads_the_same_current_state_a_save_does() {
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("smooth the ink"));
 }
+
+#[test]
+fn the_print_reads_untracked_files_under_a_root_ending_in_a_space_and_odd_byte_names() {
+    let dir = TempDir::new();
+    let repo = dir.0.join("proj ");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let print = || {
+        astrolabe::notes::RepoFacts::read(&repo)
+            .unwrap()
+            .fingerprint
+    };
+    write(&repo.join("f.txt"), "a");
+    let first = print();
+    write(&repo.join("f.txt"), "b");
+    assert_ne!(first, print(), "content read from the real root");
+    // Names that aren't UTF-8, where the filesystem allows them (not APFS).
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let name = |b: &[u8]| repo.join(std::ffi::OsStr::from_bytes(b));
+        if std::fs::write(name(b"n-\xff"), "x").is_ok() {
+            let before = print();
+            std::fs::rename(name(b"n-\xff"), name(b"n-\xfe")).unwrap();
+            assert_ne!(before, print(), "two names, two prints");
+            let before = print();
+            std::fs::write(name(b"n-\xfe"), "xy").unwrap();
+            assert_ne!(before, print(), "its content counts");
+        }
+    }
+}
