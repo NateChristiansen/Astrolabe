@@ -154,6 +154,28 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     assert!(status.contains("home.html is tracked"), "{status}");
 }
 
+/// What a reset connection left that the recovery poll can use: the saturated server's 503,
+/// whole or cut short anywhere in its status line (seen on Windows CI). The poll takes
+/// anything but a 200 as "not yet" and asks again.
+fn busy_before_reset(out: &str) -> bool {
+    const BUSY: &str = "HTTP/1.1 503 Service Unavailable\r\n";
+    !out.is_empty() && (out.starts_with(BUSY) || BUSY.starts_with(out))
+}
+
+#[test]
+fn a_reset_mid_status_line_still_counts_as_busy() {
+    assert!(busy_before_reset("HTTP/1.1 503 Serv"));
+    assert!(busy_before_reset("HTTP/1.1 503 Service Unavailable\r"));
+    assert!(busy_before_reset(
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n"
+    ));
+    assert!(!busy_before_reset(""));
+    assert!(!busy_before_reset("HTTP/1.1 200 OK\r\n"));
+    assert!(!busy_before_reset(
+        "HTTP/1.1 503 Service Unavailable, no line end"
+    ));
+}
+
 #[test]
 fn the_board_is_served_fresh_on_localhost() {
     use std::io::{BufRead, BufReader, Read};
@@ -207,7 +229,7 @@ fn the_board_is_served_fresh_on_localhost() {
                 // A saturated listener can close with the request still unread.
                 // Keep its status for the recovery poll even if Windows resets the connection.
                 Err(e)
-                    if out.starts_with("HTTP/1.1 503 Service Unavailable\r\n")
+                    if busy_before_reset(&out)
                         && matches!(
                             e.kind(),
                             std::io::ErrorKind::ConnectionReset
