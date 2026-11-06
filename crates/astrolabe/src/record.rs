@@ -889,7 +889,63 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Valu
     json!({
         "efforts": rows, "today": day, "journal": journal,
         "journal_lines": notes::parse_journal(&journal), "notes": notes.warnings(),
+        "lessons": lessons_in(&notes.root),
     })
+}
+
+/// The notes' inbox: every `lessons/*.md`, by name, since a triaged lesson is deleted and
+/// the folder holds only what waits. A lesson's title is its first heading, else its file name.
+/// Lessons reach the board and nothing else: never a session.
+pub fn lessons_in(root: &Path) -> Vec<serde_json::Value> {
+    let dir = root.join("lessons");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md"))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|name| {
+            let text = std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+            let title = text
+                .lines()
+                .find_map(|l| l.strip_prefix("# "))
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map_or_else(|| name.trim_end_matches(".md").to_owned(), str::to_owned);
+            json!({"file": format!("lessons/{name}"), "title": title})
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod lessons_tests {
+    use super::lessons_in;
+
+    #[test]
+    fn lessons_are_listed_by_name_with_their_headings() {
+        let root = std::env::temp_dir().join(format!("astrolabe-lessons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(lessons_in(&root).is_empty(), "no folder is no lessons");
+        let dir = root.join("lessons");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".gitkeep"), "").unwrap();
+        std::fs::write(
+            dir.join("2026-11-05-b.md"),
+            "# Rule text reaches a session once\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("2026-11-01-a.md"), "no heading here\n").unwrap();
+        let rows = lessons_in(&root);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["file"], "lessons/2026-11-01-a.md");
+        assert_eq!(rows[0]["title"], "2026-11-01-a");
+        assert_eq!(rows[1]["title"], "Rule text reaches a session once");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// Before a pickup: the notes brought up to date, so the effort read is the published one.

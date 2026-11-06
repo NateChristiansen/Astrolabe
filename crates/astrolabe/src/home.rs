@@ -1082,6 +1082,27 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
         board += &format!("<p class=\"quiet\">{line}.</p>\n");
     }
 
+    // The notes' inbox: lessons waiting for triage. Only a non-empty one is shown, since
+    // the count is the backlog and zero is nothing to say.
+    let lessons = rows["lessons"].as_array().cloned().unwrap_or_default();
+    let mut lesson_lines = String::new();
+    for lesson in &lessons {
+        let file = lesson["file"].as_str().unwrap_or_default();
+        lesson_lines += &format!(
+            "<li><a href=\"{}\">{}</a></li>\n",
+            esc(&links.href(root, file)),
+            esc(lesson["title"].as_str().unwrap_or_default())
+        );
+    }
+    let lessons_html = if lesson_lines.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<section class=\"col lessons\">{}<ul>\n{lesson_lines}</ul></section>",
+            heading("Lessons to triage", lessons.len())
+        )
+    };
+
     let by_number: std::collections::HashMap<u64, &Value> = cards
         .iter()
         .filter_map(|c| c.row["number"].as_u64().map(|n| (n, c.row)))
@@ -1136,7 +1157,7 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
         initiative_lines = "<li class=\"empty\">nothing open</li>\n".to_owned();
     }
     board += &format!(
-        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}</ul></section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section></div>\n",
+        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}</ul></section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>{lessons_html}</div>\n",
         heading(
             "Today",
             rows["journal_lines"].as_array().map_or(0, Vec::len)
@@ -1199,6 +1220,17 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
         .flatten()
         .filter_map(Value::as_str)
         .collect();
+    if !lessons.is_empty() {
+        chips += &chip(
+            "lesson",
+            lessons.len(),
+            if lessons.len() == 1 {
+                "lesson to triage"
+            } else {
+                "lessons to triage"
+            },
+        );
+    }
     chips += &if warnings.is_empty() {
         "<span class=\"sync\">notes in sync</span>".to_owned()
     } else {
@@ -1792,7 +1824,7 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .chip,.sync{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;border:1px solid var(--line-2);font-size:12.5px;color:var(--mute)}
 .chip b{color:var(--ink);font-weight:600}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--line-2);flex:0 0 auto}
-.dot.active{background:var(--accent)}.dot.done{background:var(--good)}.dot.blocked{background:var(--bad)}.dot.needs{background:var(--warn)}.dot.idea{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line-2)}
+.dot.active{background:var(--accent)}.dot.done{background:var(--good)}.dot.blocked{background:var(--bad)}.dot.needs{background:var(--warn)}.dot.idea{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line-2)}.dot.lesson{background:var(--warn)}
 .sync::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good);flex:0 0 auto}.sync.warn{color:var(--warn);border-color:var(--warn)}.sync.warn::before{background:var(--warn)}
 .col h2{font-size:11.5px;line-height:16px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:0 0 12px;display:flex;align-items:center;gap:8px}
 .col h2 .n{font-weight:500;letter-spacing:0;opacity:.8}
@@ -1838,6 +1870,7 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .initiatives li{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
 .initiatives li:first-child{border-top:0;padding-top:0}
 .initiatives li .num{font-size:12px}
+.lessons{grid-column:2}.lessons li{padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}.lessons li:first-child{border-top:0;padding-top:0}.lessons a{text-decoration:none}.lessons a:hover{text-decoration:underline}
 .initiatives .track{grid-column:1 / -1;height:4px;border-radius:2px;background:var(--line);overflow:hidden}.initiatives .track i{display:block;height:100%;background:var(--accent);border-radius:2px}
 .col.done{margin-top:36px}
 .closed{margin:0;padding:0;list-style:none;columns:2;column-gap:36px}
@@ -1995,6 +2028,7 @@ mod tests {
             ],
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
+            "lessons": [{"file": "lessons/2026-11-01-gates.md", "title": "Gates <did> not stop"}],
         });
         let page = render(&rows, Path::new("/n"), NOW, Look::default());
         assert!(page.contains("A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;"));
@@ -2037,6 +2071,15 @@ mod tests {
                 && page.contains("<b>1</b> done</span>"),
             "{page}"
         );
+        assert!(page.contains("<b>1</b> lesson to triage</span>"), "{page}");
+        assert!(page.contains("<h2>Lessons to triage <span class=\"n\">1</span></h2>"));
+        assert!(page.contains(
+            "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
+        ));
+        let served = board_html(&rows, Path::new("/n"), NOW, Links::Served);
+        assert!(
+            served.contains("href=\"/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>")
+        );
         assert!(page.contains("notes in sync"));
         assert!(page.contains("<a href=\"file:///n/efforts/0001-e.md\">1</a></span><span>Finished &lt;it&gt;.</span></li>"));
         assert!(page.contains("1 open · 0 done"));
@@ -2067,6 +2110,10 @@ mod tests {
         );
         assert!(!page.contains("<b>0</b>"), "a zero is no chip: {page}");
         assert!(page.contains("nothing closed lately"));
+        assert!(
+            !page.contains("to triage"),
+            "no lessons, no section and no count"
+        );
     }
 
     #[test]

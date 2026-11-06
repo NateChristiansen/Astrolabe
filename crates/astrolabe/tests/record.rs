@@ -2043,6 +2043,26 @@ fn the_board_is_served_fresh_on_localhost() {
     let mut out = String::new();
     other.read_to_string(&mut out).unwrap();
     assert!(out.starts_with("HTTP/1.1 421"), "{out}");
+    // A lesson in the notes' inbox is counted, listed and served as a page.
+    assert!(!page.contains("to triage"), "{page}");
+    std::fs::create_dir_all(mac.notes.join("lessons")).unwrap();
+    std::fs::write(
+        mac.notes.join("lessons/2026-11-05-gates.md"),
+        "# Gates did not stop\n\nWhat happened.\n",
+    )
+    .unwrap();
+    let page = get("/", &addr);
+    assert!(page.contains("<b>1</b> lesson to triage"), "{page}");
+    assert!(
+        page.contains("href=\"/lessons/2026-11-05-gates.md\">Gates did not stop</a>"),
+        "{page}"
+    );
+    let lesson = get("/lessons/2026-11-05-gates.md", &addr);
+    assert!(
+        lesson.starts_with("HTTP/1.1 200 OK\r\n") && lesson.contains("Gates did not stop"),
+        "{lesson}"
+    );
+    assert!(get("/lessons/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/favicon.ico", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/C:owner.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/..%2Fknowledge%2Fowner.md", &addr).starts_with("HTTP/1.1 404"));
