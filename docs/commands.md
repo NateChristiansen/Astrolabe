@@ -1,8 +1,9 @@
 # Command reference
 
-Exact syntax and options for the installed program and agent-session commands. For everyday tasks, see [Using Astrolabe](usage.md); for setup, see [installation](../plugin/README.md).
+Exact syntax and options for the installed program and agent-session commands. For everyday tasks, see [Using Astrolabe](usage.md); for setup, see [installation](install.md).
 
 - [Machine and repo setup](#machine-and-repo-setup)
+- [Install the program](#install-the-program)
 - [Board and notes](#board-and-notes)
 - [Load an effort](#load-an-effort)
 - [Create an effort](#create-an-effort)
@@ -17,16 +18,16 @@ Setup, board and notes commands run through the installed executable. For exampl
 macOS / Linux:
 
 ```sh
-"$HOME/.local/bin/astrolabe-trial" status
+"$HOME/.local/bin/astrolabe" status
 ```
 
 Windows (PowerShell):
 
 ```powershell
-& "$env:USERPROFILE/.local/bin/astrolabe-trial.exe" status
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" status
 ```
 
-Replace `status` with the arguments below. The current installer and hooks use the name `astrolabe-trial`; the full path avoids depending on PATH. Agents can run these commands too, except `on` and `off`, which belong in your own terminal.
+Replace `status` with the arguments below. The current installer and hooks use the name `astrolabe`; the full path avoids depending on PATH. Agents can run these commands too, except `on` and `off`, which belong in your own terminal.
 
 [Agent-session commands](#load-an-effort) instead use the literal name `astrolabe`. The plugin intercepts them; they don't need an executable on PATH.
 
@@ -47,6 +48,10 @@ Project names use ASCII letters, digits, `-`, `_` and `.`, and cannot start with
 
 For a project with a remote, registration writes the remote into `knowledge/repos/<name>.md`, so other machines can recognize the project. That edit is left uncommitted. A project without a remote gets a local binding; it also needs a repo note before an effort can load. See [adding a project](usage.md#add-a-project).
 
+## Install the program
+
+`install [--migrate-trial] [--dir <folder>]` installs the executable you invoked; it does not download a release or install the plugin. Normal installation uses your user-local bin folder, matching the hooks. `--migrate-trial` explicitly adopts an older unreceipted Astrolabe build. `--dir` is for isolated testing and does not change where the hooks look. See [installation and migration](install.md#migrate-an-existing-installation).
+
 ## Board and notes
 
 ### `home`
@@ -64,7 +69,7 @@ Write the standalone `home.html`, ensure the local board server is running, and 
 Options combine. A browser's saved appearance choice takes precedence in that browser.
 
 ```sh
-"$HOME/.local/bin/astrolabe-trial" home --open --theme dark
+"$HOME/.local/bin/astrolabe" home --open --theme dark
 ```
 
 ### `efforts [--repo <name>] [--all]`
@@ -199,4 +204,4 @@ Supply the entry as one double-quoted argument, or in a body using the [multilin
 
 `hook <event> --if-active` is called by the plugin, with the app's event JSON on stdin. Events are `session-start`, `pre-command`, `post-tool`, `stop` and `session-end`. Hooks do nothing while the machine switch is off. See [the hook manifest](../plugin/astrolabe/hooks/hooks.json) and [architecture](architecture.md#hooks-and-session-binding) for integration details.
 
-[Installation](../plugin/README.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)
+[Installation](install.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)

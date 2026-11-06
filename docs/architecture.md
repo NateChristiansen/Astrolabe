@@ -1,6 +1,6 @@
 # Architecture
 
-This guide explains how the plugin, notes and local board work together. For normal use, start with [installation](../plugin/README.md) or [Using Astrolabe](usage.md).
+This guide explains how the plugin, notes and local board work together. For normal use, start with [installation](install.md) or [Using Astrolabe](usage.md).
 
 ## Machine and session state
 
@@ -14,9 +14,9 @@ Effort involvement and authority are context supplied to agents. They aren't enf
 
 ## Hooks and session binding
 
-The [hook manifest](../plugin/astrolabe/hooks/hooks.json) calls `~/.local/bin/astrolabe-trial` at session start, before shell commands, after supported edits, at stop, and at session end. The fixed location avoids depending on the PATH inherited by a desktop app.
+The [hook manifest](../plugin/astrolabe/hooks/hooks.json) calls `~/.local/bin/astrolabe` at session start, before shell commands, after supported edits, at stop, and at session end. The fixed location avoids depending on the PATH inherited by a desktop app.
 
-The plugin uses a shared folder with a marketplace file for each supported app. Claude Code uses its plugin layout; Codex accepts that compatibility layout. On Windows the hook command is expanded by PowerShell in Codex and by Git Bash or sh in Claude Code. These app-specific installation details are in the [setup guide](../plugin/README.md#2-install-the-plugin-in-your-agent-app).
+The plugin uses a shared folder with a marketplace file for each supported app. Claude Code uses its plugin layout; Codex accepts that compatibility layout. On Windows the hook command is expanded by PowerShell in Codex and by Git Bash or sh in Claude Code. These app-specific installation details are in the [setup guide](install.md#2-install-the-plugin-in-your-agent-app).
 
 The agent runs `astrolabe activate --effort <number>` as a standalone shell command. The pre-command hook receives the app's session identifier and binds the effort there. It then replaces the command with a plain read of the result file: `cat` in a POSIX shell or `Get-Content -Raw` in PowerShell.
 

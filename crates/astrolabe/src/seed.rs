@@ -15,7 +15,7 @@ This is your private record of work, preferences and decisions. Agents save here
 
 For new notes, open an agent session in this folder and say **pick up 1**. The **Fill in your notes** effort walks you through your preferences, writing voice, machine details and first project, one piece at a time.
 
-If the agent doesn't recognize Astrolabe, finish the [installation and first-session check](https://github.com/NateChristiansen/Astrolabe/blob/main/plugin/README.md).
+If the agent doesn't recognize Astrolabe, finish the [installation and first-session check](https://github.com/NateChristiansen/Astrolabe/blob/main/docs/install.md).
 
 ## Find your work
 
