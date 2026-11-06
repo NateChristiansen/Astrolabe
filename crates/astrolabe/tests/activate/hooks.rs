@@ -266,6 +266,8 @@ fn hook_input_with_a_byte_order_mark_is_read_as_without() {
         text.contains("pick up 70") && text.contains("OWNER-TEXT"),
         "{text}"
     );
+    // Session start wants the home up, and the harness keeps it to a marker, not a server.
+    assert!(f.state().join("home-requested").exists());
     // Pre-command: the probe from loading an effort is denied by the real guard, for this
     // session, so it proves it.
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
