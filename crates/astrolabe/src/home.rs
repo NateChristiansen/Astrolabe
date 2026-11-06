@@ -603,6 +603,8 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
             .trim_matches('"');
         (!value.is_empty() && value != "none").then(|| value.to_owned())
     };
+    // What the owner reads sits under the title; what the program keeps (the save's
+    // branch, head and the like) is a small list of facts beside the outline.
     let mut pills = Vec::new();
     for key in [
         "status",
@@ -612,18 +614,8 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
         "involvement",
         "authority",
         "waits_for",
-        "updated",
-        "saved_by",
-        "branch",
-        "head",
-        "unpushed",
-        "dirty",
     ] {
         let Some(value) = prop(key) else { continue };
-        let shown = match key {
-            "updated" => when(&value, now_ms),
-            _ => tag(&value).to_owned(),
-        };
         let class = match key {
             "status" => format!(" status-{}", esc(&value)),
             _ => String::new(),
@@ -631,9 +623,24 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
         pills.push(format!(
             "<span class=\"pill{class}\"><i>{}</i>{}</span>",
             esc(&key.replace('_', " ")),
-            esc(&shown)
+            esc(tag(&value))
         ));
     }
+    let mut facts = Vec::new();
+    for key in ["updated", "saved_by", "branch", "head", "unpushed", "dirty"] {
+        let Some(value) = prop(key) else { continue };
+        let shown = match key {
+            "updated" => esc(&when(&value, now_ms)),
+            "branch" | "head" => format!("<code>{}</code>", esc(tag(&value))),
+            _ => esc(tag(&value)),
+        };
+        facts.push(format!(
+            "<dt>{}</dt><dd>{shown}</dd>",
+            esc(&key.replace('_', " "))
+        ));
+    }
+    facts.push(format!("<dt>file</dt><dd><code>{}</code></dd>", esc(rel)));
+    let facts = format!("<div class=\"facts\"><dl>{}</dl></div>", facts.join(""));
     let name = rel.rsplit('/').next().unwrap_or(rel);
     let title = body
         .lines()
@@ -719,24 +726,6 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
     });
     let mut rendered = String::new();
     html::push_html(&mut rendered, events);
-    let effort = rows["efforts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|e| e["file"].as_str() == Some(rel));
-    let stamp = match effort {
-        Some(e) => format!(
-            "Saved {}{}<br><code>{}</code>",
-            esc(&when(e["updated"].as_str().unwrap_or_default(), now_ms)),
-            e["saved_by"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .map(|s| format!(" by {}", esc(s)))
-                .unwrap_or_default(),
-            esc(rel)
-        ),
-        None => format!("<code>{}</code>", esc(rel)),
-    };
     let aside = if outline.len() > 1 {
         let items: String = outline
             .iter()
@@ -748,9 +737,7 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
                 )
             })
             .collect();
-        format!(
-            "<aside class=\"outline\"><h4>On this page</h4>{items}<div class=\"stamp\">{stamp}</div></aside>"
-        )
+        format!("<aside class=\"outline\"><h4>On this page</h4>{items}{facts}</aside>")
     } else {
         String::new()
     };
@@ -759,6 +746,16 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
     } else {
         format!("<div class=\"props\">{}</div>", pills.join(""))
     };
+    // The properties follow the title; a note without one starts with them.
+    let rendered = match rendered.find("</h1>") {
+        Some(i) => format!("{}{props}{}", &rendered[..i + 5], &rendered[i + 5..]),
+        None => format!("{props}{rendered}"),
+    };
+    let rendered = if aside.is_empty() {
+        format!("{rendered}{facts}")
+    } else {
+        rendered
+    };
     let mut crumb = String::from("<a href=\"/\">Board</a>");
     let parts: Vec<&str> = rel.split('/').collect();
     for part in &parts[..parts.len() - 1] {
@@ -766,7 +763,7 @@ fn note_page(text: &str, rel: &str, rows: &Value, root: &Path, now_ms: i64, look
     }
     crumb += &format!("<span>›</span><b>{}</b>", esc(name));
     let page = format!(
-        "<div class=\"note{}\"><div class=\"prose\">{props}{rendered}</div>{aside}</div>\n",
+        "<div class=\"note{}\"><div class=\"prose\">{rendered}</div>{aside}</div>\n",
         if aside.is_empty() { " wide" } else { "" }
     );
     shell(
@@ -971,12 +968,11 @@ fn page(
     refresh_secs: u32,
     links: Links,
 ) -> String {
-    let today = rows["today"].as_str().unwrap_or_default();
-    let crumb = format!("<b>Board</b><span>·</span><span>{}</span>", esc(today));
+    let crumb = "<b>Board</b>";
     shell(
         look,
         "Astrolabe home",
-        &crumb,
+        crumb,
         &board_html(rows, root, now_ms, links),
         &tree_html(root, rows, links, None),
         // The file reloads itself; the served page holds a stream and swaps in place.
@@ -985,8 +981,9 @@ fn page(
     )
 }
 
-/// The board itself: the Needs-you band, the four columns, the fortnight's closed work,
-/// today's journal and the open initiatives.
+/// The board itself: the chips, the Needs-you band, the active grid with the ready, blocked
+/// and ideas stacks beside it, today's journal and the open initiatives, the fortnight's
+/// closed work as a list.
 fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
     let cards: Vec<Card> = rows["efforts"]
         .as_array()
@@ -1024,78 +1021,66 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
     for column in &mut columns {
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
-    let heading =
-        |title: &str, n: usize| format!("<h2>{title} <span class=\"count\">{n}</span></h2>");
+    let heading = |title: &str, n: usize| format!("<h2>{title} <span class=\"n\">{n}</span></h2>");
+    let cards_of = |column: &[&Card], compact: bool| {
+        column
+            .iter()
+            .map(|c| card_html(c, root, now_ms, links, compact))
+            .collect::<String>()
+    };
     let mut board = String::new();
     if !columns[0].is_empty() {
         board += &format!(
-            "<section class=\"col needsyou\">{}<div class=\"cards\">{}</div></section>\n",
+            "<section class=\"col needsyou\">{}<div class=\"cards wide\">{}</div></section>\n",
             heading("Needs you", columns[0].len()),
-            columns[0]
-                .iter()
-                .map(|c| card_html(c, root, now_ms, links, false))
-                .collect::<String>()
+            cards_of(&columns[0], false)
         );
     } else {
         // Kept in the page so a test and the live swap can find the column by name.
         board += "<section class=\"col needsyou\" hidden></section>\n";
     }
-    board += "<div class=\"cols\">\n";
-    let keys = ["active", "ready", "blocked", "ideas"];
-    let titles = ["Active", "Ready", "Blocked", "Ideas"];
-    for (i, key) in keys.iter().enumerate() {
-        let column = &columns[i + 1];
-        let body = if column.is_empty() {
-            "<p class=\"empty\">nothing</p>\n".to_owned()
+    // Ready, blocked and ideas stack beside the active grid; an empty one is a few words
+    // under the work instead of a dashed box.
+    let mut stack = String::new();
+    let mut quiet = Vec::new();
+    for (key, title, slot, none) in [
+        ("ready", "Ready", 2, "nothing ready"),
+        ("blocked", "Blocked", 3, "nothing blocked"),
+        ("ideas", "Ideas", 4, "no ideas parked"),
+    ] {
+        let column = &columns[slot];
+        if column.is_empty() {
+            quiet.push(none);
         } else {
-            column
-                .iter()
-                .map(|c| card_html(c, root, now_ms, links, false))
-                .collect::<String>()
-        };
-        board += &format!(
-            "<section class=\"col {key}\">{}\n{body}</section>\n",
-            heading(titles[i], column.len())
-        );
+            stack += &format!(
+                "<section class=\"col {key}\">{}<div class=\"cards\">{}</div></section>\n",
+                heading(title, column.len()),
+                cards_of(column, true)
+            );
+        }
     }
-    board += "</div>\n";
-    let done = &columns[5];
+    let active = if columns[1].is_empty() {
+        "<p class=\"empty\">nothing in flight</p>\n".to_owned()
+    } else {
+        cards_of(&columns[1], false)
+    };
     board += &format!(
-        "<section class=\"col done\">{}\n{}</section>\n",
-        heading("Done this fortnight", done.len()),
-        if done.is_empty() {
-            "<p class=\"empty\">nothing closed lately</p>\n".to_owned()
+        "<div class=\"work{}\"><section class=\"col active\">{}<div class=\"cards grid\">{active}</div></section>\n{}</div>\n",
+        if stack.is_empty() { " solo" } else { "" },
+        heading("Active", columns[1].len()),
+        if stack.is_empty() {
+            String::new()
         } else {
-            format!(
-                "<div class=\"row\">{}</div>\n",
-                done.iter()
-                    .map(|c| card_html(c, root, now_ms, links, true))
-                    .collect::<String>()
-            )
+            format!("<div class=\"stack\">{stack}</div>")
         }
     );
-
-    let active = columns[1].len() + columns[0].iter().filter(|c| c.status() == "active").count();
-    let counts = format!(
-        "<b>{active}</b> active · <b>{}</b> need{} you · <b>{}</b> blocked",
-        columns[0].len(),
-        if columns[0].len() == 1 { "s" } else { "" },
-        columns[3].len()
-    );
-    let warnings: Vec<&str> = rows["notes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let sync = if warnings.is_empty() {
-        "<span class=\"sync\">notes in sync</span>".to_owned()
-    } else {
-        format!(
-            "<span class=\"sync warn\">{}</span>",
-            esc(&warnings.join("; "))
-        )
-    };
+    if !quiet.is_empty() {
+        let mut line = quiet.join(", ");
+        if let Some(first) = line.get(..1) {
+            line = first.to_uppercase() + &line[1..];
+        }
+        board += &format!("<p class=\"quiet\">{line}.</p>\n");
+    }
 
     let by_number: std::collections::HashMap<u64, &Value> = cards
         .iter()
@@ -1106,14 +1091,14 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
         let effort = line["effort"].as_str().unwrap_or_default();
         let num = match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {
             Some(row) => format!(
-                "<a href=\"{}\">{}</a>",
+                "<span class=\"num\"><a href=\"{}\">{}</a></span>",
                 esc(&links.href(root, row["file"].as_str().unwrap_or_default())),
                 row["number"].as_u64().unwrap_or(0)
             ),
-            None => esc(effort),
+            None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
         };
         journal += &format!(
-            "<li><span class=\"num\">{num}</span><span>{}</span></li>\n",
+            "<li>{num}<span>{}</span></li>\n",
             esc(line["text"].as_str().unwrap_or_default())
         );
     }
@@ -1142,7 +1127,7 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
             continue;
         }
         initiative_lines += &format!(
-            "<li class=\"ini\"><span class=\"tag\">{}</span><span class=\"bar\"><i style=\"width:{}%\"></i></span><span class=\"num\">{open} open · {done} done</span></li>\n",
+            "<li class=\"ini\"><span>{}</span><span class=\"num\">{open} open · {done} done</span><span class=\"track\"><i style=\"width:{}%\"></i></span></li>\n",
             esc(name),
             100 * done / (open + done)
         );
@@ -1150,6 +1135,78 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
     if initiative_lines.is_empty() {
         initiative_lines = "<li class=\"empty\">nothing open</li>\n".to_owned();
     }
+    board += &format!(
+        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}</ul></section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section></div>\n",
+        heading(
+            "Today",
+            rows["journal_lines"].as_array().map_or(0, Vec::len)
+        ),
+        heading(
+            "Initiatives",
+            initiatives.values().filter(|(open, _)| *open > 0).count()
+        )
+    );
+
+    let done = &columns[5];
+    board += &format!(
+        "<section class=\"col done\">{}\n{}</section>\n",
+        heading("Done this fortnight", done.len()),
+        if done.is_empty() {
+            "<p class=\"empty\">nothing closed lately</p>\n".to_owned()
+        } else {
+            format!(
+                "<ul class=\"closed\">{}</ul>\n",
+                done.iter()
+                    .map(|c| done_html(c, root, now_ms, links))
+                    .collect::<String>()
+            )
+        }
+    );
+
+    // The chips: every count that isn't zero, then the notes' state.
+    let active_n = columns[1].len() + columns[0].iter().filter(|c| c.status() == "active").count();
+    let chip = |dot: &str, n: usize, label: &str| {
+        format!("<span class=\"chip\"><span class=\"dot {dot}\"></span><b>{n}</b> {label}</span>")
+    };
+    let mut chips = String::new();
+    if !columns[0].is_empty() {
+        chips += &chip(
+            "needs",
+            columns[0].len(),
+            if columns[0].len() == 1 {
+                "needs you"
+            } else {
+                "need you"
+            },
+        );
+    }
+    if active_n > 0 {
+        chips += &chip("active", active_n, "active");
+    }
+    for (dot, slot, label) in [
+        ("ready", 2, "ready"),
+        ("blocked", 3, "blocked"),
+        ("idea", 4, "ideas"),
+        ("done", 5, "done"),
+    ] {
+        if !columns[slot].is_empty() {
+            chips += &chip(dot, columns[slot].len(), label);
+        }
+    }
+    let warnings: Vec<&str> = rows["notes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    chips += &if warnings.is_empty() {
+        "<span class=\"sync\">notes in sync</span>".to_owned()
+    } else {
+        format!(
+            "<span class=\"sync warn\">{}</span>",
+            esc(&warnings.join("; "))
+        )
+    };
     let date = chrono::DateTime::from_timestamp_millis(now_ms)
         .map(|t| {
             t.with_timezone(&chrono::Local)
@@ -1158,7 +1215,7 @@ fn board_html(rows: &Value, root: &Path, now_ms: i64, links: Links) -> String {
         })
         .unwrap_or_else(|| today_of(rows));
     format!(
-        "<div class=\"board\" id=\"board\"><div class=\"bhead\"><h1>{}</h1><span class=\"counts\">{counts}</span>{sync}</div>\n{board}<div class=\"foot2\"><section><h2>Today</h2><ul id=\"journal\">\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></div></div>\n",
+        "<div class=\"board\" id=\"board\"><div class=\"bhead\"><h1>{}</h1><div class=\"chips\">{chips}</div></div>\n{board}</div>\n",
         esc(&date)
     )
 }
@@ -1276,9 +1333,6 @@ impl Node {
     }
 }
 
-/// The notes checkout as a tree: the known folders first in their order, other folders
-/// after, files at the root last, and dot folders (what agents write for each other) behind
-/// a toggle. Efforts and the journal read newest first and open to the newest month.
 fn tree_html(root: &Path, rows: &Value, links: Links, current: Option<&str>) -> String {
     const FIRST: [&str; 5] = ["efforts", "journal", "knowledge", "lessons", "drafts"];
     let mut names: Vec<(bool, String)> = Vec::new();
@@ -1327,7 +1381,7 @@ fn tree_html(root: &Path, rows: &Value, links: Links, current: Option<&str>) -> 
         if matches!(name.as_str(), "efforts" | "journal") {
             node.open_latest();
         }
-        let html = dir_html(&node, 0, &by_file, root, links, current);
+        let html = dir_html(&node, 0, None, &by_file, root, links, current);
         if *is_hidden {
             hidden += &html;
             hidden_names.push(name.clone());
@@ -1338,7 +1392,7 @@ fn tree_html(root: &Path, rows: &Value, links: Links, current: Option<&str>) -> 
     }
     let board_on = if current.is_none() { " on" } else { "" };
     let mut out = format!(
-        "<a class=\"top{board_on}\" href=\"{}\">Board</a>\n",
+        "<a class=\"top{board_on}\" href=\"{}\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M9 4v16M15 4v16\"/></svg><span class=\"t\">Board</span></a>\n",
         match links {
             Links::Served => "/".to_owned(),
             Links::File => file_url(&root.join(FILE)),
@@ -1350,36 +1404,56 @@ fn tree_html(root: &Path, rows: &Value, links: Links, current: Option<&str>) -> 
     }
     if !hidden.is_empty() {
         out += &format!(
-            "<div class=\"hid\" id=\"hid\" hidden>{hidden}</div><button class=\"hidden-toggle\" id=\"hidtoggle\" data-names=\"{}\" data-n=\"{hidden_count}\">Show {} ({hidden_count} notes agents wrote for each other)</button>\n",
+            "<div class=\"hid\" id=\"hid\" hidden>{hidden}</div><button class=\"hidden-toggle\" id=\"hidtoggle\" data-names=\"{}\" data-n=\"{hidden_count}\">Show {} · {hidden_count} note{} agents wrote for each other</button>\n",
             esc(&hidden_names.join(", ")),
-            esc(&hidden_names.join(", "))
+            esc(&hidden_names.join(", ")),
+            if hidden_count == 1 { "" } else { "s" }
         );
     }
     out
 }
 
+/// `2026`, a shelf of months: its months are listed in its place, each carrying the year.
+fn is_year(name: &str) -> bool {
+    name.len() == 4 && name.chars().all(|c| c.is_ascii_digit())
+}
+
+/// `11-November` reads as `November`; a filed note's own number stays on its row.
+fn label_of(name: &str) -> &str {
+    name.split_once('-')
+        .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        .map_or(name, |(_, rest)| rest)
+}
+
 fn dir_html(
     node: &Node,
     depth: usize,
+    year: Option<&str>,
     by_file: &std::collections::HashMap<&str, &Value>,
     root: &Path,
     links: Links,
     current: Option<&str>,
 ) -> String {
-    let label = node
-        .name
-        .split_once('-')
-        .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
-        .map_or(node.name.as_str(), |(_, rest)| rest);
+    if is_year(&node.name) && node.files.is_empty() {
+        return node
+            .dirs
+            .iter()
+            .map(|d| dir_html(d, depth, Some(&node.name), by_file, root, links, current))
+            .collect();
+    }
+    let label = match year {
+        Some(year) => format!("{} {year}", label_of(&node.name)),
+        None => label_of(&node.name).to_owned(),
+    };
     let mut out = format!(
-        "<details{} data-key=\"{}\"><summary style=\"--d:{depth}\"><span class=\"chev\">›</span>{}<span class=\"n\">{}</span></summary>\n",
+        "<details{} data-key=\"{}\"><summary style=\"--d:{depth}\"><span class=\"chev\">›</span><span class=\"t\">{}</span><span class=\"n\">{}</span></summary>\n",
         if node.open { " open" } else { "" },
         esc(&node.path),
-        esc(label),
+        esc(&label),
         node.count()
     );
     for d in &node.dirs {
-        out += &dir_html(d, depth + 1, by_file, root, links, current);
+        out += &dir_html(d, depth + 1, None, by_file, root, links, current);
     }
     for f in &node.files {
         out += &file_row(f, depth + 1, by_file, root, links, current);
@@ -1404,12 +1478,14 @@ fn file_row(
             } else {
                 e["status"].as_str().unwrap_or_default().to_owned()
             };
+            let title = e["title"].as_str().unwrap_or_default();
             format!(
-                "<a class=\"f{on}\" style=\"--d:{depth}\" href=\"{href}\" title=\"{}\"><span class=\"st s-{}\"></span><span class=\"num\">{}</span><span class=\"t\">{}</span></a>\n",
+                "<a class=\"f{on}\" style=\"--d:{depth}\" href=\"{href}\" title=\"{}\" data-rel=\"{}\"><span class=\"st s-{}\"></span><span class=\"num\">{}</span><span class=\"t\">{}</span></a>\n",
+                esc(title),
                 esc(rel),
                 esc(&status),
                 e["number"].as_u64().unwrap_or(0),
-                esc(e["title"].as_str().unwrap_or_default())
+                esc(title)
             )
         }
         None => {
@@ -1418,10 +1494,18 @@ fn file_row(
                 .next()
                 .unwrap_or(rel)
                 .trim_end_matches(".md");
+            // `05-Thursday` reads as the day's number and its name.
+            let (num, text) = match name.split_once('-') {
+                Some((n, rest)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+                    (format!("<span class=\"num\">{}</span>", esc(n)), rest)
+                }
+                _ => (String::new(), name),
+            };
             format!(
-                "<a class=\"f{on}\" style=\"--d:{depth}\" href=\"{href}\" title=\"{}\"><span class=\"t\">{}</span></a>\n",
+                "<a class=\"f{on}\" style=\"--d:{depth}\" href=\"{href}\" title=\"{}\" data-rel=\"{}\">{num}<span class=\"t\">{}</span></a>\n",
+                esc(name),
                 esc(rel),
-                esc(name)
+                esc(text)
             )
         }
     }
@@ -1429,6 +1513,10 @@ fn file_row(
 
 fn card_html(card: &Card, root: &Path, now_ms: i64, links: Links, compact: bool) -> String {
     let mut bits = Vec::new();
+    let priority = card.text("priority");
+    if matches!(priority, "high" | "urgent" | "top") {
+        bits.push(format!("<span class=\"pri {priority}\">{priority}</span>"));
+    }
     let initiative = tag(card.text("initiative"));
     if !initiative.is_empty() {
         bits.push(format!(
@@ -1442,18 +1530,6 @@ fn card_html(card: &Card, root: &Path, now_ms: i64, links: Links, compact: bool)
             esc(card.text("repo"))
         ));
     }
-    let priority = card.text("priority");
-    if matches!(priority, "high" | "urgent" | "top") {
-        bits.push(format!(
-            "<span class=\"pill pri {priority}\">{priority}</span>"
-        ));
-    }
-    if let (Some(done), Some(total)) = (
-        card.row["pieces"]["done"].as_u64(),
-        card.row["pieces"]["total"].as_u64(),
-    ) {
-        bits.push(format!("<span class=\"pill pieces\">{done}/{total}</span>"));
-    }
     if card.status().is_empty() {
         bits.push("<span class=\"pill nostatus\">no status</span>".to_owned());
     }
@@ -1464,34 +1540,87 @@ fn card_html(card: &Card, root: &Path, now_ms: i64, links: Links, compact: bool)
             age(now_ms - t)
         ));
     }
+    let pieces = match (
+        card.row["pieces"]["done"].as_u64(),
+        card.row["pieces"]["total"].as_u64(),
+    ) {
+        (Some(done), Some(total)) if total > 0 => format!(
+            "<div class=\"bar\"><span class=\"track\"><i style=\"width:{}%\"></i></span><span>{done} of {total} pieces</span></div>\n",
+            100 * done / total
+        ),
+        _ => String::new(),
+    };
     let waits = card.text("waits_for");
-    let waits = if compact || waits.is_empty() {
+    let waits = if waits.is_empty() {
         String::new()
     } else if let Some(ask) = waits.strip_prefix("owner:") {
         format!("<p class=\"ask\">{}</p>\n", esc(ask.trim()))
     } else {
-        format!("<p class=\"ask\">waits for {}</p>\n", esc(waits))
+        format!("<p class=\"waits\">waits for {}</p>\n", esc(waits))
     };
     let href = match card.row["file"].as_str() {
         Some(file) => links.href(root, file),
         None => "#".to_owned(),
     };
-    let next = if compact {
+    let next = if compact || card.text("next").is_empty() {
         String::new()
     } else {
         format!(
-            "<p class=\"next\">{}</p>",
+            "<p class=\"next\">{}</p>\n",
             esc(&first_sentence(card.text("next")))
         )
     };
+    // The card's left rail says its state without the column heading.
+    let state = if card.row["needs_owner"] == true {
+        "needs"
+    } else {
+        match card.status() {
+            "" => "idea",
+            s => s,
+        }
+    };
     format!(
-        "<article class=\"card{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n<p class=\"meta\">{}</p>\n{waits}{next}</article>\n",
-        if card.closed() { " done" } else { "" },
+        "<article class=\"card s-{state}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{pieces}{next}</article>\n",
+        if compact { " compact" } else { "" },
         card.row["number"].as_u64().unwrap_or(0),
         esc(&href),
         card.row["number"].as_u64().unwrap_or(0),
         esc(card.text("title")),
         bits.join(""),
+    )
+}
+
+/// A closed effort as one line of the fortnight's list.
+fn done_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> String {
+    let href = match card.row["file"].as_str() {
+        Some(file) => links.href(root, file),
+        None => "#".to_owned(),
+    };
+    let age = card
+        .updated_ms
+        .map(|t| {
+            format!(
+                "<span class=\"age\" data-t=\"{t}\" title=\"{}\">{}</span>",
+                esc(card.text("updated")),
+                age(now_ms - t)
+            )
+        })
+        .unwrap_or_default();
+    let repo = if card.text("repo").is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<span class=\"pill repo\">{}</span>",
+            esc(card.text("repo"))
+        )
+    };
+    format!(
+        "<li class=\"{}\" data-n=\"{}\"><svg class=\"tick\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12l5 5L20 7\"/></svg><a href=\"{}\"><span class=\"num\">{}</span><span class=\"t\">{}</span></a>{repo}{age}</li>\n",
+        card.status(),
+        card.row["number"].as_u64().unwrap_or(0),
+        esc(&href),
+        card.row["number"].as_u64().unwrap_or(0),
+        esc(card.text("title")),
     )
 }
 
@@ -1607,94 +1736,135 @@ const PALETTES: &str = r#"
 "#;
 
 /* Layout: a fixed notes tree on the left, one scrolling pane on the right that is the board
-or a note. The same sheet draws the file copy. */
+or a note. The same sheet draws the file copy. Type: 11 px labels, 12 and 13 meta, 14 body,
+15.5 card titles, 28 the date; numbers tabular throughout. */
 const STYLE: &str = r##"
 *{box-sizing:border-box}html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
 a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .app{display:flex;height:100%;min-height:0}
 .side{width:268px;flex:0 0 auto;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);min-height:0}
-.brand{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;font-weight:600}
-.brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
-.brand .live{margin-left:auto;font-size:11px;font-weight:500;color:var(--good);display:flex;align-items:center;gap:5px}.brand .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}.brand .live.off{color:var(--mute)}.brand .live.off::before{background:var(--mute)}
-.search{margin:0 12px 8px}.search input{width:100%;padding:7px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--pane);color:var(--ink);font:13px inherit}
-.tree{overflow:auto;flex:1;padding:0 8px 16px;font-size:13px}
-.tree .top{display:block;padding:6px 8px;border-radius:7px;font-weight:500;margin-bottom:6px;text-decoration:none}
-.tree .top.on,.tree .f.on{background:var(--sel)}
-.tree details{margin:1px 0}
-.tree summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;padding:5px 8px 5px calc(8px + var(--d,0) * 16px);border-radius:7px;color:var(--mute);font-weight:500}
+.brand{display:flex;align-items:center;gap:10px;padding:16px 20px 12px;font-weight:600}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.brand .live{margin-left:auto;font-size:12px;font-weight:500;color:var(--mute);display:flex;align-items:center;gap:6px}.brand .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}.brand .live.off::before{background:var(--line-2)}
+.search{margin:0 10px 6px}.search input{width:100%;height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--pane);color:var(--ink);font:13px inherit}
+.tree{overflow:auto;flex:1;padding:4px 10px 16px;font-size:13px}
+.tree .top{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:7px;font-weight:500;text-decoration:none}
+.tree .top svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;color:var(--mute)}
+.tree .top.on,.tree .f.on{background:var(--sel)}.tree .f.on{font-weight:500}
+.tree details{margin:0}
+.tree>details{margin-top:14px}
+.tree summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px;height:26px;padding:0 10px 0 calc(10px + var(--d,0) * 14px);border-radius:7px;color:var(--mute);font-size:12.5px;font-weight:500;min-width:0}
 .tree summary::-webkit-details-marker{display:none}
-.tree summary .chev{display:inline-block;width:12px;transition:transform .15s;color:var(--mute)}
+.tree summary .chev{display:inline-block;width:10px;transition:transform .15s;color:var(--mute);flex:0 0 auto}
 .tree details[open]>summary .chev{transform:rotate(90deg)}
-.tree summary .n{margin-left:auto;font-weight:400;font-variant-numeric:tabular-nums;opacity:.7}
-.tree .f{display:flex;align-items:flex-start;gap:7px;padding:4px 8px 4px calc(10px + var(--d,1) * 16px);border-radius:7px;color:var(--ink);text-decoration:none;min-width:0;line-height:1.35}
+.tree summary .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree summary .n{font-weight:400;opacity:.8}
+.tree>details>summary{font-size:11px;line-height:16px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;height:24px;margin-bottom:2px}
+.tree>details>summary .chev{display:none}
+.tree>details>summary .n{letter-spacing:0;font-weight:500}
+.tree .f{display:flex;align-items:center;gap:8px;height:30px;padding:0 10px 0 calc(10px + var(--d,1) * 14px);border-radius:7px;color:var(--ink);text-decoration:none;min-width:0}
 .tree .f:hover,.tree summary:hover{background:var(--sel)}
-.tree .f .num{color:var(--mute);font-variant-numeric:tabular-nums;flex:0 0 auto}
-.tree .f .st{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--line-2);margin-top:5px}
-.tree .f .st.s-active{background:var(--accent)}.tree .f .st.s-done{background:var(--good)}.tree .f .st.s-blocked{background:var(--bad)}.tree .f .st.s-needs{background:var(--warn)}
-.tree .f .t{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
-.tree .hid summary{opacity:.6}
-.tree .hidden-toggle{display:block;width:100%;text-align:left;margin:10px 0 0;padding:4px 8px;color:var(--mute);font-size:12px;border-radius:7px}
+.tree .f .num{color:var(--mute);font-size:11.5px;width:18px;flex:0 0 auto;text-align:right}
+.tree .f .st{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--line-2)}
+.tree .f .st.s-active{background:var(--accent)}.tree .f .st.s-done{background:var(--good)}.tree .f .st.s-blocked{background:var(--bad)}.tree .f .st.s-needs{background:var(--warn)}.tree .f .st.s-ready{background:var(--line-2)}.tree .f .st.s-,.tree .f .st.s-proposed,.tree .f .st.s-abandoned{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line-2)}
+.tree .f .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree .hid summary{opacity:.7}
+.tree .hidden-toggle{display:block;width:100%;text-align:left;margin:14px 0 0;padding:6px 10px;color:var(--mute);font-size:12px;line-height:1.4;border-radius:7px}
 .tree .hidden-toggle:hover{background:var(--sel)}
 .tree.filtering details{display:block}.tree.filtering .f.miss{display:none}
-.side .foot{padding:10px 14px;border-top:1px solid var(--line);color:var(--mute);font-size:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.side .foot{padding:10px 16px;border-top:1px solid var(--line);color:var(--mute);font-size:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .side .foot select{font:12px inherit;color:var(--ink);background:var(--card);border:1px solid var(--line-2);border-radius:6px;padding:2px 4px}
 .swatches{display:flex;gap:6px;align-items:center;margin-left:auto}
-.sw{width:18px;height:18px;border-radius:50%;border:2px solid transparent;padding:0;box-shadow:inset 0 0 0 2px var(--bg)}
-.sw[data-p=ember]{background:#b35b35}.sw[data-p=iris]{background:#7c5fd3}.sw[data-p=slate]{background:#3f7fb0}.sw.on{border-color:var(--ink)}
+.sw{width:14px;height:14px;border-radius:50%;border:0;padding:0;box-shadow:0 0 0 2px var(--bg)}
+.sw[data-p=ember]{background:#b35b35}.sw[data-p=iris]{background:#7c5fd3}.sw[data-p=slate]{background:#3f7fb0}.sw.on{box-shadow:0 0 0 2px var(--bg),0 0 0 3px var(--ink)}
 .main{flex:1;min-width:0;overflow:auto;background:var(--pane)}
-.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:10px 24px;background:color-mix(in srgb,var(--pane) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);min-height:50px}
+.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:10px 24px;background:color-mix(in srgb,var(--pane) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line);min-height:44px}
 .topbar .crumb{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:13px;min-width:0;overflow:hidden;white-space:nowrap}
 .topbar .crumb b{color:var(--ink);font-weight:500}.topbar .crumb a{text-decoration:none}.topbar .crumb a:hover{text-decoration:underline}
 .btn{padding:6px 11px;border:1px solid var(--line-2);border-radius:8px;background:var(--card);font-size:12.5px;font-weight:500}
 .menu-btn{display:none}
-.board{padding:22px 24px 40px;max-width:1360px}
-.bhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 18px;margin-bottom:18px}
-.bhead h1{font-size:22px;line-height:1.2;margin:0;font-weight:600;letter-spacing:-.01em}
-.bhead .counts{color:var(--mute);font-size:13px}.bhead .counts b{color:var(--ink);font-weight:500}
-.sync{margin-left:auto;font-size:12px;color:var(--mute);display:flex;align-items:center;gap:6px}
-.sync::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}.sync.warn::before{background:var(--warn)}
-.col h2,.foot2 h2{font-size:11.5px;line-height:1;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:0 0 10px;display:flex;align-items:center;gap:7px}
-.col h2 .count{font-weight:400;opacity:.75;font-variant-numeric:tabular-nums}
-.needsyou{margin-bottom:18px}.needsyou h2{color:var(--accent)}
-.needsyou .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
-.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;align-items:start}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow);margin-bottom:10px;transition:box-shadow .2s}
+.board{padding:28px 36px 56px;max-width:1240px}
+.bhead{margin-bottom:28px}
+.bhead h1{font-size:28px;line-height:1.15;margin:0;font-weight:600;letter-spacing:-.02em}
+.chips{display:flex;gap:8px;margin:12px 0 0;flex-wrap:wrap;align-items:center}
+.chip,.sync{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;border:1px solid var(--line-2);font-size:12.5px;color:var(--mute)}
+.chip b{color:var(--ink);font-weight:600}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--line-2);flex:0 0 auto}
+.dot.active{background:var(--accent)}.dot.done{background:var(--good)}.dot.blocked{background:var(--bad)}.dot.needs{background:var(--warn)}.dot.idea{background:transparent;box-shadow:inset 0 0 0 1.5px var(--line-2)}
+.sync::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good);flex:0 0 auto}.sync.warn{color:var(--warn);border-color:var(--warn)}.sync.warn::before{background:var(--warn)}
+.col h2{font-size:11.5px;line-height:16px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+.col h2 .n{font-weight:500;letter-spacing:0;opacity:.8}
+.needsyou{margin-bottom:28px}.needsyou h2{color:var(--accent)}
+.cards{display:flex;flex-direction:column;gap:10px}
+.cards.wide{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.cards.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;align-items:start}
+.work{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:28px;align-items:start}
+.work.solo{grid-template-columns:minmax(0,1fr)}
+.stack{display:flex;flex-direction:column;gap:24px}
+.card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px 14px 20px;display:flex;flex-direction:column;gap:8px;min-width:0;box-shadow:var(--shadow);transition:box-shadow .2s}
+.card::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--line-2)}
+.card.s-active::before{background:var(--accent)}.card.s-blocked::before{background:var(--bad)}.card.s-ready::before{background:var(--good)}.card.s-needs::before{background:var(--warn)}
+.card.s-needs{background:var(--needs);border-color:var(--line-2)}
+.card.compact{padding:11px 14px 11px 18px;gap:5px;border-radius:10px}
 .card:hover{border-color:var(--line-2)}
-.needsyou .card{margin:0;background:var(--needs);border-color:color-mix(in srgb,var(--accent) 25%,transparent)}
-.card h3{margin:0 0 6px;font-size:14.5px;line-height:1.35;font-weight:600}.card h3 a{text-decoration:none}.card h3 a:hover{text-decoration:underline}
-.num{color:var(--mute);font-weight:400;font-variant-numeric:tabular-nums}.card h3 .num{margin-right:5px}
-.meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:11.5px;color:var(--mute);margin:0 0 7px}
-.pill{padding:1px 8px;border-radius:999px;background:var(--tag);color:var(--tag-ink);font-weight:500}
-.pill.repo{background:transparent;border:1px solid var(--line-2)}
-.pill.pri{background:color-mix(in srgb,var(--warn) 18%,var(--card));color:var(--warn)}.pill.pri.urgent{background:color-mix(in srgb,var(--bad) 18%,var(--card));color:var(--bad)}
-.pill.pieces{font-variant-numeric:tabular-nums}
-.meta .age{margin-left:auto;font-variant-numeric:tabular-nums}
-.card .ask{margin:0 0 6px;color:var(--accent);font-weight:500}
-.card .next{margin:0;font-size:13px;line-height:1.45}
+.card h3{margin:0;font-size:15.5px;line-height:1.3;font-weight:600}.card.compact h3{font-size:14px}
+.card h3 a{text-decoration:none;display:flex;gap:8px;align-items:baseline}.card h3 a:hover{text-decoration:underline}
+.num{color:var(--mute);font-weight:400}.card h3 .num{font-size:12px;font-weight:500;flex:0 0 auto}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--mute);margin:0}
+.pill{padding:1px 8px;border-radius:999px;background:var(--tag);color:var(--tag-ink);font-weight:500;font-size:11.5px}
+.pill.repo{background:transparent;border:1px solid var(--line-2);color:var(--mute)}
+.pill.nostatus{background:transparent;border:1px dashed var(--line-2);color:var(--mute)}
+.pri{color:var(--warn);font-weight:600;font-size:11px;letter-spacing:.05em;text-transform:uppercase}.pri.urgent{color:var(--bad)}
+.meta .age{margin-left:auto}
+.card .ask{margin:0;color:var(--accent);font-weight:500;font-size:13.5px;line-height:1.45}
+.card .waits{margin:0;color:var(--mute);font-size:13.5px;line-height:1.45}
+.card .next{margin:0;font-size:13.5px;line-height:1.45}
+.bar{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--mute)}
+.bar .track{flex:1;max-width:160px;height:4px;border-radius:2px;background:var(--line);overflow:hidden}.bar .track i{display:block;height:100%;background:var(--good);border-radius:2px}
 .card.flash{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent);transition:box-shadow .3s}
-.empty{border:1px dashed var(--line-2);border-radius:10px;padding:12px 14px;color:var(--mute);font-style:italic;font-size:13px;margin:0}
-.col.done{margin-top:22px}.col.done .row{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
-.col.done .card{margin:0;opacity:.78;padding:10px 12px}.col.done .card h3{font-size:13.5px}
-.foot2{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:28px;margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}
-.foot2 ul{margin:0;padding:0;list-style:none}
-.foot2 li{padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px;line-height:1.45;display:flex;gap:10px}
-.foot2 li:last-child{border-bottom:0}.foot2 li .num{flex:0 0 auto;min-width:34px}.foot2 li .num a{text-decoration:none}
-.foot2 li.empty{border:0;padding:6px 0}
-.ini{justify-content:space-between}.ini .bar{height:6px;border-radius:3px;background:var(--tag);flex:1;align-self:center;overflow:hidden}.ini .bar i{display:block;height:100%;background:var(--accent)}
+.empty{color:var(--mute);font-style:italic;font-size:13px;margin:0}
+.quiet{margin:14px 0 0;font-size:13px;color:var(--mute)}
+.below{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:28px;margin-top:36px}
+.below ul{margin:0;padding:0;list-style:none}
+.today ul{max-width:66ch}
+.today li{display:flex;gap:14px;padding:9px 0;border-top:1px solid var(--line);font-size:14px;line-height:1.5}
+.today li:first-child{border-top:0;padding-top:0}
+.today li .num{flex:0 0 auto;min-width:34px;height:22px;padding:0 6px;border-radius:6px;background:var(--tag);color:var(--tag-ink);font-size:11.5px;font-weight:500;display:flex;align-items:center;justify-content:center;margin-top:1px}
+.today li .num a{text-decoration:none}
+.today li .num.repo{background:transparent;border:1px solid var(--line-2);color:var(--mute)}
+.today li.empty{padding:0;border:0}
+.initiatives li{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+.initiatives li:first-child{border-top:0;padding-top:0}
+.initiatives li .num{font-size:12px}
+.initiatives .track{grid-column:1 / -1;height:4px;border-radius:2px;background:var(--line);overflow:hidden}.initiatives .track i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.col.done{margin-top:36px}
+.closed{margin:0;padding:0;list-style:none;columns:2;column-gap:36px}
+.closed li{display:flex;align-items:center;gap:12px;height:34px;border-top:1px solid var(--line);font-size:13.5px;color:var(--mute);break-inside:avoid}
+.closed li:first-child{border-top:0}
+.closed a{flex:1;min-width:0;display:flex;gap:12px;align-items:center;text-decoration:none}.closed a:hover .t{text-decoration:underline}
+.closed .t{color:var(--ink);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.closed .num{width:22px;text-align:right;font-size:12px;flex:0 0 auto}
+.closed .tick{width:14px;height:14px;fill:none;stroke:var(--good);stroke-width:2.5;flex:0 0 auto}
+.closed .abandoned .tick{stroke:var(--line-2)}
+.closed .age{font-size:12px}
 .note{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:36px;padding:26px 32px 60px;max-width:1120px}
 .note.wide{grid-template-columns:minmax(0,1fr)}
-.props{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 18px;font:12px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif}
-.props .pill i{font-style:normal;color:var(--mute);margin-right:4px}
-.props .pill.status-active{background:color-mix(in srgb,var(--accent) 16%,var(--card));color:var(--accent)}
-.props .pill.status-done{background:color-mix(in srgb,var(--good) 16%,var(--card));color:var(--good)}
-.props .pill.status-blocked{background:color-mix(in srgb,var(--bad) 16%,var(--card));color:var(--bad)}
+.props{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 22px;font:12px/1.5 -apple-system,"Segoe UI",Inter,system-ui,sans-serif}
+.props .pill{display:inline-flex;align-items:center;gap:5px}
+.props .pill i{font-style:normal;color:var(--mute)}
+.props .pill.status-active{background:color-mix(in srgb,var(--accent) 16%,var(--card));color:var(--accent)}.props .pill.status-active i{color:inherit;opacity:.75}
+.props .pill.status-done{background:color-mix(in srgb,var(--good) 16%,var(--card));color:var(--good)}.props .pill.status-done i{color:inherit;opacity:.75}
+.props .pill.status-blocked{background:color-mix(in srgb,var(--bad) 16%,var(--card));color:var(--bad)}.props .pill.status-blocked i{color:inherit;opacity:.75}
+.facts{margin:16px 0 0;padding:12px 0 0;border-top:1px solid var(--line);font:12px/1.7 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;color:var(--mute)}
+.facts dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:0 10px}.facts dt{margin:0}.facts dd{margin:0;color:var(--ink);overflow-wrap:anywhere}.facts code{font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.prose .facts{max-width:40ch}
 .prose{font:16px/1.65 Charter,"Iowan Old Style","Source Serif 4",Georgia,serif;max-width:70ch;min-width:0}
-.prose h1{font:600 28px/1.2 -apple-system,"Segoe UI",system-ui,sans-serif;letter-spacing:-.015em;margin:0 0 16px;text-wrap:balance}
-.prose h2{font:600 19px/1.3 -apple-system,"Segoe UI",system-ui,sans-serif;margin:32px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
-.prose h3{font:600 16px/1.35 -apple-system,"Segoe UI",system-ui,sans-serif;margin:22px 0 8px}
-.prose h4{font:600 14px/1.4 -apple-system,"Segoe UI",system-ui,sans-serif;margin:18px 0 6px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
-.prose h5,.prose h6{font:600 14px/1.4 -apple-system,"Segoe UI",system-ui,sans-serif;margin:14px 0 4px}
+.prose h1{font:600 28px/1.2 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;letter-spacing:-.015em;margin:0 0 16px;text-wrap:balance}
+.prose h2{font:600 19px/1.3 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;margin:32px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+.prose h3{font:600 16px/1.35 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;margin:22px 0 8px}
+.prose h4{font:600 14px/1.4 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;margin:18px 0 6px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+.prose h5,.prose h6{font:600 14px/1.4 -apple-system,"Segoe UI",Inter,system-ui,sans-serif;margin:14px 0 4px}
 .prose p{margin:0 0 14px}.prose ul,.prose ol{padding-left:22px;margin:0 0 14px}.prose li{margin:4px 0}.prose li>p{margin:0}
 .prose input[type=checkbox]{accent-color:var(--accent);margin:0 6px 0 -2px;vertical-align:-1px}
 .prose li:has(input:checked){color:var(--mute)}
@@ -1704,21 +1874,21 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .prose pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;margin:0 0 16px}
 .prose pre code{background:none;border:0;padding:0;font-size:inherit}
 .prose blockquote{margin:0 0 14px;padding:4px 0 4px 16px;border-left:3px solid var(--line-2);color:var(--mute);font-style:italic}
-.prose table{border-collapse:collapse;font:14px -apple-system,"Segoe UI",system-ui,sans-serif;margin:0 0 16px;display:block;overflow-x:auto;max-width:100%}
+.prose table{border-collapse:collapse;font:14px -apple-system,"Segoe UI",Inter,system-ui,sans-serif;margin:0 0 16px;display:block;overflow-x:auto;max-width:100%}
 .prose th,.prose td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}.prose th{background:var(--code);font-weight:600}
 .prose hr{border:0;border-top:1px solid var(--line);margin:24px 0}.prose strong{font-weight:600}.prose img{max-width:100%;border-radius:8px}
-.outline{position:sticky;top:66px;align-self:start;font-size:12.5px;color:var(--mute);max-height:calc(100vh - 90px);overflow:auto}
-.outline h4{margin:0 0 8px;font-size:11px;line-height:1;text-transform:uppercase;letter-spacing:.06em}
+.outline{position:sticky;top:60px;align-self:start;font-size:12.5px;color:var(--mute);max-height:calc(100vh - 84px);overflow:auto}
+.outline h4{margin:0 0 8px;font-size:11px;line-height:16px;text-transform:uppercase;letter-spacing:.07em;font-weight:600}
 .outline a{display:block;padding:3px 0 3px 10px;border-left:2px solid var(--line);text-decoration:none;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .outline a.l3{padding-left:20px}.outline a:hover{color:var(--ink);border-left-color:var(--accent)}
-.outline .stamp{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);line-height:1.6}.outline .stamp code{font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 .scrim{display:none}
+@media (max-width:980px){.work,.below{grid-template-columns:minmax(0,1fr)}.closed{columns:1}}
 @media (max-width:820px){
 .side{position:fixed;inset:0 auto 0 0;z-index:30;transform:translateX(-100%);transition:transform .2s;box-shadow:0 0 40px rgba(0,0,0,.25)}
 .side.open{transform:none}
 .scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:25;opacity:0;pointer-events:none;transition:opacity .2s}.scrim.on{opacity:1;pointer-events:auto}
 .menu-btn{display:inline-flex}
-.board{padding:16px 16px 40px}.note{grid-template-columns:minmax(0,1fr);padding:18px 16px 50px;gap:0}.outline{display:none}.foot2{grid-template-columns:1fr}.topbar{padding:8px 16px}
+.board{padding:16px 16px 40px}.bhead h1{font-size:24px}.note{grid-template-columns:minmax(0,1fr);padding:18px 16px 50px;gap:0}.outline{display:none}.topbar{padding:8px 16px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -1734,11 +1904,11 @@ var save=function(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 var root=document.documentElement;
 var tree=$('#tree');
 var open=read('astrolabe-tree');
-var filter=function(){var q=$('#q').value.trim().toLowerCase();tree.classList.toggle('filtering',!!q);tree.querySelectorAll('.f').forEach(function(a){a.classList.toggle('miss',!!q&&a.textContent.toLowerCase().indexOf(q)<0&&(a.title||'').toLowerCase().indexOf(q)<0)});if(q)tree.querySelectorAll('details').forEach(function(d){d.open=true})};
+var filter=function(){var q=$('#q').value.trim().toLowerCase();tree.classList.toggle('filtering',!!q);tree.querySelectorAll('.f').forEach(function(a){a.classList.toggle('miss',!!q&&a.textContent.toLowerCase().indexOf(q)<0&&(a.title||'').toLowerCase().indexOf(q)<0&&(a.dataset.rel||'').toLowerCase().indexOf(q)<0)});if(q)tree.querySelectorAll('details').forEach(function(d){d.open=true})};
 var bindTree=function(){
 tree.querySelectorAll('details[data-key]').forEach(function(d){var k=d.dataset.key;if(k in open)d.open=!!open[k];d.addEventListener('toggle',function(){open[k]=d.open;save('astrolabe-tree',open)})});
 var hid=$('#hid'),ht=$('#hidtoggle');
-if(ht){var show=function(on){hid.hidden=!on;ht.textContent=(on?'Hide ':'Show ')+ht.dataset.names+' ('+ht.dataset.n+' notes agents wrote for each other)'};show(!!read('astrolabe-hidden').on);ht.addEventListener('click',function(){var on=hid.hidden;save('astrolabe-hidden',{on:on});show(on)})}
+if(ht){var show=function(on){hid.hidden=!on;ht.textContent=(on?'Hide ':'Show ')+ht.dataset.names+' · '+ht.dataset.n+' note'+(ht.dataset.n==='1'?'':'s')+' agents wrote for each other'};show(!!read('astrolabe-hidden').on);ht.addEventListener('click',function(){var on=hid.hidden;save('astrolabe-hidden',{on:on});show(on)})}
 filter();
 };
 bindTree();
@@ -1834,8 +2004,8 @@ mod tests {
         assert!(!active.contains("Effort 2"));
         // Priority first, then the newest save.
         assert!(active.find("Effort 9").unwrap() < active.find("&quot;q&quot;").unwrap());
-        assert!(active.contains("class=\"pill pri high\">high<"));
-        assert!(active.contains("class=\"pill pieces\">2/5<"));
+        assert!(active.contains("class=\"pri high\">high<"));
+        assert!(active.contains(">2 of 5 pieces<"));
         assert!(active.contains("class=\"pill tag\">agent-tooling<"));
         assert!(active.contains("class=\"next\">Measure it.<"));
         assert!(active.contains(">3 h</span>"));
@@ -1852,8 +2022,14 @@ mod tests {
             !page.contains("Effort 8"),
             "an old done effort is off the board"
         );
-        assert!(page.contains("<span>2026-11-05</span>"), "{page}");
-        assert!(page.contains("<b>3</b> active · <b>1</b> needs you · <b>1</b> blocked"));
+        assert!(page.contains("<b>Board</b>"), "{page}");
+        assert!(
+            page.contains("<b>1</b> needs you</span>")
+                && page.contains("<b>3</b> active</span>")
+                && page.contains("<b>1</b> blocked</span>")
+                && page.contains("<b>1</b> done</span>"),
+            "{page}"
+        );
         assert!(page.contains("notes in sync"));
         assert!(page.contains("<a href=\"file:///n/efforts/0001-e.md\">1</a></span><span>Finished &lt;it&gt;.</span></li>"));
         assert!(page.contains("1 open · 0 done"));
@@ -1874,7 +2050,15 @@ mod tests {
         assert!(page.contains("class=\"sync warn\">2 notes commit(s) not yet pushed.<"));
         assert!(page.contains("nothing yet today"));
         assert!(page.contains("nothing open"));
-        assert_eq!(page.matches("class=\"empty\">nothing<").count(), 4);
+        assert!(
+            page.contains("class=\"empty\">nothing in flight<"),
+            "{page}"
+        );
+        assert!(
+            page.contains("class=\"quiet\">Nothing ready, nothing blocked, no ideas parked.<"),
+            "{page}"
+        );
+        assert!(!page.contains("<b>0</b>"), "a zero is no chip: {page}");
         assert!(page.contains("nothing closed lately"));
     }
 
@@ -2077,7 +2261,7 @@ mod tests {
         );
         assert!(
             tree.contains(
-                "class=\"f on\" style=\"--d:3\" href=\"/efforts/2026/11-November/0002-b.md\""
+                "class=\"f on\" style=\"--d:2\" href=\"/efforts/2026/11-November/0002-b.md\""
             ),
             "{tree}"
         );
@@ -2087,7 +2271,12 @@ mod tests {
         assert!(!tree.contains(".git/"), "{tree}");
         let hid = &tree[at("id=\"hid\" hidden")..];
         assert!(hid.contains("href=\"/.agents/brief.md\""), "{tree}");
-        assert!(tree.contains("Show .agents (1 notes agents wrote for each other)"));
+        assert!(
+            !tree.contains("data-key=\"efforts/2026\""),
+            "a year is a shelf of months, not a level: {tree}"
+        );
+        assert!(tree.contains(">November 2026</span>"), "{tree}");
+        assert!(tree.contains("Show .agents · 1 note agents wrote for each other"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
