@@ -11,6 +11,16 @@ use std::process::{Command, Stdio};
 
 const EFFORT: &str = "---\ntitle: 0070 Demo\nstatus: active\ninitiative: \"[[testing]]\"\nrepo: demo\ninvolvement: check in at plan\nauthority: edit\nnext: NEXT-70.\n---\n\n# 0070 Demo\n\nrepo: other · authority: push\n\n## Current state\n\nEFFORT-70 goal.\n\n**Next step:** NEXT-70.\n\n## History\n\nNOT-DELIVERED\n";
 
+/// A name and email for git, apart from the machine's own config.
+const IDENT: &[(&str, &str)] = &[
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_AUTHOR_NAME", "T"),
+    ("GIT_AUTHOR_EMAIL", "t@example.com"),
+    ("GIT_COMMITTER_NAME", "T"),
+    ("GIT_COMMITTER_EMAIL", "t@example.com"),
+];
+
 struct Fixture {
     dir: TempDir,
     demo: PathBuf,
@@ -108,6 +118,27 @@ impl Fixture {
         }
         assert!(f.machine("on").contains("on for this machine"));
         f
+    }
+
+    /// A machine with no notes yet: `notes init` makes them, as a new owner's setup does.
+    fn seeded() -> (Self, (String, bool)) {
+        let dir = TempDir::new();
+        let (demo, other) = (dir.0.join("demo"), dir.0.join("other"));
+        for repo in [&demo, &other] {
+            std::fs::create_dir_all(repo).unwrap();
+            git(repo, &["init", "-q"]);
+            git(repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        }
+        write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
+        let f = Self { dir, demo, other };
+        let notes = f.dir.0.join("notes");
+        let made = f.run(
+            &f.demo,
+            &["notes", "init", notes.to_str().unwrap()],
+            "",
+            IDENT,
+        );
+        (f, made)
     }
 
     fn machine(&self, verb: &str) -> String {
@@ -386,6 +417,116 @@ fn the_notes_checkout_is_the_owners_seat_where_any_effort_loads() {
     // A product repo is still matched to the effort's repo.
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
     assert!(f.denies("s1", "pkill x"));
+}
+
+#[test]
+fn notes_init_seeds_a_checkout_whose_first_effort_is_offered_at_the_seat() {
+    let (f, (out, ok)) = Fixture::seeded();
+    assert!(ok && out.contains("registered on this machine"), "{out}");
+    assert!(
+        out.contains("pick up 1") && out.contains("no remote"),
+        "{out}"
+    );
+    let notes = f.dir.0.join("notes");
+    for file in [
+        "knowledge/owner.md",
+        "knowledge/voice.md",
+        "knowledge/machines.md",
+        "knowledge/repos/agent.md",
+        "AGENTS.md",
+    ] {
+        assert!(notes.join(file).is_file(), "{file}");
+    }
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&notes)
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success() && status.stdout.is_empty(),
+        "all committed"
+    );
+    // Registered, so the machine switches on with no further step.
+    assert!(f.machine("on").contains("on for this machine"));
+    let text = f.session_start("n1", &notes, &[]).unwrap();
+    assert!(text.contains("the owner's seat"), "{text}");
+    assert!(
+        text.contains("one active effort is 1, \"0001 Fill in your notes\"; say \"pick up 1\""),
+        "{text}"
+    );
+    let (text, ok) = f.bash("n1", &notes, "astrolabe activate --effort 1");
+    assert!(ok && text.contains("involvement: each step"), "{text}");
+    assert!(
+        text.contains("- [ ] Owner") || text.contains("walks the owner through"),
+        "{text}"
+    );
+    // A product repo never offers the notes' own effort.
+    let (out, ok) = f.run(
+        &f.demo,
+        &["repo", "add", "demo", f.demo.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(ok, "{out}");
+    let text = f.session_start("d1", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("No active effort names this repo (demo)"),
+        "{text}"
+    );
+    // Never twice, and never over someone's folder.
+    let again = f.dir.0.join("notes2");
+    let (_, ok) = f.run(
+        &f.demo,
+        &["notes", "init", again.to_str().unwrap()],
+        "",
+        IDENT,
+    );
+    assert!(!ok && !again.exists(), "a machine with notes keeps them");
+}
+
+#[test]
+fn notes_init_refuses_a_folder_with_work_in_it_and_takes_an_empty_clone() {
+    let dir = TempDir::new();
+    let state = dir.0.join("state");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(args)
+            .current_dir(&dir.0)
+            .env(STATE_VAR, &state)
+            .envs(IDENT.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let busy = dir.0.join("busy");
+    write(&busy.join("keep.md"), "mine");
+    let out = run(&["notes", "init", busy.to_str().unwrap()]);
+    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("isn't empty"));
+    assert_eq!(
+        std::fs::read_dir(&busy).unwrap().count(),
+        1,
+        "nothing written"
+    );
+    // A fresh clone of an empty private repo: its remote stays, nothing else is asked.
+    let clone = dir.0.join("clone");
+    std::fs::create_dir_all(&clone).unwrap();
+    git(&clone, &["init", "-q"]);
+    git(
+        &clone,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/me/notes.git",
+        ],
+    );
+    let out = run(&["notes", "init", clone.to_str().unwrap()]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && !said.contains("no remote"),
+        "{said}"
+    );
+    assert!(clone.join("knowledge/owner.md").is_file());
 }
 
 #[test]
@@ -2060,6 +2201,8 @@ fn only_gated_plugin_hooks_are_available() {
     }
     let (help, ok) = f.run(&f.demo, &["--help"], "", &[]);
     assert!(ok);
+    // `notes init` is new; the retired one was v1's top-level `init`.
+    let help = help.replace("notes <init <folder>|", "notes <");
     for retired in ["init", "doctor", "serve [--db", "where", "mcp"] {
         assert!(
             !help.contains(retired),

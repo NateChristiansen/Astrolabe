@@ -1774,8 +1774,10 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
     };
     // Never loaded on its own: the owner may be here for something else (owner, 2026-11-03).
     let say = |n: &str| format!("say \"pick up {n}\" to load it");
+    let seat = in_notes(cwd);
     let offer = match active_efforts(&notes, &registry, cwd) {
         Ok((repos, _)) if repos.is_empty() => no_note(cwd),
+        Ok((_, efforts)) if seat && efforts.is_empty() => no_note(cwd),
         Ok((_, efforts)) if efforts.len() == 1 => {
             let (n, title) = &efforts[0];
             format!(
@@ -1798,6 +1800,10 @@ fn fresh(session: &str, cwd: &Path, provider: &str) -> String {
             )
         }
         Err(why) => format!("Can't list efforts: {why}."),
+    };
+    let offer = match seat && !offer.starts_with("This is the notes checkout") {
+        true => format!("{} {offer}", no_note(cwd)),
+        false => offer,
     };
     let mut head = format!(
         "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Never load or attach to one unless the owner names it: a related guess is theirs to make. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{RECORD_RULE}\n\n{GUARD_SCOPE}\n\n{}\nUntil it says proven, claim no protection.",
@@ -1855,7 +1861,11 @@ fn active_efforts(
         )
     })?;
     let mut repos = repo_names(notes, registry, cwd, &here)?;
-    repos.retain(|name| name != AGENT);
+    // The notes checkout's own efforts (`repo: agent`, as the seeded "Fill in your notes" is)
+    // are offered there, at the owner's seat, and nowhere else.
+    if !in_notes(cwd) {
+        repos.retain(|name| name != AGENT);
+    }
     if repos.is_empty() {
         return Ok((repos, Vec::new()));
     }

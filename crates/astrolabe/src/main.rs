@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette ember|iris|slate]|notes <sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette ember|iris|slate]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -132,6 +132,14 @@ fn main() {
                 Err(why) => fail(&why),
             }
         }
+        ["notes", "init", folder] => match astrolabe::seed::init(std::path::Path::new(folder)) {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{line}");
+                }
+            }
+            Err(why) => fail(&why),
+        },
         ["notes", "sync"] => match notes_here() {
             Ok(notes) => match notes.sync() {
                 Ok(text) => println!("{text}"),

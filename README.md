@@ -25,7 +25,7 @@ cargo build --release --locked -p astrolabe
 
 ## Setup
 
-See the [plugin instructions](plugin/README.md) for installation and the binary location the hooks expect. Register an existing notes checkout as `agent`, register target repos under the names in their notes, then switch the plugin on from a terminal. Installing a plugin writes the client's configuration; building this repo does not.
+See the [plugin instructions](plugin/README.md) for installation and the binary location the hooks expect. Make a new notes checkout with `notes init <folder>`, or register an existing one as `agent`, register target repos under the names in their notes, then switch the plugin on from a terminal. Installing a plugin writes the client's configuration; building this repo does not.
 
 ## Commands
 
@@ -35,6 +35,7 @@ See the [plugin instructions](plugin/README.md) for installation and the binary 
 - `effort new`, `effort save`, `journal`: record work through the plugin's pre-command hook.
 - `efforts [--repo <name>] [--all]`: list what the home reads as JSON.
 - `home [--open] [--serve] [--port <number>] [--theme auto|light|dark] [--palette ember|iris|slate]`: draw the file, make sure the server is up and print its address; `--serve` runs the server in the foreground.
+- `notes init <folder>`: make and register a new owner's notes checkout, with effort 1, "Fill in your notes", active.
 - `notes sync`, `notes status`: publish notes or inspect their sync state.
 - `repo add <name> [<checkout>]`: register the notes checkout, record a target repo's remote in its note, or register a local repo without a remote.
 
