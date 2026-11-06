@@ -53,7 +53,8 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
         mac.journal_today()
     );
     assert!(mac.log().starts_with("0001: started\n"), "{}", mac.log());
-    assert!(mac.notes.join(".gitattributes").exists());
+    let attributes = std::fs::read_to_string(mac.notes.join(".gitattributes")).unwrap();
+    assert!(attributes.contains("* text=auto eol=lf"), "{attributes}");
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "1");
@@ -434,6 +435,30 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     );
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
+}
+
+#[test]
+fn a_crlf_copy_of_the_effort_between_saves_is_not_a_change() {
+    // Git for Windows checks text out with CRLF (its system `core.autocrlf=true`), so a
+    // pull can rewrite the file with nothing in it changed.
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nFirst.\n\nNext: n.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let lf = std::fs::read_to_string(&path).unwrap();
+    assert!(!lf.contains('\r'));
+    std::fs::write(&path, lf.replace('\n', "\r\n")).unwrap();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nSecond.\n\nNext: n.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("Second."));
 }
 
 #[test]

@@ -163,6 +163,10 @@ impl Fixture {
             .current_dir(cwd)
             .env(STATE_VAR, self.state())
             .env("CLAUDE_PLUGIN_ROOT", self.dir.0.join("plugin"))
+            // No detached home or sync: a session-start hook here would otherwise leave a
+            // real server on the owner's default port for a day, and the owner's own home
+            // couldn't start (seen 2026-11-06).
+            .env("ASTROLABE_NO_DETACHED_SYNC", "1")
             .env_remove(EFFORT_VAR)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

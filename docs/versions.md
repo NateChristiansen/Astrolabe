@@ -6,7 +6,7 @@ Prebuilt releases need Git and a supported agent app, but no Rust toolchain. Nod
 
 The first prebuilt release is a candidate until its [release checks](releases.md#review-before-publication) pass. The release workflow builds and tests Apple silicon macOS 15, Intel macOS 15, x64 Windows Server 2022, and x64 Ubuntu 22.04. Linux requires glibc 2.35 or newer; Alpine/musl and other architectures are not included. These runner baselines are not a promise that every older or newer OS or app combination works. Test normal downloaded-file protections and a fresh agent session on the supported desktop systems before publication.
 
-The release tool is cargo-dist 0.34.0, pinned in `Cargo.toml` and verified by hash when downloaded. The crate, plugin, and release tag share one version. Installers keep a compatibility copy named `astrolabe-trial`; new hooks call `astrolabe`.
+The release tool is cargo-dist 0.34.0, pinned in `Cargo.toml` and verified by hash when downloaded. The crate, plugin, and release tag share one version. Hooks call `astrolabe`. The `astrolabe-trial` copy that 0.5.0 installed is retired by the next install.
 
 ## Agent apps
 

@@ -148,6 +148,58 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     assert!(state["closed_ms"].is_number());
 }
 
+/// Catches: a session in plan mode holding back from `effort new`, because the start text no
+/// longer said plan mode allows it (the slimmed start text of 2026-11-06 dropped it), and a
+/// turn-end nudge that calls the plan file an edit.
+#[test]
+fn plan_mode_is_no_reason_to_skip_the_effort_and_a_plan_alone_is_nudged_as_a_plan() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let start = mac.session_start("s1", "startup");
+    assert!(
+        start.contains("Plan mode doesn't block this command")
+            && start.contains("create the effort before writing the plan"),
+        "{start}"
+    );
+    let write = |session: &str, file: &str, mode: &str| {
+        let input = json!({"session_id": session, "cwd": mac.demo, "permission_mode": mode, "tool_name": "Write", "tool_input": {"file_path": file}, "tool_response": {}});
+        assert!(mac.hook_json("post-tool", input).is_none());
+    };
+    let said = |session: &str| {
+        let nudge = mac.stop(session, false, false).unwrap();
+        nudge["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // The plan file, in plan mode: the plan text, which says plan mode allows the fix.
+    write("s1", "/home/o/.claude/plans/a-plan.md", "plan");
+    let text = said("s1");
+    assert!(
+        text.contains("a plan was written") && text.contains("plan mode doesn't block it"),
+        "{text}"
+    );
+    assert!(mac.stop("s1", false, false).is_none(), "said once");
+    // A plan file is known by its folder too, whatever the mode says.
+    write("s2", "C:/Users/o/.claude/plans/b.md", "default");
+    assert!(said("s2").contains("a plan was written"));
+    // In plan mode the plan file is the only file the app lets a session change.
+    write("s3", "/elsewhere/plan.md", "plan");
+    assert!(said("s3").contains("a plan was written"));
+    // A plan and then real work: the edit text, as before.
+    write("s4", "/home/o/.claude/plans/c.md", "plan");
+    write("s4", "/repo/src/main.rs", "acceptEdits");
+    let text = said("s4");
+    assert!(text.contains("files were edited"), "{text}");
+    // Real work first stays real work after a plan write.
+    write("s5", "/repo/src/main.rs", "default");
+    write("s5", "/home/o/.claude/plans/d.md", "plan");
+    assert!(said("s5").contains("files were edited"));
+    // An app that names no mode, editing a file outside any plans folder: as before.
+    mac.edit("s6", "Edit");
+    assert!(said("s6").contains("files were edited"));
+}
+
 #[test]
 fn a_pickup_records_the_delivered_hash_for_stale_save_detection() {
     let world = World::new();

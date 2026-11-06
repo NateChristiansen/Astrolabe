@@ -33,9 +33,9 @@ Invoke-WebRequest https://github.com/NateChristiansen/Astrolabe/releases/downloa
 & "$env:USERPROFILE/.local/bin/astrolabe.exe" --version
 ```
 
-You can read the downloaded script before running it. It selects your system's archive, verifies its SHA-256 checksum before unpacking, and installs `astrolabe` in your user-local bin folder. It also installs the same build as `astrolabe-trial` so older cached plugins keep working during migration. It does not change PATH, your notes, or your agent app's settings.
+You can read the downloaded script before running it. It selects your system's archive, verifies its SHA-256 checksum before unpacking, and installs `astrolabe` in your user-local bin folder. It does not change PATH, your notes, or your agent app's settings.
 
-If an older executable is already there, follow [Migrate an existing installation](#migrate-an-existing-installation). A failed download or unsupported system leaves your existing installation in place.
+If a file it doesn't recognise is already there, the installer refuses it; see [troubleshooting](troubleshooting.md#the-installer-refuses-an-existing-file). A failed download or unsupported system leaves your existing installation in place.
 
 ## 2. Install the plugin in your agent app
 
@@ -175,23 +175,7 @@ Marketplace refresh alone does not update the program. A pinned marketplace also
 
 If Windows reports a file in use, close the named Astrolabe sessions and stop its board process in Task Manager, then retry. The installer does not kill processes. See [troubleshooting](troubleshooting.md) for conflicting or interrupted installations.
 
-To roll back, run the previous release's installer and register that release's marketplace again. For the first migration from a source build, keep the printed backup folder and your old source checkout until the new session check passes. [Recovery instructions](releases.md#recover-an-interrupted-installation) explain how to restore those original files.
-
-## Migrate an existing installation
-
-Older versions used `astrolabe-trial`. Close your agent sessions and board before migrating. Download the installer in step 1, then explicitly allow it to adopt your old Astrolabe build:
-
-```sh
-sh install.sh --migrate-trial
-```
-
-On Windows:
-
-```powershell
-& .\install.ps1 -MigrateTrial
-```
-
-Migration checks any existing `astrolabe` and `astrolabe-trial` programs, backs them up, and installs both names using the new build. An unrelated executable, symlink, or a file changed since the last managed installation is refused; move the conflicting file aside yourself after checking what it is. Notes, repo bindings, and the machine's on/off switch stay in place. Finish the plugin steps under [updating](#update-astrolabe); don't run `notes init` again.
+To roll back, run the previous release's installer and register that release's marketplace again. Keep the printed backup folder until the new session check passes. [Recovery instructions](releases.md#recover-an-interrupted-installation) explain how to restore those original files.
 
 ## Build from source
 
@@ -204,7 +188,7 @@ cargo build --release --locked -p astrolabe
 ./target/release/astrolabe install
 ```
 
-On Windows, the last command is `& .\target\release\astrolabe.exe install`. Add `--migrate-trial` for an existing unmanaged Astrolabe installation.
+On Windows, the last command is `& .\target\release\astrolabe.exe install`.
 
 Register `./plugin` instead of the hosted URL in step 2. Keep this checkout because your local marketplace refers to it. For later source updates, rebuild and run `install` again, then refresh the app's local plugin. Don't use a published plugin with an unrelated development build.
 

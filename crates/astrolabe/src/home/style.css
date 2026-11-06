@@ -45,6 +45,7 @@
 .tree .hidden-toggle:hover{background:var(--sel)}
 .tree.filtering details{display:block}.tree.filtering .f.miss{display:none}
 
+.dot.draft{background:var(--warn)}
 .note{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:36px;padding:26px 32px 60px;max-width:1120px}
 .note.wide{grid-template-columns:minmax(0,1fr)}
 .props{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 22px;font:12px/1.5 -apple-system,"Segoe UI",Inter,system-ui,sans-serif}

@@ -4,13 +4,13 @@ Find the symptom below. For first-time setup, follow the [installation guide](in
 
 ## The installed program can't be found
 
-Repeat the installation and version check in [step 1](install.md#1-download-and-install-the-program). Use the full installed path, including `&` before the quoted path in PowerShell. New hooks expect the `astrolabe` filename. If an older plugin still calls `astrolabe-trial`, complete the [migration](install.md#migrate-an-existing-installation) rather than renaming files by hand.
+Repeat the installation and version check in [step 1](install.md#1-download-and-install-the-program). Use the full installed path, including `&` before the quoted path in PowerShell. Hooks expect the `astrolabe` filename. If an older plugin still calls `astrolabe-trial`, [update the plugin](install.md#update-astrolabe) rather than renaming files by hand.
 
 Commands such as `astrolabe effort save` are instructions the **agent** runs through the plugin. They aren't terminal setup commands.
 
 ## The installer refuses an existing file
 
-An unreceipted Astrolabe build needs the explicit migration option. An unrelated executable, symlink, or managed file whose bytes changed is left alone. Check what is installed before moving it aside; don't remove a conflict blindly. The installer prints the path it refused.
+The installer replaces only a program it installed, as recorded in its receipt. An unreceipted `astrolabe`, a symlink, or a managed file whose bytes changed is left alone. An `astrolabe-trial` file that isn't the installer's own copy is also left in place and named in the output; nothing calls it. Check what is installed before moving it aside; don't remove a conflict blindly. The installer prints the path it refused.
 
 On Windows, close Astrolabe sessions and its board process if a file is locked, then retry. The installer does not stop processes itself. If it reports an interrupted installation, follow [recovery](releases.md#recover-an-interrupted-installation) using the named backup and marker.
 

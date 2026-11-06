@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 const RECEIPT: &str = ".astrolabe-install.json";
 const PENDING: &str = ".astrolabe-install-pending";
@@ -17,11 +16,22 @@ struct Receipt {
     sha256: String,
 }
 
-fn names() -> [&'static str; 3] {
+/// The installed program and its receipt.
+fn names() -> [&'static str; 2] {
     if cfg!(windows) {
-        ["astrolabe.exe", "astrolabe-trial.exe", RECEIPT]
+        ["astrolabe.exe", RECEIPT]
     } else {
-        ["astrolabe", "astrolabe-trial", RECEIPT]
+        ["astrolabe", RECEIPT]
+    }
+}
+
+/// The copy that installers up to 0.5.0 also wrote. A later install retires it when the
+/// receipt shows it is the installer's own.
+fn retired() -> &'static str {
+    if cfg!(windows) {
+        "astrolabe-trial.exe"
+    } else {
+        "astrolabe-trial"
     }
 }
 
@@ -44,13 +54,11 @@ fn regular(path: &Path) -> Result<bool, String> {
 
 pub fn command(args: &[&str]) -> Result<String, String> {
     let mut directory = None;
-    let mut migrate = false;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match *word {
-            "--migrate-trial" => migrate = true,
             "--dir" => directory = Some(PathBuf::from(words.next().ok_or("--dir needs a folder")?)),
-            _ => return Err("usage: astrolabe install [--migrate-trial] [--dir <folder>]".into()),
+            _ => return Err("usage: astrolabe install [--dir <folder>]".into()),
         }
     }
     let directory = match directory {
@@ -65,14 +73,12 @@ pub fn command(args: &[&str]) -> Result<String, String> {
     install(
         &std::env::current_exe().map_err(|e| e.to_string())?,
         &directory,
-        migrate,
     )
 }
 
-/// Both command names contain the same bytes. A compatibility copy also works on Windows
-/// filesystems without symlink privileges. Only files owned by this installer are updated
-/// automatically; adopting an older, unreceipted build requires an explicit migration.
-pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String, String> {
+/// Only files owned by this installer are replaced; anything else is left for the user to
+/// move aside.
+pub fn install(source: &Path, directory: &Path) -> Result<String, String> {
     fs::create_dir_all(directory).map_err(|e| e.to_string())?;
     let directory = fs::canonicalize(directory).map_err(|e| e.to_string())?;
     let lock_path = directory.join(".astrolabe-install.lock");
@@ -95,11 +101,11 @@ pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String,
         ));
     }
     let files = names();
-    let mut existed = [false; 3];
-    for (i, name) in files.iter().enumerate() {
-        existed[i] = regular(&directory.join(name))?;
-    }
-    let receipt = if existed[2] {
+    let existed = [
+        regular(&directory.join(files[0]))?,
+        regular(&directory.join(files[1]))?,
+    ];
+    let receipt = if existed[1] {
         let bytes = fs::read(directory.join(RECEIPT)).map_err(|e| e.to_string())?;
         let receipt: Receipt = serde_json::from_slice(&bytes)
             .map_err(|e| format!("invalid installation receipt: {e}"))?;
@@ -110,50 +116,46 @@ pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String,
     } else {
         None
     };
-    for (i, name) in files[..2].iter().enumerate() {
-        if !existed[i] {
-            continue;
-        }
-        let path = directory.join(name);
-        if let Some(receipt) = &receipt {
-            if digest(&path)? != receipt.sha256 {
+    if existed[0] {
+        let path = directory.join(files[0]);
+        match &receipt {
+            Some(receipt) if digest(&path)? != receipt.sha256 => {
                 return Err(format!(
                     "{} changed outside this installer; move it aside yourself before updating",
                     path.display()
                 ));
             }
-        } else if !migrate {
-            return Err(format!(
-                "{} already exists without an installation receipt; use --migrate-trial to adopt an existing Astrolabe build",
-                path.display()
-            ));
-        } else {
-            // This runs only after the user explicitly chose to adopt these local programs.
-            let output = Command::new(&path)
-                .arg("--version")
-                .stdin(Stdio::null())
-                .output()
-                .map_err(|e| format!("check {}: {e}", path.display()))?;
-            let text = String::from_utf8_lossy(&output.stdout);
-            let version = text.trim().strip_prefix("astrolabe ").unwrap_or("");
-            let parts: Vec<_> = version.split('.').collect();
-            if !output.status.success()
-                || parts.len() != 3
-                || !parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-            {
+            Some(_) => {}
+            None => {
                 return Err(format!(
-                    "{} did not identify itself as Astrolabe; it was not replaced",
+                    "{} already exists without an installation receipt; move it aside yourself before installing",
                     path.display()
                 ));
             }
         }
     }
+    // The old compatibility copy goes only when it is the receipted build; anything else
+    // under that name is not this installer's to touch.
+    let old_copy = directory.join(retired());
+    let old_copy_present = fs::symlink_metadata(&old_copy).is_ok();
+    let retire = match &receipt {
+        Some(receipt) if old_copy_present && regular(&old_copy).unwrap_or(false) => {
+            digest(&old_copy)? == receipt.sha256
+        }
+        _ => false,
+    };
+    let kept = if old_copy_present && !retire {
+        format!(
+            "\n{} was left in place: it isn't this installer's copy. Nothing calls it now; remove it yourself once you've checked what it is.",
+            old_copy.display()
+        )
+    } else {
+        String::new()
+    };
     let checksum = digest(source)?;
-    if receipt.as_ref().is_some_and(|r| r.sha256 == checksum) && existed.iter().all(|v| *v) {
+    if receipt.as_ref().is_some_and(|r| r.sha256 == checksum) && existed[0] && !retire {
         return Ok(format!(
-            "Astrolabe {VERSION} is already installed in {}. Refresh the matching plugin separately.",
+            "Astrolabe {VERSION} is already installed in {}. Refresh the matching plugin separately.{kept}",
             directory.display()
         ));
     }
@@ -165,12 +167,10 @@ pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String,
     fs::create_dir(&backup).map_err(|e| e.to_string())?;
     let stage = backup.join("new");
     fs::create_dir(&stage).map_err(|e| e.to_string())?;
-    for name in &files[..2] {
-        let dest = stage.join(name);
-        fs::copy(source, &dest).map_err(|e| e.to_string())?;
-        if digest(&dest)? != checksum {
-            return Err("staged executable checksum mismatch".into());
-        }
+    let dest = stage.join(files[0]);
+    fs::copy(source, &dest).map_err(|e| e.to_string())?;
+    if digest(&dest)? != checksum {
+        return Err("staged executable checksum mismatch".into());
     }
     let receipt = Receipt {
         format: 1,
@@ -183,18 +183,32 @@ pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String,
     )
     .map_err(|e| e.to_string())?;
     // The marker and the original files remain available for recovery after a hard stop.
-    fs::write(&pending, format!("Backup: {}\nOriginal files present: {existed:?}\nClose Astrolabe sessions before recovery. See docs/releases.md.\n", backup.display()))
+    let mut moved_out: Vec<&str> = files
+        .iter()
+        .zip(existed)
+        .filter(|(_, present)| *present)
+        .map(|(name, _)| *name)
+        .collect();
+    if retire {
+        moved_out.push(retired());
+    }
+    fs::write(&pending, format!("Backup: {}\nOriginal files moved there: {moved_out:?}\nClose Astrolabe sessions before recovery. See docs/releases.md.\n", backup.display()))
         .map_err(|e| e.to_string())?;
-    let result = replace(&directory, &backup, &stage, &files, existed);
+    let result = replace(&directory, &backup, &stage, &moved_out, &files);
     match result {
         Ok(()) => {
             fs::remove_file(&pending).map_err(|e| {
                 format!("installed, but could not remove {}: {e}", pending.display())
             })?;
             Ok(format!(
-                "Installed Astrolabe {VERSION} in {}.\nPrevious files: {}\nThe astrolabe-trial compatibility name uses the same build.\nNext: install or refresh the matching plugin, review its hooks, and start a fresh session. Notes and app settings were not changed.",
+                "Installed Astrolabe {VERSION} in {}.\nPrevious files: {}{}{kept}\nNext: install or refresh the matching plugin, review its hooks, and start a fresh session. Notes and app settings were not changed.",
                 directory.display(),
-                backup.display()
+                backup.display(),
+                if retire {
+                    format!("\nRetired the old {} copy into that folder.", retired())
+                } else {
+                    String::new()
+                }
             ))
         }
         Err((why, recovered)) => {
@@ -217,21 +231,20 @@ pub fn install(source: &Path, directory: &Path, migrate: bool) -> Result<String,
     }
 }
 
+/// Move `out` into the backup, then the staged `files` into place; undo both on failure.
 fn replace(
     directory: &Path,
     backup: &Path,
     stage: &Path,
-    files: &[&str; 3],
-    existed: [bool; 3],
+    out: &[&str],
+    files: &[&str],
 ) -> Result<(), (String, bool)> {
     let mut saved = Vec::new();
     let mut installed = Vec::new();
     let operation = (|| -> std::io::Result<()> {
-        for (i, name) in files.iter().enumerate() {
-            if existed[i] {
-                fs::rename(directory.join(name), backup.join(name))?;
-                saved.push(*name);
-            }
+        for name in out {
+            fs::rename(directory.join(name), backup.join(name))?;
+            saved.push(*name);
         }
         for name in files {
             fs::rename(stage.join(name), directory.join(name))?;
@@ -262,22 +275,21 @@ mod tests {
             std::env::temp_dir().join(format!("astrolabe-install-rollback-{}", std::process::id()));
         fs::create_dir_all(root.join("backup/new")).unwrap();
         let files = names();
-        for name in files {
+        let out = [files[0], files[1], retired()];
+        for name in out {
             fs::write(root.join(name), format!("old {name}")).unwrap();
         }
-        for name in &files[..2] {
-            fs::write(root.join("backup/new").join(name), "replacement").unwrap();
-        }
-        // No staged receipt: fail after both replacement binaries have moved.
+        fs::write(root.join("backup/new").join(files[0]), "replacement").unwrap();
+        // No staged receipt: fail after the replacement binary has moved.
         let result = replace(
             &root,
             &root.join("backup"),
             &root.join("backup/new"),
+            &out,
             &files,
-            [true; 3],
         );
         assert!(matches!(result, Err((_, true))));
-        for name in files {
+        for name in out {
             assert_eq!(
                 fs::read_to_string(root.join(name)).unwrap(),
                 format!("old {name}")

@@ -92,7 +92,7 @@ CASES
     generated = replace_once(generated, '  exit 1\n', '  throw\n')
     generated = replace_once(generated, 'Write-Information "everything\'s installed!"', 'Write-Information "Download verified and staged."')
     return '''# Download a verified release, then install it without changing notes or app settings.
-param([switch]$MigrateTrial, [string]$InstallDir)
+param([string]$InstallDir)
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
 $previousStage = $env:ASTROLABE_UNMANAGED_INSTALL
@@ -103,7 +103,6 @@ try {
 ''' + generated + '''
   }
   $installArgs = @('install')
-  if ($MigrateTrial) { $installArgs += '--migrate-trial' }
   if ($InstallDir) { $installArgs += @('--dir', $InstallDir) }
   & (Join-Path $stage 'astrolabe.exe') @installArgs
   if ($LASTEXITCODE -ne 0) { throw 'Astrolabe installation failed; see the message above' }

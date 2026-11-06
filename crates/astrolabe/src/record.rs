@@ -247,7 +247,7 @@ fn new_inner(
         cwd: crate::hook::comparable(cwd).into(),
         at_ms: notes::now_ms().into(),
         token: token.into(),
-        delivered: notes::hash(&text).into(),
+        delivered: notes::content_hash(&text).into(),
         baseline: facts
             .as_ref()
             .map(|f| Field::Known(f.fingerprint.clone()))
@@ -434,7 +434,7 @@ fn save_inner(
     let pulled = crate::application::pull(&notes);
     let path = notes.root.join(&rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
-    let on_disk_hash = notes::hash(&on_disk);
+    let on_disk_hash = notes::content_hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
     let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
         return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
@@ -534,7 +534,7 @@ fn save_inner(
     let now = notes::now_ms();
     let mut next_state = state.clone();
     next_state.saved(
-        notes::hash(&text),
+        notes::content_hash(&text),
         facts.as_ref().map(|f| f.fingerprint.clone()),
         now,
     );

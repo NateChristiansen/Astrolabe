@@ -98,6 +98,7 @@ mod tests {
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
             "lessons": [{"file": "lessons/2026-11-01-gates.md", "title": "Gates <did> not stop"}],
+            "drafts": 2,
         });
         let page = render(
             &serde_json::from_value(rows.clone()).unwrap(),
@@ -149,6 +150,7 @@ mod tests {
         assert!(
             page.contains("<h2><span>Lessons to triage</span> <span class=\"n\">1</span></h2>")
         );
+        assert!(page.contains("<b>2</b> open drafts</span>"), "{page}");
         assert!(page.contains(
             "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
         ));
@@ -200,6 +202,7 @@ mod tests {
             !page.contains("to triage"),
             "no lessons, no section and no count"
         );
+        assert!(!page.contains("open draft"), "no drafts, no count");
     }
 
     #[test]
