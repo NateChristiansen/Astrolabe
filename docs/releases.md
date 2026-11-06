@@ -1,6 +1,6 @@
 # Preparing a release
 
-Releases contain prebuilt programs, platform-selecting installers, and the plugin at the same version. The preparation workflow builds artifacts for review. It has read-only repository permissions and never creates a release or pushes a tag.
+Releases contain prebuilt programs, platform-selecting installers, and the plugin at the same version. The preparation workflow builds artifacts for review. Its build jobs have read-only repository permissions and never create a versioned release; only the [nightly](#nightly) job writes.
 
 ## Build the candidate
 
@@ -49,6 +49,12 @@ The program and plugin share a version, but the installer does not modify app co
 The install receipt records a format version, release version, and binary hash. Future updates refuse a managed executable whose bytes no longer match. An unreceipted `astrolabe`, symlinks and unrelated files are refused. An `astrolabe-trial` copy that matches the receipt is moved into the backup; any other file by that name is left in place. A successful update retains old files in the printed `.astrolabe-backup-*` folder. Notes and the machine state remain outside this transaction.
 
 For a normal rollback, rerun the previous release's installer and register its matching plugin. Keep the backup until the fresh-session check succeeds.
+
+`astrolabe update` runs those same steps: the published installer, then the documented plugin commands in each app it finds.
+
+## Nightly
+
+Every push to `main` that runs **Prepare release** also replaces one rolling prerelease tagged `nightly`, through a separate `publish-nightly` job. That job is the only one with write access. The build jobs stay read-only. It packages the reviewed artifacts with `package-release.py --channel nightly --commit <sha>`, which points the installers at the `nightly` download path and adds `nightly.json` naming the commit and version. Nightly programs report `astrolabe <version> (nightly <commit>)`. The `nightly` tag points at that same commit, so a plugin registered at `nightly` matches the program. Nightlies are neither signed nor reviewed like a release, and versioned releases are still published by hand as above.
 
 ## Recover an interrupted installation
 

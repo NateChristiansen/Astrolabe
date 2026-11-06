@@ -155,6 +155,22 @@ Continue with [Using Astrolabe](usage.md) to start work in a project, choose whe
 
 Update the program and plugin together. Existing sessions keep instructions they already received, so finish or pause current work and close your agent sessions before updating.
 
+The installed program does both in one step:
+
+```sh
+"$HOME/.local/bin/astrolabe" update
+```
+
+On Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" update
+```
+
+It keeps you on your channel: **release** if your plugin is registered at a release tag, **nightly** if it follows `main`. Add `--channel nightly` or `--channel release` to switch, or `--dry-run` to see the plan first. The nightly is a prerelease rebuilt on every push to `main`. It isn't reviewed like a release. The command refreshes the plugin in Claude Code and Codex when their commands are on PATH, and skips an app it can't find. Then restart your app and repeat the [session check](#5-start-your-first-session). The [command reference](commands.md#update) has the details.
+
+To update by hand instead:
+
 1. Download the new release's installer as in [step 1](#1-download-and-install-the-program) and run it. Use the same release tag for both downloads and the marketplace. Each successful update keeps the previous program files in the backup folder printed by the installer.
 2. Remove the old plugin and marketplace registration in each app you use:
 

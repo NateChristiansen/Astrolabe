@@ -20,6 +20,18 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 package_release.package(Path(directory), package_release.TARGETS)
 
+    def test_nightly_without_its_commit_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            version = package_release.json.loads((package_release.ROOT / 'plugin/astrolabe/.claude-plugin/plugin.json').read_text())['version']
+            for target, suffix in package_release.TARGETS.items():
+                (folder / f'astrolabe-{target}{suffix}').write_bytes(b'archive')
+            for name in ['astrolabe-installer.sh', 'astrolabe-installer.ps1']:
+                (folder / name).write_text(f'/releases/download/v{version}/')
+            for commit in [None, 'abc1234']:
+                with self.assertRaises(ValueError):
+                    package_release.package(folder, package_release.TARGETS, 'nightly', commit)
+
     def test_duplicate_anchor_is_refused(self):
         with self.assertRaises(ValueError):
             package_release.replace_once('a a', 'a', 'b')

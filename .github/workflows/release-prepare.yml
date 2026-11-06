@@ -1,5 +1,5 @@
 name: Prepare release
-# This produces downloadable CI artifacts only. It cannot publish a release or push a tag.
+# This builds reviewed CI artifacts. Only publish-nightly writes, replacing the rolling nightly prerelease on pushes to main.
 on:
   workflow_dispatch:
   push:
@@ -49,6 +49,9 @@ jobs:
         shell: bash
         env:
           RELEASE_TARGET: ${{ matrix.target }}
+          # The program names its commit, and on main says it's a nightly.
+          ASTROLABE_COMMIT: ${{ github.sha }}
+          ASTROLABE_CHANNEL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || '' }}
         run: |
           dist build --artifacts=local --target "$RELEASE_TARGET"
           git diff --exit-code -- Cargo.lock
@@ -97,3 +100,37 @@ jobs:
             target/distrib/SHA256SUMS
             target/distrib/release-files.json
           if-no-files-found: error
+  # The one job that writes: each push to main replaces the rolling nightly prerelease
+  # with this run's reviewed build. Releases are still published by hand.
+  publish-nightly:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: assemble
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: nightly
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - run: python scripts/setup-dist.py "$RUNNER_TEMP/astrolabe-dist"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: target/distrib
+          merge-multiple: true
+      - run: dist build --artifacts=global
+      - run: python scripts/package-release.py --channel nightly --commit "$GITHUB_SHA"
+      - name: Replace the nightly prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=$(python -c "import json; print(' '.join('target/distrib/' + f for f in json.load(open('target/distrib/release-files.json'))['files']))")
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly $files --prerelease --target "$GITHUB_SHA" --title "Nightly"             --notes "Built from $GITHUB_SHA on $(date -u +%Y-%m-%d). Replaced on every push to main; not reviewed like a release, and not signed."

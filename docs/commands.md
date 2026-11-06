@@ -4,6 +4,7 @@ Exact syntax and options for the installed program and agent-session commands. F
 
 - [Machine and repo setup](#machine-and-repo-setup)
 - [Install the program](#install-the-program)
+- [Update](#update)
 - [Board and notes](#board-and-notes)
 - [Load an effort](#load-an-effort)
 - [Create an effort](#create-an-effort)
@@ -51,6 +52,15 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 ## Install the program
 
 `install [--dir <folder>]` installs the executable you invoked; it does not download a release or install the plugin. Normal installation uses your user-local bin folder, matching the hooks. It replaces only a program its receipt recorded, and moves the `astrolabe-trial` copy that 0.5.0 also installed into the backup folder. `--dir` is for isolated testing and does not change where the hooks look. See [installation](install.md#1-download-and-install-the-program).
+
+## Update
+
+`update [--channel release|nightly] [--dry-run] [--force]` moves the program and the plugin together. It works out the channel from where your plugin comes from now: a release tag such as `v0.5.0` means **release**, and anything else (`main`, `nightly`, a local folder) means **nightly**. `--channel` picks one and switches to it.
+
+- **release** installs the newest published release and registers the plugin at its tag.
+- **nightly** installs the rolling `nightly` prerelease, which every push to `main` replaces, and registers the plugin at the `nightly` tag, the same commit as the program.
+
+It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program. `--dry-run` prints what it would do and changes nothing. `--force` reinstalls even when everything already matches. Restart your apps afterwards; in Codex, review the changed hooks.
 
 ## Board and notes
 

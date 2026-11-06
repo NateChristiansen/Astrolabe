@@ -14,4 +14,5 @@ pub mod record;
 pub mod registry;
 pub mod seed;
 pub mod session;
+pub mod update;
 pub mod worktree;

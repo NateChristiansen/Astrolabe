@@ -113,7 +113,7 @@ try {
 '''
 
 
-def package(folder, targets):
+def package(folder, targets, channel='release', commit=None):
     version = json.loads((ROOT / 'plugin/astrolabe/.claude-plugin/plugin.json').read_text())['version']
     cargo = (ROOT / 'Cargo.toml').read_text()
     if not re.search(r'^version = "' + re.escape(version) + r'"$', cargo, re.M):
@@ -126,6 +126,13 @@ def package(folder, targets):
     powershell = (folder / 'astrolabe-installer.ps1').read_text()
     if f'/releases/download/v{version}' not in shell or f'/releases/download/v{version}' not in powershell:
         raise ValueError('generated installers do not match the release version')
+    if channel == 'nightly':
+        # A nightly is one rolling prerelease, replaced on every push to main, so its
+        # installers download from that tag instead of the version's.
+        if not commit or not re.fullmatch(r'[0-9a-f]{40}', commit):
+            raise ValueError('a nightly needs the full commit it was built from')
+        shell = shell.replace(f'/releases/download/v{version}', '/releases/download/nightly')
+        powershell = powershell.replace(f'/releases/download/v{version}', '/releases/download/nightly')
     shell = shell_installer(shell, hashes)
     powershell = powershell_installer(powershell, hashes)
     (folder / 'install.sh').write_text(shell, newline='\n')
@@ -137,15 +144,22 @@ def package(folder, targets):
                 archive.write(path, path.relative_to(plugin).as_posix())
         archive.write(ROOT / 'LICENSE', 'LICENSE')
     names = [*hashes, 'install.sh', 'install.ps1', 'astrolabe-plugin.zip']
+    if channel == 'nightly':
+        # `astrolabe update` reads this to pin each app's plugin to the program's commit.
+        (folder / 'nightly.json').write_text(json.dumps({'version': version, 'commit': commit}, indent=2) + '\n', newline='\n')
+        names.append('nightly.json')
     checksums = ''.join(f'{hashlib.sha256((folder / name).read_bytes()).hexdigest()}  {name}\n' for name in names)
     (folder / 'SHA256SUMS').write_text(checksums, newline='\n')
     (folder / 'release-files.json').write_text(json.dumps({'version': version, 'files': [*names, 'SHA256SUMS']}, indent=2) + '\n')
-    print(f'Prepared Astrolabe {version}: {len(targets)} targets. No release was published.')
+    label = f'{version} nightly {commit[:7]}' if channel == 'nightly' else version
+    print(f'Prepared Astrolabe {label}: {len(targets)} targets. No release was published.')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dir', type=Path, default=ROOT / 'target/distrib')
     parser.add_argument('--target', action='append', choices=TARGETS, help='Local preview only; release preparation requires every target')
+    parser.add_argument('--channel', choices=['release', 'nightly'], default='release', help='nightly downloads from the rolling nightly prerelease')
+    parser.add_argument('--commit', help='The full commit a nightly was built from')
     args = parser.parse_args()
-    package(args.dir, args.target or TARGETS)
+    package(args.dir, args.target or TARGETS, args.channel, args.commit)
