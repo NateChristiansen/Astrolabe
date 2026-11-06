@@ -4,6 +4,14 @@ A plugin for Claude Code and Codex that carries an owner's notes between session
 
 The repo contains the [plugin](plugin/README.md) and the Rust program its hooks call. Personal notes and machine bindings stay outside this repo.
 
+## What it's for
+
+One place to run agents across an owner's repos, where their notes are the memory. The owner offloads what's in flight into durable notes and the note taking is automated: each piece of work is an effort with a state and a current state a fresh session can pick up on any machine, and a one-line journal says what changed. A board shows what's in flight, what's next and when the owner is needed.
+
+It stays thin: context, hooks and guardrails around the models, nothing that scripts how a model works, no gates, no UI the apps already have. What it carries is what no model can learn on its own: the owner's preferences and voice, decisions and why, the state of each piece of work, facts about their machines. Rules carry their reason, so a dead one is easy to spot, and pain points are recorded so the setup improves from evidence.
+
+It works the same with every supported agent app, so the owner can switch providers or pair them without changing how they work, and it never forks an app's tools. The owner stays in the loop as much as they choose: check-ins at logical points or a fully autonomous run, verification sized to the change, and nothing posted in their name.
+
 ## Build and check
 
 Install the Rust toolchain pinned in `rust-toolchain.toml`, then run:
