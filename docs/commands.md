@@ -137,7 +137,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `blocked`, `done` or `abandoned`. |
 | `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. |
-| `--reason "<reason>"` | Required with `--status abandoned`. Currently validates that a reason was supplied but does not store it; include the reason in Current state too. |
+| `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
 | `--plan-file <path>` | Replace the saved plan with a UTF-8 text file. |
