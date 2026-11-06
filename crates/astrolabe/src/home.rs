@@ -415,6 +415,7 @@ mod tests {
             "efforts/2026/11-November/0002-b.md",
             "journal/2026/11-November/05-Thursday.md",
             "knowledge/owner.md",
+            "lessons/2026-11-06-trial-binary-killed.md",
             ".agents/brief.md",
             "README.md",
         ] {
@@ -453,6 +454,10 @@ mod tests {
         );
         assert!(tree.contains("class=\"st s-active\""));
         assert!(tree.contains("<span class=\"num\">2</span><span class=\"t\">B</span>"));
+        assert!(tree.contains(
+            "<span class=\"num date\">Nov 6</span><span class=\"t\">trial-binary-killed</span>"
+        ));
+        assert!(tree.contains("<span class=\"num\">05</span><span class=\"t\">Thursday</span>"));
         assert!(tree.contains("href=\"/README.md\""));
         assert!(!tree.contains(".git/"), "{tree}");
         let hid = &tree[at("id=\"hid\" hidden")..];

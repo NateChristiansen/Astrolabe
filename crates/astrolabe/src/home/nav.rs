@@ -234,9 +234,20 @@ pub(super) fn file_row(
                 .next()
                 .unwrap_or(rel)
                 .trim_end_matches(".md");
+            // `2026-11-06-slug`, a lesson, reads as `Nov 6` and its slug;
             // `05-Thursday` reads as the day's number and its name.
-            let (num, text) = match name.split_once('-') {
-                Some((n, rest)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            let dated = name
+                .get(..10)
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .zip(name.get(10..).and_then(|r| r.strip_prefix('-')));
+            let (num, text) = match (dated, name.split_once('-')) {
+                (Some((date, rest)), _) => (
+                    format!("<span class=\"num date\">{}</span>", date.format("%b %-d")),
+                    rest,
+                ),
+                (None, Some((n, rest)))
+                    if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) =>
+                {
                     (format!("<span class=\"num\">{}</span>", esc(n)), rest)
                 }
                 _ => (String::new(), name),
