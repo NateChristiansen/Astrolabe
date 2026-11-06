@@ -1569,7 +1569,7 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
         "{page}"
     );
     let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "mauve"], "");
-    assert!(!ok && out.contains("ember, iris or slate"), "{out}");
+    assert!(!ok && out.contains("iris, ember or slate"), "{out}");
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "blue"], "");
     assert!(!ok && out.contains("auto, light or dark"), "{out}");
     assert!(pc.run(&pc.notes, &["home", "--theme", "auto"], "").1);

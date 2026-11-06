@@ -1,0 +1,15 @@
+<svg class="astrolabe-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="astrolabe-title">
+  <title id="astrolabe-title">Astrolabe</title>
+  <style>@media (prefers-color-scheme: dark) { .astrolabe-mark { --icon-accent: #a98bff; --icon-detail: #e9e6f1; } }</style>
+  <defs>
+    <mask id="astrolabe-pivot" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="white"/>
+      <circle cx="88" cy="149" r="16" fill="black"/>
+    </mask>
+  </defs>
+  <g transform="translate(12 12) scale(.9)">
+    <path d="M150 30 A102 102 0 1 0 225 128" fill="none" stroke="var(--icon-accent, #6b4fc2)" stroke-width="29" stroke-linecap="round"/>
+    <path d="M69 128 L204 23 C212 16 220 16 226 23 C233 30 232 38 225 45 L108 170 C97 181 78 181 67 170 C55 158 56 140 69 128Z" fill="var(--icon-accent, #6b4fc2)" mask="url(#astrolabe-pivot)"/>
+    <path d="M77 187 C112 191 147 158 185 140 C194 136 199 141 195 150 C181 185 151 207 118 209 C101 210 85 204 74 197 C68 193 70 187 77 187Z" fill="var(--icon-detail, #26232e)"/>
+  </g>
+</svg>

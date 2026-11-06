@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 pub const FILE: &str = "home.html";
 /// The machine's look (theme and palette), beside the sync record in the state folder.
 const LOOK_FILE: &str = "home.json";
+/// The same vector is used in the page, browser tab and project artwork.
+const ICON: &str = include_str!("../../../assets/branding/astrolabe.svg");
 
 /// Light or dark: the system's choice, or one fixed for a viewer that can't ask (the
 /// Claude app's file pane always renders light).
@@ -50,9 +52,9 @@ impl Theme {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Palette {
     /// Warm paper and terracotta, the board's first look.
-    #[default]
     Ember,
-    /// Cool paper and purple.
+    /// Cool paper and purple, the default look.
+    #[default]
     Iris,
     /// Grey-blue paper and steel.
     Slate,
@@ -1285,7 +1287,17 @@ fn shell(
         }
         Links::File => "",
     };
-    let swatches = [Palette::Ember, Palette::Iris, Palette::Slate]
+    let favicon = percent(ICON);
+    let icon = ICON
+        .replace(
+            "class=\"astrolabe-mark\"",
+            "class=\"astrolabe-mark brand-icon\"",
+        )
+        .replace(
+            "role=\"img\" aria-labelledby=\"astrolabe-title\"",
+            "aria-hidden=\"true\"",
+        );
+    let swatches = [Palette::Iris, Palette::Ember, Palette::Slate]
         .iter()
         .map(|p| {
             format!(
@@ -1295,7 +1307,7 @@ fn shell(
         })
         .collect::<String>();
     format!(
-        "<!doctype html><html lang=\"en\" data-palette=\"{palette}\"{theme_attr}><head><meta charset=\"utf-8\">{refresh}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{scheme}\">{csp}\n<title>{title}</title>\n<style>{PALETTES}{STYLE}</style></head><body>\n<div class=\"app\"><aside class=\"side\" id=\"side\"><div class=\"brand\"><span class=\"dot\"></span>Astrolabe<span class=\"live\" id=\"live\" hidden title=\"The page follows every save\">live</span></div><div class=\"search\"><input id=\"q\" type=\"search\" placeholder=\"Find a note\" aria-label=\"Find a note\"></div><nav class=\"tree\" id=\"tree\">\n{tree}</nav><div class=\"foot\"><label for=\"appearance\">Theme</label><select id=\"appearance\" aria-label=\"Appearance\"><option value=\"\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select><span class=\"swatches\">{swatches}</span></div></aside><div class=\"scrim\" id=\"scrim\"></div><main class=\"main\" id=\"main\"><div class=\"topbar\"><button class=\"btn menu-btn\" id=\"menu\" aria-label=\"Open the notes list\">☰</button><div class=\"crumb\" id=\"crumb\">{crumb}</div></div>\n{body}</main></div>\n<script>{SCRIPT}</script>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\" data-palette=\"{palette}\"{theme_attr}><head><meta charset=\"utf-8\">{refresh}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{scheme}\">{csp}\n<title>{title}</title>\n<link id=\"favicon\" rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,{favicon}\">\n<style>{PALETTES}{STYLE}</style></head><body>\n<div class=\"app\"><aside class=\"side\" id=\"side\"><div class=\"brand\">{icon}Astrolabe<span class=\"live\" id=\"live\" hidden title=\"The page follows every save\">live</span></div><div class=\"search\"><input id=\"q\" type=\"search\" placeholder=\"Find a note\" aria-label=\"Find a note\"></div><nav class=\"tree\" id=\"tree\">\n{tree}</nav><div class=\"foot\"><label for=\"appearance\">Theme</label><select id=\"appearance\" aria-label=\"Appearance\"><option value=\"\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select><span class=\"swatches\">{swatches}</span></div></aside><div class=\"scrim\" id=\"scrim\"></div><main class=\"main\" id=\"main\"><div class=\"topbar\"><button class=\"btn menu-btn\" id=\"menu\" aria-label=\"Open the notes list\">☰</button><div class=\"crumb\" id=\"crumb\">{crumb}</div></div>\n{body}</main></div>\n<script>{SCRIPT}</script>\n</body></html>\n",
         palette = look.palette.name(),
         title = esc(title),
     )
@@ -1778,7 +1790,7 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .app{display:flex;height:100%;min-height:0}
 .side{width:268px;flex:0 0 auto;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);min-height:0}
 .brand{display:flex;align-items:center;gap:10px;padding:16px 20px 12px;font-weight:600}
-.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.brand .brand-icon{width:28px;height:28px;flex-shrink:0;--icon-accent:var(--accent);--icon-detail:var(--ink)}
 .brand .live{margin-left:auto;font-size:12px;font-weight:500;color:var(--mute);display:flex;align-items:center;gap:6px}.brand .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}.brand .live.off::before{background:var(--line-2)}
 .search{margin:0 10px 6px}.search input{width:100%;height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--pane);color:var(--ink);font:13px inherit}
 .tree{overflow:auto;flex:1;padding:4px 10px 16px;font-size:13px}
@@ -1966,11 +1978,15 @@ var opened=false;es.onopen=function(){live.classList.remove('off');if(opened)ref
 es.onerror=function(){live.classList.add('off')};
 es.addEventListener('changed',refresh);
 }
+/* A favicon is a separate image document: copy the current page colors into the
+shared vector so it follows palette, appearance and system-theme changes too. */
+var updateIcon=function(){var icon=$('.brand-icon').cloneNode(true);var colors=getComputedStyle(root);icon.removeAttribute('class');icon.style.setProperty('--icon-accent',colors.getPropertyValue('--accent').trim());icon.style.setProperty('--icon-detail',colors.getPropertyValue('--ink').trim());$('#favicon').href='data:image/svg+xml,'+encodeURIComponent(new XMLSerializer().serializeToString(icon))};
 var look=read('astrolabe-look');
-var apply=function(){if(look.palette)root.dataset.palette=look.palette;if(look.appearance)root.dataset.theme=look.appearance;else if(look.appearance==='')root.removeAttribute('data-theme');$('#appearance').value=look.appearance||(root.dataset.theme||'');document.querySelectorAll('.sw').forEach(function(b){b.classList.toggle('on',(root.dataset.palette||'ember')===b.dataset.p)})};
+var apply=function(){if(look.palette)root.dataset.palette=look.palette;if(look.appearance)root.dataset.theme=look.appearance;else if(look.appearance==='')root.removeAttribute('data-theme');$('#appearance').value=look.appearance||(root.dataset.theme||'');document.querySelectorAll('.sw').forEach(function(b){b.classList.toggle('on',(root.dataset.palette||'iris')===b.dataset.p)});updateIcon()};
 $('#appearance').addEventListener('change',function(e){look.appearance=e.target.value;save('astrolabe-look',look);apply()});
 document.querySelectorAll('.sw').forEach(function(b){b.addEventListener('click',function(){look.palette=b.dataset.p;save('astrolabe-look',look);apply()})});
 apply();
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',updateIcon);
 var age=function(ms){var s=Math.max(0,ms)/1000;if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+' min';if(s<86400)return Math.floor(s/3600)+' h';return Math.floor(s/86400)+' d'};
 var tick=function(){document.querySelectorAll('.age[data-t]').forEach(function(a){a.textContent=age(Date.now()-(+a.dataset.t))})};
 tick();setInterval(tick,60000);
@@ -2137,7 +2153,7 @@ mod tests {
         let rows = json!({"today": "2026-11-05", "efforts": [], "journal_lines": [], "notes": []});
         let auto = render(&rows, Path::new("/n"), NOW, Look::default());
         assert!(
-            auto.contains("<html lang=\"en\" data-palette=\"ember\"><head>")
+            auto.contains("<html lang=\"en\" data-palette=\"iris\"><head>")
                 && auto.contains("content=\"light dark\"")
                 && auto.contains("prefers-color-scheme:dark"),
             "{auto}"
@@ -2154,10 +2170,42 @@ mod tests {
         assert!(dark.contains("data-palette=\"iris\" data-theme=\"dark\""));
         assert!(dark.contains("content=\"dark\""));
         assert!(dark.contains(":root[data-palette=\"iris\"]"));
+        let at = |palette| auto.find(&format!("data-p=\"{palette}\"")).unwrap();
+        assert!(at("iris") < at("ember") && at("ember") < at("slate"));
+        assert_eq!(Palette::default(), Palette::Iris);
         assert_eq!(Theme::parse("system"), Some(Theme::Auto));
         assert_eq!(Theme::parse("blue"), None);
         assert_eq!(Palette::parse("slate"), Some(Palette::Slate));
         assert_eq!(Palette::parse("mauve"), None);
+    }
+
+    #[test]
+    fn the_icon_is_self_contained_on_boards_and_notes() {
+        let rows = json!({"efforts": [], "notes": []});
+        for page in [
+            render(&rows, Path::new("/n"), NOW, Look::default()),
+            page(
+                &rows,
+                Path::new("/n"),
+                NOW,
+                Look::default(),
+                SERVE_REFRESH_SECS,
+                Links::Served,
+            ),
+            note_page_at("# A note\n"),
+        ] {
+            assert!(page.contains("class=\"astrolabe-mark brand-icon\""));
+            let marker = "href=\"data:image/svg+xml,";
+            let encoded = page
+                .split_once(marker)
+                .unwrap()
+                .1
+                .split('"')
+                .next()
+                .unwrap();
+            assert_eq!(decode(encoded).as_deref(), Some(ICON));
+            assert!(page.contains("id=\"favicon\" rel=\"icon\" type=\"image/svg+xml\""));
+        }
     }
 
     fn note_page_at(text: &str) -> String {
@@ -2255,6 +2303,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("state")).unwrap();
         let notes = Notes::new(dir.join("notes"), dir.join("state"));
+        assert_eq!(look(&notes).palette, Palette::Iris);
+        set_look(&notes, None, Some(Palette::Ember)).unwrap();
+        assert_eq!(
+            look(&notes).palette,
+            Palette::Ember,
+            "keep an explicit choice"
+        );
         assert_eq!(port(&notes), SERVE_PORT);
         set_port(&notes, 5050).unwrap();
         set_look(&notes, Some(Theme::Dark), Some(Palette::Slate)).unwrap();

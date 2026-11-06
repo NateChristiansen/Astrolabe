@@ -1,42 +1,29 @@
-# Astrolabe
+<p align="center">
+  <img src="assets/branding/astrolabe.svg" width="112" height="112" alt="Astrolabe symbol">
+</p>
 
-A plugin for Claude Code and Codex that carries an owner's notes between sessions and machines. It delivers owner and voice files, loads effort context when asked, records work in a separate notes repo, and serves the owner's home on the machine: the board, the notes tree and each note as a page. Its shell hook guards against a fixed set of destructive commands.
+<h1 align="center">Astrolabe</h1>
 
-The repo contains the [plugin](plugin/README.md) and the Rust program its hooks call. Personal notes and machine bindings stay outside this repo.
+<p align="center">Your agents can pick up where you left off—even on another machine.</p>
 
-## What it's for
+Astrolabe is a plugin that gives your agents a shared set of notes: your preferences, decisions, and work in progress. The notes live in your own Git repo, so they can travel with you between sessions, repos, and supported agent apps.
 
-One place to run agents across an owner's repos, where their notes are the memory. The owner offloads what's in flight into durable notes and the note taking is automated: each piece of work is an effort with a state and a current state a fresh session can pick up on any machine, and a one-line journal says what changed. A board shows what's in flight, what's next and when the owner is needed.
+## How it fits into your day
 
-It stays thin: context, hooks and guardrails around the models, nothing that scripts how a model works, no gates, no UI the apps already have. What it carries is what no model can learn on its own: the owner's preferences and voice, decisions and why, the state of each piece of work, facts about their machines. Rules carry their reason, so a dead one is easy to spot, and pain points are recorded so the setup improves from evidence.
+Ask an agent to work on something. Astrolabe gives that work a note called an **effort**, where the agent records what changed, what was decided, and what's next.
 
-It works the same with every supported agent app, so the owner can switch providers or pair them without changing how they work, and it never forks an app's tools. The owner stays in the loop as much as they choose: check-ins at logical points or a fully autonomous run, verification sized to the change, and nothing posted in their name.
+Later, ask an agent to “pick up 12,” using that effort's number. It gets the saved state and the context for that repo and machine. You can continue in a fresh session without reconstructing the last conversation.
 
-## Build and check
+- **Your preferences travel with the work.** Agents receive your working preferences and writing voice, with repo and machine notes when you load an effort.
+- **You choose when to check in.** Each effort tells agents whether to work autonomously, check the plan with you, or pause at each step.
+- **You can see where things stand.** A local board shows active work, what needs you, and a short journal of what changed. You can browse the notes alongside it.
 
-Install the Rust toolchain pinned in `rust-toolchain.toml`, then run:
+The notes are plain Markdown, separate from your project code. You can read and edit them yourself.
 
-```sh
-scripts/check
-cargo build --release --locked -p astrolabe
-```
+## Get started
 
-`scripts/check` runs formatting, clippy with warnings denied, and every test suite. It uses Node.js for the Git landing tests. Run it before each commit. CI runs the same checks on macOS and Windows.
+Astrolabe currently builds from source. Start with the [per-machine setup](plugin/README.md#setup-once-per-machine), then [install the plugin in your agent app](plugin/README.md#install).
 
-## Setup
+Setup creates a notes repo and a first effort, “Fill in your notes,” to help you add your preferences and register a project. Already have Astrolabe notes? Register that checkout on the new machine instead.
 
-See the [plugin instructions](plugin/README.md) for installation and the binary location the hooks expect. Make a new notes checkout with `notes init <folder>`, or register an existing one as `agent`, register target repos under the names in their notes, then switch the plugin on from a terminal. Installing a plugin writes the client's configuration; building this repo does not.
-
-## Commands
-
-- `hook <event> --if-active`: the plugin's hook entry point; does nothing when the machine switch is off.
-- `on`, `off`, `status`: the machine switch, operated by the owner.
-- `activate --effort <number> [--worker]`, `activate --status`, `activate --off`: load effort context for this session, inspect guard proof, or unload the effort.
-- `effort new`, `effort save`, `journal`: record work through the plugin's pre-command hook.
-- `efforts [--repo <name>] [--all]`: list what the home reads as JSON.
-- `home [--open] [--serve] [--port <number>] [--theme auto|light|dark] [--palette ember|iris|slate]`: draw the file, make sure the server is up and print its address; `--serve` runs the server in the foreground.
-- `notes init <folder>`: make and register a new owner's notes checkout, with effort 1, "Fill in your notes", active.
-- `notes sync`, `notes status`: publish notes or inspect their sync state.
-- `repo add <name> [<checkout>]`: register the notes checkout, record a target repo's remote in its note, or register a local repo without a remote.
-
-The guard is an accident guard, not a sandbox. It sees shell commands supplied to the hook, not file edits or other tools. A session proves its own hook with an allowed control and a denied probe when it loads or creates an effort; until then it claims no protection. `activate --status` reports whether that proof holds.
+[Command reference](docs/commands.md) · [How the plugin works](plugin/README.md) · [Contributing](CONTRIBUTING.md)
