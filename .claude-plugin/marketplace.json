@@ -1,0 +1,14 @@
+{
+  "name": "astrolabe",
+  "owner": {
+    "name": "Astrolabe"
+  },
+  "plugins": [
+    {
+      "name": "astrolabe",
+      "source": "./plugin/astrolabe",
+      "description": "Shared notes, saved work and a shell guard for agents while Astrolabe is on"
+    }
+  ],
+  "description": "Shared notes, saved work and a shell guard for agents"
+}

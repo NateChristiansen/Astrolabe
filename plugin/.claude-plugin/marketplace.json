@@ -1,11 +1,14 @@
 {
   "name": "astrolabe",
-  "owner": { "name": "Astrolabe" },
+  "owner": {
+    "name": "Astrolabe"
+  },
   "plugins": [
     {
       "name": "astrolabe",
       "source": "./astrolabe",
-      "description": "Idle until a session switches on for an effort"
+      "description": "Shared notes, saved work and a shell guard for agents while Astrolabe is on"
     }
-  ]
+  ],
+  "description": "Shared notes, saved work and a shell guard for agents"
 }

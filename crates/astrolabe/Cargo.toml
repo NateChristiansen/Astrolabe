@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Shared notes, saved work and a shell guard for agents"
+repository = "https://github.com/NateChristiansen/Astrolabe"
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }

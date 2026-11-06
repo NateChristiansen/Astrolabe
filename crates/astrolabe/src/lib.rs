@@ -4,6 +4,7 @@ pub mod effort;
 pub mod guard;
 pub mod home;
 pub mod hook;
+pub mod install;
 pub mod notes;
 pub mod nudge;
 pub mod record;

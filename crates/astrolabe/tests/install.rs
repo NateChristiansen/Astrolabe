@@ -1,0 +1,212 @@
+mod common;
+
+use common::TempDir;
+use std::fs;
+use std::process::Command;
+
+fn binary() -> &'static str {
+    env!("CARGO_BIN_EXE_astrolabe")
+}
+fn name() -> &'static str {
+    if cfg!(windows) {
+        "astrolabe.exe"
+    } else {
+        "astrolabe"
+    }
+}
+fn trial() -> &'static str {
+    if cfg!(windows) {
+        "astrolabe-trial.exe"
+    } else {
+        "astrolabe-trial"
+    }
+}
+fn run(dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(["install", "--dir"])
+        .arg(dir)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn fresh_install_and_repeat_preserve_unrelated_files() {
+    let temp = TempDir::new();
+    let dir = temp.0.join("a folder with spaces");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("notes.md"), "my notes").unwrap();
+    for _ in 0..2 {
+        let output = run(&dir, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read(dir.join(name())).unwrap(),
+            fs::read(binary()).unwrap()
+        );
+        assert_eq!(
+            fs::read(dir.join(trial())).unwrap(),
+            fs::read(binary()).unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("notes.md")).unwrap(),
+            "my notes"
+        );
+        assert!(!dir.join(".astrolabe-install-pending").exists());
+    }
+    let output = Command::new(dir.join(name()))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        concat!("astrolabe ", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn unmanaged_programs_are_never_replaced_implicitly() {
+    let temp = TempDir::new();
+    fs::write(temp.0.join(name()), "some other app").unwrap();
+    assert!(!run(&temp.0, &[]).status.success());
+    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert_eq!(
+        fs::read_to_string(temp.0.join(name())).unwrap(),
+        "some other app"
+    );
+    assert!(!temp.0.join(trial()).exists());
+}
+
+#[test]
+fn explicit_trial_migration_keeps_a_backup() {
+    let temp = TempDir::new();
+    fs::copy(binary(), temp.0.join(trial())).unwrap();
+    assert!(!run(&temp.0, &[]).status.success());
+    let output = run(&temp.0, &["--migrate-trial"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let backup = fs::read_dir(&temp.0)
+        .unwrap()
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".astrolabe-backup-")
+        })
+        .unwrap()
+        .path();
+    assert_eq!(
+        fs::read(backup.join(trial())).unwrap(),
+        fs::read(binary()).unwrap()
+    );
+}
+
+#[test]
+fn an_update_replaces_both_managed_names_and_keeps_the_old_bytes() {
+    use sha2::{Digest, Sha256};
+    let temp = TempDir::new();
+    let old = b"a previous managed build";
+    fs::write(temp.0.join(name()), old).unwrap();
+    fs::write(temp.0.join(trial()), old).unwrap();
+    fs::write(
+        temp.0.join(".astrolabe-install.json"),
+        serde_json::json!({
+            "format": 1, "version": "0.4.0", "sha256": format!("{:x}", Sha256::digest(old))
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let output = run(&temp.0, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(temp.0.join(name())).unwrap(),
+        fs::read(binary()).unwrap()
+    );
+    assert_eq!(
+        fs::read(temp.0.join(trial())).unwrap(),
+        fs::read(binary()).unwrap()
+    );
+    let backup = fs::read_dir(&temp.0)
+        .unwrap()
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".astrolabe-backup-")
+        })
+        .unwrap()
+        .path();
+    assert_eq!(fs::read(backup.join(name())).unwrap(), old);
+    assert_eq!(fs::read(backup.join(trial())).unwrap(), old);
+}
+
+#[test]
+fn modified_managed_program_and_corrupt_receipt_are_not_adopted() {
+    let temp = TempDir::new();
+    assert!(run(&temp.0, &[]).status.success());
+    fs::write(temp.0.join(trial()), "edited").unwrap();
+    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert_eq!(fs::read_to_string(temp.0.join(trial())).unwrap(), "edited");
+    fs::write(temp.0.join(".astrolabe-install.json"), "broken").unwrap();
+    assert!(!run(&temp.0, &[]).status.success());
+}
+
+#[test]
+fn interrupted_install_refuses_to_destroy_recovery_files() {
+    let temp = TempDir::new();
+    fs::write(
+        temp.0.join(".astrolabe-install-pending"),
+        "recovery instructions",
+    )
+    .unwrap();
+    assert!(!run(&temp.0, &[]).status.success());
+    assert_eq!(
+        fs::read_to_string(temp.0.join(".astrolabe-install-pending")).unwrap(),
+        "recovery instructions"
+    );
+    assert!(!temp.0.join(name()).exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_are_not_followed_even_during_migration() {
+    let temp = TempDir::new();
+    std::os::unix::fs::symlink(binary(), temp.0.join(name())).unwrap();
+    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert!(
+        fs::symlink_metadata(temp.0.join(name()))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_locked_trial_file_does_not_replace_the_primary() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let temp = TempDir::new();
+    fs::copy(binary(), temp.0.join(name())).unwrap();
+    fs::copy(binary(), temp.0.join(trial())).unwrap();
+    let _held = fs::File::options()
+        .read(true)
+        .share_mode(0)
+        .open(temp.0.join(trial()))
+        .unwrap();
+    assert!(!run(&temp.0, &["--migrate-trial"]).status.success());
+    assert_eq!(
+        fs::read(temp.0.join(name())).unwrap(),
+        fs::read(binary()).unwrap()
+    );
+}

@@ -1,49 +1,239 @@
-# Astrolabe plugin
+# Install Astrolabe
 
-One plugin folder for Claude Code and Codex, in Claude's layout, with one marketplace file per app. A machine switch, `astrolabe on` and `astrolabe off`, run by the owner in a terminal, decides whether it does anything. Off, its hooks do nothing. On, every session and its subagents get the guard on shell commands, and every session gets the owner note and the rules from the voice note, plus its repo's active efforts as a suggestion. No effort is loaded until the owner asks for one in plain words ("pick up 70", "work on effort 70", or `/astrolabe:effort 70`), and `ASTROLABE_EFFORT=70` at launch sets it for a worker. With an effort, that session also gets the effort's settings and current state, the whole voice note, the repo note and the machine notes, and proves its guard.
+Astrolabe needs two things on each machine: a small program downloaded for your system, and a plugin installed in your agent app. This guide takes you through both, then starts your first session.
 
-Every session also records its work: when the owner's request means a change, a plan, or findings that take more than that session, the session runs `astrolabe effort new` with a title and a one-line goal, which numbers and writes `efforts/<year>/<month>/NNNN-slug.md` in the notes (the shelf is the month it was created, which never changes, so the file never moves), commits, and binds the session to that effort. It saves with `astrolabe effort save`, the new Current state in a heredoc, at real moments: before waiting on the owner, before a long run, when a piece is done, and when the Stop hook says work moved since the last save. Work with more than one piece keeps them as a `## Pieces` checklist in the effort (`--pieces-file`, `--tick`), not as efforts of their own. A question answered on the spot records no effort; a finding worth keeping is one sentence, `astrolabe journal "…"`. A session dispatched by another agent is a worker: it runs `astrolabe activate --effort <n> --worker`, gets the effort's context and the guard, and writes nothing to the notes; the dispatcher reports for it. The journal (`journal/<year>/<month>/<day>.md`, as in `journal/2026/11-November/05-Thursday.md`) is the owner's history and holds only sentences the agent writes with `--journal`, one per effort per day, a later one replacing the earlier: nothing in it is code-built. Agents write the meaning; the program writes the stamp (time, machine, provider, session, branch, head, unpushed, dirty), the commit and the push.
+Already installed? See [Using Astrolabe](../docs/usage.md), [updating](#update-astrolabe), or [troubleshooting](../docs/troubleshooting.md).
 
-Everything personal is read from the notes checkout at run time; nothing here holds it.
+## Before you start
 
-## How an effort is bound to a session
+- Install [Git](https://git-scm.com/downloads) and configure a name and email for commits. Astrolabe commits changes to your notes.
+- Install and sign in to Claude Code or Codex, with its command available in your terminal. Astrolabe requires plugin hooks; see [compatibility](../docs/versions.md).
 
-The skill runs `astrolabe activate --effort <n>` as a plain shell command. The plugin's pre-command hook sees it with the session id the app supplies, does the work there, and rewrites the command to a plain read of the result the hook left (`cat '<state folder>/shown/<ticket>.txt'`, `Get-Content -Raw` in PowerShell). A read-only command runs in every mode: Claude's plan mode ignores a hook's allow for anything else, and the hook has already written by then, so the effort commands work while planning. A command no hook took says that no effort was loaded and claims no protection, which is what an untrusted Codex hook looks like.
+Run the commands below in your own terminal. Use Bash or zsh on macOS/Linux, or PowerShell on Windows. You don't need Rust, Node.js, Python, or a source checkout to install a prebuilt release. Git is still needed for your notes and the plugin marketplace.
 
-## How notes get written
+## 1. Download and install the program
 
-The agent's own tools can't write the notes checkout from a product repo (Codex's sandbox confines writes to the workspace; Claude prompts outside its folders), so the pre-command hook does it: it reads the whole `astrolabe effort …` command, heredoc body included, writes the notes as the user under one advisory lock per machine, and rewrites the command to a print of the result. The plain command, run with no hook, only explains itself: a recent ticket for the same command means it was done, a leftover intent means it's still finishing, otherwise "NOT recorded".
+**Release candidate:** prebuilt downloads are being prepared. Until `v0.5.0` appears on the [releases page](https://github.com/NateChristiansen/Astrolabe/releases), use [Build from source](#build-from-source). The commands below describe that release, not a download that is already available.
 
-Writes are planned whole as an intent file in the state folder and applied idempotently, so a crash leaves what to finish and a retried tool call doesn't commit twice. Before each write the notes are pulled (bounded, 15 s; a timeout backs syncs off for five minutes); a save over a file that changed since it was delivered is refused with the current text. Two efforts with one number after a pull renumber the newer, noted in its Decisions, and its journal lines follow it. Pushes run detached: at a state change, every 10 minutes, at session end, and at the next session start for anything left; `astrolabe notes status` shows what's unpublished or diverged, `astrolabe notes sync` runs a push by hand. The journal day file merges by union (`.gitattributes`, written on first use), so two machines appending the same day never conflict; each line's hidden tail names the effort and the machine, so a writer replaces only its own line and the home view drops a doubled id.
+The first release targets Apple silicon and Intel Macs, x64 Windows, and x64 Linux with glibc. See [versions and compatibility](../docs/versions.md) for the tested systems. Install into your own account; administrator access is not needed.
 
-The Stop hook nudges once per change when the repo's fingerprint (HEAD, the diff, untracked contents) differs from the last save's, or an edit or commit marked the session: Claude gets it as hook feedback, Codex as a block whose reason is the text, and `stop_hook_active` stops a second one. No save is ever required to finish. `astrolabe efforts [--repo <name>] [--all]` prints what the home view reads as JSON. That includes `lessons/*.md`, the notes' inbox of friction waiting for triage: the board counts them and lists them, and nothing delivers them to a session; a triaged lesson is deleted, so the folder holds only what waits.
+### macOS / Linux
 
-Known limits, stated: a plain command run within a minute of another session's identical command in the same folder sees that one's result (the reply says so); the effort file's shape is fixed by the program, there is no `templates/effort.md`; findings written only in chat, with no file touched, aren't detected at turn end; rule text reaches a session once, at its start, so a session already running when a rule changes keeps the old one until it's told in chat or restarted.
+```sh
+curl --fail --location --output install.sh https://github.com/NateChristiansen/Astrolabe/releases/download/v0.5.0/install.sh
+sh install.sh
+"$HOME/.local/bin/astrolabe" --version
+```
 
-## The home
+### Windows (PowerShell)
 
-The owner reads the notes on a page the plugin serves on the machine, at `http://localhost:4747/` unless `astrolabe home --port` set another: the board (what needs them, what's active, ready, blocked or an idea, the fortnight's closed work, today's journal, the open initiatives), the notes tree beside it, and every note as a page with its properties as pills and an outline. Nothing starts it by hand: every change to the notes and every session start makes sure a server is up, one per machine by a lock in the state folder, and it stops after a day with no request. The page holds a stream to the server and swaps the board, the tree or the note in place when the notes change, so nothing reloads, scrolls or closes. `astrolabe home` draws the file, prints the address and starts the server if needed; `--open` opens the address; `--theme auto|light|dark` and `--palette iris|ember|slate` set the look per machine, and a viewer's own choice on the page is kept by that browser. Iris is the default; the palette choices run Iris, Ember, Slate. The header and browser-tab icon use the same mark and follow the chosen palette and appearance. The same page is written as `home.html` at the notes checkout root at every change, excluded from git through the checkout's own exclude file, for a machine with no server; it reloads itself once a minute.
+```powershell
+Invoke-WebRequest https://github.com/NateChristiansen/Astrolabe/releases/download/v0.5.0/install.ps1 -OutFile install.ps1
+& .\install.ps1
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" --version
+```
 
-Folders starting with a dot are kept out of the tree behind a toggle: `.agents/` holds what agents write for each other, not for reading. Efforts and the journal sit on month shelves, newest first, and the tree opens to the newest month.
+You can read the downloaded script before running it. It selects your system's archive, verifies its SHA-256 checksum before unpacking, and installs `astrolabe` in your user-local bin folder. It also installs the same build as `astrolabe-trial` so older cached plugins keep working during migration. It does not change PATH, your notes, or your agent app's settings.
 
-## Setup, once per machine
+If an older executable is already there, follow [Migrate an existing installation](#migrate-an-existing-installation). A failed download or unsupported system leaves your existing installation in place.
 
-1. Build with `cargo build --release --locked -p astrolabe`, then place the program at `~/.local/bin/astrolabe-trial` (`astrolabe-trial.exe` on Windows). The hooks call it as `~/.local/bin/astrolabe-trial`, unquoted: Codex on Windows runs hooks in PowerShell and Claude in Git Bash or sh, all of them expand that `~`, and none needs PATH, which an app started from the Mac Dock may lack. A trial run points `~` at a scratch folder instead: HOME for Git Bash and sh, USERPROFILE for PowerShell.
-2. The notes checkout. A new owner makes one with `astrolabe-trial notes init <folder>`: it makes the folder (or takes a fresh clone of an empty private repo), writes the starting notes, commits and registers them. Each starting note says in a line what goes there, and effort 1, "Fill in your notes", is active: a session in that folder offers it, and picking it up walks the owner through their own owner, voice and machines notes and their first repo note. A folder that isn't empty is refused, as is a machine that already has notes. With no remote, the reply says to add a private one. An existing checkout, on another machine or from a clone: `astrolabe-trial repo add agent <notes checkout>`.
-3. Each target repo (effort 1 does the first), under the name its note has in `knowledge/repos/<name>.md`: `astrolabe-trial repo add <name> [<checkout>]`, from that repo if no checkout is given. A repo with a remote gets that remote recorded in its note, so another machine can match it without a local binding. The notes checkout and repos without remotes get local records, one file per repo in `repos/` in the state folder, `~/.local/state/astrolabe-layer/` (`%USERPROFILE%\.local\state\astrolabe-layer\` on Windows). The denial log is there too. `astrolabe on` refuses until `agent` is recorded, since that's where the notes are. If a local record can't be written, `repo add` says so and rerunning is safe.
-4. `astrolabe-trial on`.
-5. Each effort note has, in its properties (YAML frontmatter, as Obsidian shows them): `status: active` to be suggested, `repo: <name>` (or a list), `involvement: <autonomous | check in at plan | each step>` and `authority: <read | edit | push>`. Missing or unknown values refuse the switch, with the field named; nothing fills them in.
+## 2. Install the plugin in your agent app
 
-## In the notes checkout
+Choose the app you use, or install in both. These commands let the app fetch the plugin from the hosted marketplace; you don't clone the source yourself. The marketplace is pinned to the same release as the program.
 
-The registered notes checkout (`agent` in the registry) and its worktrees are the owner's seat: the plugin runs there like anywhere else, any effort loads there with "pick up N" whatever its repo, its own active efforts (`repo: agent`) are offered there and nowhere else, and `effort new` there needs `--repo <name>`, the repo the work is for, because the folder can't say. A pull stashes hand edits around the rebase; one that won't reapply stays in the stash and the next reply says so.
+### Claude Code
 
-## Install
+```sh
+claude plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git#v0.5.0
+claude plugin install astrolabe@astrolabe
+```
 
-These write each app's home config.
+This installs at user scope. See the [Claude Code plugin guide](https://code.claude.com/docs/en/discover-plugins) for app-specific installation options.
 
-- Claude: `claude plugin marketplace add <this folder>`, then `claude plugin install astrolabe@astrolabe`.
-- Codex: `codex plugin marketplace add <this folder>`, then `codex plugin add astrolabe@astrolabe`, then review and trust all five hooks with `/hooks`. Codex marks the hooks modified after any plugin version change, and they don't run until trusted again.
-- Upgrading: Claude keeps a cached copy of the version it installed, so after a plugin change run `claude plugin update astrolabe@astrolabe` (or uninstall and install); Codex: `codex plugin add astrolabe@astrolabe` again, then `/hooks` to trust the changed hooks.
+### Codex
 
-Remove: `claude plugin uninstall astrolabe@astrolabe` and `claude plugin marketplace remove astrolabe`; `codex plugin remove astrolabe@astrolabe` and `codex plugin marketplace remove astrolabe`. That leaves the program, its machine config, and the repo list, denial log and any activation state in `~/.local/state/astrolabe-layer/`.
+```sh
+codex plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git --ref v0.5.0
+codex plugin add astrolabe@astrolabe
+```
+
+Review and trust Astrolabe's five hooks. In the CLI, open `/hooks`; in the desktop app, use **Review hooks** in the composer or **Settings → Hooks**. Installing the plugin alone does not trust its hooks. See the [Codex hook guide](https://learn.chatgpt.com/docs/hooks#plugin-bundled-hooks).
+
+Already registered an Astrolabe marketplace from a local folder or older release? Follow [updating](#update-astrolabe) to replace that source first.
+
+## 3. Set up your notes
+
+Your notes live in a separate Git repo. Choose **new notes** for your first machine or **existing notes** if you already use Astrolabe.
+
+### New notes
+
+Choose a new or empty folder outside the Astrolabe source checkout and your project repos. For example:
+
+macOS / Linux:
+
+```sh
+"$HOME/.local/bin/astrolabe" notes init "$HOME/Astrolabe-notes"
+```
+
+Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" notes init "$env:USERPROFILE/Astrolabe-notes"
+```
+
+This creates and registers your notes, makes their first commit, and adds an effort called **Fill in your notes**. An effort is a note about a piece of work: where it stands, what was decided, and what comes next.
+
+Your notes stay on this machine until you [connect a private remote](../docs/usage.md#use-another-machine). You can do that after your first session. A fresh clone of an empty private Git repo also works as the folder for `notes init`.
+
+### Existing notes
+
+Clone your private notes repo onto this machine first, or use a checkout you already have. Register its location; don't run `notes init` on it.
+
+macOS / Linux:
+
+```sh
+"$HOME/.local/bin/astrolabe" repo add agent "$HOME/Astrolabe-notes"
+```
+
+Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" repo add agent "$env:USERPROFILE/Astrolabe-notes"
+```
+
+Replace the example folder with yours. `agent` is Astrolabe's reserved name for the notes repo.
+
+## 4. Turn it on
+
+macOS / Linux:
+
+```sh
+"$HOME/.local/bin/astrolabe" on
+```
+
+Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" on
+```
+
+The reply should say **Astrolabe is on for this machine**. This enables Astrolabe across sessions on this machine; you don't turn it on separately for each project. The app still needs to load and run its hooks.
+
+## 5. Start your first session
+
+Restart your agent app, then open a new session in **your notes folder**.
+
+For new notes, say:
+
+> Pick up 1.
+
+The agent should load **Fill in your notes** and walk you through your preferences, writing voice, machine details, and first project. It should also check that the shell guard runs and report the result. Let the agent handle those checks.
+
+For existing notes, ask the agent to pick up an effort by its number. The [board](#6-open-the-board) shows your saved work.
+
+You're ready when the agent can name the loaded effort, read its saved state, and report that the guard is proven for the session. If it can't, use [troubleshooting](../docs/troubleshooting.md) before relying on it to record work.
+
+## 6. Open the board
+
+macOS / Linux:
+
+```sh
+"$HOME/.local/bin/astrolabe" home --open
+```
+
+Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" home --open
+```
+
+Your browser opens the local board, normally at [localhost:4747](http://localhost:4747/). It shows your efforts, journal and notes. It starts automatically when needed.
+
+Continue with [Using Astrolabe](../docs/usage.md) to start work in a project, choose when agents check in, and resume on another machine.
+
+## Update Astrolabe
+
+Update the program and plugin together. Existing sessions keep instructions they already received, so finish or pause current work and close your agent sessions before updating.
+
+1. Download the new release's installer as in [step 1](#1-download-and-install-the-program) and run it. Use the same release tag for both downloads and the marketplace. Each successful update keeps the previous program files in the backup folder printed by the installer.
+2. Remove the old plugin and marketplace registration in each app you use:
+
+   ```sh
+   # Claude Code
+   claude plugin uninstall astrolabe@astrolabe
+   claude plugin marketplace remove astrolabe
+
+   # Codex
+   codex plugin remove astrolabe@astrolabe
+   codex plugin marketplace remove astrolabe
+   ```
+
+3. Repeat [step 2](#2-install-the-plugin-in-your-agent-app) using the new release tag. This also moves an existing local marketplace to the hosted source. Removing the old registration does not erase your notes.
+4. Review and trust any changed hooks, restart your app, and repeat the [session check](#5-start-your-first-session).
+
+Marketplace refresh alone does not update the program. A pinned marketplace also stays on its selected release until you change the registration. Astrolabe's installers do not enable background updates.
+
+If Windows reports a file in use, close the named Astrolabe sessions and stop its board process in Task Manager, then retry. The installer does not kill processes. See [troubleshooting](../docs/troubleshooting.md) for conflicting or interrupted installations.
+
+To roll back, run the previous release's installer and register that release's marketplace again. For the first migration from a source build, keep the printed backup folder and your old source checkout until the new session check passes. [Recovery instructions](../docs/releases.md#recover-an-interrupted-installation) explain how to restore those original files.
+
+## Migrate an existing installation
+
+Older versions used `astrolabe-trial`. Close your agent sessions and board before migrating. Download the installer in step 1, then explicitly allow it to adopt your old Astrolabe build:
+
+```sh
+sh install.sh --migrate-trial
+```
+
+On Windows:
+
+```powershell
+& .\install.ps1 -MigrateTrial
+```
+
+Migration checks any existing `astrolabe` and `astrolabe-trial` programs, backs them up, and installs both names using the new build. An unrelated executable, symlink, or a file changed since the last managed installation is refused; move the conflicting file aside yourself after checking what it is. Notes, repo bindings, and the machine's on/off switch stay in place. Finish the plugin steps under [updating](#update-astrolabe); don't run `notes init` again.
+
+## Build from source
+
+This is the development path and the fallback while prebuilt releases are not yet published. Install [Rust through rustup](https://rustup.rs/) and the build tools it requests, then:
+
+```sh
+git clone https://github.com/NateChristiansen/Astrolabe.git
+cd Astrolabe
+cargo build --release --locked -p astrolabe
+./target/release/astrolabe install
+```
+
+On Windows, the last command is `& .\target\release\astrolabe.exe install`. Add `--migrate-trial` for an existing unmanaged Astrolabe installation.
+
+Register `./plugin` instead of the hosted URL in step 2. Keep this checkout because your local marketplace refers to it. For later source updates, rebuild and run `install` again, then refresh the app's local plugin. Don't use a published plugin with an unrelated development build.
+
+## Turn off or remove Astrolabe
+
+To stop its hooks doing work, run the installed program with `off` in your terminal:
+
+```sh
+"$HOME/.local/bin/astrolabe" off
+```
+
+On Windows:
+
+```powershell
+& "$env:USERPROFILE/.local/bin/astrolabe.exe" off
+```
+
+To uninstall from an app, run its pair of commands:
+
+```sh
+# Claude Code
+claude plugin uninstall astrolabe@astrolabe
+claude plugin marketplace remove astrolabe
+
+# Codex
+codex plugin remove astrolabe@astrolabe
+codex plugin marketplace remove astrolabe
+```
+
+Uninstalling leaves your notes, the installed program, and [local machine state](../docs/internals.md#files-and-local-state) in place. Turning it off doesn't erase context already delivered to a session.
+
+[Using Astrolabe](../docs/usage.md) · [Command reference](../docs/commands.md) · [Troubleshooting](../docs/troubleshooting.md) · [Internals](../docs/internals.md) · [Project overview](../README.md)

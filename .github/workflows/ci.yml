@@ -11,3 +11,7 @@ jobs:
     uses: ./.github/workflows/system.yml
     with:
       os: windows-latest
+  linux:
+    uses: ./.github/workflows/system.yml
+    with:
+      os: ubuntu-22.04

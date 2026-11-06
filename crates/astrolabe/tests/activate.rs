@@ -1088,7 +1088,7 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
         let command = &hooks["hooks"][event][0]["hooks"][0]["command"];
         // Unquoted from `~`: Codex on Windows runs hooks in PowerShell, Claude in Git Bash or
         // sh, and all of them expand it, with no PATH, which a Mac app from the Dock may lack.
-        let wanted = format!("~/.local/bin/astrolabe-trial hook {slug} --if-active");
+        let wanted = format!("~/.local/bin/astrolabe hook {slug} --if-active");
         assert_eq!(command, &wanted, "the trial build, by its home path");
         assert!(
             hooks["hooks"][event][0].get("matcher").is_none(),
