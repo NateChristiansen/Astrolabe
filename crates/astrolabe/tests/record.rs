@@ -1515,11 +1515,22 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
     std::fs::remove_file(&board).unwrap();
     let (out, ok) = mac.run(&mac.notes, &["home"], "");
     assert!(ok, "{out}");
+    let file = out.lines().next().unwrap_or_default().trim();
     // The registered checkout may be the canonical path of the one the test knows.
     assert!(
-        out.trim().ends_with("home.html") && Path::new(out.trim()).exists(),
+        file.ends_with("home.html") && Path::new(file).exists(),
         "{out}"
     );
+    // Then the address, and the server was asked for (a marker stands in for the process
+    // under test).
+    assert!(
+        out.lines()
+            .nth(1)
+            .unwrap_or_default()
+            .starts_with("http://localhost:"),
+        "{out}"
+    );
+    assert!(mac.state().join("home-requested").exists());
     assert!(board.exists());
     // The other machine redraws its own copy when the saves arrive.
     assert!(mac.sync().1);
@@ -1893,6 +1904,7 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(mac.bash("s1", NEW).1);
     let mut child = Kill(
         mac.command(&mac.notes, &["home", "--serve", "--port", "0"])
+            .env("ASTROLABE_HOME_IDLE_SECS", "6")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1915,6 +1927,12 @@ fn the_board_is_served_fresh_on_localhost() {
         .and_then(|u| u.strip_suffix('/'))
         .unwrap_or_else(|| panic!("{url}"))
         .to_owned();
+    // A second server on this machine leaves at once, naming the address.
+    let (out, ok) = mac.run(&mac.notes, &["home", "--serve", "--port", "0"], "");
+    assert!(
+        ok && out.contains("already serving") && out.contains("http://localhost:"),
+        "{out}"
+    );
     // One request; a connection the runner's stack resets before any byte arrives (seen
     // once on Windows CI) is tried again, since that's the runner, not the server.
     let get = |target: &str, host: &str| {
@@ -2060,4 +2078,20 @@ fn the_board_is_served_fresh_on_localhost() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+    // With nothing asking for a while, the server stops on its own and the lock goes with
+    // it; the next change to the notes starts one again.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let exited = loop {
+        if let Ok(Some(status)) = child.0.try_wait() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        exited.is_some_and(|s| s.success()),
+        "the server stops when idle: {exited:?}"
+    );
 }

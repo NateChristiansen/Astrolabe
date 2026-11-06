@@ -778,6 +778,8 @@ impl Notes {
         if let Err(why) = self.draw() {
             self.record_sync("board-failed", &why);
         }
+        // Every change is a chance to have the home up, so the owner never starts it.
+        crate::home::ensure_serving(self);
     }
 
     /// The board, redrawn by hand: `astrolabe home`.
@@ -995,14 +997,20 @@ impl Notes {
             let _ = write_text(&self.state.join("sync-requested"), "");
             return;
         }
+        self.spawn_detached(&["notes", "sync"], "sync.log");
+    }
+
+    /// Runs this program again with `args`, in the notes checkout, as its own process that
+    /// outlives the caller, its output appended to `log` in the state folder.
+    pub fn spawn_detached(&self, args: &[&str], log: &str) {
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        let log = self.state.join("sync.log");
+        let log = self.state.join(log);
         let out = File::options().create(true).append(true).open(&log).ok();
         let err = File::options().create(true).append(true).open(&log).ok();
         let mut cmd = Command::new(exe);
-        cmd.args(["notes", "sync"])
+        cmd.args(args)
             .current_dir(&self.root)
             .stdin(Stdio::null())
             .stdout(out.map_or(Stdio::null(), Stdio::from))

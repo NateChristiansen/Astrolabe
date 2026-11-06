@@ -123,6 +123,101 @@ pub fn set_look(
     )
 }
 
+/// The port this machine serves on, beside the look; `SERVE_PORT` when unset.
+pub fn port(notes: &Notes) -> u16 {
+    std::fs::read_to_string(notes.state.join(LOOK_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["port"].as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .unwrap_or(SERVE_PORT)
+}
+
+pub fn set_port(notes: &Notes, port: u16) -> Result<(), String> {
+    let mut saved = std::fs::read_to_string(notes.state.join(LOOK_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    saved["port"] = port.into();
+    notes::write_text(&notes.state.join(LOOK_FILE), &saved.to_string())
+}
+
+/// The address the home is served at on this machine.
+pub fn url(notes: &Notes) -> String {
+    format!("http://localhost:{}/", port(notes))
+}
+
+/// The machine's one server holds this file; a second `--serve` sees it and leaves.
+const LOCK_FILE: &str = "home.lock";
+/// With no request this long, the server stops; the next change starts one again.
+const IDLE_SECS: u64 = 24 * 3600;
+/// Tests set a shorter idle, in seconds.
+const IDLE_SECS_VAR: &str = "ASTROLABE_HOME_IDLE_SECS";
+/// Tests ask for no process: a marker says the home was wanted.
+const NO_DETACHED_VAR: &str = "ASTROLABE_NO_DETACHED_SYNC";
+const REQUESTED_MARKER: &str = "home-requested";
+
+/// The machine's server lock, held for the server's life; None when another holds it.
+pub fn hold(notes: &Notes) -> Option<std::fs::File> {
+    use fs4::fs_std::FileExt;
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(notes.state.join(LOCK_FILE))
+        .ok()?;
+    file.try_lock_exclusive().ok()?.then_some(file)
+}
+
+/// Whether a home answers on the port already: a server from before the lock, or one
+/// started by hand.
+fn answering(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(300),
+    ) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(700)));
+    if stream
+        .write_all(format!("HEAD / HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n").as_bytes())
+        .is_err()
+    {
+        return false;
+    }
+    let mut head = [0u8; 15];
+    stream.read_exact(&mut head).is_ok() && head.starts_with(b"HTTP/1.1 200")
+}
+
+/// Has the home up on this machine: nothing to do when a server holds the lock or answers,
+/// else one is started as its own process, so the owner never starts it by hand. Called
+/// after every change to the notes and at each session's start. The address, or None when
+/// there is no notes checkout to serve.
+pub fn ensure_serving(notes: &Notes) -> Option<String> {
+    if !notes.root.is_dir() {
+        return None;
+    }
+    let port = port(notes);
+    if std::env::var_os(NO_DETACHED_VAR).is_some() {
+        let _ = notes::write_text(&notes.state.join(REQUESTED_MARKER), &port.to_string());
+        return Some(url(notes));
+    }
+    match hold(notes) {
+        // Held by a running server.
+        None => return Some(url(notes)),
+        // Free: nothing holds it, so a start is wanted unless something answers anyway.
+        Some(free) => drop(free),
+    }
+    if !answering(port) {
+        notes.spawn_detached(
+            &["home", "--serve", "--port", &port.to_string()],
+            "home.log",
+        );
+    }
+    Some(url(notes))
+}
+
 /// Done and abandoned efforts stay on the board this long after their last save.
 const DONE_DAYS: i64 = 14;
 /// How often the file reloads itself in a browser, and how often the served board does.
@@ -185,15 +280,35 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
     Ok((listener, format!("http://127.0.0.1:{port}/")))
 }
 
-/// Serves the board, drawn fresh for every request, until the process is stopped. For a viewer
-/// that never reloads a file (the Claude app's pane) and so the ages on the cards stay right.
-/// One thread per connection, since browsers hold idle connections open; past the cap a
+/// Serves the home, drawn fresh for every request, until a day passes with no request or
+/// the process is stopped. `hold` is the machine's lock, kept for the server's life. One
+/// thread per connection, since browsers hold idle connections open; past the cap a
 /// connection is told to come back.
-pub fn serve(notes: &Notes, listener: TcpListener) {
+pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let busy = Arc::new(AtomicUsize::new(0));
+    let last = Arc::new(std::sync::atomic::AtomicI64::new(notes::now_ms()));
+    let idle = std::env::var(IDLE_SECS_VAR)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(IDLE_SECS);
+    let seen = Arc::clone(&last);
+    std::thread::spawn(move || {
+        // The lock lives as long as this thread, which is as long as the process.
+        let _hold = hold;
+        let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000));
+        loop {
+            std::thread::sleep(every);
+            let quiet = notes::now_ms() - seen.load(Ordering::SeqCst);
+            if quiet >= (idle * 1000) as i64 {
+                // The lock goes with the process; the next change starts a server again.
+                std::process::exit(0);
+            }
+        }
+    });
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
+        last.store(notes::now_ms(), Ordering::SeqCst);
         if busy.load(Ordering::SeqCst) >= HANDLERS {
             let _ = stream.write_all(BUSY);
             continue;

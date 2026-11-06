@@ -1538,6 +1538,12 @@ pub fn gate(event: &str) {
         "session-start" if !child => {
             // Anything an earlier session left unpublished goes now, in the background.
             let _ = std::panic::catch_unwind(crate::nudge::push_pending);
+            // And the home is up, so the owner's board is there before they look.
+            let _ = std::panic::catch_unwind(|| {
+                if let Ok((_, notes)) = crate::record::notes_here() {
+                    crate::home::ensure_serving(&notes);
+                }
+            });
             let text = std::panic::catch_unwind(|| session_start(&input, session?));
             if let Ok(Some(text)) = text {
                 let inner = json!({"hookEventName": "SessionStart", "additionalContext": text});

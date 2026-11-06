@@ -55,7 +55,7 @@ fn main() {
         ["home", rest @ ..] => {
             let mut open = false;
             let mut serve = false;
-            let mut port = astrolabe::home::SERVE_PORT;
+            let mut port: Option<u16> = None;
             let mut theme = None;
             let mut palette = None;
             let mut words = rest.iter();
@@ -64,7 +64,7 @@ fn main() {
                     "--open" => open = true,
                     "--serve" => serve = true,
                     "--port" => match words.next().and_then(|w| w.parse().ok()) {
-                        Some(p) => port = p,
+                        Some(p) => port = Some(p),
                         None => fail("--port takes a number"),
                     },
                     "--theme" => {
@@ -92,26 +92,41 @@ fn main() {
                     {
                         fail(&why);
                     }
+                    if let Some(port) = port
+                        && let Err(why) = astrolabe::home::set_port(&notes, port)
+                    {
+                        fail(&why);
+                    }
+                    let port = port.unwrap_or_else(|| astrolabe::home::port(&notes));
                     if serve {
+                        // The machine's one server; a second leaves, naming the first.
+                        let Some(hold) = astrolabe::home::hold(&notes) else {
+                            println!("{}", astrolabe::home::url(&notes));
+                            eprintln!("already serving");
+                            return;
+                        };
                         match astrolabe::home::listen(port) {
                             Ok((listener, url)) => {
                                 println!("{url}");
                                 if open && let Err(why) = open_in_browser(&url) {
                                     fail(&why);
                                 }
-                                astrolabe::home::serve(&notes, listener);
+                                astrolabe::home::serve(&notes, listener, hold);
                             }
                             Err(why) => fail(&why),
                         }
                     }
+                    // The file first, then the server if none is up; the address is what
+                    // opens, since the file never reloads under the reader.
                     match notes.board() {
-                        Ok(path) => {
-                            println!("{}", path.display());
-                            if open && let Err(why) = open_in_browser(&path.display().to_string()) {
-                                fail(&why);
-                            }
-                        }
+                        Ok(path) => println!("{}", path.display()),
                         Err(why) => fail(&why),
+                    }
+                    if let Some(url) = astrolabe::home::ensure_serving(&notes) {
+                        println!("{url}");
+                        if open && let Err(why) = open_in_browser(&url) {
+                            fail(&why);
+                        }
                     }
                 }
                 Err(why) => fail(&why),
