@@ -39,7 +39,8 @@ const MACHINES: &str = "# Machines\n\nFacts about the owner's machines that agen
 
 const NOTES_REPO: &str = "# Notes\n\nThis notes checkout, registered on each machine as `agent`. Efforts about the notes themselves name it in `repo: agent`, and a session here is the owner's seat, where any effort loads.\n";
 
-const ATTRIBUTES: &str = "journal/*.md merge=union\njournal/**/*.md merge=union\n";
+const ATTRIBUTES: &str =
+    "* text=auto eol=lf\njournal/*.md merge=union\njournal/**/*.md merge=union\n";
 
 const CURRENT: &str = "New notes, with nothing filled in yet. This effort walks the owner through them, one file at a time, so agents start every session knowing who they work for.\n\nEach piece is a conversation: ask, write what the owner says in their words, show it, and tick the piece once they're happy. owner.md is how they want work run and replies written; voice.md is samples of their own writing; machines.md is what agents can't work out about their machines. The first repo note comes from `astrolabe repo add <name>`, run from that repo.\n\nNext: the owner file. Nothing filled in yet.";
 

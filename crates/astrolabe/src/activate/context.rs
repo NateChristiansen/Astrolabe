@@ -105,7 +105,7 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
     };
     let file = file.clone();
     let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
-    let hash = crate::notes::hash(&text);
+    let hash = crate::notes::content_hash(&text);
     let text = text.replace("\r\n", "\n");
     let props = frontmatter(&text);
     let title = (props

@@ -1,5 +1,7 @@
 //! Recoverable note writes and their commit scope. Callers hold the notes lock.
-use super::{INTENTS, Notes, Op, RECENT_MS, RepoFacts, journal_file, tidy_journal, write_text};
+use super::{
+    EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RepoFacts, journal_file, tidy_journal, write_text,
+};
 use std::path::PathBuf;
 
 impl Notes {
@@ -260,22 +262,32 @@ impl Notes {
     }
 
     /// The journal merges by union, so two machines appending the same day never conflict.
+    /// Text checks out with LF on every machine, so git for Windows (whose system config sets
+    /// `core.autocrlf=true`) doesn't rewrite the files the program wrote.
     fn ensure_attributes(&self) -> Result<(), String> {
         let path = self.root.join(".gitattributes");
         let have = std::fs::read_to_string(&path).unwrap_or_default();
         // The day files sit on month shelves, so the rule reaches every depth; an older
         // `journal/*.md` line is left as it is, harmless.
-        if have
+        let union = have
             .lines()
-            .any(|l| l.trim_start().starts_with("journal/**") && l.contains("merge=union"))
-        {
+            .any(|l| l.trim_start().starts_with("journal/**") && l.contains("merge=union"));
+        let lf = have
+            .lines()
+            .any(|l| l.trim_start().starts_with("* ") && l.contains("eol=lf"));
+        if union && lf {
             return Ok(());
         }
         let mut text = have;
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        text.push_str("journal/**/*.md merge=union\n");
+        if !lf {
+            text.push_str(EOL_RULE);
+        }
+        if !union {
+            text.push_str("journal/**/*.md merge=union\n");
+        }
         write_text(&path, &text)
     }
 }

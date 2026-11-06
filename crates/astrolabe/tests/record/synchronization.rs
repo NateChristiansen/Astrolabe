@@ -163,6 +163,39 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
 }
 
 #[test]
+fn a_save_from_a_crlf_checkout_is_not_reported_stale_after_sync() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.sync().1);
+    // The PC pushes a different effort, so the Mac's next sync rebases its save.
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort new --title \"Other\" <<'ASTROLABE'\nanother goal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(pc.sync().1);
+    // The Mac's checkout holds effort 1 with CRLF endings, as Git for Windows leaves it.
+    let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(m, _)| *m == 1)
+        .unwrap();
+    let path = mac.notes.join(rel);
+    let lf = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, lf.replace('\n', "\r\n")).unwrap();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nMac view.\n\nMac next.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.sync();
+    assert!(ok && !out.contains("stale"), "{out}");
+    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(!status.contains("unseen"), "{status}");
+}
+
+#[test]
 fn two_machines_replacing_their_lines_the_same_day_leave_one_line_each_after_merge() {
     let world = World::new();
     let mac = world.machine("mac");

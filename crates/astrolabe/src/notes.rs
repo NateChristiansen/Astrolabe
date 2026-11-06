@@ -27,6 +27,8 @@ const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
+/// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
+pub const EOL_RULE: &str = "* text=auto eol=lf\n";
 
 /// The notes checkout and the state folder its lock and intents live in.
 pub struct Notes {
@@ -284,6 +286,12 @@ pub fn hash(text: &str) -> String {
         .take(16)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// A note's text hashed with its line endings as LF, for every delivered, base and on-disk
+/// comparison: git on Windows checks text out with CRLF, which changes the bytes, not the note.
+pub fn content_hash(text: &str) -> String {
+    hash(&text.replace("\r\n", "\n"))
 }
 
 /// The short name of this machine, as the stamp shows it.

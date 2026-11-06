@@ -1,7 +1,7 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, NETWORK_SECS, Notes, Op, Pull, SYNC, hash, md_files, now_ms, tidy_journal,
-    write_text,
+    ASKED, BACKOFF_MS, NETWORK_SECS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms,
+    tidy_journal, write_text,
 };
 use serde_json::{Value, json};
 use std::process::{Command, Stdio};
@@ -234,7 +234,7 @@ impl Notes {
                 let before = self
                     .git(&["show", &format!("{sha}~1:{file}")])
                     .unwrap_or_default();
-                if !before.is_empty() && hash(&before) != base {
+                if !before.is_empty() && content_hash(&before) != base {
                     stale.push(file.to_owned());
                 }
             }
