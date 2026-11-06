@@ -22,10 +22,8 @@ The notes are plain Markdown, separate from your project code. You can read and 
 
 ## Get started
 
-Follow the [installation guide](plugin/README.md) to install the program, add it to your agent app, and check your first session.
-
-Setup creates a notes repo and a first effort, “Fill in your notes,” to help you add your preferences and register a project. Already have Astrolabe notes? Register that checkout on the new machine instead.
+Follow the [installation guide](docs/install.md) to install the program, add it to your agent app, and check your first session.
 
 Then read [Using Astrolabe](docs/usage.md) for starting work, choosing when agents check in, and picking up where you left off.
 
-[Command reference](docs/commands.md) · [How it works](docs/internals.md) · [Contributing](CONTRIBUTING.md)
+[Command reference](docs/commands.md) · [How it works](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
