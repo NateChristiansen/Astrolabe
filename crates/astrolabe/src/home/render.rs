@@ -83,9 +83,8 @@ pub(super) fn page(
     )
 }
 
-/// The board itself: the chips, the Needs-you band, the active grid with the ready, blocked
-/// and ideas stacks beside it, today's journal and the open initiatives, the fortnight's
-/// closed work as a list.
+/// Studio's attention and active work first, followed by ready, waiting and proposed
+/// work, recent journal entries, initiatives and a disclosure of recently closed work.
 pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Links) -> String {
     let cards: Vec<Card> = rows
         .efforts
@@ -121,7 +120,9 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     for column in &mut columns {
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
-    let heading = |title: &str, n: usize| format!("<h2>{title} <span class=\"n\">{n}</span></h2>");
+    let heading = |title: &str, n: usize| {
+        format!("<h2><span>{title}</span> <span class=\"n\">{n}</span></h2>")
+    };
     let cards_of = |column: &[&Card], compact: bool| {
         column
             .iter()
@@ -129,23 +130,23 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             .collect::<String>()
     };
     let mut board = String::new();
-    if !columns[0].is_empty() {
-        board += &format!(
+    let attention = if !columns[0].is_empty() {
+        format!(
             "<section class=\"col needsyou\">{}<div class=\"cards wide\">{}</div></section>\n",
             heading("Needs you", columns[0].len()),
             cards_of(&columns[0], false)
-        );
+        )
     } else {
         // Kept in the page so a test and the live swap can find the column by name.
-        board += "<section class=\"col needsyou\" hidden></section>\n";
-    }
-    // Ready, blocked and ideas stack beside the active grid; an empty one is a few words
+        "<section class=\"col needsyou\" hidden></section>\n".to_owned()
+    };
+    // Ready, blocked and ideas sit below the active grid; an empty one is a few words
     // under the work instead of a dashed box.
     let mut stack = String::new();
     let mut quiet = Vec::new();
     for (key, title, slot, none) in [
-        ("ready", "Ready", 2, "nothing ready"),
-        ("blocked", "Blocked", 3, "nothing blocked"),
+        ("ready", "Up next", 2, "nothing ready"),
+        ("blocked", "Waiting", 3, "nothing blocked"),
         ("ideas", "Ideas", 4, "no ideas parked"),
     ] {
         let column = &columns[slot];
@@ -167,7 +168,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     board += &format!(
         "<div class=\"work{}\"><section class=\"col active\">{}<div class=\"cards grid\">{active}</div></section>\n{}</div>\n",
         if stack.is_empty() { " solo" } else { "" },
-        heading("Active", columns[1].len()),
+        heading("In motion", columns[1].len()),
         if stack.is_empty() {
             String::new()
         } else {
@@ -208,13 +209,24 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         .filter_map(|c| c.row.number.map(|n| (n, c.row)))
         .collect();
     let mut journal = String::new();
-    for line in &rows.journal_lines {
+    for (index, line) in rows.journal_lines.iter().rev().enumerate() {
+        if index == 3 {
+            journal += &format!(
+                "</ul><details class=\"history\" data-persist=\"journal-history\"><summary>Earlier updates <span>{}</span></summary><ul>",
+                rows.journal_lines.len() - 3
+            );
+        }
         let effort = line.effort.as_str();
         let num = match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {
             Some(row) => format!(
-                "<span class=\"num\"><a href=\"{}\">{}</a></span>",
+                "<span class=\"num\"><a href=\"{}\" title=\"{}\">{}</a></span>",
                 esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
-                row.number.unwrap_or(0)
+                esc(row.title.as_deref().unwrap_or("Effort")),
+                esc(row
+                    .repo
+                    .as_deref()
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("Effort"))
             ),
             None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
         };
@@ -223,6 +235,11 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     if journal.is_empty() {
         journal = "<li class=\"empty\">nothing yet today</li>\n".to_owned();
     }
+    let journal_end = if rows.journal_lines.len() > 3 {
+        "</ul></details>"
+    } else {
+        "</ul>"
+    };
 
     let mut initiatives: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
     for card in &cards {
@@ -254,8 +271,8 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         initiative_lines = "<li class=\"empty\">nothing open</li>\n".to_owned();
     }
     board += &format!(
-        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}</ul></section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>{lessons_html}</div>\n",
-        heading("Today", rows.journal_lines.len()),
+        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}{journal_end}</section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>{lessons_html}</div>\n",
+        heading("Recent changes", rows.journal_lines.len()),
         heading(
             "Initiatives",
             initiatives.values().filter(|(open, _)| *open > 0).count()
@@ -264,8 +281,8 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
 
     let done = &columns[5];
     board += &format!(
-        "<section class=\"col done\">{}\n{}</section>\n",
-        heading("Done this fortnight", done.len()),
+        "<section class=\"col done\"><details data-persist=\"closed-work\"><summary>Done this fortnight <span class=\"n\">{}</span></summary>\n{}</details></section>\n",
+        done.len(),
         if done.is_empty() {
             "<p class=\"empty\">nothing closed lately</p>\n".to_owned()
         } else {
@@ -335,8 +352,23 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                 .to_string()
         })
         .unwrap_or_else(|| today_of(rows));
+    let attention_title = match columns[0].len() {
+        0 => "Nothing needs you.".to_owned(),
+        1 => "One thing needs you.".to_owned(),
+        n => format!("{n} things need you."),
+    };
+    let motion_title = match columns[1].len() {
+        0 => "Room for what’s next.".to_owned(),
+        1 => "One thing moving.".to_owned(),
+        n => format!("{n} things moving."),
+    };
     format!(
-        "<div class=\"board\" id=\"board\"><div class=\"bhead\"><h1>{}</h1><div class=\"chips\">{chips}</div></div>\n{board}</div>\n",
+        "<div class=\"board\" id=\"board\"><div class=\"hero{}\"><div class=\"bhead\"><p class=\"eyebrow\">{}</p><h1>{attention_title}<br><em>{motion_title}</em></h1><div class=\"chips\">{chips}</div></div>{attention}</div>\n{board}</div>\n",
+        if columns[0].is_empty() {
+            " quiet-hero"
+        } else {
+            ""
+        },
         esc(&date)
     )
 }
@@ -345,8 +377,8 @@ pub(super) fn today_of(rows: &BoardData) -> String {
     rows.today.clone()
 }
 
-/// The document around a board or a note: the notes tree down the side, the top bar, the
-/// look's tokens, the small script that keeps the tree and the viewer's overrides.
+/// The shared Studio shell: vertical navigation, sticky controls, the searchable notes
+/// view and the small script that preserves navigation and appearance choices.
 pub(super) fn shell(
     look: Look,
     title: &str,
@@ -384,19 +416,52 @@ pub(super) fn shell(
             "role=\"img\" aria-labelledby=\"astrolabe-title\"",
             "aria-hidden=\"true\"",
         );
-    let swatches = [Palette::Iris, Palette::Ember, Palette::Slate]
-        .iter()
-        .map(|p| {
-            format!(
-                "<button class=\"sw\" data-p=\"{0}\" title=\"{0}\" aria-label=\"{0} palette\"></button>",
-                p.name()
-            )
-        })
-        .collect::<String>();
+    let swatches = [Palette::Iris, Palette::Ember, Palette::Slate, Palette::Moss, Palette::Graphite]
+        .iter().map(|p| {
+            let (name, description) = match p {
+                Palette::Iris => ("Iris", "Soft violet"),
+                Palette::Ember => ("Ember", "Warm clay"),
+                Palette::Slate => ("Slate", "Clear blue"),
+                Palette::Moss => ("Moss", "Quiet green"),
+                Palette::Graphite => ("Graphite", "Pure neutral"),
+            };
+            format!(r#"<button type="button" class="sw" data-p="{}" aria-pressed="false"><span class="palette-preview" aria-hidden="true"></span><span><strong>{name}</strong><small>{description}</small></span><span class="palette-check" aria-hidden="true">✓</span></button>"#, p.name())
+        }).collect::<String>();
+    let home = if links == Links::Served {
+        "/"
+    } else {
+        "home.html"
+    };
+    let navigation = [("overview", "Overview", "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"),
+        ("efforts", "Efforts", "m3 7 9-4 9 4-9 4z M3 12l9 4 9-4 M3 17l9 4 9-4"),
+        ("journal", "Journal", "M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5"),
+        ("notes", "Notes", "M3 7V4h6l3 3h9v13H3z")]
+        .iter().map(|(view, label, path)| format!(r#"<a class="nav-link" data-view="{view}" href="{home}#{view}" aria-label="{label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg><span>{label}</span></a>"#)).collect::<String>();
+    let back = if crumb == "<b>Board</b>" {
+        String::new()
+    } else {
+        format!(r#"<a class="back-link" href="{home}">← Back to overview</a>"#)
+    };
     format!(
-        "<!doctype html><html lang=\"en\" data-palette=\"{palette}\"{theme_attr}><head><meta charset=\"utf-8\">{refresh}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{scheme}\">{csp}\n<title>{title}</title>\n<link id=\"favicon\" rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,{favicon}\">\n<style>{PALETTES}{STYLE}</style></head><body>\n<div class=\"app\"><aside class=\"side\" id=\"side\"><div class=\"brand\">{icon}Astrolabe<span class=\"live\" id=\"live\" hidden title=\"The page follows every save\">live</span></div><div class=\"search\"><input id=\"q\" type=\"search\" placeholder=\"Find a note\" aria-label=\"Find a note\"></div><nav class=\"tree\" id=\"tree\">\n{tree}</nav><div class=\"foot\"><label for=\"appearance\">Theme</label><select id=\"appearance\" aria-label=\"Appearance\"><option value=\"\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select><span class=\"swatches\">{swatches}</span></div></aside><div class=\"scrim\" id=\"scrim\"></div><main class=\"main\" id=\"main\"><div class=\"topbar\"><button class=\"btn menu-btn\" id=\"menu\" aria-label=\"Open the notes list\">☰</button><div class=\"crumb\" id=\"crumb\">{crumb}</div></div>\n{body}</main></div>\n<script>{SCRIPT}</script>\n</body></html>\n",
+        include_str!("shell.html"),
         palette = look.palette.name(),
+        theme_attr = theme_attr,
+        refresh = refresh,
+        scheme = scheme,
+        csp = csp,
         title = esc(title),
+        favicon = favicon,
+        palettes = PALETTES,
+        style = STYLE,
+        icon = icon,
+        navigation = navigation,
+        home = home,
+        crumb = crumb,
+        swatches = swatches,
+        back = back,
+        body = body,
+        tree = tree,
+        script = SCRIPT
     )
 }
 
@@ -440,8 +505,9 @@ pub(super) fn card_html(
         card.row.pieces.as_ref().map(|p| p.total),
     ) {
         (Some(done), Some(total)) if total > 0 => format!(
-            "<div class=\"bar\"><span class=\"track\"><i style=\"width:{}%\"></i></span><span>{done} of {total} pieces</span></div>\n",
-            100 * done / total
+            "<div class=\"bar\"><span class=\"track\" role=\"progressbar\" aria-label=\"Completed pieces\" aria-valuemin=\"0\" aria-valuemax=\"{total}\" aria-valuenow=\"{}\"><i style=\"width:{}%\"></i></span><span>{done} of {total} pieces</span></div>\n",
+            done.min(total),
+            100_u128 * done.min(total) as u128 / total as u128
         ),
         _ => String::new(),
     };
@@ -467,6 +533,13 @@ pub(super) fn card_html(
             ))
         )
     };
+    let context = card
+        .row
+        .state
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("<p class=\"context\">{}</p>", esc(&first_sentence(s))))
+        .unwrap_or_default();
     // The card's left rail says its state without the column heading.
     let state = if card.row.needs_owner {
         "needs"
@@ -476,8 +549,16 @@ pub(super) fn card_html(
             s => s,
         }
     };
+    let review = if card.row.needs_owner {
+        format!(
+            "<a class=\"review-link\" href=\"{}\">Read context →</a>",
+            esc(&href)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{pieces}{next}</article>\n",
+        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{context}{next}{pieces}{review}</article>\n",
         esc(state),
         if compact { " compact" } else { "" },
         card.row.number.unwrap_or(0),

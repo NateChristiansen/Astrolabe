@@ -64,9 +64,19 @@ Write the standalone `home.html`, ensure the local board server is running, and 
 | `--serve` | Run the server in the foreground. If one is already running, print its address and exit. |
 | `--port <number>` | Save the port for this machine; default `4747`. |
 | `--theme auto\|light\|dark` | Save the theme; default `auto` follows the system. |
-| `--palette iris\|ember\|slate` | Save the palette; default `iris`. |
+| `--palette iris\|ember\|slate\|moss\|graphite` | Save the palette; default `iris`. |
 
 Options combine. A browser's saved appearance choice takes precedence in that browser.
+
+The home dashboard puts work needing attention and active efforts first. The sidebar
+opens the overview, efforts, journal and searchable notes. Click the Astrolabe mark to
+return home; a note's back link returns to the view that opened it. Earlier journal
+updates and recently closed work expand in place.
+
+The palette menu beside the light/dark toggle offers Iris, Ember, Slate, Moss and
+Graphite. It also includes **Follow system appearance**. Palette and appearance are
+remembered independently in each browser. Live updates retain the current view,
+reading position and expanded history.
 
 ```sh
 "$HOME/.local/bin/astrolabe" home --open --theme dark

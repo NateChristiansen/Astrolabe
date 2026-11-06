@@ -41,6 +41,7 @@ mod tests {
     use super::server::*;
     use super::settings::*;
     use super::*;
+    use crate::board::BoardData;
     use serde_json::Value;
     use serde_json::json;
     use std::path::Path;
@@ -145,7 +146,9 @@ mod tests {
             "{page}"
         );
         assert!(page.contains("<b>1</b> lesson to triage</span>"), "{page}");
-        assert!(page.contains("<h2>Lessons to triage <span class=\"n\">1</span></h2>"));
+        assert!(
+            page.contains("<h2><span>Lessons to triage</span> <span class=\"n\">1</span></h2>")
+        );
         assert!(page.contains(
             "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
         ));
@@ -159,15 +162,15 @@ mod tests {
             served.contains("href=\"/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>")
         );
         assert!(page.contains("notes in sync"));
-        assert!(page.contains("<a href=\"file:///n/efforts/0001-e.md\">1</a></span><span>Finished &lt;it&gt;.</span></li>"));
+        assert!(page.contains("title=\"A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;\">demo</a></span><span>Finished &lt;it&gt;.</span></li>"));
         assert!(page.contains("1 open · 0 done"));
         assert!(
             !page.contains("finished"),
             "an initiative with nothing open is off the board"
         );
         assert!(
-            !page.contains("<details"),
-            "done is a column like the others, open"
+            page.contains("<details data-persist=\"closed-work\">"),
+            "closed work remains available behind a disclosure"
         );
     }
 
@@ -249,6 +252,57 @@ mod tests {
         assert_eq!(Theme::parse("blue"), None);
         assert_eq!(Palette::parse("slate"), Some(Palette::Slate));
         assert_eq!(Palette::parse("mauve"), None);
+        for palette in [
+            Palette::Iris,
+            Palette::Ember,
+            Palette::Slate,
+            Palette::Moss,
+            Palette::Graphite,
+        ] {
+            assert_eq!(Palette::parse(palette.name()), Some(palette));
+            for theme in [Theme::Auto, Theme::Light, Theme::Dark] {
+                let page = render(
+                    &BoardData::default(),
+                    Path::new("/n"),
+                    NOW,
+                    Look { theme, palette },
+                );
+                assert!(page.contains(&format!("data-palette=\"{}\"", palette.name())));
+                assert!(page.contains(&format!("data-p=\"{}\"", palette.name())));
+            }
+        }
+    }
+
+    #[test]
+    fn studio_keeps_attention_and_journal_context_with_real_counts() {
+        let rows = json!({"efforts": [
+            row(1, "active", json!({"needs_owner":true,"waits_for":"owner: Choose <one>","state":"Context & detail."})),
+            row(2, "blocked", json!({"needs_owner":true,"waits_for":"owner: Read the result"})),
+            row(3, "active", json!({"pieces":{"done":9,"total":3}})),
+            row(4, "ready", json!({"pieces":{"done":0,"total":0}}))
+        ], "journal_lines": (1..=7).map(|n| json!({"effort":"0001","text":format!("Update {n} <safe>")})).collect::<Vec<_>>()});
+        let page = render(
+            &serde_json::from_value(rows).unwrap(),
+            Path::new("/n"),
+            NOW,
+            Look::default(),
+        );
+        assert!(page.contains("2 things need you."));
+        assert!(page.contains("One thing moving."));
+        assert_eq!(page.matches("class=\"review-link\"").count(), 2);
+        assert!(page.contains("Context &amp; detail."));
+        assert!(page.contains("Choose &lt;one&gt;"));
+        assert!(page.contains("aria-valuemax=\"3\" aria-valuenow=\"3\""));
+        assert!(!page.contains("width:300%"));
+        assert!(!page.contains("0 of 0 pieces"));
+        let journal = page.find("id=\"journal\"").unwrap();
+        let earlier = page.find("data-persist=\"journal-history\"").unwrap();
+        assert!(page[journal..earlier].contains("Update 7 &lt;safe&gt;"));
+        assert!(page[journal..earlier].contains("Update 5 &lt;safe&gt;"));
+        assert!(!page[journal..earlier].contains("Update 4"));
+        assert!(page[earlier..].contains("Update 1 &lt;safe&gt;"));
+        assert!(page.contains("class=\"brand\" href=\"home.html#overview\" data-home"));
+        assert!(page.contains("id=\"system-appearance\""));
     }
 
     #[test]

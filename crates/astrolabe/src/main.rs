@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--migrate-trial] [--dir <folder>]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--migrate-trial] [--dir <folder>]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -83,7 +83,7 @@ fn main() {
                             .and_then(|w| astrolabe::home::Palette::parse(w))
                         {
                             Some(p) => palette = Some(p),
-                            None => fail("--palette takes iris, ember or slate"),
+                            None => fail("--palette takes iris, ember, slate, moss or graphite"),
                         }
                     }
                     _ => usage(),

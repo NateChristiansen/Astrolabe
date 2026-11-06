@@ -132,7 +132,16 @@ fn the_board_follows_every_save_and_stays_out_of_git() {
         "{page}"
     );
     let (out, ok) = pc.run(&pc.notes, &["home", "--palette", "mauve"], "");
-    assert!(!ok && out.contains("iris, ember or slate"), "{out}");
+    assert!(
+        !ok && out.contains("iris, ember, slate, moss or graphite"),
+        "{out}"
+    );
+    for palette in ["moss", "graphite"] {
+        let (out, ok) = pc.run(&pc.notes, &["home", "--palette", palette], "");
+        assert!(ok, "{out}");
+        let page = std::fs::read_to_string(pc.notes.join("home.html")).unwrap();
+        assert!(page.contains(&format!("data-palette=\"{palette}\" data-theme=\"dark\">")));
+    }
     let (out, ok) = pc.run(&pc.notes, &["home", "--theme", "blue"], "");
     assert!(!ok && out.contains("auto, light or dark"), "{out}");
     assert!(pc.run(&pc.notes, &["home", "--theme", "auto"], "").1);

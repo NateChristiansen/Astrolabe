@@ -44,6 +44,10 @@ pub enum Palette {
     Iris,
     /// Grey-blue paper and steel.
     Slate,
+    /// Soft green and forest.
+    Moss,
+    /// Neutral paper and charcoal.
+    Graphite,
 }
 
 impl Palette {
@@ -52,6 +56,8 @@ impl Palette {
             "ember" => Some(Palette::Ember),
             "iris" => Some(Palette::Iris),
             "slate" => Some(Palette::Slate),
+            "moss" => Some(Palette::Moss),
+            "graphite" => Some(Palette::Graphite),
             _ => None,
         }
     }
@@ -61,6 +67,8 @@ impl Palette {
             Palette::Ember => "ember",
             Palette::Iris => "iris",
             Palette::Slate => "slate",
+            Palette::Moss => "moss",
+            Palette::Graphite => "graphite",
         }
     }
 }
