@@ -309,10 +309,10 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             get("repo")?
         ));
     }
-    let current = text.split("\n## Current state\n").nth(1).map(|rest| {
-        let end = rest.find("\n## ").unwrap_or(rest.len());
-        rest[..end].trim().to_owned()
-    });
+    // The same reading a save and the board make, so a fenced example isn't the section.
+    let current = crate::effort::EffortFile::parse(&text)
+        .map(|f| f.current)
+        .ok();
     Ok(Effort {
         number: n.to_string(),
         title: title
