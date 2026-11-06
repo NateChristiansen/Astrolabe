@@ -140,4 +140,4 @@ While Astrolabe is on, its shell hook checks for a fixed set of risky commands: 
 
 The agent checks that the hook actually runs in its session and reports whether the guard is proven. It's an accident guard, not a sandbox: it can't see file edits, other tools, or input sent into an already-running shell. See [guard details](internals.md#the-shell-guard) if you need to understand its limits.
 
-[Installation and troubleshooting](../plugin/README.md) · [Command reference](commands.md) · [Project overview](../README.md)
+[Installation](../plugin/README.md) · [Troubleshooting](troubleshooting.md) · [Command reference](commands.md) · [Project overview](../README.md)

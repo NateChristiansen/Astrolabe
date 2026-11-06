@@ -71,4 +71,4 @@ The plugin runs the installed program with `hook <event> --if-active`. It does n
 
 The guard checks shell commands supplied to the hook; it can't see file edits or other tools. Each session proves its own hook with an allowed control and a denied probe. Effort settings guide agents and aren't enforced permissions. See [guard details](internals.md#the-shell-guard).
 
-[Installation and troubleshooting](../plugin/README.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)
+[Installation](../plugin/README.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)
