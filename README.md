@@ -26,21 +26,4 @@ Astrolabe currently builds from source. Start with the [per-machine setup](plugi
 
 Setup creates a notes repo and a first effort, “Fill in your notes,” to help you add your preferences and register a project. Already have Astrolabe notes? Register that checkout on the new machine instead.
 
-Once you're set up, open the board with `astrolabe-trial home --open`.
-
-## The command guard
-
-Astrolabe's shell hook blocks a fixed set of destructive commands and checks that the hook works in each session. It is an accident guard, not a sandbox: it cannot see file edits or other tools. Effort settings guide agents; they aren't enforced permissions.
-
-## Develop
-
-Install the [pinned Rust toolchain](rust-toolchain.toml) and Node.js, then run:
-
-```sh
-scripts/check
-cargo build --release --locked -p astrolabe
-```
-
-Run `scripts/check` before each commit. It checks formatting, lints, and all tests; CI runs the same checks on macOS and Windows. Building alone does not install the plugin.
-
-[Command reference](docs/commands.md) · [How the plugin works](plugin/README.md) · [Icon and colors](assets/branding/README.md)
+[Command reference](docs/commands.md) · [How the plugin works](plugin/README.md) · [Contributing](CONTRIBUTING.md)

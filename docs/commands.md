@@ -2,7 +2,7 @@
 
 For installation, start with the [setup instructions](../plugin/README.md#setup-once-per-machine).
 
-The installed program is named `astrolabe-trial` (`astrolabe-trial.exe` on Windows). Use that name in a terminal. Inside an agent session, the plugin intercepts `astrolabe activate`, `astrolabe effort`, and `astrolabe journal` commands to load context and record work.
+The build produces `astrolabe`, but the current setup installs it as `astrolabe-trial` (`astrolabe-trial.exe` on Windows), the filename the hooks expect. The terminal examples below use that installed name. Inside an agent session, the plugin intercepts `astrolabe activate`, `astrolabe effort`, and `astrolabe journal` commands to load context and record work.
 
 ## Machine and repo setup
 
@@ -44,6 +44,6 @@ The `home` options can be combined, for example `astrolabe-trial home --open --t
 
 `astrolabe-trial hook <event> --if-active` is called by the plugin. It does nothing when the machine switch is off.
 
-The guard sees shell commands supplied to the hook, not file edits or other tools. Each session proves its own hook with an allowed control and a denied probe; `astrolabe activate --status` reports whether that proof holds.
+The guard blocks a fixed set of destructive shell commands supplied to the hook. It is an accident guard, not a sandbox: it cannot see file edits or other tools. Effort settings guide agents; they aren't enforced permissions. Each session proves its own hook with an allowed control and a denied probe; `astrolabe activate --status` reports whether that proof holds.
 
 [Back to the README](../README.md)
