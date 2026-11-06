@@ -30,6 +30,11 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
+    # The program names its commit, and on main says it's a nightly. Job-wide, so every
+    # step that builds or checks the program sees the same values.
+    env:
+      ASTROLABE_COMMIT: ${{ github.sha }}
+      ASTROLABE_CHANNEL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -49,9 +54,6 @@ jobs:
         shell: bash
         env:
           RELEASE_TARGET: ${{ matrix.target }}
-          # The program names its commit, and on main says it's a nightly.
-          ASTROLABE_COMMIT: ${{ github.sha }}
-          ASTROLABE_CHANNEL: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly' || '' }}
         run: |
           dist build --artifacts=local --target "$RELEASE_TARGET"
           git diff --exit-code -- Cargo.lock

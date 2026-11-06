@@ -50,7 +50,12 @@ def smoke(folder, target, powershell):
                 before = executable.read_bytes()
                 subprocess.run(command, env=env, check=True)
                 version = json.loads((mirror / 'release-files.json').read_text())['version']
-                assert subprocess.check_output([executable, '--version'], text=True).strip() == f'astrolabe {version}'
+                # A build of main names itself a nightly and its commit; a release only its version.
+                expected = f'astrolabe {version}'
+                if os.environ.get('ASTROLABE_CHANNEL') == 'nightly':
+                    expected += f" (nightly {os.environ['ASTROLABE_COMMIT'][:7]})"
+                shown = subprocess.check_output([executable, '--version'], text=True).strip()
+                assert shown == expected, f'--version said {shown!r}, expected {expected!r}'
                 notes_env = dict(env, ASTROLABE_LAYER_STATE=str(root / 'state'), ASTROLABE_NO_DETACHED_SYNC='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1', GIT_AUTHOR_NAME='Release test', GIT_AUTHOR_EMAIL='test@example.invalid', GIT_COMMITTER_NAME='Release test', GIT_COMMITTER_EMAIL='test@example.invalid')
                 subprocess.run([executable, 'notes', 'init', str(root / 'notes')], env=notes_env, check=True)
                 assert (root / 'notes/knowledge/owner.md').exists()
