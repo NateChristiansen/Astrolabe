@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +9,9 @@ import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('./land.mjs', import.meta.url));
 const branch = 'feature/topic';
 const ref = `refs/heads/${branch}`;
+// Windows can't remove the folder the shell is in, so the worktree goes on a
+// retry from the main checkout there.
+const windows = process.platform === 'win32';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'astrolabe-land-'));
@@ -67,20 +70,41 @@ function fixture(t) {
       const args = retry ? ['--cleanup-only', name, sha] : [name, sha];
       return run(process.execPath, [script, ...args], cwd, status);
     },
+    finish(options = {}) {
+      const result = this.land({ ...options, status: windows ? 1 : 0 });
+      if (windows) {
+        assert.match(result.stderr, /Worktree cleanup pending/);
+        this.land({ retry: true, cwd: checkout });
+      }
+      assert.equal(existsSync(worktree), false);
+      return result;
+    },
   };
 }
 
-test('lands and removes only the source refs, keeping the worktree files', (t) => {
+test('lands, removes the source refs and the finished worktree with its build output', (t) => {
   const f = fixture(t);
-  writeFileSync(join(f.worktree, 'build.log'), 'keep me');
-  f.land();
+  writeFileSync(join(f.worktree, 'build.log'), 'build output');
+  f.finish();
   assert.equal(f.tip(f.remote, 'refs/heads/main'), f.checked);
   assert.equal(f.tip(f.remote, ref), '');
   assert.equal(f.tip(f.checkout, ref), '');
+  assert.equal(existsSync(f.worktree), false);
+  assert.doesNotMatch(f.git(f.checkout, 'worktree', 'list'), /finished work/);
+  f.land({ retry: true, cwd: f.checkout });
+});
+
+test('a locked worktree keeps its files after the branch is gone', (t) => {
+  const f = fixture(t);
+  f.git(f.checkout, 'worktree', 'lock', f.worktree);
+  const result = f.land({ status: 1 });
+  assert.match(result.stderr, /Worktree cleanup pending/);
+  assert.equal(f.tip(f.checkout, ref), '');
   assert.equal(f.tip(f.worktree, 'HEAD'), f.checked);
   assert.equal(readFileSync(join(f.worktree, 'feature.txt'), 'utf8'), 'landed');
-  assert.equal(readFileSync(join(f.worktree, 'build.log'), 'utf8'), 'keep me');
-  f.land({ retry: true });
+  f.git(f.checkout, 'worktree', 'unlock', f.worktree);
+  assert.match(f.land({ retry: true, cwd: f.checkout }).stdout, /Worktree is gone/);
+  assert.equal(existsSync(f.worktree), false);
 });
 
 test('rejects main as a source and skips cleanup when the checked commit has not landed', (t) => {
@@ -141,7 +165,7 @@ test('a dirty worktree keeps its branch until a retry can detach it', (t) => {
   assert.equal(f.tip(f.checkout, ref), f.checked);
   assert.equal(readFileSync(dirty, 'utf8'), 'in progress');
   rmSync(dirty);
-  f.land({ retry: true });
+  f.finish({ retry: true });
   assert.equal(f.tip(f.checkout, ref), '');
 });
 
@@ -153,7 +177,7 @@ test('a retry from another checkout leaves an occupied branch in place', (t) => 
   assert.match(result.stderr, /Local cleanup pending/);
   assert.equal(f.tip(f.checkout, ref), f.checked);
   assert.equal(f.git(f.worktree, 'symbolic-ref', 'HEAD'), ref);
-  f.land({ retry: true });
+  f.finish({ retry: true });
   assert.equal(f.tip(f.checkout, ref), '');
 });
 
@@ -171,7 +195,7 @@ test('a remote deletion failure can be retried without pushing main again', (t) 
   f.git(f.worktree, 'push', 'origin', `${advanced}:refs/heads/main`);
   f.hook('pre-receive', `read old new ref
 test "$ref" = ${ref}`);
-  f.land({ retry: true });
+  f.finish({ retry: true });
   assert.equal(f.tip(f.remote, 'refs/heads/main'), advanced);
   assert.equal(f.tip(f.remote, ref), '');
 });

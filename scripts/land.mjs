@@ -54,6 +54,47 @@ function removeLocal(branch, ref, checked, landedMain) {
   git(['branch', '-d', '--', branch]);
 }
 
+function worktrees() {
+  return git(['worktree', 'list', '--porcelain']).output.split('\n\n').map((block) => {
+    const entry = {};
+    for (const line of block.split('\n')) {
+      const [key, ...value] = line.split(' ');
+      entry[key] = value.join(' ');
+    }
+    return entry;
+  });
+}
+
+// Removes the finished worktree once its branch is gone: the linked worktree
+// landing ran from, or, from the main checkout, the one detached at the
+// checked commit. A locked or dirty worktree stays; ignored build output goes.
+function removeWorktree(checked) {
+  const [mainCheckout, ...linked] = worktrees();
+  const gitDir = git(['rev-parse', '--path-format=absolute', '--git-dir']).output;
+  const commonDir = git(['rev-parse', '--path-format=absolute', '--git-common-dir']).output;
+  let target;
+  if (gitDir !== commonDir) {
+    if (git(['symbolic-ref', '--quiet', 'HEAD'], [0, 1]).output) {
+      throw new Error('The worktree is on a branch.');
+    }
+    if (git(['rev-parse', 'HEAD']).output !== checked) {
+      throw new Error('The worktree moved past the checked commit.');
+    }
+    if (process.platform === 'win32') {
+      throw new Error(`Windows can't remove the folder a shell is in. Retry from ${mainCheckout.worktree}.`);
+    }
+    target = git(['rev-parse', '--show-toplevel']).output;
+  } else {
+    const finished = linked.filter((entry) => 'detached' in entry && entry.HEAD === checked);
+    if (finished.length === 0) return '';
+    if (finished.length > 1) throw new Error('More than one worktree is at the checked commit.');
+    target = finished[0].worktree;
+  }
+  process.chdir(mainCheckout.worktree);
+  git(['worktree', 'remove', target]);
+  return mainCheckout.worktree;
+}
+
 function verifyLanded(main, checked) {
   const landedMain = remoteTip(main);
   if (!landedMain) throw new Error('Origin has no main branch.');
@@ -118,6 +159,15 @@ function land(args) {
     } catch (error) {
       pending = true;
       console.error(`${where} cleanup pending: ${error.message}`);
+    }
+  }
+  if (!pending) {
+    try {
+      const mainCheckout = removeWorktree(checked);
+      if (mainCheckout) console.log(`Worktree is gone. Continue from ${mainCheckout}.`);
+    } catch (error) {
+      pending = true;
+      console.error(`Worktree cleanup pending: ${error.message}`);
     }
   }
   if (pending) {
