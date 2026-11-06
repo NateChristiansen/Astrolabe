@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const FILE: &str = "home.html";
@@ -287,7 +287,7 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
 pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let busy = Arc::new(AtomicUsize::new(0));
-    let last = Arc::new(std::sync::atomic::AtomicI64::new(notes::now_ms()));
+    let last = Arc::new(AtomicI64::new(notes::now_ms()));
     let idle = std::env::var(IDLE_SECS_VAR)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -315,9 +315,10 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
         }
         let notes = Notes::new(notes.root.clone(), notes.state.clone());
         let count = Arc::clone(&busy);
+        let seen = Arc::clone(&last);
         count.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new().spawn(move || {
-            handle(&notes, stream, port);
+            handle(&notes, stream, port, &seen);
             count.fetch_sub(1, Ordering::SeqCst);
         });
         if spawned.is_err() {
@@ -332,10 +333,14 @@ const BUSY: &[u8] =
 const REQUEST_BOUND: usize = 16 * 1024;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
-fn handle(notes: &Notes, mut stream: TcpStream, port: u16) {
+fn handle(notes: &Notes, mut stream: TcpStream, port: u16, seen: &AtomicI64) {
     let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let (status, kind, body, head_only) = match request(&mut stream) {
+        Some(head) if is_events(&head, port) => {
+            events(notes, stream, seen);
+            return;
+        }
         Some(head) => {
             let head_only = head.split_whitespace().next() == Some("HEAD");
             let (status, kind, body) = answer(notes, &head, port);
@@ -360,6 +365,103 @@ fn handle(notes: &Notes, mut stream: TcpStream, port: u16) {
     }
     // A close with no FIN first reads as a reset on Windows; say the answer is whole.
     let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+/// A GET of `/events` addressed to this port.
+fn is_events(head: &str, port: u16) -> bool {
+    let mut words = head.lines().next().unwrap_or_default().split_whitespace();
+    words.next() == Some("GET")
+        && words
+            .next()
+            .is_some_and(|t| t.split('?').next() == Some("/events"))
+        && host_ok(head, port)
+}
+
+/// Whether the request names this loopback port as its host, so a page on another origin
+/// that reaches the socket by a rebound name gets nothing.
+fn host_ok(head: &str, port: u16) -> bool {
+    let host = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| v.trim().to_ascii_lowercase());
+    let mut ours = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    if port == 80 {
+        // A browser leaves the default port out.
+        ours.extend(["127.0.0.1".to_owned(), "localhost".to_owned()]);
+    }
+    host.is_some_and(|h| ours.contains(&h))
+}
+
+/// How often the notes are looked at for a change, and how often a quiet stream says it's
+/// alive so a proxy or the browser doesn't drop it.
+const WATCH_EVERY: Duration = Duration::from_secs(1);
+const PING_EVERY: Duration = Duration::from_secs(15);
+
+/// The stream a page holds open: `changed` whenever the notes change, a comment to keep it
+/// alive meanwhile. The page re-reads itself on `changed`. A viewer holding the stream
+/// counts as a request, so the server stays up for an open tab.
+fn events(notes: &Notes, mut stream: TcpStream, seen: &AtomicI64) {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    if stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nretry: 2000\n\n",
+        )
+        .is_err()
+    {
+        return;
+    }
+    let mut print = fingerprint(&notes.root);
+    let mut pinged = Instant::now();
+    // A page that went away is noticed by a read, since nothing is written until a change.
+    let _ = stream.set_nonblocking(true);
+    let mut probe = [0u8; 64];
+    loop {
+        std::thread::sleep(WATCH_EVERY);
+        match stream.read(&mut probe) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => return,
+        }
+        seen.store(notes::now_ms(), Ordering::SeqCst);
+        let now = fingerprint(&notes.root);
+        let line = if now != print {
+            print = now;
+            format!("event: changed\ndata: {}\n\n", notes::now_ms())
+        } else if pinged.elapsed() >= PING_EVERY {
+            ": ping\n\n".to_owned()
+        } else {
+            continue;
+        };
+        pinged = Instant::now();
+        if stream.write_all(line.as_bytes()).is_err() {
+            return;
+        }
+    }
+}
+
+/// What a change to the notes moves: the newest change time and the count of effort and
+/// journal files, and the board file's own, which every save rewrites.
+fn fingerprint(root: &Path) -> (i64, usize, i64) {
+    let mut newest = 0;
+    let mut count = 0;
+    for top in ["efforts", "journal"] {
+        for rel in notes::md_files(root, top) {
+            count += 1;
+            if let Some(ms) = modified_ms(&root.join(rel)) {
+                newest = newest.max(ms);
+            }
+        }
+    }
+    (newest, count, modified_ms(&root.join(FILE)).unwrap_or(0))
+}
+
+fn modified_ms(path: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(since.as_millis()).ok()
 }
 
 /// The request head, read until its blank line within one deadline for the whole of it; None
@@ -396,16 +498,7 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
     {
         return ("400 Bad Request", "text/plain", "bad request\n".to_owned());
     }
-    let host = lines
-        .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
-        .map(|(_, v)| v.trim().to_ascii_lowercase());
-    let mut ours = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")];
-    if port == 80 {
-        // A browser leaves the default port out.
-        ours.extend(["127.0.0.1".to_owned(), "localhost".to_owned()]);
-    }
-    if !host.is_some_and(|h| ours.contains(&h)) {
+    if !host_ok(head, port) {
         return (
             "421 Misdirected Request",
             "text/plain",
@@ -844,7 +937,8 @@ fn page(
         &crumb,
         &board_html(rows, root, now_ms, links),
         &tree_html(root, rows, links, None),
-        Some(refresh_secs),
+        // The file reloads itself; the served page holds a stream and swaps in place.
+        (links == Links::File).then_some(refresh_secs),
         links,
     )
 }
@@ -1070,7 +1164,7 @@ fn shell(
         })
         .collect::<String>();
     format!(
-        "<!doctype html><html lang=\"en\" data-palette=\"{palette}\"{theme_attr}><head><meta charset=\"utf-8\">{refresh}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{scheme}\">{csp}\n<title>{title}</title>\n<style>{PALETTES}{STYLE}</style></head><body>\n<div class=\"app\"><aside class=\"side\" id=\"side\"><div class=\"brand\"><span class=\"dot\"></span>Astrolabe</div><div class=\"search\"><input id=\"q\" type=\"search\" placeholder=\"Find a note\" aria-label=\"Find a note\"></div><nav class=\"tree\" id=\"tree\">\n{tree}</nav><div class=\"foot\"><label for=\"appearance\">Theme</label><select id=\"appearance\" aria-label=\"Appearance\"><option value=\"\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select><span class=\"swatches\">{swatches}</span></div></aside><div class=\"scrim\" id=\"scrim\"></div><main class=\"main\" id=\"main\"><div class=\"topbar\"><button class=\"btn menu-btn\" id=\"menu\" aria-label=\"Open the notes list\">☰</button><div class=\"crumb\" id=\"crumb\">{crumb}</div></div>\n{body}</main></div>\n<script>{SCRIPT}</script>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\" data-palette=\"{palette}\"{theme_attr}><head><meta charset=\"utf-8\">{refresh}<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{scheme}\">{csp}\n<title>{title}</title>\n<style>{PALETTES}{STYLE}</style></head><body>\n<div class=\"app\"><aside class=\"side\" id=\"side\"><div class=\"brand\"><span class=\"dot\"></span>Astrolabe<span class=\"live\" id=\"live\" hidden title=\"The page follows every save\">live</span></div><div class=\"search\"><input id=\"q\" type=\"search\" placeholder=\"Find a note\" aria-label=\"Find a note\"></div><nav class=\"tree\" id=\"tree\">\n{tree}</nav><div class=\"foot\"><label for=\"appearance\">Theme</label><select id=\"appearance\" aria-label=\"Appearance\"><option value=\"\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select><span class=\"swatches\">{swatches}</span></div></aside><div class=\"scrim\" id=\"scrim\"></div><main class=\"main\" id=\"main\"><div class=\"topbar\"><button class=\"btn menu-btn\" id=\"menu\" aria-label=\"Open the notes list\">☰</button><div class=\"crumb\" id=\"crumb\">{crumb}</div></div>\n{body}</main></div>\n<script>{SCRIPT}</script>\n</body></html>\n",
         palette = look.palette.name(),
         title = esc(title),
     )
@@ -1480,6 +1574,7 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .side{width:268px;flex:0 0 auto;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);min-height:0}
 .brand{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;font-weight:600}
 .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,transparent)}
+.brand .live{margin-left:auto;font-size:11px;font-weight:500;color:var(--good);display:flex;align-items:center;gap:5px}.brand .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--good)}.brand .live.off{color:var(--mute)}.brand .live.off::before{background:var(--mute)}
 .search{margin:0 12px 8px}.search input{width:100%;padding:7px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--pane);color:var(--ink);font:13px inherit}
 .tree{overflow:auto;flex:1;padding:0 8px 16px;font-size:13px}
 .tree .top{display:block;padding:6px 8px;border-radius:7px;font-weight:500;margin-bottom:6px;text-decoration:none}
@@ -1535,7 +1630,7 @@ a{color:inherit}button{font:inherit;color:inherit;background:none;border:0;curso
 .meta .age{margin-left:auto;font-variant-numeric:tabular-nums}
 .card .ask{margin:0 0 6px;color:var(--accent);font-weight:500}
 .card .next{margin:0;font-size:13px;line-height:1.45}
-.card.flash{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent)}
+.card.flash{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent);transition:box-shadow .3s}
 .empty{border:1px dashed var(--line-2);border-radius:10px;padding:12px 14px;color:var(--mute);font-style:italic;font-size:13px;margin:0}
 .col.done{margin-top:22px}.col.done .row{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
 .col.done .card{margin:0;opacity:.78;padding:10px 12px}.col.done .card h3{font-size:13.5px}
@@ -1597,10 +1692,34 @@ var save=function(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 var root=document.documentElement;
 var tree=$('#tree');
 var open=read('astrolabe-tree');
+var filter=function(){var q=$('#q').value.trim().toLowerCase();tree.classList.toggle('filtering',!!q);tree.querySelectorAll('.f').forEach(function(a){a.classList.toggle('miss',!!q&&a.textContent.toLowerCase().indexOf(q)<0&&(a.title||'').toLowerCase().indexOf(q)<0)});if(q)tree.querySelectorAll('details').forEach(function(d){d.open=true})};
+var bindTree=function(){
 tree.querySelectorAll('details[data-key]').forEach(function(d){var k=d.dataset.key;if(k in open)d.open=!!open[k];d.addEventListener('toggle',function(){open[k]=d.open;save('astrolabe-tree',open)})});
 var hid=$('#hid'),ht=$('#hidtoggle');
 if(ht){var show=function(on){hid.hidden=!on;ht.textContent=(on?'Hide ':'Show ')+ht.dataset.names+' ('+ht.dataset.n+' notes agents wrote for each other)'};show(!!read('astrolabe-hidden').on);ht.addEventListener('click',function(){var on=hid.hidden;save('astrolabe-hidden',{on:on});show(on)})}
-$('#q').addEventListener('input',function(e){var q=e.target.value.trim().toLowerCase();tree.classList.toggle('filtering',!!q);tree.querySelectorAll('.f').forEach(function(a){a.classList.toggle('miss',!!q&&a.textContent.toLowerCase().indexOf(q)<0&&(a.title||'').toLowerCase().indexOf(q)<0)});if(q)tree.querySelectorAll('details').forEach(function(d){d.open=true})});
+filter();
+};
+bindTree();
+$('#q').addEventListener('input',filter);
+/* The served page follows every save: the server says `changed`, the page reads itself
+again and swaps the tree and the board or the note in place, so nothing scrolls or
+closes, and a card that changed is marked for a moment. */
+if(location.protocol!=='file:'&&window.EventSource){
+var live=$('#live');live.hidden=false;live.classList.add('off');
+var swap=function(sel,doc){var a=document.querySelector(sel),b=doc.querySelector(sel);if(a&&b)a.innerHTML=b.innerHTML};
+var refresh=function(){fetch(location.pathname,{cache:'no-store'}).then(function(r){return r.text()}).then(function(html){
+var doc=new DOMParser().parseFromString(html,'text/html');
+var before={};document.querySelectorAll('.card[data-n]').forEach(function(c){before[c.dataset.n]=c.innerHTML});
+swap('#tree',doc);bindTree();
+var board=$('#board');if(board){swap('#board',doc);document.querySelectorAll('.card[data-n]').forEach(function(c){if(before[c.dataset.n]!==c.innerHTML){c.classList.add('flash');setTimeout(function(){c.classList.remove('flash')},1500)}})}
+var note=document.querySelector('.note');if(note){var fresh=doc.querySelector('.note');if(fresh&&fresh.innerHTML!==note.innerHTML)note.innerHTML=fresh.innerHTML}
+tick();
+}).catch(function(){})};
+var es=new EventSource('/events');
+es.onopen=function(){live.classList.remove('off')};
+es.onerror=function(){live.classList.add('off')};
+es.addEventListener('changed',refresh);
+}
 var look=read('astrolabe-look');
 var apply=function(){if(look.palette)root.dataset.palette=look.palette;if(look.appearance)root.dataset.theme=look.appearance;else if(look.appearance==='')root.removeAttribute('data-theme');$('#appearance').value=look.appearance||(root.dataset.theme||'');document.querySelectorAll('.sw').forEach(function(b){b.classList.toggle('on',(root.dataset.palette||'ember')===b.dataset.p)})};
 $('#appearance').addEventListener('change',function(e){look.appearance=e.target.value;save('astrolabe-look',look);apply()});

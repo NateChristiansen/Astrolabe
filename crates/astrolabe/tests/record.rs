@@ -1977,8 +1977,8 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
     assert!(page.contains("Cache-Control: no-store"));
     assert!(
-        page.contains("content=\"5\""),
-        "served pages reload every 5 s"
+        !page.contains("http-equiv=\"refresh\"") && page.contains("new EventSource('/events')"),
+        "a served page follows the stream instead of reloading: {page}"
     );
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card links through the server, since a browser refuses file links from a page.
@@ -2001,10 +2001,48 @@ fn the_board_is_served_fresh_on_localhost() {
         note.contains("<h1 id=\"0001-smooth-ink\">0001 Smooth ink</h1>"),
         "{note}"
     );
+    // A page holding the stream hears of a save within a few seconds; meanwhile the stream
+    // says nothing but that it's alive.
+    let mut events = std::net::TcpStream::connect(&addr).unwrap();
+    events
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    events
+        .write_all(format!("GET /events HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut heard = String::new();
+    let mut buf = [0u8; 1024];
+    let n = events.read(&mut buf).unwrap();
+    heard.push_str(&String::from_utf8_lossy(&buf[..n]));
+    assert!(
+        heard.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream"),
+        "{heard}"
+    );
+    std::thread::sleep(Duration::from_millis(1500));
     // Drawn per request: a save shows on the next fetch with no redraw of the file.
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     let page = get("/", &addr);
     assert!(column(&page, "needsyou").contains("which cap?"), "{page}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !heard.contains("event: changed") && std::time::Instant::now() < deadline {
+        match events.read(&mut buf) {
+            Ok(n) if n > 0 => heard.push_str(&String::from_utf8_lossy(&buf[..n])),
+            _ => break,
+        }
+    }
+    assert!(heard.contains("event: changed\ndata: "), "{heard}");
+    drop(events);
+    // Another origin can't hold the stream either.
+    let mut other = std::net::TcpStream::connect(&addr).unwrap();
+    other
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    other
+        .write_all(b"GET /events HTTP/1.1\r\nHost: evil.example:80\r\n\r\n")
+        .unwrap();
+    let mut out = String::new();
+    other.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 421"), "{out}");
     assert!(get("/favicon.ico", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/C:owner.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/..%2Fknowledge%2Fowner.md", &addr).starts_with("HTTP/1.1 404"));
