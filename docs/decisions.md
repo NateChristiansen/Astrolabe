@@ -8,6 +8,7 @@ The plugin replaced the previous product on 2026-11-03. Its choices come first; 
 - Keep only the gated hook entry point. The owner's machine switch decides whether hooks do anything; loading an effort supplies context and settings to that session.
 - Treat the command guard as an accident guard. Prove interception in each session with an allowed control and a denied probe; never claim that it covers file edits or other tools.
 - Keep the existing privacy policy: no string-matching content scrubbers in this repo. Private content stays in the separate notes checkout; secrets rely on the forge's secret scanning and push protection.
+- Count the notes' lessons on the board and never deliver them to sessions (2026-11-05). Stored experience helps when the store is small, curated and retired one entry at a time, and hurts as an always-loaded archive: instruction following falls with the count of rules, and growing lessons archives go stale and unread. A lesson is an inbox entry that ends as a short rule with its reason, a fix, or nothing, then is deleted; the folder's size is the backlog.
 
 ## Superseded 2026-11-05 by the plugin
 

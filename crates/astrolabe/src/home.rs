@@ -492,6 +492,27 @@ fn page(
         columns[0].len(),
         columns[3].len()
     );
+    // The notes' inbox: lessons waiting for triage. Only a non-empty one is shown, since
+    // the count is the backlog and zero is nothing to say.
+    let lessons = rows["lessons"].as_array().cloned().unwrap_or_default();
+    let counts = match lessons.len() {
+        0 => counts,
+        1 => format!("{counts} · 1 lesson to triage"),
+        n => format!("{counts} · {n} lessons to triage"),
+    };
+    let mut lesson_lines = String::new();
+    for lesson in &lessons {
+        lesson_lines += &format!(
+            "<li><a href=\"{}\">{}</a></li>\n",
+            file_url(&root.join(lesson["file"].as_str().unwrap_or_default())),
+            esc(lesson["title"].as_str().unwrap_or_default())
+        );
+    }
+    let lessons_html = if lesson_lines.is_empty() {
+        String::new()
+    } else {
+        format!("<section><h2>Lessons to triage</h2><ul>\n{lesson_lines}</ul></section>")
+    };
     let sync = rows["notes"]
         .as_array()
         .map(|w| {
@@ -540,7 +561,7 @@ fn page(
     }
 
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"{refresh_secs}\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>Astrolabe home</title>\n<style>{}{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section></footer>\n</body></html>\n",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"{refresh_secs}\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"color-scheme\" content=\"{}\">\n<title>Astrolabe home</title>\n<style>{}{STYLE}</style></head><body>\n<header><h1>{}</h1><span class=\"counts\">{counts}</span><span class=\"sync\">{}</span></header>\n<div class=\"board\">\n{board}</div>\n<footer><section><h2>Today</h2><ul>\n{journal}</ul></section><section><h2>Initiatives</h2><ul>\n{initiative_lines}</ul></section>{lessons_html}</footer>\n</body></html>\n",
         match theme {
             Theme::Auto => "light dark",
             Theme::Light => "light",
@@ -784,6 +805,7 @@ mod tests {
             ],
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
+            "lessons": [{"file": "lessons/2026-11-01-gates.md", "title": "Gates <did> not stop"}],
         });
         let page = render(&rows, Path::new("/n"), NOW, Theme::Auto);
         assert!(page.contains("A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;"));
@@ -814,7 +836,11 @@ mod tests {
             "an old done effort is off the board"
         );
         assert!(page.contains("<h1>2026-11-05</h1>"));
-        assert!(page.contains("3 active · 1 need you · 1 blocked"));
+        assert!(page.contains("3 active · 1 need you · 1 blocked · 1 lesson to triage"));
+        assert!(page.contains("<h2>Lessons to triage</h2>"));
+        assert!(page.contains(
+            "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
+        ));
         assert!(page.contains("notes in sync"));
         assert!(page.contains("<li>Finished &lt;it&gt;. <span class=\"num\">0001</span></li>"));
         assert!(page.contains(">agent-tooling</span> 1 open, 0 done<"));
@@ -827,6 +853,10 @@ mod tests {
         assert!(page.contains("class=\"sync\">2 notes commit(s) not yet pushed.<"));
         assert!(page.contains("nothing yet today"));
         assert!(page.contains("no initiatives named"));
+        assert!(
+            !page.contains("to triage"),
+            "no lessons, no section and no count"
+        );
         assert_eq!(page.matches("class=\"empty\">nothing<").count(), 6);
     }
 
