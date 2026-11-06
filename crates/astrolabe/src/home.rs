@@ -247,9 +247,11 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
         );
         return ("200 OK", "text/html", page);
     }
-    // An effort file by its own name: one plain path component, nothing a join could carry
-    // elsewhere (a slash, a dot-dot, a drive letter's colon).
-    if let Some(name) = path.strip_prefix("/efforts/")
+    // An effort or lesson file by its own name: one plain path component, nothing a join
+    // could carry elsewhere (a slash, a dot-dot, a drive letter's colon).
+    if let Some((folder, name)) = ["efforts", "lessons"]
+        .iter()
+        .find_map(|f| path.strip_prefix(&format!("/{f}/")).map(|n| (*f, n)))
         && let Some(name) = decode(name)
         && name.ends_with(".md")
         && !name.contains([':', '/', '\\'])
@@ -259,7 +261,7 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
             Path::new(&name).components().next(),
             Some(Component::Normal(_))
         )
-        && let Ok(text) = std::fs::read_to_string(notes.root.join("efforts").join(&name))
+        && let Ok(text) = std::fs::read_to_string(notes.root.join(folder).join(&name))
     {
         return ("200 OK", "text/html", note_page(&text, theme(notes)));
     }
@@ -502,9 +504,14 @@ fn page(
     };
     let mut lesson_lines = String::new();
     for lesson in &lessons {
+        let file = lesson["file"].as_str().unwrap_or_default();
+        let href = match links {
+            Links::Served => format!("/{}", percent(file)),
+            Links::File => file_url(&root.join(file)),
+        };
         lesson_lines += &format!(
             "<li><a href=\"{}\">{}</a></li>\n",
-            file_url(&root.join(lesson["file"].as_str().unwrap_or_default())),
+            esc(&href),
             esc(lesson["title"].as_str().unwrap_or_default())
         );
     }
@@ -841,6 +848,17 @@ mod tests {
         assert!(page.contains(
             "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
         ));
+        let served = super::page(
+            &rows,
+            Path::new("/n"),
+            NOW,
+            Theme::Auto,
+            SERVE_REFRESH_SECS,
+            Links::Served,
+        );
+        assert!(
+            served.contains("href=\"/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>")
+        );
         assert!(page.contains("notes in sync"));
         assert!(page.contains("<li>Finished &lt;it&gt;. <span class=\"num\">0001</span></li>"));
         assert!(page.contains(">agent-tooling</span> 1 open, 0 done<"));
