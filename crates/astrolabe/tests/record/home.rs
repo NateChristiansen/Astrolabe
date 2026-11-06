@@ -322,6 +322,17 @@ fn the_board_is_served_fresh_on_localhost() {
         "{lesson}"
     );
     assert!(get("/lessons/../knowledge/owner.md", &addr).starts_with("HTTP/1.1 404"));
+    // An open draft is counted; the program never removes one.
+    assert!(!page.contains("open draft"), "{page}");
+    std::fs::create_dir_all(mac.notes.join("drafts")).unwrap();
+    std::fs::write(mac.notes.join("drafts/.gitkeep"), "").unwrap();
+    std::fs::write(
+        mac.notes.join("drafts/2026-11-05-release-note.md"),
+        "# Release note\n\nText to post.\n",
+    )
+    .unwrap();
+    let page = get("/", &addr);
+    assert!(page.contains("<b>1</b> open draft</span>"), "{page}");
     assert!(get("/favicon.ico", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/C:owner.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(get("/efforts/..%2Fknowledge%2Fowner.md", &addr).starts_with("HTTP/1.1 404"));

@@ -13,6 +13,7 @@ pub struct BoardData {
     pub journal_lines: Vec<JournalEntry>,
     pub notes: Vec<String>,
     pub lessons: Vec<Lesson>,
+    pub drafts: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -117,6 +118,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         journal,
         notes: notes.warnings(),
         lessons: lessons_in(&notes.root),
+        drafts: drafts_in(&notes.root),
     }
 }
 
@@ -151,9 +153,21 @@ pub fn lessons_in(root: &Path) -> Vec<Lesson> {
         .collect()
 }
 
+/// The open drafts: every `drafts/*.md`, since a posted or decided draft is deleted and the
+/// folder holds only what waits on the owner. The board counts them and nothing else:
+/// never a session, and the program never removes one.
+pub fn drafts_in(root: &Path) -> usize {
+    std::fs::read_dir(root.join("drafts"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".md"))
+        .count()
+}
+
 #[cfg(test)]
 mod lessons_tests {
-    use super::lessons_in;
+    use super::{drafts_in, lessons_in};
 
     #[test]
     fn lessons_are_listed_by_name_with_their_headings() {
@@ -174,6 +188,22 @@ mod lessons_tests {
         assert_eq!(rows[0].file, "lessons/2026-11-01-a.md");
         assert_eq!(rows[0].title, "2026-11-01-a");
         assert_eq!(rows[1].title, "Rule text reaches a session once");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn drafts_are_counted_without_the_gitkeep() {
+        let root = std::env::temp_dir().join(format!("astrolabe-drafts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(drafts_in(&root), 0, "no folder is no drafts");
+        let dir = root.join("drafts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".gitkeep"), "").unwrap();
+        assert_eq!(drafts_in(&root), 0, "an empty folder is no drafts");
+        std::fs::write(dir.join("2026-11-06-release-note.md"), "# Release note\n").unwrap();
+        std::fs::write(dir.join("2026-11-06-reply.md"), "no heading\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a draft\n").unwrap();
+        assert_eq!(drafts_in(&root), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

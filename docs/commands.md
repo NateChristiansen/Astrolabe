@@ -76,7 +76,7 @@ Options combine. A browser's saved appearance choice takes precedence in that br
 
 Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only.
 
-The output contains `efforts`, `today`, today's raw `journal` and parsed `journal_lines`, `notes` sync warnings, and `lessons`. Journal entries, warnings and lessons are not filtered by repo.
+The output contains `efforts`, `today`, today's raw `journal` and parsed `journal_lines`, `notes` sync warnings, `lessons` and the `drafts` count. Journal entries, warnings, lessons and drafts are not filtered by repo.
 
 ### `notes status` and `notes sync`
 

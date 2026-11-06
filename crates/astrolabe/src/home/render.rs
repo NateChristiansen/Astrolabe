@@ -320,6 +320,18 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             },
         );
     }
+    // Open drafts wait on the owner the way lessons do, and leave the folder the same way.
+    if rows.drafts > 0 {
+        chips += &chip(
+            "draft",
+            rows.drafts,
+            if rows.drafts == 1 {
+                "open draft"
+            } else {
+                "open drafts"
+            },
+        );
+    }
     chips += &if warnings.is_empty() {
         "<span class=\"sync\">notes in sync</span>".to_owned()
     } else {

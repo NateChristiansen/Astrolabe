@@ -55,6 +55,7 @@ Personal content lives in the notes checkout and is read at runtime:
 - `efforts/<year>/<month>/NNNN-slug.md`: effort records, stored by creation date so status changes don't move files or break links.
 - `journal/<year>/<month>/<day>.md`: the owner's history, written by agents rather than generated from tool activity.
 - `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it, so unreviewed observations don't become standing instructions. Triaged entries are deleted.
+- `drafts/`: text waiting for the owner to post or decide on. The board counts it; nothing delivers it to a session. Closed drafts are deleted.
 - `initiatives/`: notes for groups of related efforts.
 - `.agents/`: material agents write for each other, hidden behind the board's dot-folder toggle.
 
