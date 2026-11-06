@@ -52,9 +52,12 @@ fn detach(cmd: &mut Command) {
 #[cfg(windows)]
 fn detach(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    // A hidden console rather than none: a process with no console makes Windows open a
+    // visible one for every console program it starts, so each git call the board server
+    // or a sync made flashed a window. Children share this hidden one instead.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 }
 
 #[cfg(windows)]

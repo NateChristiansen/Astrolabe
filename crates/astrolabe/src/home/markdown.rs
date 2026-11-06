@@ -188,10 +188,15 @@ pub(super) fn note_page(
     } else {
         rendered
     };
-    let mut crumb = String::from("<a href=\"/\">Board</a>");
+    // There are no folder pages: each folder opens the notes view at that folder.
+    let mut crumb = String::from("<a href=\"/#notes\">Notes</a>");
     let parts: Vec<&str> = rel.split('/').collect();
-    for part in &parts[..parts.len() - 1] {
-        crumb += &format!("<span>›</span><span>{}</span>", esc(part));
+    for (i, part) in parts[..parts.len() - 1].iter().enumerate() {
+        crumb += &format!(
+            "<span>›</span><a href=\"/#notes/{}\">{}</a>",
+            esc(&parts[..=i].join("/")),
+            esc(part)
+        );
     }
     crumb += &format!("<span>›</span><b>{}</b>", esc(name));
     let page = format!(

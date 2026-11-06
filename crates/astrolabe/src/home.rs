@@ -164,7 +164,7 @@ mod tests {
             served.contains("href=\"/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>")
         );
         assert!(page.contains("notes in sync"));
-        assert!(page.contains("title=\"A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;\">demo</a></span><span>Finished &lt;it&gt;.</span></li>"));
+        assert!(page.contains("title=\"A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;\">1 · demo</a></span><span>Finished &lt;it&gt;.</span></li>"));
         assert!(page.contains("1 open · 0 done"));
         assert!(
             !page.contains("finished"),
@@ -403,6 +403,12 @@ mod tests {
             page.contains("<b>0001-a.md</b>"),
             "the crumb ends in the file: {page}"
         );
+        assert!(
+            page.contains(
+                "<a href=\"/#notes\">Notes</a><span>›</span><a href=\"/#notes/efforts\">efforts</a>"
+            ),
+            "each crumb folder opens the notes view there: {page}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -510,6 +516,10 @@ mod tests {
             "{tree}"
         );
         assert!(tree.contains("class=\"st s-active\""));
+        assert!(
+            !tree.contains(">Board<"),
+            "the sidebar leads home, not the tree: {tree}"
+        );
         assert!(tree.contains("<span class=\"num\">2</span><span class=\"t\">B</span>"));
         assert!(tree.contains(
             "<span class=\"num date\">Nov 6</span><span class=\"t\">trial-binary-killed</span>"

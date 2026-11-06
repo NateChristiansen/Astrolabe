@@ -32,8 +32,20 @@ var setView=function(view,reset){
  main.scrollTop=reset?0:(positions[view]??Number(sessionRead(scrollKey(view))||0));
  if(reset){positions[view]=0;sessionSave(scrollKey(view),'0')}
 };
-var viewFromHash=function(){var v=location.hash.slice(1);return views.includes(v)?v:(board?'overview':'note')};
-window.addEventListener('hashchange',function(){setView(viewFromHash(),false)});
+var viewFromHash=function(){var v=location.hash.slice(1);if(board&&v.startsWith('notes/'))return 'notes';return views.includes(v)?v:(board?'overview':'note')};
+// A breadcrumb folder opens the notes view at that folder: its tree rows open and it scrolls into view.
+var revealFolder=function(){
+ var h=location.hash.slice(1);if(!board||!h.startsWith('notes/'))return;
+ var path;try{path=decodeURIComponent(h.slice(6))}catch(e){return}
+ var all=Array.from(tree.querySelectorAll('details[data-key]')),target=null;
+ all.forEach(function(d){var k=d.dataset.key;if(k===path||path.startsWith(k+'/')){d.open=true;if(!target||k.length>target.dataset.key.length)target=d}});
+ // A year has no row of its own; its months stand in for it.
+ if(!target||target.dataset.key!==path)all.forEach(function(d){if(d.dataset.key.startsWith(path+'/')){d.open=true;if(!target||target.dataset.key.length<path.length)target=d}});
+ if(!target)return;
+ var ht=$('#hidtoggle');if(target.closest('#hid')&&$('#hid').hidden&&ht)ht.click();
+ var s=target.querySelector('summary');s.scrollIntoView({block:'center'});s.focus({preventScroll:true});
+};
+window.addEventListener('hashchange',function(){setView(viewFromHash(),false);revealFolder()});
 // Explicit home starts at the top; ordinary Back restores the previous position.
 var resetHome=sessionRead('astrolabe-home-reset')==='true';sessionSave('astrolabe-home-reset','false');
 // Don't overwrite a stored position with the fresh document's initial zero.
@@ -89,7 +101,7 @@ var bindTree=function(){
 };
 var restoreSections=function(){document.querySelectorAll('details[data-persist]').forEach(function(d){if(d.dataset.persist in sections)d.open=!!sections[d.dataset.persist]})};
 document.addEventListener('toggle',function(e){var d=e.target;if(!d.matches('details'))return;if(d.dataset.key&&!$('#q').value.trim()){open[d.dataset.key]=d.open;save('astrolabe-tree',open)}if(d.dataset.persist){sections[d.dataset.persist]=d.open;save('astrolabe-sections',sections)}},true);
-bindTree();restoreSections();$('#q').addEventListener('input',function(){sessionSave('astrolabe-note-query',$('#q').value);filter()});
+bindTree();restoreSections();revealFolder();$('#q').addEventListener('input',function(){sessionSave('astrolabe-note-query',$('#q').value);filter()});
 var paletteNames={iris:'Iris',ember:'Ember',slate:'Slate',moss:'Moss',graphite:'Graphite'};
 var look=read('astrolabe-look');
 if(!Object.hasOwn(paletteNames,look.palette))delete look.palette;

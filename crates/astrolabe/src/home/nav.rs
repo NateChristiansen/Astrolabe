@@ -1,6 +1,6 @@
 //! The notes tree, shelf ordering and effort labels.
-use super::FILE;
-use super::render::{Links, esc, file_url};
+
+use super::render::{Links, esc};
 use crate::board::{BoardData, EffortRow};
 use crate::notes::{self};
 use std::path::Path;
@@ -130,15 +130,8 @@ pub(super) fn tree_html(
             shown += &html;
         }
     }
-    let board_on = if current.is_none() { " on" } else { "" };
-    let mut out = format!(
-        "<a class=\"top{board_on}\" href=\"{}\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M9 4v16M15 4v16\"/></svg><span class=\"t\">Board</span></a>\n",
-        match links {
-            Links::Served => "/".to_owned(),
-            Links::File => file_url(&root.join(FILE)),
-        }
-    );
-    out += &shown;
+    // The sidebar leads home, so the tree starts with the notes themselves.
+    let mut out = shown;
     for name in &files {
         out += &file_row(name, 0, &by_file, root, links, current);
     }

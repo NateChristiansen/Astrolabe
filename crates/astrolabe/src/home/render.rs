@@ -218,16 +218,19 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         }
         let effort = line.effort.as_str();
         let num = match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {
-            Some(row) => format!(
-                "<span class=\"num\"><a href=\"{}\" title=\"{}\">{}</a></span>",
-                esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
-                esc(row.title.as_deref().unwrap_or("Effort")),
-                esc(row
-                    .repo
-                    .as_deref()
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or("Effort"))
-            ),
+            // The number says which effort the link opens; the repo says where it landed.
+            Some(row) => {
+                let n = row.number.map(|n| n.to_string()).unwrap_or_default();
+                let label = match row.repo.as_deref().filter(|r| !r.is_empty()) {
+                    Some(repo) => format!("{n} · {}", esc(repo)),
+                    None => format!("Effort {n}"),
+                };
+                format!(
+                    "<span class=\"num\"><a href=\"{}\" title=\"{}\">{label}</a></span>",
+                    esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
+                    esc(row.title.as_deref().unwrap_or("Effort")),
+                )
+            }
             None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
         };
         journal += &format!("<li>{num}<span>{}</span></li>\n", esc(line.text.as_str()));
