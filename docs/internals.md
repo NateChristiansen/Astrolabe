@@ -26,7 +26,7 @@ The hook performs the write before the app runs that read. This lets effort comm
 
 For a change, plan or investigation that needs a lasting record, the agent runs `astrolabe effort new` with a title and a goal. The program creates and commits the note, assigns its number and binds it to the session. New work defaults to `check in at plan` involvement and `edit` authority unless the owner specifies otherwise.
 
-The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning.
+The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries longer than two sentences or 40 words, entries ending with a status word, and entries naming a file or saying “the owner” are refused with guidance for rewriting them.
 
 Recording commands also run through the pre-command hook. The hook can write to the separate notes checkout even when the app's tool sandbox cannot. Without interception, the executable reports an already-recorded result, an unfinished write, or that nothing was recorded; running it directly doesn't create or save an effort.
 
@@ -34,7 +34,7 @@ The Stop hook compares the repo's HEAD, diff and untracked contents with the las
 
 ## Synchronization and recovery
 
-Notes writes share an advisory lock on each machine. Each complete write is first stored as an intent in the local state folder, then applied so a retry won't commit the same operation twice. Interrupted writes can be finished from those intents.
+Notes writes share an advisory lock on each machine. Each complete write is first stored as an intent in the local state folder, then applied so a retry won't commit the same operation twice. Interrupted writes can be finished from those intents. An unreadable intent is kept and reported by `notes status`; further writes wait until it is repaired or moved aside. Recording commits include only `efforts/`, `journal/`, and `.gitattributes`, including hand edits there. Unrelated staged files remain staged and outside the commit.
 
 Before writing, Astrolabe attempts to pull notes with a bounded wait. A pull timeout backs off further attempts for five minutes. A save is refused if the effort changed since the session received it; the reply includes the current text so the agent can reconcile its next save.
 
@@ -44,7 +44,7 @@ Pushes run in the background after state changes, periodically during activity, 
 
 The journal uses Git's union merge driver. Hidden entry metadata identifies the effort and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate effort entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 
-When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Manual edits and repo registration changes are the owner's to commit.
+When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Manual edits outside the recording paths and repo registration changes are the owner's to commit.
 
 ## Files and local state
 

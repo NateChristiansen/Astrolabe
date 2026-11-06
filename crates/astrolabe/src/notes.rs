@@ -597,22 +597,55 @@ impl Notes {
     }
 
     pub fn intents(&self) -> Vec<Op> {
+        self.scan_intents().0
+    }
+
+    /// Intents that are there but can't be read or parsed, each as its path and why. They're
+    /// never deleted or guessed at: an unfinished write may be in one, so it waits for repair.
+    pub fn broken_intents(&self) -> Vec<String> {
+        self.scan_intents().1
+    }
+
+    fn scan_intents(&self) -> (Vec<Op>, Vec<String>) {
         let dir = self.state.join(INTENTS);
-        let mut ops = Vec::new();
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            if let Ok(bytes) = std::fs::read(entry.path())
-                && let Ok(op) = serde_json::from_slice::<Op>(&bytes)
-            {
-                ops.push(op);
+        let (mut ops, mut broken) = (Vec::new(), Vec::new());
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (ops, broken),
+            Err(e) => {
+                broken.push(format!("{}: {e}", dir.display()));
+                return (ops, broken);
+            }
+        };
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    broken.push(format!("{}: {e}", dir.display()));
+                    continue;
+                }
+            };
+            // A `.tmp` beside it is a write that never got renamed into place: not an intent.
+            if path.extension().is_none_or(|x| x != "json") {
+                continue;
+            }
+            let read = std::fs::read(&path).map_err(|e| e.to_string());
+            match read.and_then(|b| serde_json::from_slice::<Op>(&b).map_err(|e| e.to_string())) {
+                Ok(op) => ops.push(op),
+                Err(why) => broken.push(format!("{}: {why}", path.display())),
             }
         }
-        ops
+        (ops, broken)
     }
 
     /// Finishes whatever an earlier run left, under the caller's lock. A finished op whose
-    /// ticket never got written is dropped once it's old; nothing is applied twice.
+    /// ticket never got written is dropped once it's old; nothing is applied twice. An intent
+    /// that can't be read fails here every time, so nothing new lands over it until it's
+    /// repaired.
     pub fn reconcile(&self) -> Vec<String> {
-        let mut failed = Vec::new();
+        let mut failed: Vec<String> = (self.broken_intents().into_iter())
+            .map(|b| format!("{b} (kept for repair)"))
+            .collect();
         for op in self.intents() {
             if op.result.is_some() {
                 let age = std::fs::metadata(self.intent_path(&op.key))
@@ -719,30 +752,40 @@ impl Notes {
             write_text(&path, &tidy_journal(&text))?;
         }
         self.ensure_attributes()?;
-        // Only what exists: a first effort with no journal line yet has no journal folder.
-        let mut status = vec!["status", "--porcelain", "--"];
-        let mut add = vec!["add", "-A", "--"];
+        // Only what changed: a first effort with no journal line yet has no journal folder,
+        // and a path git doesn't know would fail the commit. Hand edits under these paths
+        // ride along on purpose; anything else the owner staged stays staged and out.
+        let mut changed = Vec::new();
         for path in ["efforts", "journal", ".gitattributes"] {
-            if self.root.join(path).exists() {
-                status.push(path);
-                add.push(path);
+            if self.root.join(path).exists()
+                && !self
+                    .git(&["status", "--porcelain", "--", path])?
+                    .trim()
+                    .is_empty()
+            {
+                changed.push(path);
             }
         }
-        let changed = self.git(&status)?;
-        if !changed.trim().is_empty() {
+        if !changed.is_empty() {
+            let mut add = vec!["add", "-A", "--"];
+            add.extend(&changed);
             self.git(&add)?;
             let mut message = format!("{}\n\nOp-Key: {}", op.message, op.key);
             if let Some(base) = &op.base {
                 message += &format!("\nBase: {base}");
             }
-            self.git(&[
+            let mut commit = vec![
                 "-c",
                 "user.useConfigOnly=false",
                 "commit",
                 "--quiet",
+                "--only",
                 "-m",
                 &message,
-            ])?;
+                "--",
+            ];
+            commit.extend(&changed);
+            self.git(&commit)?;
         }
         op.committed = true;
         self.save_intent(&op)?;
@@ -1194,6 +1237,14 @@ impl Notes {
                 "{intents} notes write(s) left unfinished; `astrolabe notes sync` finishes them."
             ));
         }
+        let broken = self.broken_intents();
+        if !broken.is_empty() {
+            lines.push(format!(
+                "{} unfinished notes write(s) can't be read, so no new notes write lands until they're repaired or moved aside: {}",
+                broken.len(),
+                broken.join("; ")
+            ));
+        }
         lines
     }
 
@@ -1234,7 +1285,18 @@ impl RepoFacts {
             .unwrap_or_default();
         let unpushed =
             git(&["rev-list", "--count", "@{upstream}..HEAD"]).and_then(|n| n.trim().parse().ok());
-        let status = git(&["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default();
+        // `-z` names files as they are, never quoted, and relative to the repo root, which
+        // is where they're read from whatever folder the session is in. Both stay bytes:
+        // a name needn't be UTF-8, and a root may end in a space.
+        let raw = |args: &[&str]| {
+            let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
+            crate::worktree::git_bytes(cwd, &args).ok()
+        };
+        let status =
+            raw(&["status", "--porcelain", "-z", "--untracked-files=all"]).unwrap_or_default();
+        let top = raw(&["rev-parse", "--show-toplevel"])
+            .map(|t| path_of(t.strip_suffix(b"\n").unwrap_or(&t)))
+            .unwrap_or_else(|| cwd.to_owned());
         let diff = git(&["diff", "HEAD"]).unwrap_or_default();
         use sha2::{Digest, Sha256};
         let mut print = Sha256::new();
@@ -1242,10 +1304,20 @@ impl RepoFacts {
             print.update(head.as_bytes());
         }
         print.update(diff.as_bytes());
-        for line in status.lines().filter(|l| l.starts_with("?? ")) {
-            let file = cwd.join(&line[3..]);
-            print.update(line.as_bytes());
-            if let Ok(bytes) = std::fs::read(&file) {
+        let mut entries = status.split(|b| *b == 0).filter(|e| !e.is_empty());
+        while let Some(entry) = entries.next() {
+            // A rename or copy carries its old name as the next entry.
+            if entry
+                .get(..2)
+                .is_some_and(|xy| xy.contains(&b'R') || xy.contains(&b'C'))
+            {
+                entries.next();
+            }
+            let Some(name) = entry.strip_prefix(b"?? ") else {
+                continue;
+            };
+            print.update(entry);
+            if let Ok(bytes) = std::fs::read(top.join(path_of(name))) {
                 print.update(&bytes);
             }
         }
@@ -1259,9 +1331,23 @@ impl RepoFacts {
             branch,
             head: head.chars().take(7).collect(),
             unpushed,
-            dirty: !status.trim().is_empty(),
+            dirty: !status.is_empty(),
             fingerprint,
         })
+    }
+}
+
+/// A path as git printed it: bytes on Unix, where a name needn't be UTF-8; UTF-8 elsewhere,
+/// which is what git for Windows prints.
+fn path_of(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
     }
 }
 

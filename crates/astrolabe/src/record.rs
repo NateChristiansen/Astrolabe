@@ -114,7 +114,22 @@ fn as_current(body: &str) -> Result<String, String> {
     Ok(current)
 }
 
-/// A journal line the owner would write: one or two sentences.
+/// Closing words that say where the work stands: the board shows that.
+const STATUS_WORDS: [&str; 9] = [
+    "merged",
+    "landed",
+    "done",
+    "pushed",
+    "shipped",
+    "blocked",
+    "abandoned",
+    "merging",
+    "unmerged",
+];
+
+/// A journal line the owner would write: one or two sentences on the change itself. The
+/// refusals are the shapes sessions wrote with the rule alone (2026-11-05: nine of seventeen
+/// lines); each says what to write instead, as the label-line refusal on Current state does.
 fn check_journal(text: &str) -> Result<(), String> {
     if text.lines().count() > 1 {
         return Err("a journal line is one line".to_owned());
@@ -125,7 +140,88 @@ fn check_journal(text: &str) -> Result<(), String> {
             "the journal line is {words} words; aim for 25, at most {JOURNAL_WORDS}: what changed, as the owner would say it. Nothing was written"
         ));
     }
+    let sentences = journal_sentences(text);
+    if sentences.len() > 2 {
+        return Err(format!(
+            "the journal line is {} sentences; two at most, the change and its why. Nothing was written",
+            sentences.len()
+        ));
+    }
+    if let Some(last) = sentences.last() {
+        let closing: Vec<String> = last
+            .split_whitespace()
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_ascii_lowercase()
+            })
+            .filter(|w| !w.is_empty())
+            .collect();
+        if !closing.is_empty()
+            && closing.len() <= 3
+            && closing
+                .iter()
+                .all(|w| w == "and" || STATUS_WORDS.contains(&w.as_str()))
+        {
+            return Err(format!(
+                "the line ends with \"{}\", which says where the work stands; that's the effort's status, already on the board, so drop it and keep the change. Nothing was written",
+                last.trim()
+            ));
+        }
+    }
+    if let Some(file) = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && !"/.~".contains(c)))
+        .find(|w| looks_like_a_file(w))
+    {
+        return Err(format!(
+            "the line names a file ({file}); the owner reads things, not paths, so say what it is. Nothing was written"
+        ));
+    }
+    if text.to_ascii_lowercase().contains("the owner") {
+        return Err(
+            "the line says \"the owner\"; the journal is in their words, so say I or my. Nothing was written"
+                .to_owned(),
+        );
+    }
     Ok(())
+}
+
+/// Sentences end at a full stop, question or exclamation mark before a space and a capital,
+/// so "Astra. viral-studio" and "about 1.5 s" stay one sentence.
+fn journal_sentences(text: &str) -> Vec<&str> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 0..b.len() {
+        if matches!(b[i], b'.' | b'!' | b'?')
+            && b.get(i + 1) == Some(&b' ')
+            && b.get(i + 2).is_some_and(u8::is_ascii_uppercase)
+        {
+            out.push(&text[start..=i]);
+            start = i + 2;
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// A word that is a path or a file name: two slashes, a slash with a dot or a root beside
+/// it, or a code or document extension. "and/or" and "Mac/PC" are words.
+fn looks_like_a_file(word: &str) -> bool {
+    const EXTENSIONS: [&str; 22] = [
+        "md", "rs", "cs", "gd", "js", "mjs", "ts", "json", "toml", "yaml", "yml", "py", "sh",
+        "ps1", "txt", "html", "css", "tscn", "tres", "cfg", "ini", "lock",
+    ];
+    if word.matches('/').count() > 1
+        || (word.contains('/') && (word.contains('.') || word.starts_with(['/', '~', '.'])))
+    {
+        return true;
+    }
+    word.rsplit_once('.').is_some_and(|(name, ext)| {
+        name.chars().last().is_some_and(char::is_alphanumeric) && EXTENSIONS.contains(&ext)
+    })
 }
 
 /// Plan headings shifted together so the top level lands at `###`: the effort file's
