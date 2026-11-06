@@ -66,6 +66,6 @@ Your notes hold your working preferences, writing voice, project goals and usefu
 
 Connect your notes to a private Git remote so Astrolabe can sync them between machines. An agent in your notes folder can help set that up and check that your latest work has synced.
 
-On the other machine, follow [installation](../plugin/README.md), choosing **existing notes**. Open your project and ask the agent to pick up the effort you want to continue.
+On the other machine, follow [installation](install.md), choosing **existing notes**. Open your project and ask the agent to pick up the effort you want to continue.
 
-[Installation](../plugin/README.md) · [Troubleshooting](troubleshooting.md) · [Command reference](commands.md) · [Project overview](../README.md)
+[Installation](install.md) · [Troubleshooting](troubleshooting.md) · [Command reference](commands.md) · [Project overview](../README.md)

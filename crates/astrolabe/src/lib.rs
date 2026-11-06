@@ -7,6 +7,7 @@ pub mod guard;
 pub mod home;
 mod home_effects;
 pub mod hook;
+pub mod install;
 pub mod notes;
 pub mod nudge;
 pub mod record;

@@ -1,0 +1,99 @@
+name: Prepare release
+# This produces downloadable CI artifacts only. It cannot publish a release or push a tag.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/release-prepare.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - 'plugin/**'
+      - 'scripts/**'
+      - '.agents/plugins/**'
+      - '.claude-plugin/**'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check the release revision
+        shell: bash
+        run: scripts/check
+      - name: Install pinned release tooling
+        shell: bash
+        run: python scripts/setup-dist.py "$RUNNER_TEMP/astrolabe-dist"
+      - name: Build and exercise the native archive
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          dist build --artifacts=local --target "$RELEASE_TARGET"
+          git diff --exit-code -- Cargo.lock
+          dist build --artifacts=global
+          python scripts/package-release.py --target "$RELEASE_TARGET"
+          python scripts/smoke-release.py --target "$RELEASE_TARGET"
+      - name: Exercise PowerShell 7 as well as Windows PowerShell
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/smoke-release.py --target "$RELEASE_TARGET" --powershell pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            target/distrib/astrolabe-${{ matrix.target }}.*
+          if-no-files-found: error
+  assemble:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: rustup toolchain install 1.99.1 --profile minimal
+      - run: python scripts/setup-dist.py "$RUNNER_TEMP/astrolabe-dist"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: target/distrib
+          merge-multiple: true
+      - run: dist build --artifacts=global
+      - run: python scripts/package-release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: astrolabe-release-for-review
+          path: |
+            target/distrib/astrolabe-*.tar.gz
+            target/distrib/astrolabe-*.zip
+            target/distrib/install.sh
+            target/distrib/install.ps1
+            target/distrib/SHA256SUMS
+            target/distrib/release-files.json
+          if-no-files-found: error
