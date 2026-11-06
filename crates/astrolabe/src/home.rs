@@ -116,11 +116,23 @@ pub fn set_look(
     if let Some(p) = palette {
         have.palette = p;
     }
-    notes::write_text(
-        &notes.state.join(LOOK_FILE),
-        &serde_json::json!({ "theme": have.theme.name(), "palette": have.palette.name() })
-            .to_string(),
-    )
+    // The port and anything else kept there stay as they are.
+    let mut saved = std::fs::read_to_string(notes.state.join(LOOK_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    saved["theme"] = have.theme.name().into();
+    saved["palette"] = have.palette.name().into();
+    notes::write_text(&notes.state.join(LOOK_FILE), &saved.to_string())
+}
+
+/// The port as saved, 0 and all; None when none was.
+fn saved_port(notes: &Notes) -> Option<u16> {
+    std::fs::read_to_string(notes.state.join(LOOK_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["port"].as_u64())
+        .and_then(|p| u16::try_from(p).ok())
 }
 
 /// The port this machine serves on, beside the look; `SERVE_PORT` when unset.
@@ -214,6 +226,12 @@ pub fn ensure_serving(notes: &Notes) -> Option<String> {
             &["home", "--serve", "--port", &port.to_string()],
             "home.log",
         );
+        // Up before the address is named, so a browser opened on it finds it; a start that
+        // fails is in home.log in the state folder.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !answering(port) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     Some(url(notes))
 }
@@ -284,7 +302,7 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
 /// the process is stopped. `hold` is the machine's lock, kept for the server's life. One
 /// thread per connection, since browsers hold idle connections open; past the cap a
 /// connection is told to come back.
-pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
+pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requested: u16) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let busy = Arc::new(AtomicUsize::new(0));
     let last = Arc::new(AtomicI64::new(notes::now_ms()));
@@ -293,6 +311,7 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(IDLE_SECS);
     let seen = Arc::clone(&last);
+    let watched = Notes::new(notes.root.clone(), notes.state.clone());
     std::thread::spawn(move || {
         // The lock lives as long as this thread, which is as long as the process.
         let _hold = hold;
@@ -300,8 +319,10 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File) {
         loop {
             std::thread::sleep(every);
             let quiet = notes::now_ms() - seen.load(Ordering::SeqCst);
-            if quiet >= (idle * 1000) as i64 {
-                // The lock goes with the process; the next change starts a server again.
+            // The lock goes with the process; the next change starts a server again, on
+            // the port the machine now wants if that changed.
+            let moved = saved_port(&watched).unwrap_or(SERVE_PORT) != requested;
+            if moved || quiet >= (idle * 1000) as i64 {
                 std::process::exit(0);
             }
         }
@@ -447,12 +468,23 @@ fn events(notes: &Notes, mut stream: TcpStream, seen: &AtomicI64) {
 fn fingerprint(root: &Path) -> (i64, usize, i64) {
     let mut newest = 0;
     let mut count = 0;
-    for top in ["efforts", "journal"] {
-        for rel in notes::md_files(root, top) {
-            count += 1;
-            if let Some(ms) = modified_ms(&root.join(rel)) {
-                newest = newest.max(ms);
+    let mut note = |path: &Path| {
+        count += 1;
+        if let Some(ms) = modified_ms(path) {
+            newest = newest.max(ms);
+        }
+    };
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.path().is_dir() {
+            if name == ".git" || name == ".obsidian" {
+                continue;
             }
+            for rel in notes::md_files(root, &name) {
+                note(&root.join(rel));
+            }
+        } else if name.ends_with(".md") {
+            note(&entry.path());
         }
     }
     (newest, count, modified_ms(&root.join(FILE)).unwrap_or(0))
@@ -529,6 +561,7 @@ fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, 
         && Path::new(&rel)
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
+        && inside(&notes.root, &rel)
         && let Ok(text) = std::fs::read_to_string(notes.root.join(&rel))
     {
         return (
@@ -860,6 +893,15 @@ fn when(stamp: &str, now_ms: i64) -> String {
         1 => format!("yesterday {time}").trim_end().to_owned(),
         _ => then.format("%b %-d").to_string(),
     }
+}
+
+/// Whether the note at `rel` really sits under the checkout once links are followed: a
+/// symlink or junction inside it pointing out is not served.
+fn inside(root: &Path, rel: &str) -> bool {
+    let (Ok(real), Ok(root)) = (root.join(rel).canonicalize(), root.canonicalize()) else {
+        return false;
+    };
+    real.starts_with(&root)
 }
 
 /// A link destination the note page may carry: relative, or http, https or mailto. Anything
@@ -1716,7 +1758,7 @@ var note=document.querySelector('.note');if(note){var fresh=doc.querySelector('.
 tick();
 }).catch(function(){})};
 var es=new EventSource('/events');
-es.onopen=function(){live.classList.remove('off')};
+var opened=false;es.onopen=function(){live.classList.remove('off');if(opened)refresh();opened=true};
 es.onerror=function(){live.classList.add('off')};
 es.addEventListener('changed',refresh);
 }
@@ -1941,6 +1983,56 @@ mod tests {
             page.contains("<b>0001-a.md</b>"),
             "the crumb ends in the file: {page}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_note_is_served_only_from_inside_the_checkout() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes/knowledge")).unwrap();
+        std::fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        std::fs::write(dir.join("notes/knowledge/owner.md"), "# o\n").unwrap();
+        std::fs::write(dir.join("elsewhere/secret.md"), "# s\n").unwrap();
+        let root = dir.join("notes");
+        assert!(inside(&root, "knowledge/owner.md"));
+        assert!(!inside(&root, "knowledge/nope.md"), "nothing there");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("elsewhere"), root.join("out")).unwrap();
+            std::os::unix::fs::symlink(
+                dir.join("elsewhere/secret.md"),
+                root.join("knowledge/alias.md"),
+            )
+            .unwrap();
+            assert!(!inside(&root, "out/secret.md"), "a folder link out");
+            assert!(!inside(&root, "knowledge/alias.md"), "a file link out");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_look_keeps_the_port_and_the_port_keeps_the_look() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-look-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        let notes = Notes::new(dir.join("notes"), dir.join("state"));
+        assert_eq!(port(&notes), SERVE_PORT);
+        set_port(&notes, 5050).unwrap();
+        set_look(&notes, Some(Theme::Dark), Some(Palette::Slate)).unwrap();
+        assert_eq!(port(&notes), 5050);
+        set_port(&notes, 5051).unwrap();
+        assert_eq!(
+            look(&notes),
+            Look {
+                theme: Theme::Dark,
+                palette: Palette::Slate
+            }
+        );
+        assert_eq!(saved_port(&notes), Some(5051));
+        set_port(&notes, 0).unwrap();
+        assert_eq!(port(&notes), SERVE_PORT, "0 means the default");
+        assert_eq!(saved_port(&notes), Some(0));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

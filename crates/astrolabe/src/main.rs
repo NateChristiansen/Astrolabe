@@ -111,7 +111,7 @@ fn main() {
                                 if open && let Err(why) = open_in_browser(&url) {
                                     fail(&why);
                                 }
-                                astrolabe::home::serve(&notes, listener, hold);
+                                astrolabe::home::serve(&notes, listener, hold, port);
                             }
                             Err(why) => fail(&why),
                         }

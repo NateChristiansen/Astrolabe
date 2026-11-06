@@ -883,6 +883,8 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> serde_json::Valu
             journal.push('\n');
         }
         journal.push_str(&flat);
+        // One line per effort across both, the later one.
+        journal = notes::tidy_journal(&journal);
     }
     json!({
         "efforts": rows, "today": day, "journal": journal,
