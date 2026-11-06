@@ -20,8 +20,11 @@ fn mark_path(dir: &Path, session: &str) -> PathBuf {
         .join(state_path(dir, session).file_name().unwrap_or_default())
 }
 
-/// Records that this session did work: in its state when bound, else in a mark file.
-pub fn mark(session: &str) {
+/// Records that this session did work: in its state when bound, else in a mark file. `plan`
+/// says the work was only the app's plan file; an unbound mark stays a plan's while every
+/// mark since the last turn end was one, so the turn-end message can say plan mode allows
+/// the fix instead of calling a plan an edit.
+pub fn mark(session: &str, plan: bool) {
     let Some(dir) = state_dir() else { return };
     match read_state(&dir, session) {
         Ok(Some(mut state)) => {
@@ -31,12 +34,45 @@ pub fn mark(session: &str) {
             }
         }
         _ => {
+            let path = mark_path(&dir, session);
+            let plan = plan && (!path.exists() || plan_only(&path));
             let _ = notes::write_text(
-                &mark_path(&dir, session),
-                &json!({"at_ms": notes::now_ms()}).to_string(),
+                &path,
+                &json!({"at_ms": notes::now_ms(), "plan": plan}).to_string(),
             );
         }
     }
+}
+
+/// Whether an unbound mark holds only plan-file writes. An unreadable mark, or one written
+/// before marks said so, counts as other work.
+fn plan_only(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|mark| mark["plan"] == true)
+}
+
+/// Whether an edit tool's input is a write to the app's plan file: Claude in plan mode,
+/// where the plan file is the only file it may change, or a file in a `.claude/plans`
+/// folder, where Claude keeps them. Codex keeps no plan file, so its edits never are.
+pub fn plan_edit(input: &Value) -> bool {
+    if input["permission_mode"] == "plan" {
+        return true;
+    }
+    let tool = &input["tool_input"];
+    let file = tool["file_path"]
+        .as_str()
+        .or(tool["notebook_path"].as_str());
+    let Some(parent) = file.and_then(|f| Path::new(f).parent()) else {
+        return false;
+    };
+    let mut names = parent.components().rev().map(|c| c.as_os_str());
+    let named = |name: Option<&std::ffi::OsStr>, want: &str| {
+        name.and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case(want))
+    };
+    named(names.next(), "plans") && named(names.next(), ".claude")
 }
 
 /// Whether a shell command commits: the one shell edit the guard can see cheaply.
@@ -111,7 +147,12 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         }
         Ok(None) => {
             let path = mark_path(&dir, session);
-            if path.exists() {
+            if path.exists() && plan_only(&path) {
+                let _ = std::fs::remove_file(&path);
+                // A plan is work the owner asked for, and the session may have held back
+                // from `effort new` because plan mode forbids changes: say it doesn't.
+                "Astrolabe: a plan was written in this session with no effort recorded. If the owner asked for this plan, run `astrolabe effort new` with its title and goal now: plan mode doesn't block it, because the hook writes only the owner's notes and the app runs a read of the result. When the owner approves the plan, save it on the effort with --plan-file. If it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+            } else if path.exists() {
                 let _ = std::fs::remove_file(&path);
                 "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work the owner asked for (a change or a plan), run `astrolabe effort new` with its title and goal, then save; if another agent dispatched you, run `astrolabe activate --effort <n> --worker` under its effort; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             } else {

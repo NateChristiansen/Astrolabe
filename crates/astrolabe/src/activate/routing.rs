@@ -193,7 +193,7 @@ pub fn gate(event: &str) {
                 (session, crate::guard::command_field(&input["tool_input"]))
                 && crate::nudge::commits(&crate::guard::command_text(command))
             {
-                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
+                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session, false));
             }
             // The plugin's denials go in its state folder, which every app reads the same.
             let dir = state_dir();
@@ -218,7 +218,8 @@ pub fn gate(event: &str) {
         "post-tool" => {
             let tool = input["tool_name"].as_str().unwrap_or_default();
             if let (Some(session), true) = (session, crate::nudge::EDIT_TOOLS.contains(&tool)) {
-                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session));
+                let plan = crate::nudge::plan_edit(&input);
+                let _ = std::panic::catch_unwind(|| crate::nudge::mark(session, plan));
             }
         }
         "stop" if !child => {
