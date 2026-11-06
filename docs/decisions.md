@@ -6,7 +6,7 @@ The plugin replaced the previous product on 2026-11-03. Its choices come first; 
 - Use the plugin's machine state folder for repo bindings and guard denials, so hooks and terminal commands read the same records across clients.
 - Use standard-library command routing for the small CLI, serde/serde_json for hook input and state, and Markdown files for effort records.
 - Keep only the gated hook entry point. The owner's machine switch decides whether hooks do anything; loading an effort supplies context and settings to that session.
-- Treat the command guard as an accident guard. Prove interception in each session with an allowed control and a denied probe; never claim that it covers file edits or other tools.
+- Treat the command guard as an accident guard. Prove interception with an allowed control and a denied probe when a session loads or creates an effort, not at every session start (2026-11-06): a session without one only reads and is told it holds no proven protection, and the probe cost every session about two tool calls. Never claim that the guard covers file edits or other tools.
 - Keep the existing privacy policy: no string-matching content scrubbers in this repo. Private content stays in the separate notes checkout; secrets rely on the forge's secret scanning and push protection.
 - File efforts and journal days on month shelves by creation date, over flat folders or folders by repo: the creation date never changes, so a file never moves and every link holds, and the board, not the folder, shows status.
 - Serve the owner's home as a page on localhost rather than a Markdown note or an Obsidian base: the owner saw a Markdown sample and found it too plain, and columns, colour and ticking ages need a page; Obsidian stays optional.

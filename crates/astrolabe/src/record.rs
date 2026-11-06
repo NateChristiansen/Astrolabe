@@ -360,7 +360,8 @@ fn new_inner(
         cwd,
         read_state(&dir, session).ok().flatten().as_ref(),
         shells,
-    )?;
+    )?
+    .mid_session();
     let mut head = format!(
         "Effort {number} created as {file_name}, status {status}, bound to this session and committed. Say your reading in one line (involvement {involvement} · authority {authority} · one piece or multi-step) and proceed.",
     );
