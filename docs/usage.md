@@ -48,9 +48,11 @@ Use a session in the project to work on its code. From your notes folder, you ca
 
 Open an agent session in the project and ask:
 
-> Add this project to Astrolabe as “my-app” and help me set up its project notes.
+> Add this project to Astrolabe as “my-app”.
 
-The agent can register the repo and help you capture its conventions, useful commands and other context in a project knowledge file. Future efforts in that project receive those notes.
+The agent registers the repo so Astrolabe can connect it with your efforts. Its project note is for context you supply, such as your goals or project-specific preferences.
+
+Keep conventions, build commands and implementation details in the repo's own files. Agents should check those files as they work; a project note can link to them.
 
 ## Update your preferences
 
@@ -58,7 +60,7 @@ Ask an agent in your notes folder to help update how you want it to work:
 
 > Keep review comments short, and explain why a change matters. Add that to my preferences.
 
-Your notes hold your working preferences, writing voice, project context and useful facts about your machines. You can review and edit them as Markdown too. New sessions receive your updated preferences; tell an existing session when you want it to use a change immediately.
+Your notes hold your working preferences, writing voice, project goals and useful facts about your machines. You can review and edit them as Markdown too. New sessions receive your updated preferences; tell an existing session when you want it to use a change immediately.
 
 ## Use another machine
 
