@@ -405,3 +405,28 @@ fn a_dirty_notes_checkout_still_pulls() {
     let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
     assert!(!status.contains("stash"), "{status}");
 }
+
+#[test]
+fn an_offline_pickup_still_begins_astrolabe_is_on_with_the_note_after() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    git(
+        &mac.notes,
+        &["remote", "set-url", "origin", "/nonexistent/notes.git"],
+    );
+    // The first line is what a pickup checks; the refresh note follows the opening paragraph.
+    let (out, ok) = mac.bash("s2", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    assert!(out.starts_with("Astrolabe is on"), "{out}");
+    let (opening, rest) = out.split_once("\n\n").unwrap();
+    assert!(!opening.contains("Notes not refreshed"), "{out}");
+    assert!(rest.starts_with("Notes not refreshed from origin"), "{out}");
+    // The same at a session's reload of its effort.
+    let start = mac.session_start("s2", "resume");
+    assert!(start.starts_with("Astrolabe is on"), "{start}");
+    assert!(
+        start.contains("\n\nNotes not refreshed from origin"),
+        "{start}"
+    );
+}
