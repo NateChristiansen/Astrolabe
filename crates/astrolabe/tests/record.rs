@@ -444,6 +444,45 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         !ok && out.contains("41 words") && out.contains("aim for 25"),
         "{out}"
     );
+    // The shapes sessions wrote with the rule alone are refused with what to write instead.
+    for (line, why) in [
+        (
+            "Landed the ink smoothing helper. Merged.",
+            "where the work stands",
+        ),
+        (
+            "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
+            "3 sentences",
+        ),
+        (
+            "Chat replies drift without voice.md at start.",
+            "names a file (voice.md)",
+        ),
+        (
+            "Replies lose the owner's voice without the voice note.",
+            "the owner",
+        ),
+        (
+            "Moved the hook script out of src/hooks/old and it fires again.",
+            "names a file",
+        ),
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(
+            !ok && out.contains(why) && out.contains("Nothing was written"),
+            "{line}: {out}"
+        );
+    }
+    // A name after a full stop, a decimal, a slash between words and a status word inside a
+    // sentence are not those shapes.
+    for line in [
+        "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
+        "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
+        "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(ok, "{line}: {out}");
+    }
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
     assert!(
         ok && out.contains("status done") && out.contains("journal line written"),
@@ -2304,4 +2343,35 @@ fn the_print_reads_untracked_files_under_a_root_ending_in_a_space_and_odd_byte_n
             assert_ne!(before, print(), "its content counts");
         }
     }
+}
+
+#[test]
+fn a_command_that_only_names_an_effort_command_runs_as_itself() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = mac.effort_text(1);
+    let journal = mac.journal_today();
+    // Quoted text, a heredoc body and a comment aren't commands the shell runs, so the hook
+    // leaves them to the shell and writes nothing.
+    for (cmd, printed) in [
+        (
+            "echo \"next: astrolabe effort save --status done\"",
+            "next: astrolabe effort save --status done",
+        ),
+        (
+            "cat <<'EOF'\nastrolabe journal \"x\"\nEOF",
+            "astrolabe journal \"x\"",
+        ),
+        ("echo ok # astrolabe effort save", "ok"),
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(ok && out.trim() == printed, "{cmd:?}: {out}");
+    }
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.journal_today(), journal);
+    // Chained after another command, it's still claimed and refused with the forms rather
+    // than run by whatever `astrolabe` is on PATH.
+    let (out, ok) = mac.bash("s1", "true && astrolabe effort save --status done");
+    assert!(!ok && out.contains("Accepted forms"), "{out}");
 }

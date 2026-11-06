@@ -54,14 +54,26 @@ Flags take a bare word or a double-quoted value with no $, backtick or inner dou
 
 impl EffortCommand {
     /// Whether a command string is one of these at all, so other commands pass untouched.
-    /// Any shape that names `astrolabe effort` or `astrolabe journal` is claimed, so one the
-    /// grammar rejects is refused with the forms rather than run by whatever `astrolabe` is
-    /// on PATH.
+    /// A command is claimed when `astrolabe` (bare or a path) starts one of its simple
+    /// commands and `effort` or `journal` follows, wherever that command sits in a chain, so
+    /// one the grammar rejects is refused with the forms rather than run by whatever
+    /// `astrolabe` is on PATH. Text the shell wouldn't run (quoted words, heredoc and
+    /// here-string bodies, comments) is never claimed, so a prompt or a commit message that
+    /// names the command passes through.
     pub fn is_effort_command(command: &str) -> bool {
-        let words: Vec<&str> = command.split_whitespace().collect();
-        words.windows(2).any(|w| {
-            (w[0] == "astrolabe" || w[0].ends_with("/astrolabe") || w[0].ends_with("\\astrolabe"))
-                && (w[1] == "effort" || w[1] == "journal")
+        simple_commands(command).iter().any(|words| {
+            // Assignments and the words that only introduce a command come before the program.
+            const LEAD: [&str; 10] = [
+                "!", "{", "if", "elif", "then", "while", "until", "do", "else", "time",
+            ];
+            let mut words = words
+                .iter()
+                .skip_while(|w| LEAD.contains(&w.as_str()) || is_assignment(w));
+            let program = words.next().map(String::as_str).unwrap_or_default();
+            let named = program == "astrolabe"
+                || program.ends_with("/astrolabe")
+                || program.ends_with("\\astrolabe");
+            named && matches!(words.next().map(String::as_str), Some("effort" | "journal"))
         })
     }
 
@@ -192,6 +204,176 @@ impl EffortCommand {
             .map(|b| format!("{b:02x}"))
             .collect()
     }
+}
+
+/// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// The words of each simple command in a command string, read roughly as a POSIX shell or
+/// PowerShell would: quotes group a word and hide what's inside them; a heredoc body, a
+/// PowerShell here-string body and a `#` comment are skipped; `|`, `;`, `&`, newline, `(`,
+/// `)` and backtick outside quotes end a command. It's only for deciding what to claim:
+/// `parse` reads the claimed command strictly.
+fn simple_commands(text: &str) -> Vec<Vec<String>> {
+    let text = text.replace("\r\n", "\n");
+    let chars: Vec<char> = text.chars().collect();
+    let mut commands = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    // A word that was quoted, even empty (`''`), is still a word.
+    let mut started = false;
+    // Heredoc delimiters opened on this line, skipped in order once it ends.
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut i = 0;
+
+    fn end_word(words: &mut Vec<String>, word: &mut String, started: &mut bool) {
+        if *started || !word.is_empty() {
+            words.push(std::mem::take(word));
+        }
+        *started = false;
+    }
+    fn end_command(commands: &mut Vec<Vec<String>>, words: &mut Vec<String>) {
+        if !words.is_empty() {
+            commands.push(std::mem::take(words));
+        }
+    }
+    // The index just past the line that starts at `from`, or the end.
+    fn next_line(chars: &[char], from: usize) -> usize {
+        chars[from..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(chars.len(), |p| from + p + 1)
+    }
+
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\'' => {
+                started = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    word.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            '"' => {
+                started = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    word.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            '\\' if chars.get(i + 1) == Some(&'\n') => i += 2,
+            '\\' => {
+                // Kept as written, so a Windows path keeps its separators.
+                word.push(c);
+                if let Some(&next) = chars.get(i + 1) {
+                    word.push(next);
+                }
+                i += 2;
+            }
+            '#' if !started && word.is_empty() => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '@' if !started
+                && word.is_empty()
+                && matches!(chars.get(i + 1), Some('\'' | '"'))
+                && chars[i + 2..]
+                    .iter()
+                    .take_while(|&&c| c != '\n')
+                    .all(|c| c.is_whitespace()) =>
+            {
+                // A PowerShell here-string: its body runs to a line starting with the
+                // closing quote and `@`, and it's one word.
+                let close = [chars[i + 1], '@'];
+                let mut at = next_line(&chars, i);
+                loop {
+                    if at >= chars.len() {
+                        i = at;
+                        break;
+                    }
+                    if chars[at..].starts_with(&close) {
+                        i = at + 2;
+                        break;
+                    }
+                    at = next_line(&chars, at);
+                }
+                started = true;
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
+                end_word(&mut words, &mut word, &mut started);
+                i += 2;
+                let strip_tabs = chars.get(i) == Some(&'-');
+                if strip_tabs {
+                    i += 1;
+                }
+                while i < chars.len() && (chars[i] == ' ' || chars[i] == '\t') {
+                    i += 1;
+                }
+                let mut delimiter = String::new();
+                while i < chars.len() && !" \t\n;|&<>()".contains(chars[i]) {
+                    if chars[i] != '\'' && chars[i] != '"' && chars[i] != '\\' {
+                        delimiter.push(chars[i]);
+                    }
+                    i += 1;
+                }
+                if !delimiter.is_empty() {
+                    heredocs.push((delimiter, strip_tabs));
+                }
+            }
+            '\n' => {
+                end_word(&mut words, &mut word, &mut started);
+                end_command(&mut commands, &mut words);
+                i += 1;
+                for (delimiter, strip_tabs) in std::mem::take(&mut heredocs) {
+                    while i < chars.len() {
+                        let end = next_line(&chars, i);
+                        let line: String = chars[i..end].iter().collect();
+                        i = end;
+                        let line = line.trim_end_matches('\n');
+                        let line = if strip_tabs {
+                            line.trim_start_matches('\t')
+                        } else {
+                            line
+                        };
+                        if line == delimiter {
+                            break;
+                        }
+                    }
+                }
+            }
+            '|' | ';' | '&' | '(' | ')' | '`' => {
+                end_word(&mut words, &mut word, &mut started);
+                end_command(&mut commands, &mut words);
+                i += 1;
+            }
+            c if c.is_whitespace() => {
+                end_word(&mut words, &mut word, &mut started);
+                i += 1;
+            }
+            _ => {
+                word.push(c);
+                i += 1;
+            }
+        }
+    }
+    end_word(&mut words, &mut word, &mut started);
+    end_command(&mut commands, &mut words);
+    commands
 }
 
 /// The command line and its body apart: a POSIX heredoc `<<'ASTROLABE' … ASTROLABE`, a
@@ -411,6 +593,46 @@ mod tests {
             "astrolabe activate --status"
         ));
         assert!(!EffortCommand::is_effort_command("git effort"));
+    }
+
+    #[test]
+    fn a_command_that_only_names_it_in_text_is_not_claimed() {
+        for text in [
+            "echo \"astrolabe effort save\"",
+            "echo 'run astrolabe journal \"x\" alone'",
+            "git commit -m \"Say astrolabe effort save in the guide\"",
+            "codex exec 'When done, run astrolabe effort save --status done' < /dev/null",
+            "cat > note.md <<'EOF'\nastrolabe effort save --status done\nEOF",
+            "cat <<-EOF\n\tastrolabe journal \"x\"\n\tEOF\necho done",
+            "grep -n \"astrolabe effort\" README.md # astrolabe effort save",
+            "# astrolabe effort save\nls",
+            "Write-Output @'\nastrolabe effort new --title t\n'@",
+            "rg 'astrolabe journal' docs | head",
+            "echo see \\\n  astrolabe effort save",
+        ] {
+            assert!(!EffortCommand::is_effort_command(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_chained_or_nested_command_is_still_claimed() {
+        for text in [
+            "cd notes && astrolabe effort save",
+            "ls; astrolabe journal \"x\"",
+            "true || astrolabe effort new --title t",
+            "echo $(astrolabe effort save)",
+            "echo `astrolabe effort save`",
+            "(astrolabe effort save)",
+            "ls\nastrolabe effort save",
+            "FOO=1 astrolabe effort save",
+            "if astrolabe journal \"x\"; then echo ok; fi",
+            "cat <<'EOF'\nbody\nEOF\nastrolabe effort save",
+            "@'\nGoal.\n'@ | astrolabe effort new --title t",
+            "& 'C:\\Users\\x\\.local\\bin\\astrolabe' effort save",
+            "astrolabe effort save --title \"unclosed",
+        ] {
+            assert!(EffortCommand::is_effort_command(text), "{text:?}");
+        }
     }
 
     #[test]
