@@ -457,3 +457,52 @@ fn nested_decision_details_survive_a_save() {
         "{saved}"
     );
 }
+
+#[test]
+fn an_abandoned_effort_keeps_its_reason_in_decisions() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = mac.effort_text(1);
+    // No reason, or a reason with no abandon to explain, is refused and writes nothing.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status abandoned");
+    assert!(!ok && out.contains("--reason"), "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done --reason \"stale\"",
+    );
+    assert!(
+        !ok && out.contains("--status abandoned") && out.contains("Nothing was written"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --reason \"stale\"");
+    assert!(!ok && out.contains("--status abandoned"), "{out}");
+    assert_eq!(mac.effort_text(1), before, "a refused save wrote nothing");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status abandoned --reason \"the brush rewrite replaced it\" <<'ASTROLABE'\nStopped.\n\nNothing left.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("status abandoned"), "{out}");
+    // Read back from the parsed note, so it's in the section a fresh session reads.
+    let file = astrolabe::effort::EffortFile::parse(&mac.effort_text(1)).unwrap();
+    assert_eq!(file.prop("status"), Some("abandoned"));
+    assert!(
+        file.decisions
+            .lines()
+            .any(|l| l.starts_with("- 20")
+                && l.ends_with(": abandoned: the brush rewrite replaced it")),
+        "{}",
+        file.decisions
+    );
+    // A later save replaces Current state but keeps the reason.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active <<'ASTROLABE'\nRevived.\n\nNext: n.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("Revived.") && text.contains(": abandoned: the brush rewrite replaced it"),
+        "{text}"
+    );
+}

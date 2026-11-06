@@ -347,6 +347,10 @@ fn save_inner(
     if let Some(j) = journal_text {
         check_journal(j)?;
     }
+    // The reason is stored with the status it explains, so one given alone would be dropped.
+    if reason.is_some() && status.as_deref() != Some("abandoned") {
+        return Err("--reason goes with --status abandoned, where it's recorded under Decisions; for any other choice use --decision \"chose X over Y: reason\". Nothing was written".to_owned());
+    }
     let (body, body_plan, body_marked) = split_plan(cmd.body.as_deref());
     if plan_file.is_some() && body_marked {
         return Err(
@@ -467,6 +471,11 @@ fn save_inner(
     }
     if let Some(d) = decision {
         file.add_decision(&format!("{day}: {d}"));
+    }
+    // Why the work stopped goes with the record of choices, dated, so it outlives later saves
+    // and a revival; Current state is replaced on every save.
+    if let Some(r) = reason {
+        file.add_decision(&format!("{day}: abandoned: {r}"));
     }
     if let Some(p) = &pieces {
         file.set_pieces(p);
