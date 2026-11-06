@@ -1,6 +1,10 @@
 # Decisions
 
+These are design records, not setup instructions. Start with [installation](../plugin/README.md) or [Using Astrolabe](usage.md); see [internals](internals.md) for current behavior.
+
 The plugin replaced the previous product on 2026-11-03. Its choices come first; the product's decisions follow, kept as records.
+
+## Current design
 
 - Keep the owner's notes in a separate private Git repo, read at run time, so sessions and machines share the same record without personal content in this repo.
 - Use the plugin's machine state folder for repo bindings and guard denials, so hooks and terminal commands read the same records across clients.
