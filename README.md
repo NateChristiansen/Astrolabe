@@ -39,4 +39,4 @@ See the [plugin instructions](plugin/README.md) for installation and the binary 
 - `notes sync`, `notes status`: publish notes or inspect their sync state.
 - `repo add <name> [<checkout>]`: register the notes checkout, record a target repo's remote in its note, or register a local repo without a remote.
 
-The guard is an accident guard, not a sandbox. It sees shell commands supplied to the hook, not file edits or other tools. Each session proves its own hook with an allowed control and a denied probe; `activate --status` reports whether that proof holds.
+The guard is an accident guard, not a sandbox. It sees shell commands supplied to the hook, not file edits or other tools. A session proves its own hook with an allowed control and a denied probe when it loads or creates an effort; until then it claims no protection. `activate --status` reports whether that proof holds.

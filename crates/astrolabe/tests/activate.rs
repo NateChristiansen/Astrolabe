@@ -75,7 +75,10 @@ impl Fixture {
         let notes = dir.0.join("notes");
         for (file, text) in [
             ("knowledge/owner.md", "OWNER-TEXT"),
-            ("knowledge/voice.md", "VOICE-TEXT"),
+            (
+                "knowledge/voice.md",
+                "VOICE-TEXT\n\n## Rules\n\n- VOICE-RULE\n\n## Chat\n\nVOICE-SAMPLE",
+            ),
             ("knowledge/machines.md", "MACHINE-TEXT"),
             ("knowledge/repos/demo.md", "REPO-DEMO-TEXT"),
             ("knowledge/repos/other.md", "REPO-OTHER-TEXT"),
@@ -276,12 +279,14 @@ fn off_for_the_machine_nothing_runs_and_on_needs_no_step() {
     let (text, ok) = f.run(&f.demo, &["activate", "--effort", "70"], "", &[]);
     assert!(!ok && text.contains("astrolabe on"), "{text}");
     assert!(f.machine("on").contains("on for this machine"));
-    // On: a fresh session in a repo with no active effort gets owner, voice and the guard.
+    // On: a fresh session in a repo with no active effort gets owner, voice's rules and the
+    // guard; voice's samples wait for a session that records.
     let text = f.session_start("s2", &f.other, &[]).unwrap();
     assert!(
-        text.contains("OWNER-TEXT") && text.contains("VOICE-TEXT") && text.contains("guard runs"),
+        text.contains("OWNER-TEXT") && text.contains("VOICE-RULE") && text.contains("guard runs"),
         "{text}"
     );
+    assert!(!text.contains("VOICE-SAMPLE"), "{text}");
     assert!(
         text.contains("No active effort names this repo (other)") && !text.contains("EFFORT-72"),
         "{text}"
@@ -354,7 +359,10 @@ fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
     let f = Fixture::new();
     let big = "word ".repeat(940);
     write(&f.dir.0.join("notes/knowledge/owner.md"), &big);
-    write(&f.dir.0.join("notes/knowledge/voice.md"), &big);
+    write(
+        &f.dir.0.join("notes/knowledge/voice.md"),
+        &format!("VOICE\n\n## Rules\n\n{big}"),
+    );
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(text.len() <= 9800, "{}", text.len());
     assert!(
@@ -367,18 +375,24 @@ fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
 }
 
 #[test]
-fn a_session_with_no_effort_proves_its_own_guard() {
+fn a_session_proves_its_guard_when_it_loads_an_effort() {
     let f = Fixture::new();
-    let text = f.session_start("s1", &f.other, &[]).unwrap();
-    let probe = f.probe(&text);
-    f.control(&text);
-    let status = || f.bash("s1", &f.other, "astrolabe activate --status").0;
+    // With no effort the session only reads: no probe, and no protection claimed.
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(!text.contains("astrolabe-guard-probe"), "{text}");
+    assert!(text.contains("claim no protection"), "{text}");
+    let status = || f.bash("s1", &f.demo, "astrolabe activate --status").0;
     assert!(
         status().contains("No effort is set") && status().contains("not proven yet"),
         "{}",
         status()
     );
-    let child = json!({"session_id": "s1", "agent_id": "a1", "cwd": f.other, "tool_name": "Bash", "tool_input": {"command": probe}});
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
+    let probe = f.probe(&text);
+    f.control(&text);
+    assert!(status().contains("not proven yet"), "{}", status());
+    let child = json!({"session_id": "s1", "agent_id": "a1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": probe}});
     assert!(f.hook(child).is_some());
     assert!(f.denies("s2", &probe));
     assert!(
@@ -593,13 +607,18 @@ fn switching_on_binds_the_hooks_session_and_only_that_one() {
         "authority: edit",
         "EFFORT-70",
         "NEXT-70",
-        "OWNER-TEXT",
         "VOICE-TEXT",
+        "VOICE-SAMPLE",
         "REPO-DEMO-TEXT",
         "MACHINE-TEXT",
-        "doesn't see file edits",
     ] {
         assert!(text.contains(wanted), "missing {wanted}: {text}");
+    }
+    for given in ["OWNER-TEXT", "doesn't see file edits"] {
+        assert!(
+            !text.contains(given),
+            "session start gave {given} already: {text}"
+        );
     }
     assert!(!text.contains("NOT-DELIVERED") && !text.contains("REPO-OTHER"));
     assert!(f.denies("s1", "pkill -f anything"));
@@ -1453,7 +1472,8 @@ fn a_bad_repo_name_is_refused_before_anything_is_written() {
 #[test]
 fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_shells() {
     let f = Fixture::new();
-    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
     // The folder is in the temp folder, named for this state folder, and already made.
     let probe = f.probe(&text);
     let marker = probe.split('\'').nth(1).unwrap();
@@ -1463,7 +1483,7 @@ fn markers_live_where_a_sandboxed_shell_can_write_and_session_start_names_the_sh
     let name = probe_dir.file_name().unwrap().to_string_lossy();
     assert!(name.starts_with("astrolabe-probe-"), "{probe}");
     assert!(probe_dir.is_dir(), "made, so the shell's touch works");
-    // Claude on Windows may use Bash or PowerShell, so session start offers both.
+    // Claude on Windows may use Bash or PowerShell, so loading an effort offers both.
     let both = text.contains("For PowerShell:") && text.contains("For the POSIX shell");
     assert_eq!(both, cfg!(windows), "{text}");
     f.control(&text);
@@ -1945,9 +1965,12 @@ fn hook_input_with_a_byte_order_mark_is_read_as_without() {
         text.contains("pick up 70") && text.contains("OWNER-TEXT"),
         "{text}"
     );
-    // Pre-command: the probe is denied by the real guard, for this session, so it proves it.
-    f.control(text);
-    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": f.probe(text)}});
+    // Pre-command: the probe from loading an effort is denied by the real guard, for this
+    // session, so it proves it.
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
+    f.control(&text);
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": f.probe(&text)}});
     let (out, ok) = f.run(
         &f.demo,
         &["hook", "pre-command", "--if-active"],

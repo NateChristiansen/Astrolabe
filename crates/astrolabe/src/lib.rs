@@ -9,5 +9,4 @@ pub mod nudge;
 pub mod record;
 pub mod registry;
 pub mod seed;
-pub mod voice;
 pub mod worktree;
