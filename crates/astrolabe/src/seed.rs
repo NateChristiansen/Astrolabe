@@ -41,17 +41,43 @@ pub fn init(folder: &Path) -> Result<Vec<String>, String> {
             .join(folder),
     };
     let fresh_clone = check_empty(&folder)?;
-    // Before anything is written: a commit with no name to sign it leaves a half-made folder.
-    let parent = folder
-        .parent()
-        .filter(|p| p.is_dir())
-        .unwrap_or(Path::new("."));
-    git(parent, &["var", "GIT_COMMITTER_IDENT"]).map_err(|_| {
-        "git has no name and email to commit with; set `git config --global user.name` and `user.email` first".to_owned()
-    })?;
+    let made_folder = !folder.exists();
     std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    // Any failure from here puts the folder back as it was, so a rerun isn't refused as
+    // someone's work.
+    if let Err(why) = seed(&folder, fresh_clone) {
+        undo(&folder, made_folder, fresh_clone);
+        return Err(why);
+    }
+    let checkout = PathBuf::from(crate::registry::native(&folder));
+    crate::activate::add_repo(AGENT, &checkout).map_err(|why| {
+        format!("the notes were made at {} but the plugin's record couldn't be written ({why}); fix that and run `astrolabe repo add agent {}`", checkout.display(), checkout.display())
+    })?;
+    let mut said = vec![
+        format!(
+            "Notes made at {} and registered on this machine as the notes checkout.",
+            checkout.display()
+        ),
+        format!(
+            "Effort 1, \"{TITLE}\", is active: open a session in that folder and say \"pick up 1\"."
+        ),
+    ];
+    if git(&folder, &["remote"]).is_ok_and(|r| r.trim().is_empty()) {
+        said.push("It has no remote, so nothing leaves this machine yet: add a private one with `git remote add origin <url>` and `git push -u origin HEAD`.".to_owned());
+    }
+    Ok(said)
+}
+
+/// The files and the first commit. The identity is checked inside the new repo, where
+/// `git commit` reads it: a parent folder's or a `gitdir:` include's config may differ.
+fn seed(folder: &Path, fresh_clone: bool) -> Result<(), String> {
     if !fresh_clone {
-        git(&folder, &["init", "-q"])?;
+        git(folder, &["init", "-q"])?;
+    }
+    for ident in ["GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+        git(folder, &["var", ident]).map_err(|_| {
+            "git has no name and email to commit with here; set `git config --global user.name` and `user.email`, then run this again".to_owned()
+        })?;
     }
     let (day, _) = crate::notes::local_day_time();
     let effort = format!(
@@ -75,25 +101,27 @@ pub fn init(folder: &Path) -> Result<Vec<String>, String> {
     for (file, text) in &files {
         crate::notes::write_text(&folder.join(file), text)?;
     }
-    git(&folder, &["add", "-A"])?;
-    git(&folder, &["commit", "-q", "-m", "Seed the notes"])?;
-    let checkout = PathBuf::from(crate::registry::native(&folder));
-    crate::activate::add_repo(AGENT, &checkout).map_err(|why| {
-        format!("the notes were made at {} but the plugin's record couldn't be written ({why}); fix that and run `astrolabe repo add agent {}`", checkout.display(), checkout.display())
-    })?;
-    let mut said = vec![
-        format!(
-            "Notes made at {} and registered on this machine as the notes checkout.",
-            checkout.display()
-        ),
-        format!(
-            "Effort 1, \"{TITLE}\", is active: open a session in that folder and say \"pick up 1\"."
-        ),
-    ];
-    if !fresh_clone {
-        said.push("It has no remote, so nothing leaves this machine yet: add a private one with `git remote add origin <url>` and `git push -u origin HEAD`.".to_owned());
+    git(folder, &["add", "-A"])?;
+    git(folder, &["commit", "-q", "-m", "Seed the notes"])?;
+    Ok(())
+}
+
+/// Back to what `check_empty` found: no folder, an empty one, or the clone's own `.git`.
+fn undo(folder: &Path, made_folder: bool, fresh_clone: bool) {
+    if made_folder {
+        let _ = std::fs::remove_dir_all(folder);
+        return;
     }
-    Ok(said)
+    for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        if fresh_clone && entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        let _ = match path.is_dir() {
+            true => std::fs::remove_dir_all(&path),
+            false => std::fs::remove_file(&path),
+        };
+    }
 }
 
 /// A folder that's missing or empty, or a fresh clone of an empty repo (true): anything else

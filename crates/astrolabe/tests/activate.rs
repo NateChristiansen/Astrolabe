@@ -530,6 +530,49 @@ fn notes_init_refuses_a_folder_with_work_in_it_and_takes_an_empty_clone() {
 }
 
 #[test]
+fn notes_init_with_no_git_identity_leaves_nothing_and_a_rerun_works() {
+    let dir = TempDir::new();
+    let state = dir.0.join("state");
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(args)
+            .current_dir(&dir.0)
+            .env(STATE_VAR, &state)
+            .env_remove("EMAIL")
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let nobody = [
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "user.useConfigOnly"),
+        ("GIT_CONFIG_VALUE_0", "true"),
+    ];
+    let notes = dir.0.join("notes");
+    let out = run(&["notes", "init", notes.to_str().unwrap()], &nobody);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no name and email"));
+    assert!(!notes.exists(), "a folder it made is taken away again");
+    // An empty folder made by hand stays, empty; a plain `git init` one has no remote.
+    std::fs::create_dir_all(&notes).unwrap();
+    git(&notes, &["init", "-q"]);
+    let out = run(&["notes", "init", notes.to_str().unwrap()], &nobody);
+    assert!(!out.status.success());
+    let left: Vec<_> = std::fs::read_dir(&notes)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(left, [".git"], "only what was there");
+    let out = run(&["notes", "init", notes.to_str().unwrap()], IDENT);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && said.contains("no remote"), "{said}");
+}
+
+#[test]
 fn the_machine_switch_reaches_running_sessions_at_once() {
     let f = Fixture::new();
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
