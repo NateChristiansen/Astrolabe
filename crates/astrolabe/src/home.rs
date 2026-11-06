@@ -2019,7 +2019,7 @@ mod tests {
         assert!(ideas.contains("Effort 5") && ideas.contains("Effort 6"));
         assert!(ideas.contains("no status"));
         assert!(
-            ideas.contains("class=\"card s-x&quot; onmouseover=&quot;alert(1)\"")
+            ideas.contains("class=\"card s-x&quot; onmouseover=&quot;alert(1) compact\"")
                 && !page.contains("onmouseover=\""),
             "a status stays inside its class: {ideas}"
         );
