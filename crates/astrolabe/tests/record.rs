@@ -444,6 +444,45 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         !ok && out.contains("41 words") && out.contains("aim for 25"),
         "{out}"
     );
+    // The shapes sessions wrote with the rule alone are refused with what to write instead.
+    for (line, why) in [
+        (
+            "Landed the ink smoothing helper. Merged.",
+            "where the work stands",
+        ),
+        (
+            "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
+            "3 sentences",
+        ),
+        (
+            "Chat replies drift without voice.md at start.",
+            "names a file (voice.md)",
+        ),
+        (
+            "Replies lose the owner's voice without the voice note.",
+            "the owner",
+        ),
+        (
+            "Moved the hook script out of src/hooks/old and it fires again.",
+            "names a file",
+        ),
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(
+            !ok && out.contains(why) && out.contains("Nothing was written"),
+            "{line}: {out}"
+        );
+    }
+    // A name after a full stop, a decimal, a slash between words and a status word inside a
+    // sentence are not those shapes.
+    for line in [
+        "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
+        "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
+        "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(ok, "{line}: {out}");
+    }
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
     assert!(
         ok && out.contains("status done") && out.contains("journal line written"),
@@ -2152,4 +2191,187 @@ fn the_board_is_served_fresh_on_localhost() {
         exited.is_some_and(|s| s.success()),
         "the server stops when idle: {exited:?}"
     );
+}
+
+#[test]
+fn a_save_commits_only_the_notes_it_wrote_and_leaves_the_owners_staging_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The owner has a draft staged in the notes checkout, unrelated to the save.
+    write(&mac.notes.join("drafts/post.md"), "half a post");
+    git(&mac.notes, &["add", "drafts/post.md"]);
+    // And a hand-edited journal line, which saves deliberately carry along.
+    let day = astrolabe::notes::journal_file("2026-01-02");
+    write(&mac.notes.join(&day), "- by hand\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"kept apart\"");
+    assert!(ok, "{out}");
+    let files = git(&mac.notes, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(!files.contains("drafts/post.md"), "{files}");
+    assert!(
+        files.contains(&day),
+        "hand journal edits still ride along: {files}"
+    );
+    let staged = git(&mac.notes, &["diff", "--cached", "--name-only"]);
+    assert_eq!(staged.trim(), "drafts/post.md", "still staged");
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("drafts/post.md")).unwrap(),
+        "half a post"
+    );
+}
+
+#[test]
+fn a_shell_edit_to_an_untracked_file_moves_the_print_with_spaces_and_from_a_subfolder() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.stop("s1", false, false).is_none(), "baseline at create");
+    // A file with a space in its name, edited twice by shell, no edit tool marking it.
+    let (_, ok) = mac.bash("s1", "printf a > 'b c.txt'");
+    assert!(ok);
+    assert!(mac.stop("s1", false, false).is_some(), "new file");
+    let (_, ok) = mac.bash("s1", "printf aa > 'b c.txt'");
+    assert!(ok);
+    assert!(
+        mac.stop("s1", false, false).is_some(),
+        "second edit, same name"
+    );
+    // From a subfolder: paths come from the repo root, not the session's folder.
+    let sub = mac.demo.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let stop_in = |dir: &Path| {
+        mac.hook_json(
+            "stop",
+            json!({"session_id": "s1", "cwd": dir, "stop_hook_active": false, "last_assistant_message": "done"}),
+        )
+    };
+    write(&sub.join("x.txt"), "x");
+    assert!(stop_in(&sub).is_some(), "new file in a subfolder");
+    write(&sub.join("x.txt"), "xx");
+    assert!(stop_in(&sub).is_some(), "second edit from the subfolder");
+    assert!(stop_in(&sub).is_none(), "said once per change");
+}
+
+#[test]
+fn a_pending_write_that_cant_be_read_is_reported_kept_and_blocks_new_writes() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let bad = mac.state().join("ops/broken.json");
+    write(&bad, "{\"key\": \"broken\", \"files\": [");
+    let (out, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(!out.contains("nothing pending"), "{out}");
+    assert!(out.contains("broken"), "names the record: {out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"over a broken op\"",
+    );
+    assert!(!ok && out.contains("broken"), "{out}");
+    let (out, ok) = mac.sync();
+    assert!(!ok && out.contains("broken"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&bad).unwrap(),
+        "{\"key\": \"broken\", \"files\": [",
+        "kept for repair"
+    );
+    // Once it's repaired (here, moved aside by hand), writes go through again.
+    std::fs::remove_file(&bad).unwrap();
+    assert!(
+        mac.bash("s1", "astrolabe effort save --decision \"repaired\"")
+            .1
+    );
+    let (out, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(!out.contains("broken"), "{out}");
+}
+
+#[test]
+fn activation_reads_the_same_current_state_a_save_does() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let rel = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(n, _)| *n == 1)
+        .unwrap()
+        .1;
+    let text = mac.effort_text(1);
+    let (head, rest) = text.split_once("\n## Current state\n").unwrap();
+    let edited = format!(
+        "{head}\n\nHow a note looks:\n\n```md\n## Current state\nFENCED EXAMPLE\n```\n\n## Current state\n{rest}"
+    );
+    write(&mac.notes.join(&rel), &edited);
+    git(&mac.notes, &["commit", "-qam", "hand edit"]);
+    let (out, ok) = mac.bash("s2", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    let shown = out.split(", Current state\n").nth(1).unwrap_or_default();
+    assert!(shown.contains("smooth the ink"), "{out}");
+    assert!(!shown.contains("FENCED EXAMPLE"), "{out}");
+    // A save from that delivery agrees, and keeps the example as text.
+    let (out, ok) = mac.bash("s2", "astrolabe effort save --decision \"agreed\"");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("smooth the ink"));
+}
+
+#[test]
+fn the_print_reads_untracked_files_under_a_root_ending_in_a_space_and_odd_byte_names() {
+    let dir = TempDir::new();
+    // Windows drops a trailing space from a folder name, so only Unix can have such a root.
+    let repo = dir.0.join(if cfg!(unix) { "proj " } else { "proj" });
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let print = || {
+        astrolabe::notes::RepoFacts::read(&repo)
+            .unwrap()
+            .fingerprint
+    };
+    write(&repo.join("f.txt"), "a");
+    let first = print();
+    write(&repo.join("f.txt"), "b");
+    assert_ne!(first, print(), "content read from the real root");
+    // Names that aren't UTF-8, where the filesystem allows them (not APFS).
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let name = |b: &[u8]| repo.join(std::ffi::OsStr::from_bytes(b));
+        if std::fs::write(name(b"n-\xff"), "x").is_ok() {
+            let before = print();
+            std::fs::rename(name(b"n-\xff"), name(b"n-\xfe")).unwrap();
+            assert_ne!(before, print(), "two names, two prints");
+            let before = print();
+            std::fs::write(name(b"n-\xfe"), "xy").unwrap();
+            assert_ne!(before, print(), "its content counts");
+        }
+    }
+}
+
+#[test]
+fn a_command_that_only_names_an_effort_command_runs_as_itself() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = mac.effort_text(1);
+    let journal = mac.journal_today();
+    // Quoted text, a heredoc body and a comment aren't commands the shell runs, so the hook
+    // leaves them to the shell and writes nothing.
+    for (cmd, printed) in [
+        (
+            "echo \"next: astrolabe effort save --status done\"",
+            "next: astrolabe effort save --status done",
+        ),
+        (
+            "cat <<'EOF'\nastrolabe journal \"x\"\nEOF",
+            "astrolabe journal \"x\"",
+        ),
+        ("echo ok # astrolabe effort save", "ok"),
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(ok && out.trim() == printed, "{cmd:?}: {out}");
+    }
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.journal_today(), journal);
+    // Chained after another command, it's still claimed and refused with the forms rather
+    // than run by whatever `astrolabe` is on PATH.
+    let (out, ok) = mac.bash("s1", "true && astrolabe effort save --status done");
+    assert!(!ok && out.contains("Accepted forms"), "{out}");
 }

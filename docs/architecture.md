@@ -4,9 +4,9 @@ This guide explains how the plugin, notes and local board work together. For nor
 
 ## Machine and session state
 
-The installed program's `on` and `off` commands control one machine switch. When off, plugin hooks do nothing. When on, new sessions receive owner and voice notes, recording instructions, and a suggestion of the current repo's active efforts. Shell commands are guarded even before an effort is loaded.
+The installed program's `on` and `off` commands control one machine switch. When off, plugin hooks do nothing. When on, new sessions receive the owner note, the Rules section of the voice note, recording instructions, and a suggestion of the current repo's active efforts. Shell commands are guarded even before an effort is loaded.
 
-Loading an effort adds its settings and current state, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
+Loading an effort adds its settings and current state, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
 
 Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive context. Workers leave notes reporting to the agent that dispatched them.
 
@@ -26,7 +26,7 @@ The hook performs the write before the app runs that read. This lets effort comm
 
 For a change, plan or investigation that needs a lasting record, the agent runs `astrolabe effort new` with a title and a goal. The program creates and commits the note, assigns its number and binds it to the session. New work defaults to `check in at plan` involvement and `edit` authority unless the owner specifies otherwise.
 
-The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning.
+The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
 
 Recording commands also run through the pre-command hook. The hook can write to the separate notes checkout even when the app's tool sandbox cannot. Without interception, the executable reports an already-recorded result, an unfinished write, or that nothing was recorded; running it directly doesn't create or save an effort.
 
@@ -34,7 +34,7 @@ The Stop hook compares the repo's HEAD, diff and untracked contents with the las
 
 ## Synchronization and recovery
 
-Notes writes share an advisory lock on each machine. Each complete write is first stored as an intent in the local state folder, then applied so a retry won't commit the same operation twice. Interrupted writes can be finished from those intents.
+Notes writes share an advisory lock on each machine. Each complete write is first stored as an intent in the local state folder, then applied so a retry won't commit the same operation twice. Interrupted writes can be finished from those intents. An unreadable intent is preserved and reported by `notes status`; new writes wait until it is repaired or moved aside.
 
 Before writing, Astrolabe attempts to pull notes with a bounded wait. A pull timeout backs off further attempts for five minutes. A save is refused if the effort changed since the session received it; the reply includes the current text so the agent can reconcile its next save.
 
@@ -44,13 +44,13 @@ Pushes run in the background after state changes, periodically during activity, 
 
 The journal uses Git's union merge driver. Hidden entry metadata identifies the effort and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate effort entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 
-When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Manual edits and repo registration changes are the owner's to commit.
+When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/` and `journal/`, plus `.gitattributes`, including hand edits there. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
 
 ## Files and local state
 
 Personal content lives in the notes checkout and is read at runtime:
 
-- `knowledge/owner.md` and `knowledge/voice.md`: preferences delivered to new sessions.
+- `knowledge/owner.md` and `knowledge/voice.md`: preferences and writing style. New sessions receive the owner note and voice rules; effort activation adds the full voice note.
 - `knowledge/machines.md` and `knowledge/repos/<name>.md`: context delivered with an effort.
 - `efforts/<year>/<month>/NNNN-slug.md`: effort records, stored by creation date so status changes don't move files or break links.
 - `journal/<year>/<month>/<day>.md`: the owner's history, written by agents rather than generated from tool activity.
@@ -78,7 +78,7 @@ Appearance settings are saved per machine; a browser's own choice takes preceden
 
 The pre-command hook checks commands submitted through the app's shell tools. It denies machine-wide kills, force pushes, hard resets, posting through `gh`, and recursive deletes outside the worktree.
 
-Each session must prove interception with both an allowed control and a denied probe. `astrolabe activate --status` checks that the control ran, the probe was denied and its marker wasn't created. A subagent's proof doesn't prove the parent session's hook.
+Loading or creating an effort asks the session to prove interception with both an allowed control and a denied probe. A new session has no proven protection until that check succeeds. `astrolabe activate --status` checks that the control ran, the probe was denied and its marker wasn't created. A subagent's proof doesn't prove the parent session's hook.
 
 The guard doesn't see file edits, MCP calls, input written into an existing shell, or commands an app runs without invoking the hook. It's an accident guard, not a security boundary.
 
