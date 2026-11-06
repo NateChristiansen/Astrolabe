@@ -75,7 +75,7 @@ pub(super) fn act(
                     }
                     let mut text = activation.text();
                     if let Some(note) = refreshed {
-                        text = format!("{note}\n\n{text}");
+                        text = after_first_paragraph(&text, &note);
                     }
                     (text, true, Change::Write(Box::new(activation.state)), failed)
                 }
@@ -83,6 +83,15 @@ pub(super) fn act(
             }
         }
         _ => ("Usage: astrolabe activate <--effort <n> [--worker]|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
+    }
+}
+
+/// A refresh note after the opening paragraph, never before it: that paragraph begins
+/// "Astrolabe is on", the line a pickup checks before trusting the rest.
+fn after_first_paragraph(text: &str, note: &str) -> String {
+    match text.split_once("\n\n") {
+        Some((first, rest)) => format!("{first}\n\n{note}\n\n{rest}"),
+        None => format!("{text}\n\n{note}"),
     }
 }
 
@@ -486,7 +495,7 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                             &Change::Write(Box::new(activation.state.clone())),
                         ) {
                             Ok(()) => match refreshed {
-                                Some(note) => format!("{note}\n\n{}", activation.fitted()),
+                                Some(note) => after_first_paragraph(&activation.fitted(), &note),
                                 None => activation.fitted(),
                             },
                             Err(why) => format!(
