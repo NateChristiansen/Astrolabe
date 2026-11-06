@@ -74,12 +74,18 @@ pub(super) fn note_page(
     facts.push(format!("<dt>file</dt><dd><code>{}</code></dd>", esc(rel)));
     let facts = format!("<div class=\"facts\"><dl>{}</dl></div>", facts.join(""));
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    let title = body
+    // An effort's file keeps its padded number ("0043 …"); its page reads "43 …".
+    let effort = rows.efforts.iter().any(|e| e.file.as_deref() == Some(rel));
+    let raw_title = body
         .lines()
         .find_map(|l| l.strip_prefix("# "))
         .unwrap_or(name.trim_end_matches(".md"))
-        .trim()
-        .to_owned();
+        .trim();
+    let title = if effort {
+        unpadded(raw_title)
+    } else {
+        raw_title.to_owned()
+    };
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -88,6 +94,7 @@ pub(super) fn note_page(
     let mut events: Vec<Event> = Parser::new_ext(&body, options).collect();
     // Headings get ids, and the second and third levels make the outline.
     let mut outline = Vec::new();
+    let mut trimmed = false;
     let mut i = 0;
     while i < events.len() {
         if let Event::Start(Tag::Heading { level, .. }) = &events[i] {
@@ -109,6 +116,13 @@ pub(super) fn note_page(
             match level {
                 HeadingLevel::H2 => outline.push((2, heading, id)),
                 HeadingLevel::H3 => outline.push((3, heading, id)),
+                // The id above keeps the padded number, so links to it still land.
+                HeadingLevel::H1 if effort && !trimmed => {
+                    trimmed = true;
+                    if let Some(Event::Text(t)) = events.get_mut(i + 1) {
+                        *t = unpadded(t).into();
+                    }
+                }
                 _ => {}
             }
         }
@@ -230,6 +244,18 @@ pub(super) fn strip_comments(text: &str) -> String {
     out
 }
 
+/// A title whose first word is a number, with that number's leading zeros dropped:
+/// "0043 Studio fixes" reads "43 Studio fixes". Any other title is returned as it is.
+pub(super) fn unpadded(title: &str) -> String {
+    let digits = title.len() - title.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let rest = &title[digits..];
+    if digits == 0 || !(rest.is_empty() || rest.starts_with(' ')) {
+        return title.to_owned();
+    }
+    let number = title[..digits].trim_start_matches('0');
+    format!("{}{rest}", if number.is_empty() { "0" } else { number })
+}
+
 /// A heading's anchor: lowercase words joined by hyphens.
 pub(super) fn heading_id(text: &str) -> String {
     let mut id = String::new();
@@ -341,5 +367,24 @@ pub(super) fn plain_url(url: &str) -> bool {
             matches!(scheme.as_str(), "http" | "https" | "mailto")
         }
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unpadded;
+
+    #[test]
+    fn an_effort_title_loses_its_padding_and_nothing_else() {
+        assert_eq!(
+            unpadded("0043 Studio board feedback fixes"),
+            "43 Studio board feedback fixes"
+        );
+        assert_eq!(unpadded("0000 Zero"), "0 Zero");
+        assert_eq!(unpadded("0050"), "50");
+        assert_eq!(unpadded("43 Already short"), "43 Already short");
+        assert_eq!(unpadded("2026-11-01-a"), "2026-11-01-a");
+        assert_eq!(unpadded("007bond"), "007bond");
+        assert_eq!(unpadded("Notes"), "Notes");
     }
 }

@@ -271,6 +271,12 @@ fn the_board_is_served_fresh_on_localhost() {
         "a served page follows the stream instead of reloading: {page}"
     );
     assert!(column(&page, "active").contains("Smooth ink"));
+    // The card's title leads with its number, shown rather than hidden.
+    assert!(
+        page.contains("<span class=\"num\">1</span> Smooth ink")
+            && !page.contains(".card h3 .num{display:none}"),
+        "{page}"
+    );
     // The card links through the server, since a browser refuses file links from a page.
     assert!(page.contains("href=\"/efforts/"), "{page}");
     // The card's own link, past the style sheet and the tree.
@@ -288,7 +294,9 @@ fn the_board_is_served_fresh_on_localhost() {
         "{note}"
     );
     assert!(
-        note.contains("<h1 id=\"0001-smooth-ink\">0001 Smooth ink</h1>"),
+        // The page drops the file's padding; the anchor keeps it so old links still land.
+        note.contains("<h1 id=\"0001-smooth-ink\">1 Smooth ink</h1>")
+            && note.contains("<title>1 Smooth ink"),
         "{note}"
     );
     // A page holding the stream hears of a save within a few seconds; meanwhile the stream
