@@ -2276,7 +2276,8 @@ fn activation_reads_the_same_current_state_a_save_does() {
 #[test]
 fn the_print_reads_untracked_files_under_a_root_ending_in_a_space_and_odd_byte_names() {
     let dir = TempDir::new();
-    let repo = dir.0.join("proj ");
+    // Windows drops a trailing space from a folder name, so only Unix can have such a root.
+    let repo = dir.0.join(if cfg!(unix) { "proj " } else { "proj" });
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
