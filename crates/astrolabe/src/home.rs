@@ -1580,7 +1580,8 @@ fn card_html(card: &Card, root: &Path, now_ms: i64, links: Links, compact: bool)
         }
     };
     format!(
-        "<article class=\"card s-{state}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{pieces}{next}</article>\n",
+        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span>{}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{pieces}{next}</article>\n",
+        esc(state),
         if compact { " compact" } else { "" },
         card.row["number"].as_u64().unwrap_or(0),
         esc(&href),
@@ -1616,7 +1617,7 @@ fn done_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> String {
     };
     format!(
         "<li class=\"{}\" data-n=\"{}\"><svg class=\"tick\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12l5 5L20 7\"/></svg><a href=\"{}\"><span class=\"num\">{}</span><span class=\"t\">{}</span></a>{repo}{age}</li>\n",
-        card.status(),
+        esc(card.status()),
         card.row["number"].as_u64().unwrap_or(0),
         esc(&href),
         card.row["number"].as_u64().unwrap_or(0),
@@ -1990,6 +1991,7 @@ mod tests {
                 row(7, "done", json!({"updated": "2026-11-02T09:00-07:00"})),
                 row(8, "done", json!({"updated": "2026-10-10T09:00-07:00", "initiative": "[[finished]]"})),
                 row(9, "active", json!({"priority": "high", "pieces": {"done": 2, "total": 5}, "initiative": "[[agent-tooling]]", "next": "**Next:** Measure it. Then decide."})),
+                row(10, "x\" onmouseover=\"alert(1)", json!({})),
             ],
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
@@ -2016,6 +2018,11 @@ mod tests {
         let ideas = section(&page, "ideas");
         assert!(ideas.contains("Effort 5") && ideas.contains("Effort 6"));
         assert!(ideas.contains("no status"));
+        assert!(
+            ideas.contains("class=\"card s-x&quot; onmouseover=&quot;alert(1)\"")
+                && !page.contains("onmouseover=\""),
+            "a status stays inside its class: {ideas}"
+        );
         let done = section(&page, "done");
         assert!(done.contains("Effort 7"));
         assert!(
