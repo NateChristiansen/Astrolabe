@@ -444,6 +444,45 @@ fn save_replaces_current_state_journals_states_and_refuses_what_it_should() {
         !ok && out.contains("41 words") && out.contains("aim for 25"),
         "{out}"
     );
+    // The shapes sessions wrote with the rule alone are refused with what to write instead.
+    for (line, why) in [
+        (
+            "Landed the ink smoothing helper. Merged.",
+            "where the work stands",
+        ),
+        (
+            "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
+            "3 sentences",
+        ),
+        (
+            "Chat replies drift without voice.md at start.",
+            "names a file (voice.md)",
+        ),
+        (
+            "Replies lose the owner's voice without the voice note.",
+            "the owner",
+        ),
+        (
+            "Moved the hook script out of src/hooks/old and it fires again.",
+            "names a file",
+        ),
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(
+            !ok && out.contains(why) && out.contains("Nothing was written"),
+            "{line}: {out}"
+        );
+    }
+    // A name after a full stop, a decimal, a slash between words and a status word inside a
+    // sentence are not those shapes.
+    for line in [
+        "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
+        "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
+        "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
+    ] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
+        assert!(ok, "{line}: {out}");
+    }
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status done --decision \"X over Y: cheaper\" --journal \"Started smoothing the ink; the first frame still jumps.\" <<'ASTROLABE'\nDone: merged the ink MR.\nASTROLABE\n");
     assert!(
         ok && out.contains("status done") && out.contains("journal line written"),
