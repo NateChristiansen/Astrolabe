@@ -50,7 +50,7 @@ Combine `home` options as needed. For example, on macOS/Linux:
 "$HOME/.local/bin/astrolabe-trial" home --open --theme dark --palette iris
 ```
 
-A browser's saved appearance choice takes precedence in that browser. See [sharing notes between machines](usage.md#share-notes-between-machines) for the sync workflow.
+A browser's saved appearance choice takes precedence in that browser. See [using another machine](usage.md#use-another-machine) for continuing work elsewhere.
 
 ## Work in an agent session
 

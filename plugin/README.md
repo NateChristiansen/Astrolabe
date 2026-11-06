@@ -86,7 +86,7 @@ Windows:
 
 This creates and registers your notes, makes their first commit, and adds an effort called **Fill in your notes**. An effort is a note about a piece of work: where it stands, what was decided, and what comes next.
 
-Your notes stay on this machine until you [connect a private remote](../docs/usage.md#share-notes-between-machines). You can do that after your first session. A fresh clone of an empty private Git repo also works as the folder for `notes init`.
+Your notes stay on this machine until you [connect a private remote](../docs/usage.md#use-another-machine). You can do that after your first session. A fresh clone of an empty private Git repo also works as the folder for `notes init`.
 
 ### Existing notes
 

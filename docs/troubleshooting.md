@@ -26,7 +26,7 @@ Check the property named in the error at the top of the effort note. Its repo mu
 
 ## Notes haven't reached another machine
 
-Use the [notes sync checks](usage.md#share-notes-between-machines). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
+Ask the agent to check whether your notes have synced, or use the [notes sync commands](commands.md#board-and-notes). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
 
 
 [Installation](../plugin/README.md) · [Using Astrolabe](usage.md) · [Command reference](commands.md)
