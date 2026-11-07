@@ -715,3 +715,32 @@ fn an_effort_with_no_issue_says_nothing_about_issues() {
     let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
     assert!(ok && !out.contains("issue"), "{out}");
 }
+
+#[test]
+fn the_done_report_never_reads_another_repo_s_history() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue 7 <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    // The notes checkout's own main says Fixes #7; that's not the project's main.
+    git(
+        &mac.notes,
+        &["commit", "-q", "--allow-empty", "-m", "Fixes #7"],
+    );
+    git(
+        &mac.notes,
+        &["update-ref", "refs/remotes/origin/HEAD", "HEAD"],
+    );
+    let (out, ok) = mac.bash_from(
+        "s1",
+        &mac.notes,
+        "astrolabe effort save --status done",
+        None,
+    );
+    assert!(ok, "{out}");
+    assert!(!out.contains("has a commit that closes #7"), "{out}");
+    assert!(out.contains("#7"), "{out}");
+}

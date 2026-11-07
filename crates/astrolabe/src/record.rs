@@ -323,7 +323,7 @@ fn save_inner(
     provider: &str,
     cwd: &Path,
 ) -> Result<String, String> {
-    let (_registry, notes) = notes_here()?;
+    let (registry, notes) = notes_here()?;
     let dir = notes.state.clone();
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
@@ -603,7 +603,20 @@ fn save_inner(
         && before != "done"
         && let Some(issue) = file.prop("issue").filter(|i| !i.is_empty())
     {
-        head += &format!(" {}", issue_report(cwd, issue));
+        // Main of the effort's own repo: from the notes checkout, its registered checkout;
+        // elsewhere, this folder only when it's that repo, never another's history.
+        let repos: Vec<&str> = (file.prop("repo").unwrap_or("").split(','))
+            .map(str::trim)
+            .collect();
+        let checkout = if activate::in_notes(cwd) {
+            repos.first().and_then(|r| registry.checkout(r))
+        } else {
+            repo_of(&notes, &registry, cwd, None)
+                .ok()
+                .filter(|r| repos.contains(&r.as_str()))
+                .map(|_| cwd.to_path_buf())
+        };
+        head += &format!(" {}", issue_report(checkout.as_deref(), issue));
     }
     crate::application::finish(&notes, key, &head);
     Ok(head)
@@ -612,7 +625,24 @@ fn save_inner(
 /// Whether main here already holds a commit that closes each issue the effort answers, read
 /// from the last fetch: an effort can be done while the issue it answers stays open, because
 /// the issue number never reached the landed commit (2026-11-07: five fixed issues sat open).
-fn issue_report(cwd: &Path, issue: &str) -> String {
+fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
+    // Split on any comma: a hand-edited `5,6` is two issues, as the session context reads it.
+    let issues: Vec<&str> = (issue.split(','))
+        .map(|n| n.trim().trim_start_matches('#'))
+        .filter(|n| !n.is_empty())
+        .collect();
+    let tag = |ns: &[&str]| {
+        ns.iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some(cwd) = checkout else {
+        return format!(
+            "This effort answers issue {}, but this folder isn't a checkout of its repo, so nothing checked whether main closes it; make sure GitHub does.",
+            tag(&issues)
+        );
+    };
     let os = |s: &str| std::ffi::OsString::from(s);
     let main = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
         .into_iter()
@@ -627,19 +657,13 @@ fn issue_report(cwd: &Path, issue: &str) -> String {
         main.map(|r| crate::worktree::git(cwd, &[&os("log"), &os("--format=%B%x00"), &os(r)]));
     let Some(Ok(log)) = log else {
         return format!(
-            "This effort answers issue {issue}, but there's no origin main here to check it against; make sure GitHub closes it."
+            "This effort answers issue {}, but there's no origin main here to check it against; make sure GitHub closes it.",
+            tag(&issues)
         );
     };
     let messages: Vec<&str> = log.split('\0').collect();
-    let (closed, open): (Vec<&str>, Vec<&str>) = issue
-        .split(", ")
-        .partition(|n| messages.iter().any(|m| closes(m, n)));
-    let tag = |ns: &[&str]| {
-        ns.iter()
-            .map(|n| format!("#{n}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let (closed, open): (Vec<&str>, Vec<&str>) =
+        (issues.iter().copied()).partition(|n| messages.iter().any(|m| closes(m, n)));
     let mut said = Vec::new();
     if !closed.is_empty() {
         said.push(format!(
