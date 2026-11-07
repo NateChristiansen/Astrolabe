@@ -638,6 +638,10 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
         worker_note,
         "a refused save wrote nothing"
     );
+    write(
+        &mac.notes.join("initiatives/ink.md"),
+        "---\nstatus: ready\nrepo: demo\n---\n# Ink\n",
+    );
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save --effort 1 --status active --decision \"ink over paint: cheaper\" --initiative \"Ink\"",
@@ -650,7 +654,7 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
     let text = mac.effort_text(1);
     for line in [
         "status: active",
-        "initiative: Ink",
+        "initiative: ink",
         ": ink over paint: cheaper",
         "saved_by: mac · claude",
         "session: s1",
@@ -676,7 +680,7 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
     assert_eq!(mac.log().lines().next(), Some("0001: done"));
     let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"Ink\"");
     assert!(ok, "{out}");
-    assert!(mac.effort_text(2).contains("initiative: Ink"));
+    assert!(mac.effort_text(2).contains("initiative: ink"));
     let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"\"");
     assert!(ok, "{out}");
     assert!(mac.effort_text(2).contains("initiative: \"\""));

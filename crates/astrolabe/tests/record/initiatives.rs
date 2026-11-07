@@ -425,6 +425,7 @@ fn invalid_or_conflicting_joins_write_neither_page_nor_members() {
         assert!(!mac.notes.join("initiatives/join-project.md").exists());
         assert_eq!(mac.log().lines().count(), before);
     }
+    write(&mac.notes.join("initiatives/other.md"), "# Other\n");
     let (out, ok) = mac.bash("lead", "astrolabe effort save --initiative other");
     assert!(ok, "{out}");
     let command = "astrolabe initiative new --title \"Join project\" <<'ASTROLABE'\nPurpose.\n\n## Efforts\neffort 1\nASTROLABE\n";
@@ -696,7 +697,7 @@ fn an_initiative_binding_refuses_a_repository_journal_line() {
 }
 
 #[test]
-fn explicit_membership_writes_canonicalize_existing_pages_and_keep_unknown_names() {
+fn explicit_membership_requires_a_page_but_omitted_membership_preserves_legacy_values() {
     let world = World::new();
     let mac = world.machine("mac");
     legacy_page(&mac);
@@ -705,7 +706,6 @@ fn explicit_membership_writes_canonicalize_existing_pages_and_keep_unknown_names
         "Smooth lines",
         "[[smooth-lines]]",
         "[[Smooth lines]]",
-        "No page yet",
     ]
     .iter()
     .enumerate()
@@ -715,39 +715,43 @@ fn explicit_membership_writes_canonicalize_existing_pages_and_keep_unknown_names
         );
         let (out, ok) = mac.bash("worker", &cmd);
         assert!(ok, "{out}");
-        let file = astrolabe::effort::EffortFile::parse(&mac.effort_text(i as u32 + 1)).unwrap();
-        assert_eq!(
-            file.prop("initiative"),
-            Some(if i < 4 { "smooth-lines" } else { name })
+        assert!(
+            mac.effort_text(i as u32 + 1)
+                .contains("initiative: smooth-lines\n")
         );
     }
-    // An old spelling stays untouched when the caller omits --initiative, even after
-    // a page is filed for it. An explicit save then canonicalizes the same value.
+    let before = mac.effort_text(4);
+    let log = mac.log();
+    for cmd in [
+        "astrolabe effort new --title Missing --initiative Unknown <<'ASTROLABE'\nPurpose.\nASTROLABE\n",
+        "astrolabe effort save --initiative Unknown",
+        "astrolabe effort save --effort 1 --initiative Unknown",
+    ] {
+        let (out, ok) = mac.bash("worker", cmd);
+        assert!(
+            !ok && out.contains("no initiative page") && out.contains("astrolabe initiative new"),
+            "{out}"
+        );
+        assert_eq!(mac.log(), log);
+        assert_eq!(mac.effort_text(4), before);
+        assert_eq!(astrolabe::notes::effort_files(&mac.notes).len(), 4);
+    }
+    let path = mac.notes.join(shelf("0004-member-3.md"));
     write(
-        &mac.notes.join("initiatives/later-page.md"),
-        "---\nrepo: demo\nstatus: ready\n---\n# No page yet\n",
+        &path,
+        &before.replace("initiative: smooth-lines", "initiative: No page yet"),
     );
+    // Reload after the external edit, then save without asking to change membership.
+    assert!(mac.bash("worker", "astrolabe activate --effort 4").1);
     let (out, ok) = mac.bash(
         "worker",
         "astrolabe effort save --decision \"Kept the existing membership\"",
     );
     assert!(ok, "{out}");
-    assert!(mac.effort_text(5).contains("initiative: No page yet\n"));
-    let (out, ok) = mac.bash(
-        "worker",
-        "astrolabe effort save --initiative \"[[No page yet]]\"",
-    );
+    assert!(mac.effort_text(4).contains("initiative: No page yet\n"));
+    let (out, ok) = mac.bash("worker", "astrolabe effort save --initiative \"\"");
     assert!(ok, "{out}");
-    assert!(mac.effort_text(5).contains("initiative: later-page\n"));
-    let (out, ok) = mac.bash(
-        "worker",
-        "astrolabe effort save --initiative \"Unknown future page\"",
-    );
-    assert!(ok, "{out}");
-    assert!(
-        mac.effort_text(5)
-            .contains("initiative: Unknown future page\n")
-    );
+    assert!(mac.effort_text(4).contains("initiative: \"\""));
 }
 
 #[test]

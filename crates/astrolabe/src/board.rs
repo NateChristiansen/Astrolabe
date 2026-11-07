@@ -9,6 +9,8 @@ use std::path::Path;
 pub struct BoardData {
     pub efforts: Vec<EffortRow>,
     pub initiative_attention: Vec<EffortRow>,
+    pub initiatives: Vec<InitiativeRow>,
+    pub legacy_initiatives: std::collections::BTreeMap<String, InitiativeProgress>,
     pub initiative_titles: std::collections::BTreeMap<String, String>,
     pub today: String,
     pub journal: String,
@@ -27,6 +29,7 @@ pub struct EffortRow {
     pub status: Option<String>,
     pub priority: Option<String>,
     pub initiative: Option<String>,
+    pub initiative_title: Option<String>,
     pub repo: Option<String>,
     pub waits_for: Option<String>,
     pub updated: Option<String>,
@@ -52,9 +55,55 @@ pub struct Lesson {
     pub title: String,
 }
 
+/// A page and progress derived from its members, independent of board filters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InitiativeRow {
+    pub page: EffortRow,
+    pub progress: InitiativeProgress,
+    pub counts_unavailable: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InitiativeProgress {
+    pub total: usize,
+    pub done: usize,
+    pub review: usize,
+    pub blocked: usize,
+    pub to_start: usize,
+    pub abandoned: usize,
+    pub need_you: usize,
+}
+
+impl InitiativeProgress {
+    pub fn add(&mut self, status: &str, needs_owner: bool) {
+        if status == "abandoned" {
+            self.abandoned += 1;
+        } else {
+            self.total += 1;
+        }
+        match status {
+            "done" => self.done += 1,
+            "review" => self.review += 1,
+            "blocked" => self.blocked += 1,
+            "proposed" | "ready" => self.to_start += 1,
+            _ => {}
+        }
+        self.need_you += usize::from(needs_owner);
+    }
+}
+
 /// The same rows from a checkout already in hand: what the board is drawn from.
 pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     let mut rows = Vec::new();
+    let mut warnings = notes.warnings();
+    let pages = crate::effort::initiative_catalog(&notes.root).unwrap_or_else(|error| {
+        warnings.push(error);
+        Vec::new()
+    });
+    let mut legacy_initiatives: std::collections::BTreeMap<String, InitiativeProgress> =
+        Default::default();
     for (_, rel) in notes.numbers() {
         let path = notes.root.join(&rel);
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -64,9 +113,9 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             continue;
         };
         let status = file.prop("status").unwrap_or("");
-        if !all && (status == "done" || status == "abandoned") {
-            continue;
-        }
+        let needs_owner = file
+            .prop("waits_for")
+            .is_some_and(|w| w.starts_with("owner:"));
         if let Some(r) = repo
             && !file
                 .prop("repo")
@@ -74,9 +123,17 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         {
             continue;
         }
-        let needs_owner = file
-            .prop("waits_for")
-            .is_some_and(|w| w.starts_with("owner:"));
+        if let Some(name) = file.prop("initiative").filter(|name| !name.is_empty())
+            && crate::effort::resolve_initiative(&pages, name).is_err()
+        {
+            legacy_initiatives
+                .entry(crate::effort::initiative_name(name))
+                .or_default()
+                .add(status, needs_owner);
+        }
+        if !all && (status == "done" || status == "abandoned") {
+            continue;
+        }
         rows.push(EffortRow {
             number: file.number().map(u64::from),
             title: Some(file.name().to_owned()),
@@ -90,6 +147,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
                 .map(|(done, total)| Pieces { done, total }),
             priority: file.prop("priority").map(str::to_owned),
             initiative: file.prop("initiative").map(str::to_owned),
+            initiative_title: None,
             repo: file.prop("repo").map(str::to_owned),
             waits_for: file.prop("waits_for").map(str::to_owned),
             updated: file.prop("updated").map(str::to_owned),
@@ -101,36 +159,82 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     }
     let mut initiative_attention = Vec::new();
     let mut initiative_titles = std::collections::BTreeMap::new();
-    if let Ok(pages) = crate::effort::initiative_catalog(&notes.root) {
-        for page in pages {
-            let file = &page.file;
-            initiative_titles.insert(page.slug.clone(), file.title.clone());
-            if file
-                .prop("waits_for")
-                .is_none_or(|w| !w.starts_with("owner:"))
-            {
-                continue;
-            }
-            if let Some(repo) = repo
-                && !file
-                    .prop("repo")
-                    .is_some_and(|rs| rs.split(',').any(|r| r.trim() == repo))
-            {
-                continue;
-            }
-            initiative_attention.push(EffortRow {
-                title: Some(file.title.clone()),
-                file: Some(page.path),
-                status: file.prop("status").map(str::to_owned),
-                repo: file.prop("repo").map(str::to_owned),
-                waits_for: file.prop("waits_for").map(str::to_owned),
-                needs_owner: true,
-                state: file.first_paragraph().map(str::to_owned),
-                next: file.last_paragraph().map(str::to_owned),
-                updated: file.prop("updated").map(str::to_owned),
-                ..Default::default()
-            });
+    let mut initiatives = Vec::new();
+    for row in &mut rows {
+        row.initiative_title = row
+            .initiative
+            .as_deref()
+            .and_then(|name| crate::effort::resolve_initiative(&pages, name).ok())
+            .map(|page| page.file.title.clone());
+    }
+    for page in &pages {
+        let file = &page.file;
+        initiative_titles.insert(page.slug.clone(), file.title.clone());
+        if let Some(repo) = repo
+            && !file
+                .prop("repo")
+                .is_some_and(|rs| rs.split(',').any(|r| r.trim() == repo))
+        {
+            continue;
         }
+        let needs_owner = file
+            .prop("waits_for")
+            .is_some_and(|w| w.starts_with("owner:"));
+        let mut progress = InitiativeProgress::default();
+        let mut counts_unavailable = false;
+        match crate::effort::initiative_members(&notes.root, page) {
+            Ok(members) => {
+                for (_, member) in members {
+                    progress.add(
+                        member.prop("status").unwrap_or(""),
+                        member
+                            .prop("waits_for")
+                            .is_some_and(|w| w.starts_with("owner:")),
+                    );
+                }
+            }
+            Err(error) => {
+                counts_unavailable = true;
+                warnings.push(error);
+            }
+        }
+        progress.need_you += usize::from(needs_owner);
+        let row = EffortRow {
+            title: Some(file.title.clone()),
+            file: Some(page.path.clone()),
+            status: file.prop("status").map(str::to_owned),
+            repo: file.prop("repo").map(str::to_owned),
+            waits_for: file.prop("waits_for").map(str::to_owned),
+            needs_owner,
+            state: file.first_paragraph().map(str::to_owned).or_else(|| {
+                file.other
+                    .iter()
+                    .find(|(heading, _)| heading == "Purpose")
+                    .map(|(_, body)| body.trim().to_owned())
+                    .or_else(|| {
+                        // Legacy pages put their purpose between the title and first section.
+                        let text = page.text.replace("\r\n", "\n");
+                        let mut lines = text.lines().skip_while(|line| !line.starts_with("# "));
+                        lines.next();
+                        let purpose = lines
+                            .take_while(|line| !line.starts_with("## "))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        (!purpose.trim().is_empty()).then(|| purpose.trim().to_owned())
+                    })
+            }),
+            next: file.last_paragraph().map(str::to_owned),
+            updated: file.prop("updated").map(str::to_owned),
+            ..Default::default()
+        };
+        if needs_owner {
+            initiative_attention.push(row.clone());
+        }
+        initiatives.push(InitiativeRow {
+            page: row,
+            progress,
+            counts_unavailable,
+        });
     }
     let (day, _) = notes::local_day_time();
     let mut journal =
@@ -150,10 +254,12 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         efforts: rows,
         initiative_attention,
         initiative_titles,
+        initiatives,
+        legacy_initiatives,
         today: day,
         journal_lines: notes::parse_journal(&journal),
         journal,
-        notes: notes.warnings(),
+        notes: warnings,
         lessons: lessons_in(&notes.root),
         drafts: drafts_in(&notes.root),
     }
@@ -242,5 +348,138 @@ mod lessons_tests {
         std::fs::write(dir.join("notes.txt"), "not a draft\n").unwrap();
         assert_eq!(drafts_in(&root), 2);
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn initiative_fixture() -> Notes {
+    let root = std::env::temp_dir().join(format!(
+        "astrolabe-board-initiatives-{}",
+        crate::activate::random_hex().unwrap()
+    ));
+    std::fs::create_dir_all(root.join("efforts")).unwrap();
+    std::fs::create_dir_all(root.join("initiatives")).unwrap();
+    for (slug, title, status, wait, body) in [
+        (
+            "shared-work",
+            "Shared work",
+            "active",
+            "owner: accept the plan",
+            "## Current state\nBuilding together. Another sentence.\n\n## Purpose\nThis is not the summary.\n",
+        ),
+        (
+            "finished-members",
+            "Finished members",
+            "ready",
+            "",
+            "## Purpose\nAccept the combined result. More purpose.\n",
+        ),
+        (
+            "accepted-work",
+            "Accepted work",
+            "done",
+            "",
+            "## Current state\nAccepted together.\n",
+        ),
+        (
+            "empty-work",
+            "Empty work",
+            "proposed",
+            "",
+            "A legacy purpose. Another sentence.\n",
+        ),
+        (
+            "dropped-work",
+            "Dropped work",
+            "active",
+            "",
+            "## Current state\nThe direction was dropped.\n",
+        ),
+        (
+            "old-work",
+            "Old work",
+            "done",
+            "",
+            "## Current state\nAccepted long ago.\n",
+        ),
+        ("abandoned-page", "Abandoned page", "abandoned", "", ""),
+    ] {
+        let updated = if slug == "old-work" {
+            "2026-09-01T12:00-07:00"
+        } else {
+            "2026-11-05T12:00-07:00"
+        };
+        std::fs::write(root.join(format!("initiatives/{slug}.md")), format!(
+            "---\nstatus: {status}\nrepo: demo\nwaits_for: {wait}\nupdated: {updated}\n---\n# {title}\n\n{body}"
+        )).unwrap();
+    }
+    // Membership comes from frontmatter, even for cross-repository members and
+    // orchestrate-style efforts. No page maintains a second list of its members.
+    for (i, (initiative, status, wait, repo)) in [
+        ("Unfiled work", "done", "", "demo"),
+        ("Unfiled work", "active", "", "demo"),
+        ("Unfiled work", "blocked", "owner: choose", "demo"),
+        ("shared-work", "active", "", "demo"),
+        ("Shared work", "blocked", "owner: review", "other"),
+        ("[[shared-work]]", "review", "owner: accept", "demo"),
+        ("shared-work", "ready", "", "demo"),
+        ("shared-work", "abandoned", "", "demo"),
+        ("shared-work", "done", "", "demo"),
+        ("finished-members", "done", "", "demo"),
+        ("accepted-work", "done", "", "demo"),
+        ("[[loose-tools]]", "ready", "", "demo"),
+        ("Discarded experiment", "abandoned", "", "demo"),
+        ("dropped-work", "abandoned", "", "demo"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        std::fs::write(root.join(format!("efforts/{:04}-member.md", i + 1)), format!(
+            "---\nstatus: {status}\nrepo: {repo}\ninitiative: {initiative}\nwaits_for: {wait}\nupdated: 2026-11-05T12:00-07:00\n---\n# {:04} Member\n\n## Current state\nWorking.\n", i + 1
+        )).unwrap();
+    }
+    Notes::new(root.clone(), root.join("state"))
+}
+
+#[cfg(test)]
+mod initiative_tests {
+    use super::*;
+
+    #[test]
+    fn pages_and_member_counts_survive_effort_filters() {
+        let notes = initiative_fixture();
+        let board = rows_in(&notes, Some("demo"), false);
+        let shared = board
+            .initiatives
+            .iter()
+            .find(|i| i.page.title.as_deref() == Some("Shared work"))
+            .unwrap();
+        let p = &shared.progress;
+        assert_eq!(
+            (
+                p.done,
+                p.total,
+                p.review,
+                p.blocked,
+                p.to_start,
+                p.abandoned,
+                p.need_you
+            ),
+            (1, 5, 1, 1, 1, 1, 3)
+        );
+        assert_eq!(board.initiatives.len(), 7);
+        assert_eq!(board.legacy_initiatives["unfiled work"].done, 1);
+        assert_eq!(
+            board.legacy_initiatives["discarded experiment"].abandoned,
+            1
+        );
+        let member = board
+            .efforts
+            .iter()
+            .find(|r| r.initiative.as_deref() == Some("[[shared-work]]"))
+            .unwrap();
+        assert_eq!(member.initiative_title.as_deref(), Some("Shared work"));
+        assert_eq!(member.initiative.as_deref(), Some("[[shared-work]]"));
+        std::fs::remove_dir_all(notes.root).unwrap();
     }
 }

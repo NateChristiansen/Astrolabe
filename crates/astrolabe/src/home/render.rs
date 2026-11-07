@@ -27,9 +27,6 @@ impl Card<'_> {
     fn status(&self) -> &str {
         self.row.status.as_deref().unwrap_or_default()
     }
-    fn closed(&self) -> bool {
-        matches!(self.status(), "done" | "abandoned")
-    }
     fn priority_rank(&self) -> u8 {
         match self.row.priority.as_deref().unwrap_or_default() {
             "urgent" | "top" => 0,
@@ -279,30 +276,34 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         "</ul>"
     };
 
-    let mut initiatives: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
-    for card in &cards {
-        let name = tag(card.row.initiative.as_deref().unwrap_or_default());
-        if name.is_empty() {
-            continue;
-        }
-        let entry = initiatives.entry(name.to_owned()).or_default();
-        if card.closed() {
-            entry.1 += 1;
-        } else {
-            entry.0 += 1;
-        }
-    }
-    // An initiative is listed while an effort of its is open; one whose efforts have all
-    // closed has had its say and leaves the board with them.
     let mut initiative_lines = String::new();
-    for (name, (open, done)) in &initiatives {
-        if *open == 0 {
+    let mut open_pages = 0;
+    for initiative in &rows.initiatives {
+        let row = &initiative.page;
+        if matches!(row.status.as_deref(), Some("done" | "abandoned")) {
             continue;
         }
-        initiative_lines += &format!(
-            "<li class=\"ini\"><span>{}</span><span class=\"num\">{open} open · {done} done</span><span class=\"track\"><i style=\"width:{}%\"></i></span></li>\n",
-            esc(name),
-            100 * done / (open + done)
+        open_pages += 1;
+        let title = format!(
+            "<a href=\"{}\">{}</a>",
+            esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
+            esc(row.title.as_deref().unwrap_or_default())
+        );
+        initiative_lines += &initiative_html(
+            &title,
+            row.state.as_deref(),
+            &initiative.progress,
+            true,
+            initiative.counts_unavailable,
+        );
+    }
+    for (name, progress) in &rows.legacy_initiatives {
+        initiative_lines += &initiative_html(
+            &format!("{} <span class=\"pill\">no page</span>", esc(name)),
+            None,
+            progress,
+            false,
+            false,
         );
     }
     if initiative_lines.is_empty() {
@@ -311,12 +312,24 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     board += &format!(
         "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}{journal_end}</section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>{lessons_html}</div>\n",
         heading("Recent changes", rows.journal_lines.len()),
-        heading(
-            "Initiatives",
-            initiatives.values().filter(|(open, _)| *open > 0).count()
-        )
+        heading("Initiatives", open_pages)
     );
 
+    let closed_pages: Vec<Card> = rows
+        .initiatives
+        .iter()
+        .filter(|i| i.page.status.as_deref() == Some("done"))
+        .map(|i| Card {
+            row: &i.page,
+            updated_ms: i.page.updated.as_deref().and_then(stamp_ms),
+        })
+        .filter(|c| {
+            c.updated_ms
+                .is_some_and(|t| now_ms - t <= DONE_DAYS * 86_400_000)
+        })
+        .collect();
+    columns[5].extend(closed_pages.iter());
+    columns[5].sort_by_key(|c| -c.updated_ms.unwrap_or(0));
     let done = &columns[5];
     board += &format!(
         "<section class=\"col done\"><details data-persist=\"closed-work\"><summary>Done this fortnight <span class=\"n\">{}</span></summary>\n{}</details></section>\n",
@@ -527,7 +540,11 @@ pub(super) fn card_html(
     if matches!(priority, "high" | "urgent" | "top") {
         bits.push(format!("<span class=\"pri {priority}\">{priority}</span>"));
     }
-    let initiative = tag(card.row.initiative.as_deref().unwrap_or_default());
+    let initiative = card
+        .row
+        .initiative_title
+        .as_deref()
+        .unwrap_or_else(|| tag(card.row.initiative.as_deref().unwrap_or_default()));
     if !initiative.is_empty() {
         bits.push(format!(
             "<span class=\"pill tag\">{}</span>",
@@ -634,6 +651,54 @@ pub(super) fn card_html(
     )
 }
 
+/// Counts are independent; attention overlaps the status counts.
+fn initiative_html(
+    title: &str,
+    state: Option<&str>,
+    p: &crate::board::InitiativeProgress,
+    has_page: bool,
+    counts_unavailable: bool,
+) -> String {
+    if counts_unavailable {
+        return format!(
+            "<li class=\"ini\"><span>{title}</span><p>member counts unavailable</p></li>\n"
+        );
+    }
+    let mut counts = format!("{} of {} done", p.done, p.total);
+    for (count, label) in [
+        (p.review, "in review"),
+        (p.blocked, "blocked"),
+        (p.to_start, "to start"),
+        (p.abandoned, "abandoned"),
+        (p.need_you, "need you"),
+    ] {
+        if count > 0 {
+            counts += &format!(" · {count} {label}");
+        }
+    }
+    let edge = if p.total == 0 && p.abandoned == 0 {
+        "no members yet"
+    } else if p.total == 0 {
+        "all members abandoned"
+    } else if has_page && p.done == p.total {
+        "awaiting acceptance"
+    } else {
+        ""
+    };
+    let state = state
+        .map(|s| format!("<p>{}</p>", esc(&first_sentence(s))))
+        .unwrap_or_default();
+    let edge = if edge.is_empty() {
+        String::new()
+    } else {
+        format!("<p>{edge}</p>")
+    };
+    let percent = (100 * p.done).checked_div(p.total).unwrap_or(0);
+    format!(
+        "<li class=\"ini\"><span>{title}</span><span class=\"num\">{counts}</span>{state}{edge}<span class=\"track\"><i style=\"width:{percent}%\"></i></span></li>\n"
+    )
+}
+
 /// A closed effort as one line of the fortnight's list.
 pub(super) fn done_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> String {
     let href = match card.row.file.as_deref() {
@@ -663,7 +728,10 @@ pub(super) fn done_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> 
         esc(card.status()),
         card.row.number.unwrap_or(0),
         esc(&href),
-        card.row.number.unwrap_or(0),
+        card.row
+            .number
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "Initiative".to_owned()),
         esc(card.row.title.as_deref().unwrap_or_default()),
     )
 }

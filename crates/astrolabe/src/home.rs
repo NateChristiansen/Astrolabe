@@ -56,6 +56,63 @@ mod tests {
         )
     }
 
+    #[test]
+    fn initiatives_show_pages_derived_progress_and_legacy_groups() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, true);
+        // The renderer consumes a snapshot, never the notes on disk.
+        std::fs::remove_dir_all(&notes.root).unwrap();
+        for links in [Links::File, Links::Served] {
+            let html = board_html(&rows, &notes.root, NOW, links);
+            let column = html
+                .split("<section class=\"col initiatives\">")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            for expected in [
+                "Initiatives</span> <span class=\"n\">4</span>",
+                "initiatives/shared-work.md",
+                ">Shared work</a>",
+                "Building together.",
+                "1 of 5 done · 1 in review · 1 blocked · 1 to start · 1 abandoned · 3 need you",
+                "initiatives/finished-members.md",
+                "awaiting acceptance",
+                "Accept the combined result.",
+                "initiatives/empty-work.md",
+                "A legacy purpose.",
+                "no members yet",
+                "all members abandoned",
+                "unfiled work <span class=\"pill\">no page</span>",
+                "1 of 3 done · 1 blocked · 1 need you",
+                "loose-tools <span class=\"pill\">no page</span>",
+                "0 of 1 done · 1 to start",
+                "discarded experiment <span class=\"pill\">no page</span>",
+                "0 of 0 done · 1 abandoned",
+            ] {
+                assert!(column.contains(expected), "{expected}: {column}");
+            }
+            for absent in [
+                "Another sentence",
+                "More purpose",
+                "not the summary",
+                "Accepted work",
+                "Abandoned page",
+            ] {
+                assert!(!column.contains(absent), "{absent}: {column}");
+            }
+            assert!(html.contains("<span class=\"pill tag\">Shared work</span>"));
+            assert!(!html.contains("<span class=\"pill tag\">shared-work</span>"));
+            let done = html.split("Done this fortnight").nth(1).unwrap();
+            assert!(
+                done.contains("initiatives/accepted-work.md") && done.contains("Accepted work")
+            );
+            assert!(done.contains("efforts/0001-member.md"));
+            assert!(!done.contains("Old work"));
+        }
+    }
+
     const NOW: i64 = 1_793_916_000_000; // 2026-11-05T15:00-07:00
 
     fn row(n: u64, status: &str, extra: Value) -> Value {
@@ -165,11 +222,7 @@ mod tests {
         );
         assert!(page.contains("notes in sync"));
         assert!(page.contains("title=\"A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;\">1 · demo</a></span><span>Finished &lt;it&gt;.</span></li>"));
-        assert!(page.contains("1 open · 0 done"));
-        assert!(
-            !page.contains("finished"),
-            "an initiative with nothing open is off the board"
-        );
+
         assert!(
             page.contains("<details data-persist=\"closed-work\">"),
             "closed work remains available behind a disclosure"

@@ -114,16 +114,13 @@ fn line_id(key: &str, n: usize) -> String {
     format!("{}{n}", &key[..key.len().min(10)])
 }
 
-/// Existing pages have one spelling on write. Unknown names remain usable until the
-/// separate membership-validation change; omitted flags never enter this resolver.
+/// Explicit membership must name a page; omitted flags never enter this resolver.
 fn canonical_membership(root: &Path, name: &str) -> Result<String, String> {
     if name.is_empty() {
         return Ok(String::new());
     }
     let pages = crate::effort::initiative_catalog(root)?;
-    Ok(crate::effort::resolve_initiative(&pages, name)
-        .map(|page| page.slug.clone())
-        .unwrap_or_else(|_| name.to_owned()))
+    crate::effort::resolve_initiative(&pages, name).map(|page| page.slug.clone())
 }
 
 /// `astrolabe effort new`, in the hook.
