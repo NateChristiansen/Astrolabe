@@ -38,8 +38,7 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
     let mut effort = EffortFile::parse(&original).ok()?;
     if effort.number()? != state.effort.as_deref()?.parse::<u32>().ok()?
         || effort.prop("session")? != session
-        || !matches!(effort.prop("status"), Some("active" | "blocked"))
-        || !effort.prop("waits_for")?.starts_with("owner:")
+        || !can_clear_wait(&effort)
     {
         return None;
     }
@@ -88,6 +87,14 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
     notes.forget(&op.key);
     notes.spawn_sync();
     Some(())
+}
+
+/// Review is a deliberate handoff, so conversation replies never advance it.
+fn can_clear_wait(effort: &EffortFile) -> bool {
+    matches!(effort.prop("status"), Some("active" | "blocked"))
+        && effort
+            .prop("waits_for")
+            .is_some_and(|w| w.starts_with("owner:"))
 }
 
 fn has_reply(path: &Path, provider: &str, session: &str, after: i64, now: i64) -> Option<bool> {

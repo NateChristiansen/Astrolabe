@@ -35,7 +35,7 @@ pub const DELIMITER: &str = "ASTROLABE";
 /// command says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffortCommand {
-    /// `new`, `save`, `journal` or `initiative`.
+    /// `new`, `save`, `read`, `journal` or `initiative`.
     pub verb: String,
     /// `--key value` pairs, in order, keys without the dashes.
     pub flags: Vec<(String, String)>,
@@ -84,11 +84,13 @@ impl EffortCommand {
         }
         let verb = match words.next_word()?.as_deref() {
             Some("effort") => match words.next_word()?.as_deref() {
-                Some(v @ ("new" | "save")) => v.to_owned(),
+                Some(v @ ("new" | "save" | "read")) => v.to_owned(),
                 Some(other) => {
-                    return Err(format!("`effort {other}` isn't a verb; use new or save"));
+                    return Err(format!(
+                        "`effort {other}` isn't a verb; use new, save or read"
+                    ));
                 }
-                None => return Err("`effort` needs a verb: new or save".to_owned()),
+                None => return Err("`effort` needs a verb: new, save or read".to_owned()),
             },
             Some("initiative") => match words.next_word()?.as_deref() {
                 Some("new") => "initiative".to_owned(),
@@ -145,6 +147,24 @@ impl EffortCommand {
                 );
             }
         };
+        if verb == "read" {
+            let number = words
+                .next_word()?
+                .ok_or("`effort read` needs an effort number")?;
+            let number = number
+                .parse::<u32>()
+                .map_err(|_| "`effort read` needs an effort number")?;
+            if body.is_some() || words.next_word()?.is_some() {
+                return Err(
+                    "`effort read <n>` takes only the number, with no body or flags".into(),
+                );
+            }
+            return Ok(Self {
+                verb,
+                flags: vec![("effort".into(), number.to_string())],
+                body: None,
+            });
+        }
         let mut flags = Vec::new();
         while let Some(word) = words.next_word()? {
             let Some(key) = word.strip_prefix("--") else {
@@ -219,7 +239,7 @@ pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
-Another effort's state, from the session that dispatched it:  astrolabe effort save --effort <n> --status done --decision \"…\"  (only --status, --waits-for, --reason, --decision and --initiative go with --effort).\n\
+Another effort: first run astrolabe effort read <n>, then astrolabe effort save --effort <n> [--status <state>] [--tick \"<piece>\"] [--untick \"<piece>\"] with a Current state body as above. Reading delivers the note for a checked write. --journal, --plan-file and --pieces-file stay unavailable with --effort. Statuses: proposed, ready, active, review, blocked, done, abandoned.\n\
 An initiative page alone, or with efforts filed as proposed in one step, the body being its page:\n  astrolabe initiative new --title \"<name>\" <<'ASTROLABE'\n  <purpose>\n\n  ## Efforts\n  <first effort's title>\n  <its goal>\n\n  <next title>\n  <its goal>\n  ASTROLABE\n\
 Omit the Efforts section for a page only; to join existing efforts, use one paragraph beginning `effort <n>` per member, without mixing new titles. Bind with `astrolabe activate --initiative <slug>` (a quoted title also works); `effort save` then writes the initiative. Pieces and plans are unavailable there.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
@@ -678,6 +698,25 @@ mod tests {
             "astrolabe effort save --title \"unclosed",
         ] {
             assert!(EffortCommand::is_effort_command(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn read_takes_only_a_number_and_is_claimed_in_chains() {
+        let read = EffortCommand::parse("astrolabe effort read 0012").unwrap();
+        assert_eq!(read.verb, "read");
+        assert_eq!(read.flag("effort"), Some("12"));
+        assert!(EffortCommand::is_effort_command(
+            "true && astrolabe effort read 12"
+        ));
+        for bad in [
+            "astrolabe effort read",
+            "astrolabe effort read twelve",
+            "astrolabe effort read 12 --status done",
+            "astrolabe effort read 12; true",
+            "astrolabe effort read 12 <<'ASTROLABE'\nbody\nASTROLABE",
+        ] {
+            assert!(EffortCommand::parse(bad).is_err(), "{bad}");
         }
     }
 

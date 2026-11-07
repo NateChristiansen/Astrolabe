@@ -99,6 +99,9 @@ pub struct SessionState {
     pub token: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub delivered: Field<String>,
+    /// Notes explicitly read by number in this session, separate from the bound record.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub read_efforts: Field<std::collections::BTreeMap<String, String>>,
     /// When this exact note version was delivered; older replies cannot answer its wait.
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub delivered_ms: Field<i64>,

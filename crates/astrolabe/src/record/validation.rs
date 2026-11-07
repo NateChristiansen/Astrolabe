@@ -1,10 +1,11 @@
 //! Pure validation of saved prose, domain values and plan sections.
 use crate::effort::EffortFile;
 
-pub(super) const STATUSES: [&str; 6] = [
+pub(super) const STATUSES: [&str; 7] = [
     "proposed",
     "ready",
     "active",
+    "review",
     "blocked",
     "done",
     "abandoned",

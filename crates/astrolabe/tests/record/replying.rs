@@ -16,7 +16,9 @@ fn waiting(m: &Machine, codex: bool) -> Value {
         }
     };
     assert!(run(NEW).1);
-    let (out, ok) = run("astrolabe effort save --status blocked --waits-for \"owner: land it?\"");
+    let (out, ok) = run(
+        "astrolabe effort save --status blocked --waits-for \"owner: land it?\" <<'ASTROLABE'\nBlocked on landing.\nASTROLABE",
+    );
     assert!(ok, "{out}");
     let mut state = session(m);
     state["delivered_ms"] = (Machine::now_ms() - 2_000).into();
@@ -105,7 +107,7 @@ fn reply_clears_the_board_once_without_counting_as_a_progress_save() {
             };
             assert!(ok, "{out}");
             // Asking again must not be cleared by the reply that answered the previous wait.
-            let command = "astrolabe effort save --status blocked --waits-for \"owner: land it?\"";
+            let command = "astrolabe effort save --status blocked --waits-for \"owner: land it?\" <<'ASTROLABE'\nBlocked on landing.\nASTROLABE";
             let mut reask = input.clone();
             reask["tool_use_id"] = "new-question".into();
             reask["tool_input"]["command"] = command.into();
@@ -313,5 +315,29 @@ fn parallel_session_edits_survive_the_reply_commit() {
             assert_eq!(after["named"], concurrent["named"]);
             assert_ne!(after["delivered"], before["delivered"]);
         }
+    }
+}
+
+#[test]
+fn a_reply_leaves_review_status_and_its_wait_untouched() {
+    for codex in [false, true] {
+        let world = World::new();
+        let m = world.machine("pc");
+        waiting(&m, codex);
+        let command = "astrolabe effort save --status review --waits-for \"owner: review it\" <<'ASTROLABE'\nBuilt and checked, awaiting review.\nASTROLABE";
+        let (out, ok) = if codex {
+            m.bash_codex("s1", command)
+        } else {
+            m.bash("s1", command)
+        };
+        assert!(ok, "{out}");
+        let mut state = session(&m);
+        state["delivered_ms"] = (Machine::now_ms() - 2000).into();
+        save_session(&m, &state);
+        let before = m.effort_text(1);
+        let commits = m.log().lines().count();
+        assert!(m.hook_json("pre-command", input(&m, codex)).is_none());
+        assert_eq!(m.effort_text(1), before);
+        assert_eq!(m.log().lines().count(), commits);
     }
 }

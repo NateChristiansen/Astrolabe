@@ -279,7 +279,7 @@ mod tests {
             "{page}"
         );
         assert!(
-            page.contains("class=\"quiet\">Nothing ready, nothing blocked, no ideas parked.<"),
+            page.contains("class=\"quiet\">Nothing ready, nothing blocked, nothing in review, no ideas parked.<"),
             "{page}"
         );
         assert!(!page.contains("<b>0</b>"), "a zero is no chip: {page}");

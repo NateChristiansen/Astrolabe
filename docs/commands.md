@@ -193,7 +193,7 @@ Bind with `astrolabe activate --initiative <slug>` and save with `astrolabe effo
 
 ## Save an effort
 
-`astrolabe effort save` updates the effort or initiative bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state. With `--effort <number>` it changes another effort's state instead; see below.
+`astrolabe effort save` updates the effort or initiative bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state, unless the save changes status to active, review, blocked, done or abandoned: those transitions require a Current state body. Repeating the status on disk or omitting `--status` requires none. The same rule applies to initiative bindings, which have no review status. With `--effort <number>` it changes another effort instead; see below.
 
 Without a notes remote, a successful save reports `saved locally; sync unavailable: no remote configured`. With a remote, `background sync started` means the background process was launched, not that a push finished. A launch failure is reported separately; the local save still succeeds.
 
@@ -211,7 +211,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 
 | Option | Effect |
 | --- | --- |
-| `--status <state>` | Set `proposed`, `ready`, `active`, `blocked`, `done` or `abandoned`. |
+| `--status <state>` | Set `proposed`, `ready`, `active`, `review`, `blocked`, `done` or `abandoned`. Review means built and checked, waiting for review, acceptance or landing. |
 | `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. |
@@ -221,22 +221,28 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 | `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. Existing page names resolve to their slug; unknown names are refused with a pointer to `astrolabe initiative new`. Omitting this option leaves membership untouched. |
-| `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
+| `--effort <number>` | Save another effort. After `effort read <number>` in this session, a body replaces its Current state and `--tick` / `--untick` change its pieces. Status, wait, reason, decision and initiative flags remain available. Journal, plan replacement and pieces-file writes are refused. The target must share the session's repo or an existing initiative with the bound record, or belong to the bound initiative page; the notes checkout can reach any repo. The bound record is untouched. |
+
+A done save lists any unticked pieces in its reply without refusing the save. Keep a dated explanation of deferred or dropped pieces in the note.
 
 When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
 
-A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Unsupported or ambiguous transcripts leave the wait alone.
+A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Review efforts and unsupported or ambiguous transcripts leave the wait alone.
 
-A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked or in review. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
 
 ```sh
-astrolabe effort save --status blocked --waits-for "owner: try upload retries"
+astrolabe effort save --status blocked --waits-for "owner: try upload retries" <<'ASTROLABE'
+Blocked, waiting for the upload retry check.
+ASTROLABE
 ```
 
 After the condition is resolved:
 
 ```sh
-astrolabe effort save --status active
+astrolabe effort save --status active <<'ASTROLABE'
+Active again after the upload check.
+ASTROLABE
 ```
 
 File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
@@ -255,6 +261,24 @@ astrolabe effort save --tick "First repo note"
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
 
 `save` has no flags for changing the title, repo, involvement, authority, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
+
+### Read another effort
+
+Run `astrolabe effort read <number>` alone through the hook before writing another effort's Current state or ticks. It prints the full note and remembers its content hash for that number in this session, separately from the bound record. A worker can read only its own effort. Read and save use the same repository and initiative access rules.
+
+```sh
+astrolabe effort read 12
+```
+
+Then, as a separate command:
+
+```sh
+astrolabe effort save --effort 12 --status review --tick "Build and check" <<'ASTROLABE'
+Built and checked, waiting for review.
+ASTROLABE
+```
+
+If the note changed since delivery, the save refuses to overwrite it and prints the current note. Read that text before saving again; the refusal records the newly delivered version. A successful save advances that number's hash without changing the bound record's hash. `--journal` remains unavailable with `--effort`.
 
 ### Multiline input and quoting
 

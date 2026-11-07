@@ -110,3 +110,20 @@ fn transcript_is_bounded_complete_and_bound_to_the_session() {
     assert_eq!(has_reply(&path, "claude", "s1", AFTER, NOW), None);
     std::fs::remove_dir(&dir).unwrap();
 }
+
+#[test]
+fn review_waits_are_not_answered_by_conversation_replies() {
+    for (status, eligible) in [
+        ("active", true),
+        ("blocked", true),
+        ("review", false),
+        ("done", false),
+    ] {
+        let mut effort = EffortFile::default();
+        effort.set("status", status);
+        effort.set("waits_for", "owner: review it");
+        assert_eq!(can_clear_wait(&effort), eligible);
+        effort.set("waits_for", "the reviewer");
+        assert!(!can_clear_wait(&effort));
+    }
+}

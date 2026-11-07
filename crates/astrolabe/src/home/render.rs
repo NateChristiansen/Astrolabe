@@ -99,7 +99,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             updated_ms: row.updated.as_deref().and_then(stamp_ms),
         })
         .collect();
-    let mut columns: [Vec<&Card>; 6] = Default::default();
+    let mut columns: [Vec<&Card>; 7] = Default::default();
     for card in &cards {
         let slot = if card.row.needs_owner {
             0
@@ -108,6 +108,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                 "active" => 1,
                 "ready" => 2,
                 "blocked" => 3,
+                "review" => 6,
                 "done" | "abandoned" => {
                     let fresh = card
                         .updated_ms
@@ -146,13 +147,14 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         // Kept in the page so a test and the live swap can find the column by name.
         "<section class=\"col needsyou\" hidden></section>\n".to_owned()
     };
-    // Ready and blocked share a row below active work. Ideas get their own full-width
+    // Ready, blocked and review share a row below active work. Ideas get their own full-width
     // grid; empty sections leave a few words instead of reserving layout space.
     let mut stack = String::new();
     let mut quiet = Vec::new();
     for (key, title, slot, none) in [
         ("ready", "Up next", 2, "nothing ready"),
         ("blocked", "Waiting", 3, "nothing blocked"),
+        ("review", "In review", 6, "nothing in review"),
     ] {
         let column = &columns[slot];
         if column.is_empty() {
@@ -366,6 +368,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     for (dot, slot, label) in [
         ("ready", 2, "ready"),
         ("blocked", 3, "blocked"),
+        ("review", 6, "in review"),
         ("idea", 4, "ideas"),
         ("done", 5, "done"),
     ] {

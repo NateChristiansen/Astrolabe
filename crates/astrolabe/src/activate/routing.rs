@@ -425,9 +425,10 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
         let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
             Ok(parsed)
                 if worker.is_some()
-                    && (parsed.verb != "save"
-                        || parsed.flag("journal").is_some()
-                        || parsed.flag("effort").is_some()) =>
+                    && (parsed.verb != "read"
+                        && (parsed.verb != "save"
+                            || parsed.flag("journal").is_some()
+                            || parsed.flag("effort").is_some())) =>
             {
                 return Some(hook::deny(&format!(
                     "This session is a worker under effort {}: it saves that effort's state, decisions and pieces, and nothing else; the session that dispatched it files efforts, writes the day's journal line and marks the others. Report to it instead.",
@@ -449,6 +450,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                         &cwd,
                         &[powershell],
                     ),
+                    "read" => crate::record::read(&parsed, session, &cwd),
                     "journal" => crate::record::journal(&parsed, &op_key, session, &cwd),
                     "initiative" => {
                         crate::record::initiative(&parsed, &op_key, session, provider(input), &cwd)

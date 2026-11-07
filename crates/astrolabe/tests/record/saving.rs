@@ -101,7 +101,7 @@ fn current_state_and_blocked_status_are_saved() {
     assert!(!ok && out.contains("--waits-for"), "{out}");
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\" <<'ASTROLABE'\nBlocked on the choice.\nASTROLABE",
     );
     assert!(ok, "{out}");
     assert!(
@@ -141,7 +141,7 @@ fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
     // Blocked keeps its condition across a progress save.
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\" <<'ASTROLABE'\nBlocked on the choice.\nASTROLABE",
     );
     assert!(ok, "{out}");
     let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
@@ -156,7 +156,7 @@ fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
     // An empty value clears it alongside a status that isn't blocked.
     let (out, ok) = mac.bash(
         "s1",
-        "astrolabe effort save --status active --waits-for \"\"",
+        "astrolabe effort save --status active --waits-for \"\" <<'ASTROLABE'\nActive again.\nASTROLABE",
     );
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("waits_for: \"\""));
@@ -233,7 +233,7 @@ fn journal_replacement_keeps_one_line_per_day() {
     assert!(
         mac.bash(
             "s1",
-            "astrolabe effort save --status blocked --waits-for waiting"
+            "astrolabe effort save --status blocked --waits-for waiting <<'ASTROLABE'\nBlocked, waiting.\nASTROLABE"
         )
         .1
     );
@@ -387,7 +387,10 @@ fn plan_sources_preserve_section_boundaries() {
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n### Step one\nfirst\n### Step two\nsecond\nASTROLABE",
     );
     assert!(ok, "{out}");
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status active");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active <<'ASTROLABE'\nActive again.\nASTROLABE",
+    );
     assert!(ok, "{out}");
     let text = mac.effort_text(1);
     assert!(
@@ -614,7 +617,7 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
     );
     let worker_note = mac.effort_text(1);
     let own_note = mac.effort_text(2);
-    // Only state goes by number: its text is the worker's, the journal line this session's.
+    // Text and ticks need a read first; journal and plan writes remain unavailable.
     for cmd in [
         "astrolabe effort save --effort 1 --status active <<'ASTROLABE'\nMine.\n\nNext: n.\nASTROLABE\n",
         "astrolabe effort save --effort 1 --journal \"Did the thing.\"",
@@ -623,7 +626,8 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
     ] {
         let (out, ok) = mac.bash("s1", cmd);
         assert!(
-            !ok && out.contains("never its text") && out.contains("Nothing was written"),
+            !ok && (out.contains("read 1") || out.contains("unavailable"))
+                && out.contains("Nothing was written"),
             "{cmd}: {out}"
         );
     }
@@ -673,8 +677,9 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
         !mac.notes.join("journal").exists(),
         "no journal line by number"
     );
-    // Done, then the session's own effort joins the initiative too, or leaves it.
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status done");
+    // Done requires a read and text, then the bound effort can join or leave.
+    assert!(mac.bash("s1", "astrolabe effort read 1").1);
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE");
     assert!(ok && out.contains("status done"), "{out}");
     assert!(mac.effort_text(1).contains("status: done"));
     assert_eq!(mac.log().lines().next(), Some("0001: done"));
@@ -836,7 +841,10 @@ fn an_effort_for_an_issue_says_how_to_close_it_and_reports_it_when_done() {
         &mac.demo,
         &["update-ref", "refs/remotes/origin/main", "HEAD"],
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE",
+    );
     assert!(ok, "{out}");
     assert!(
         out.contains("Main here has a commit that closes #5."),
@@ -848,7 +856,10 @@ fn an_effort_for_an_issue_says_how_to_close_it_and_reports_it_when_done() {
         "{out}"
     );
     // Only the save that marks it done reports.
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE",
+    );
     assert!(ok && !out.contains("closes"), "{out}");
 }
 
@@ -859,7 +870,10 @@ fn an_effort_with_no_issue_says_nothing_about_issues() {
     let (out, ok) = mac.bash("s1", NEW);
     assert!(ok && !out.contains("- issue:"), "{out}");
     assert!(!mac.effort_text(1).contains("issue:"));
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE",
+    );
     assert!(ok && !out.contains("issue"), "{out}");
 }
 
@@ -884,10 +898,235 @@ fn the_done_report_never_reads_another_repo_s_history() {
     let (out, ok) = mac.bash_from(
         "s1",
         &mac.notes,
-        "astrolabe effort save --status done",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE",
         None,
     );
     assert!(ok, "{out}");
     assert!(!out.contains("has a commit that closes #7"), "{out}");
     assert!(out.contains("#7"), "{out}");
+}
+
+#[test]
+fn review_is_accepted_and_keeps_its_wait_and_board_column() {
+    let world = World::new();
+    let m = world.machine("mac");
+    let (out, ok) = m.bash("s1", "astrolabe effort new --title Check --status review <<'ASTROLABE'\nReady for review.\nASTROLABE");
+    assert!(ok, "{out}");
+    let (out, ok) = m.bash("s1", "astrolabe effort save --waits-for \"the reviewer\"");
+    assert!(ok, "{out}");
+    let (out, ok) = m.bash("s1", "astrolabe effort save --status review");
+    assert!(ok, "{out}");
+    assert!(m.effort_text(1).contains("waits_for: the reviewer"));
+    let page = std::fs::read_to_string(m.notes.join("home.html")).unwrap();
+    assert!(column(&page, "review").contains("Check"));
+    assert!(!page.contains("class=\"col ideas\""));
+}
+
+#[test]
+fn status_transitions_need_text_but_repeated_statuses_do_not() {
+    let world = World::new();
+    let m = world.machine("mac");
+    assert!(m.bash("s1", NEW).1);
+    let (out, ok) = m.bash("s1", "astrolabe effort save --status active");
+    assert!(ok, "{out}");
+    for flags in [
+        "--status review",
+        "--status blocked --waits-for reviewer",
+        "--status done",
+        "--status abandoned --reason superseded",
+    ] {
+        let before = m.effort_text(1);
+        let (out, ok) = m.bash("s1", &format!("astrolabe effort save {flags}"));
+        assert!(
+            !ok && out.contains("needs a Current state body") && out.contains("Accepted forms"),
+            "{out}"
+        );
+        assert_eq!(m.effort_text(1), before);
+    }
+    let (out, ok) = m.bash(
+        "s1",
+        "astrolabe effort save --status review <<'ASTROLABE'\nReady for review.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    assert!(m.bash("s1", "astrolabe effort save --status review").1);
+}
+
+#[test]
+fn done_lists_unfinished_pieces_without_refusing() {
+    let world = World::new();
+    let m = world.machine("mac");
+    assert!(m.bash("s1", NEW).1);
+    write(
+        &m.demo.join("pieces.md"),
+        "- [x] Built\n- [ ] Deferred playtest\n- [ ] Dropped variant",
+    );
+    assert!(
+        m.bash("s1", "astrolabe effort save --pieces-file pieces.md")
+            .1
+    );
+    let (out, ok) = m.bash("s1", "astrolabe effort save --status done <<'ASTROLABE'\nDone, with playtest deferred and variant dropped.\nASTROLABE");
+    assert!(
+        ok && out.contains("Unticked pieces:\n- [ ] Deferred playtest\n- [ ] Dropped variant"),
+        "{out}"
+    );
+}
+
+fn dispatcher(m: &Machine) {
+    assert!(m.bash("worker", NEW).1);
+    write(&m.demo.join("pieces.md"), "- [ ] Build\n- [ ] Land");
+    assert!(
+        m.bash("worker", "astrolabe effort save --pieces-file pieces.md")
+            .1
+    );
+    assert!(
+        m.bash(
+            "lead",
+            "astrolabe effort new --title Lead <<'ASTROLABE'\nCoordinate the work.\nASTROLABE"
+        )
+        .1
+    );
+}
+
+#[test]
+fn read_delivers_another_note_for_text_ticks_and_stale_write_checks() {
+    let world = World::new();
+    let m = world.machine("mac");
+    dispatcher(&m);
+    let own = m.effort_text(2);
+    let command = "astrolabe effort save --effort 1 --status review --tick Build <<'ASTROLABE'\nBuilt and checked, awaiting review.\nASTROLABE";
+    let (out, ok) = m.bash("lead", command);
+    assert!(!ok && out.contains("effort read 1"), "{out}");
+    let (out, ok) = m.bash("lead", "astrolabe effort read 1");
+    assert!(ok && out.contains(&m.effort_text(1)), "{out}");
+    let (out, ok) = m.bash("lead", command);
+    assert!(ok, "{out}");
+    assert!(m.effort_text(1).contains("- [x] Build"));
+    assert!(m.effort_text(1).contains("Built and checked"));
+    let (out, ok) = m.bash("lead", "astrolabe effort save --effort 1 --untick Build");
+    assert!(ok, "{out}");
+    assert!(m.effort_text(1).contains("- [ ] Build"));
+    // Another session changes the note after the dispatcher read it.
+    assert!(m.bash("other", "astrolabe activate --effort 1").1);
+    assert!(
+        m.bash(
+            "other",
+            "astrolabe effort save <<'ASTROLABE'\nNew findings from the worker.\nASTROLABE"
+        )
+        .1
+    );
+    let before = m.effort_text(1);
+    let command = &command.replace("Built and checked", "Rechecked with the new findings");
+    let (out, ok) = m.bash("lead", command);
+    assert!(
+        !ok && out.contains("changed since") && out.contains("New findings from the worker"),
+        "{out}"
+    );
+    assert_eq!(m.effort_text(1), before);
+    // The refusal delivered the latest text, allowing a deliberate retry.
+    assert!(m.bash("lead", command).1);
+    assert_eq!(m.effort_text(2), own);
+    assert!(m.bash("lead", "astrolabe effort save --status active").1);
+}
+
+#[test]
+fn cross_repo_access_requires_shared_membership_or_the_notes_seat() {
+    let world = World::new();
+    let m = world.machine("mac");
+    dispatcher(&m);
+    let path = m.notes.join(shelf("0001-smooth-ink.md"));
+    write(
+        &path,
+        &m.effort_text(1).replace("repo: demo", "repo: elsewhere"),
+    );
+    for command in [
+        "astrolabe effort read 1",
+        "astrolabe effort save --effort 1 --status ready",
+    ] {
+        let (out, ok) = m.bash("lead", command);
+        assert!(!ok && out.contains("share no initiative"), "{out}");
+    }
+    write(
+        &m.notes.join("initiatives/shared.md"),
+        "---\nstatus: ready\nrepo: demo\n---\n# Shared work\n\n## Current state\nCoordinating.\n",
+    );
+    write(
+        &path,
+        &m.effort_text(1)
+            .replace("repo: elsewhere", "repo: elsewhere\ninitiative: shared"),
+    );
+    assert!(
+        m.bash("lead", "astrolabe effort save --initiative \"Shared work\"")
+            .1
+    );
+    for binding in [
+        "astrolabe activate --effort 2",
+        "astrolabe activate --initiative shared",
+    ] {
+        assert!(m.bash("lead", binding).1);
+        let (out, ok) = m.bash("lead", "astrolabe effort read 1");
+        assert!(ok, "{out}");
+        let text = if binding.contains("--initiative") {
+            "Built from the initiative page."
+        } else {
+            "Built from the shared initiative."
+        };
+        let (out, ok) = m.bash(
+            "lead",
+            &format!(
+                "astrolabe effort save --effort 1 --tick Build <<'ASTROLABE'\n{text}\nASTROLABE"
+            ),
+        );
+        assert!(ok, "{out}");
+    }
+    // In the notes checkout no shared membership is needed.
+    write(
+        &path,
+        &m.effort_text(1)
+            .replace("initiative: shared", "initiative: unrelated"),
+    );
+    let (out, ok) = m.bash_from("lead", &m.notes, "astrolabe effort read 1", None);
+    assert!(ok, "{out}");
+    let (out, ok) = m.bash_from(
+        "lead",
+        &m.notes,
+        "astrolabe effort save --effort 1 --untick Build",
+        None,
+    );
+    assert!(ok, "{out}");
+}
+
+#[test]
+fn a_worker_cannot_read_another_effort() {
+    let world = World::new();
+    let m = world.machine("mac");
+    dispatcher(&m);
+    assert!(m.bash("worker", "astrolabe activate --effort 1 --worker").1);
+    let (out, ok) = m.bash("worker", "astrolabe effort read 2");
+    assert!(!ok && out.contains("worker"), "{out}");
+    let (out, ok) = m.bash("worker", "astrolabe effort read 1");
+    assert!(ok, "{out}");
+}
+
+#[test]
+fn initiative_status_moves_need_text_and_review_is_unavailable() {
+    let world = World::new();
+    let m = world.machine("mac");
+    write(
+        &m.notes.join("initiatives/shared.md"),
+        "---\nstatus: ready\nrepo: demo\n---\n# Shared work\n\n## Current state\nReady to begin.\n",
+    );
+    assert!(m.bash("lead", "astrolabe activate --initiative shared").1);
+    let (out, ok) = m.bash("lead", "astrolabe effort save --status active");
+    assert!(!ok && out.contains("needs a Current state body"), "{out}");
+    let (out, ok) = m.bash("lead", "astrolabe effort save --status active <<'ASTROLABE'\nActive, coordinating the work.\nASTROLABE");
+    assert!(ok, "{out}");
+    assert!(m.bash("lead", "astrolabe effort save --status active").1);
+    let (out, ok) = m.bash(
+        "lead",
+        "astrolabe effort save --status review <<'ASTROLABE'\nReady for review.\nASTROLABE",
+    );
+    assert!(!ok && out.contains("no review status"), "{out}");
+    assert!(m.bash("lead", "astrolabe effort save --status done <<'ASTROLABE'\nAccepted, the whole works.\nASTROLABE").1);
+    let (out, ok) = m.bash("lead", "astrolabe effort save --status done");
+    assert!(ok, "{out}");
 }

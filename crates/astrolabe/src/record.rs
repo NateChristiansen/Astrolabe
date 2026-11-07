@@ -656,7 +656,7 @@ fn save_inner(
         .map(str::trim)
         .filter(|d| !d.is_empty());
     // Given empty, it clears the condition; left out, it's cleared too unless the effort
-    // stays blocked (below).
+    // stays blocked or in review (below).
     let waits_for = cmd.flag("waits-for").map(str::trim);
     let reason = cmd.flag("reason").map(str::trim).filter(|r| !r.is_empty());
     let plan_file = cmd.flag("plan-file");
@@ -700,14 +700,8 @@ fn save_inner(
     {
         return Err("an initiative has no pieces, ticks, plan replacement or initiative membership; save its Current state, Decisions, status, wait and journal only. Nothing was written".into());
     }
-    if page_binding
-        && status.as_deref() == Some("done")
-        && body.as_deref().is_none_or(|b| b.trim().is_empty())
-    {
-        return Err(
-            "done needs a nonempty acceptance statement in Current state. Nothing was written"
-                .into(),
-        );
+    if page_binding && status.as_deref() == Some("review") {
+        return Err("an initiative has no review status. Nothing was written".into());
     }
     if plan_file.is_some() && body_marked {
         return Err(
@@ -731,26 +725,25 @@ fn save_inner(
             "nothing to save: give a Current state body, or a flag.\n{FORMS}"
         ));
     }
-    // Another effort's record is changed in its state only: the dispatcher was never
-    // delivered its text, so a body here would overwrite what its worker wrote, and the
-    // day's journal line is this session's own effort's (one per initiative, not per worker).
     if target.is_some()
-        && (body.is_some()
-            || body_plan.is_some()
+        && (body_plan.is_some()
             || plan_file.is_some()
             || journal_text.is_some()
-            || pieces_file.is_some()
-            || !ticks.is_empty()
-            || !unticks.is_empty())
+            || pieces_file.is_some())
     {
-        return Err("with --effort <n> a save changes that effort's state, never its text: only --status, --waits-for, --reason, --decision and --initiative go with it. Its Current state, plan and pieces are its own session's to write, and the day's journal line goes on this session's effort. Nothing was written".to_owned());
+        return Err(format!(
+            "with --effort <n>, --journal, --plan-file and --pieces-file are unavailable. Nothing was written.\n{FORMS}"
+        ));
     }
     if target.is_some() && state.worker.is_true() {
         return Err(format!(
             "this session is a worker under {record}: it saves that effort only; the session that dispatched it marks the others. Nothing was written"
         ));
     }
-    if target.is_some_and(|t| t.to_string() == number) {
+    if !page_binding
+        && state.initiative_key().is_none()
+        && target.is_some_and(|t| t.to_string() == number)
+    {
         return Err(format!(
             "{record} is this session's own: save it without --effort. Nothing was written"
         ));
@@ -853,6 +846,15 @@ fn save_inner(
             file.current
         ));
     }
+    if page_binding
+        && status.as_deref() == Some("done")
+        && file.prop("status") != Some("done")
+        && current.as_deref().is_none_or(|b| b.trim().is_empty())
+    {
+        return Err(format!(
+            "done needs a nonempty acceptance statement in Current state. Nothing was written.\n{FORMS}"
+        ));
+    }
     if page_binding && status.as_deref() == Some("done") {
         let pages = crate::effort::initiative_catalog(&notes.root)?;
         let page = crate::effort::resolve_initiative(&pages, &number)?;
@@ -868,6 +870,7 @@ fn save_inner(
             ));
         }
     }
+    require_transition_body(&file, status.as_deref(), current.as_deref())?;
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
@@ -886,25 +889,7 @@ fn save_inner(
     if let Some(p) = &pieces {
         file.set_pieces(p);
     }
-    if !ticks.is_empty() || !unticks.is_empty() {
-        let on: Vec<usize> = ticks
-            .iter()
-            .map(|l| file.piece_at(l, true))
-            .collect::<Result<_, _>>()?;
-        let off: Vec<usize> = unticks
-            .iter()
-            .map(|l| file.piece_at(l, false))
-            .collect::<Result<_, _>>()?;
-        if let Some(i) = on.iter().position(|i| off.contains(i)) {
-            return Err(format!("{:?} is both ticked and unticked", ticks[i]));
-        }
-        for at in on {
-            file.tick(at, true);
-        }
-        for at in off {
-            file.tick(at, false);
-        }
-    }
+    apply_ticks(&mut file, &ticks, &unticks)?;
     let before = Change {
         status: status.as_deref(),
         waits_for,
@@ -1036,13 +1021,69 @@ fn save_inner(
         };
         head += &format!(" {}", issue_report(checkout.as_deref(), issue));
     }
+    head += &unfinished_pieces(&file);
     crate::application::finish(&notes, key, &head);
     Ok(head)
 }
 
+fn apply_ticks(file: &mut EffortFile, ticks: &[&str], unticks: &[&str]) -> Result<(), String> {
+    if !ticks.is_empty() || !unticks.is_empty() {
+        let on: Vec<usize> = ticks
+            .iter()
+            .map(|l| file.piece_at(l, true))
+            .collect::<Result<_, _>>()?;
+        let off: Vec<usize> = unticks
+            .iter()
+            .map(|l| file.piece_at(l, false))
+            .collect::<Result<_, _>>()?;
+        if let Some(i) = on.iter().position(|i| off.contains(i)) {
+            return Err(format!("{:?} is both ticked and unticked", ticks[i]));
+        }
+        for at in on {
+            file.tick(at, true);
+        }
+        for at in off {
+            file.tick(at, false);
+        }
+    }
+    Ok(())
+}
+
+fn require_transition_body(
+    file: &EffortFile,
+    status: Option<&str>,
+    body: Option<&str>,
+) -> Result<(), String> {
+    if let Some(status @ ("active" | "review" | "blocked" | "done" | "abandoned")) = status
+        && file.prop("status") != Some(status)
+        && body.is_none_or(|b| b.trim().is_empty())
+    {
+        return Err(format!(
+            "changing status to {status} needs a Current state body so status moves with its text. Nothing was written.\n{FORMS}"
+        ));
+    }
+    Ok(())
+}
+
+fn unfinished_pieces(file: &EffortFile) -> String {
+    if file.prop("status") != Some("done") {
+        return String::new();
+    }
+    let lines: Vec<_> = file
+        .pieces()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- [ ] "))
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("\nUnticked pieces:\n{}", lines.join("\n"))
+    }
+}
+
 /// The part of a save that changes an effort's state rather than its text: what a session
-/// writes on its own effort beside Current state, and all a dispatcher may write on a
-/// worker's.
+/// writes beside Current state, whether bound or addressed by number.
 struct Change<'a> {
     status: Option<&'a str>,
     waits_for: Option<&'a str>,
@@ -1070,7 +1111,7 @@ impl Change<'_> {
             file.set("status", s);
         }
         // A wait is set by the save made just before waiting, so a later save means the work
-        // moved on: one without --waits-for clears it unless the effort is still blocked.
+        // moved on: one without --waits-for clears it unless blocked or in review.
         // Before this, only a status change cleared it, and an agent saving progress after
         // the owner answered left the effort in Needs you.
         let blocked = file.prop("status") == Some("blocked");
@@ -1079,17 +1120,99 @@ impl Change<'_> {
         }
         match self.waits_for {
             Some(w) => file.set("waits_for", w),
-            None if !blocked => file.set("waits_for", ""),
+            None if !matches!(file.prop("status"), Some("blocked" | "review")) => {
+                file.set("waits_for", "")
+            }
             None => {}
         }
         Ok(before)
     }
 }
 
-/// `astrolabe effort save --effort <n> …`: another effort's state, from the session that
-/// dispatched its worker. The worker owns the text (it was delivered the note; this session
-/// wasn't), so only the state changes, and the stamp names this session without the branch
-/// facts, which are the worker's checkout's, not this one's.
+/// An explicit read delivers the whole note without changing the session binding.
+pub fn read(cmd: &EffortCommand, session: &str, cwd: &Path) -> Done {
+    match read_inner(cmd, session, cwd) {
+        Ok(text) => Done { text, ok: true },
+        Err(why) => Done {
+            text: format!("Effort NOT read: {why}"),
+            ok: false,
+        },
+    }
+}
+
+fn read_inner(cmd: &EffortCommand, session: &str, cwd: &Path) -> Result<String, String> {
+    let (_, notes) = notes_here()?;
+    let _held = notes.lock()?;
+    let mut state =
+        read_state(&notes.state, session)?.ok_or("no record is bound to this session")?;
+    let target: u32 = cmd
+        .flag("effort")
+        .ok_or("read needs a number")?
+        .parse()
+        .map_err(|_| "read needs a number")?;
+    if state.worker.is_true()
+        && (state.initiative_key().is_some()
+            || state.bound_key() != Some(target.to_string().as_str()))
+    {
+        return Err(
+            "a worker can read only its own effort; report to the session that dispatched it"
+                .into(),
+        );
+    }
+    crate::application::pull(&notes);
+    let (_, text, file) = target_note(&notes, &state, target, cwd)?;
+    let hash = notes::content_hash(&text);
+    let mut reads = state.read_efforts.as_ref().cloned().unwrap_or_default();
+    reads.insert(target.to_string(), hash.clone());
+    state.read_efforts.set(reads);
+    if state.initiative_key().is_none() && state.bound_key() == Some(target.to_string().as_str()) {
+        state.delivered.set(hash);
+        state.delivered_ms.set(notes::now_ms());
+    }
+    notes::write_text(&state_path(&notes.state, session), &state.to_string())?;
+    Ok(format!("Read effort {target}: {}\n\n{text}", file.title))
+}
+
+/// Repo access is identical for reading and saving; membership is resolved from disk,
+/// never from the save's proposed initiative flag.
+fn target_note(
+    notes: &Notes,
+    state: &SessionState,
+    target: u32,
+    cwd: &Path,
+) -> Result<(String, String, EffortFile), String> {
+    let (_, rel) = notes
+        .numbers()
+        .into_iter()
+        .find(|(n, _)| *n == target)
+        .ok_or_else(|| format!("no effort {target} in the notes"))?;
+    let text = std::fs::read_to_string(notes.root.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+    let file = EffortFile::parse(&text)?;
+    let mine = state.repo.as_deref().unwrap_or_default();
+    let theirs = file.prop("repo").unwrap_or_default();
+    if theirs != mine && !activate::in_notes(cwd) {
+        let pages = crate::effort::initiative_catalog(&notes.root)?;
+        let target_page = file
+            .prop("initiative")
+            .and_then(|name| crate::effort::resolve_initiative(&pages, name).ok());
+        let bound =
+            std::fs::read_to_string(notes.root.join(state.file.as_deref().unwrap_or_default()))
+                .map_err(|e| format!("cannot read the bound record: {e}"))?;
+        let bound = EffortFile::parse(&bound)?;
+        let source_page = state
+            .initiative_key()
+            .or_else(|| bound.prop("initiative"))
+            .and_then(|name| crate::effort::resolve_initiative(&pages, name).ok());
+        if !matches!((source_page, target_page), (Some(a), Some(b)) if a.slug == b.slug) {
+            return Err(format!(
+                "effort {target} is for repo {theirs:?}, not this session's {mine:?}, and they share no initiative. Nothing was written"
+            ));
+        }
+    }
+    Ok((rel, text, file))
+}
+
+/// A dispatcher can write text and ticks once the note was delivered by number.
 #[allow(clippy::too_many_arguments)]
 fn save_target(
     notes: &Notes,
@@ -1103,23 +1226,35 @@ fn save_target(
     change: &Change<'_>,
     pulled: &Pull,
 ) -> Result<String, String> {
-    let (_, rel) = notes
-        .numbers()
-        .into_iter()
-        .find(|(n, _)| *n == target)
-        .ok_or_else(|| format!("no effort {target} in the notes"))?;
-    let path = notes.root.join(&rel);
-    let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+    let (rel, on_disk, mut file) = target_note(notes, state, target, cwd)?;
     let on_disk_hash = notes::content_hash(&on_disk);
-    let mut file = EffortFile::parse(&on_disk)?;
-    // A project session reaches only its project's efforts, as activation does.
-    let mine = state.repo.as_deref().unwrap_or_default();
-    let theirs = file.prop("repo").unwrap_or_default();
-    if theirs != mine {
+    let current = cmd.body.as_deref().map(as_current).transpose()?;
+    let ticks = cmd.flags_all("tick");
+    let unticks = cmd.flags_all("untick");
+    let delivered = state
+        .read_efforts
+        .as_ref()
+        .and_then(|reads| reads.get(&target.to_string()));
+    if (current.is_some() || !ticks.is_empty() || !unticks.is_empty()) && delivered.is_none() {
         return Err(format!(
-            "effort {target} is for repo {theirs:?}, not this session's {mine:?}. Nothing was written"
+            "run `astrolabe effort read {target}` first: a body or tick needs the note delivered in this session. Nothing was written.\n{FORMS}"
         ));
     }
+    if delivered.is_some_and(|hash| hash != &on_disk_hash) {
+        let mut next = state.clone();
+        let mut reads = next.read_efforts.as_ref().cloned().unwrap_or_default();
+        reads.insert(target.to_string(), on_disk_hash.clone());
+        next.read_efforts.set(reads);
+        notes::write_text(&state_path(&notes.state, session), &next.to_string())?;
+        return Err(format!(
+            "effort {target} changed since it was delivered to this session. Nothing was overwritten. Its note now:\n\n{on_disk}\nSave again from this."
+        ));
+    }
+    require_transition_body(&file, change.status, current.as_deref())?;
+    if let Some(current) = current {
+        file.current = current;
+    }
+    apply_ticks(&mut file, &ticks, &unticks)?;
     let (day, _) = notes::local_day_time();
     let before = change.apply(&mut file, &day)?;
     file.set("updated", &notes::local_stamp());
@@ -1133,6 +1268,12 @@ fn save_target(
         Some(s) if s != before => format!("{target:04}: {s}"),
         _ => format!("{target:04}: checkpoint"),
     };
+    let mut next = state.clone();
+    let mut reads = next.read_efforts.as_ref().cloned().unwrap_or_default();
+    if delivered.is_some() {
+        reads.insert(target.to_string(), notes::content_hash(&text));
+        next.read_efforts.set(reads);
+    }
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
@@ -1142,8 +1283,8 @@ fn save_target(
         journal: Vec::new(),
         message,
         base: Some(on_disk_hash),
-        // This session's own record is untouched: its effort wasn't saved.
-        states: Vec::new(),
+        // Only the by-number hash advances; the bound record was not saved.
+        states: vec![(state_path(&notes.state, session), next.to_value())],
         committed: false,
         digest: Some(cmd.digest()),
         result: None,
@@ -1160,6 +1301,7 @@ fn save_target(
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
     }
+    head += &unfinished_pieces(&file);
     crate::application::finish(notes, key, &head);
     Ok(head)
 }
@@ -1325,7 +1467,10 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     let mut wants_value = false;
     for (i, a) in args.iter().enumerate() {
         let is_flag = a.starts_with("--");
-        let positional = (i > 0 || first == "journal") && !is_flag && !wants_value;
+        let positional = (i > 0 || first == "journal")
+            && !(first == "effort" && args.first() == Some(&"read") && i == 1)
+            && !is_flag
+            && !wants_value;
         if a.contains('\n') || positional {
             body = Some((*a).to_owned());
         } else if a.contains(' ') || a.is_empty() {
