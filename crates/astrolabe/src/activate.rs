@@ -6,6 +6,7 @@ pub(crate) use crate::session::state_path;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub(crate) mod allow;
 mod context;
 mod housekeeping;
 mod proof;
