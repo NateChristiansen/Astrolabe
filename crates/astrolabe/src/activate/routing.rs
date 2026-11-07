@@ -263,6 +263,9 @@ pub(crate) fn provider(input: &Value) -> &'static str {
 /// The hook's answer to `astrolabe activate …`: done here, for this session, and the command
 /// rewritten to print it. Only a plain command is taken, so it's exactly what the hook read.
 pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<Value> {
+    if let Some(answer) = super::housekeeping::command(input, session, child) {
+        return Some(answer);
+    }
     let tool_input = &input["tool_input"];
     let key = if tool_input.get("command").is_some() {
         "command"

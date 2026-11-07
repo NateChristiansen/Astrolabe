@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +34,13 @@ fn main() {
         }
         ["activate", rest @ ..] => {
             let (text, ok) = astrolabe::activate::command(rest);
+            println!("{text}");
+            if !ok {
+                std::process::exit(1);
+            }
+        }
+        ["lesson", rest @ ..] => {
+            let (text, ok) = astrolabe::record::lesson::plain(rest);
             println!("{text}");
             if !ok {
                 std::process::exit(1);

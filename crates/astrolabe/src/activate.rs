@@ -7,6 +7,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 mod context;
+mod housekeeping;
 mod proof;
 mod repos;
 mod routing;

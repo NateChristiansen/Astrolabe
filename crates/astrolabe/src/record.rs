@@ -8,6 +8,7 @@ use crate::session::{Field, SessionState};
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+pub mod lesson;
 mod validation;
 use validation::{
     AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, one_of, shift_plan_headings,
@@ -258,6 +259,7 @@ fn new_inner(
         ..Default::default()
     };
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
         renames: Vec::new(),
@@ -543,6 +545,7 @@ fn save_inner(
         _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
     };
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: vec![(rel.clone(), text)],
         renames: Vec::new(),
@@ -647,6 +650,7 @@ fn journal_inner(
     let pulled = crate::application::pull(&notes);
     let (day, _) = notes::local_day_time();
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: Vec::new(),
         renames: Vec::new(),

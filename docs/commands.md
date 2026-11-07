@@ -102,6 +102,14 @@ The output contains `efforts`, `today`, today's raw `journal` and parsed `journa
 
 `notes status` reports unpublished changes, divergence and unfinished writes. `notes sync` retries pending writes and synchronization with the notes remote. See [troubleshooting](troubleshooting.md) for failures and [using another machine](usage.md#use-another-machine) for setup.
 
+Run `astrolabe notes sync` alone in an agent session: the plugin's hook recovers unfinished writes locally, starts background sync and reports whether it started. Use `astrolabe notes status` for the result. In a terminal without the hook it runs synchronization directly as before.
+
+### `lesson close`
+
+Run `astrolabe lesson close lessons/<name>.md --as "<disposition>"` alone in an agent session. The hook validates the request, pulls the notes, then appends the disposition as the refreshed lesson's last line, commits only that lesson, removes it in a second commit and requests background sync. Both commit subjects name the lesson; unrelated staged work stays staged. Interrupted closes resume through the notes recovery path without repeating the disposition.
+
+The path is relative to the notes checkout and must name a Markdown file inside `lessons/`, without symbolic links. A missing file, an outside path, a non-Markdown file or an empty disposition is refused without changes. The disposition must be one line. Without hook interception, the command closes nothing.
+
 ## Load an effort
 
 These commands run through the plugin in an agent session with Astrolabe on. Normally you ask the agent to **pick up 12** and it handles the command.

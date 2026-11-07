@@ -38,5 +38,9 @@ Check the property named in the error at the top of the effort note. Its repo mu
 
 Ask the agent to check whether your notes have synced, or use the [notes sync commands](commands.md#board-and-notes). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
 
+Lesson closing and notes sync run through the hook and need no extra writable folder.
+Making the notes folder writable doesn't cover Git metadata or local state.
+A GitHub read in a sandboxed session is a per-command approval where the host allows it.
+
 
 [Installation](install.md) · [Using Astrolabe](usage.md) · [Command reference](commands.md)

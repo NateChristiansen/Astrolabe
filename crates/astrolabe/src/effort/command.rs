@@ -199,7 +199,7 @@ A journal line with no effort:  astrolabe journal \"Found the Deck preset in the
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
-pub(super) fn is_assignment(word: &str) -> bool {
+pub(crate) fn is_assignment(word: &str) -> bool {
     word.split_once('=').is_some_and(|(name, _)| {
         !name.is_empty()
             && !name.starts_with(|c: char| c.is_ascii_digit())
@@ -212,7 +212,7 @@ pub(super) fn is_assignment(word: &str) -> bool {
 /// PowerShell here-string body and a `#` comment are skipped; `|`, `;`, `&`, newline, `(`,
 /// `)` and backtick outside quotes end a command. It's only for deciding what to claim:
 /// `parse` reads the claimed command strictly.
-pub(super) fn simple_commands(text: &str) -> Vec<Vec<String>> {
+pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
     let text = text.replace("\r\n", "\n");
     let chars: Vec<char> = text.chars().collect();
     let mut commands = Vec::new();
@@ -461,18 +461,18 @@ pub(super) fn end_of_body<'a>(rest: &'a str, end: &str) -> Result<(String, &'a s
 /// Words of a command line: bare words, or double-quoted values that may hold spaces,
 /// apostrophes and any letters, but no `$`, backtick, backslash or inner double quote, because
 /// the shell would read those and the program must read the command the way the shell would.
-pub(super) struct Words<'a> {
+pub(crate) struct Words<'a> {
     rest: &'a str,
 }
 
 impl<'a> Words<'a> {
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         let text = text.trim();
         let text = text.strip_prefix("& ").unwrap_or(text);
         Self { rest: text }
     }
 
-    fn next_word(&mut self) -> Result<Option<String>, String> {
+    pub(crate) fn next_word(&mut self) -> Result<Option<String>, String> {
         self.rest = self.rest.trim_start();
         if self.rest.is_empty() {
             return Ok(None);

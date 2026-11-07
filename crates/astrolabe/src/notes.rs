@@ -43,6 +43,9 @@ pub struct Held(#[allow(dead_code)] File);
 /// A planned write, applied whole and idempotently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Op {
+    /// Two ordered lesson commits, recovered through the same intent as a save.
+    #[serde(default)]
+    pub lesson_close: Option<LessonClose>,
     /// Random, minted by the hook; reused for a retry of the same tool call.
     pub key: String,
     /// Relative path and full text, replaced whole.
@@ -74,6 +77,13 @@ pub struct Op {
     /// the fingerprint reads. Kept in the intent so a replay does the same.
     #[serde(default)]
     pub rebaseline: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LessonClose {
+    pub path: String,
+    pub original: String,
+    pub disposed: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,7 +142,7 @@ impl Notes {
     }
 
     /// Files the index holds unmerged: a save can't stage those, so nothing is written.
-    fn refuse_unmerged(&self) -> Result<(), String> {
+    pub(crate) fn refuse_unmerged(&self) -> Result<(), String> {
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .unwrap_or_default();
@@ -220,6 +230,7 @@ impl Notes {
             }
         }
         let mut op = Op {
+            lesson_close: None,
             key: key.clone(),
             files,
             renames: vec![(old_rel.clone(), new_rel.clone())],

@@ -5,6 +5,66 @@ use super::{
 use std::path::PathBuf;
 
 impl Notes {
+    /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
+    /// markers too, covering a crash after git commits but before the intent is updated.
+    fn apply_lesson(&self, op: &Op, lesson: &super::LessonClose) -> Result<(), String> {
+        if self.already_applied(&op.key) {
+            return Ok(());
+        }
+        let path = crate::record::lesson::safe_path(self, &lesson.path)?;
+        let literal = format!(":(literal){}", lesson.path);
+        let first_key = format!("disposition-{}", op.key);
+        let first = self.applied_commit(&first_key);
+        let have = std::fs::read_to_string(&path).ok();
+        if first.is_none() {
+            if have.as_deref() != Some(&lesson.original)
+                && have.as_deref() != Some(&lesson.disposed)
+            {
+                return Err(
+                    "the lesson changed before its disposition could be committed".to_owned(),
+                );
+            }
+            super::write_text(&path, &lesson.disposed)?;
+            self.git(&["add", "--", &literal])?;
+            let message = format!(
+                "Record disposition for lesson {}\n\nOp-Key: {first_key}",
+                lesson.path
+            );
+            self.git(&[
+                "-c",
+                "user.useConfigOnly=false",
+                "commit",
+                "--quiet",
+                "--only",
+                "-m",
+                &message,
+                "--",
+                &literal,
+            ])?;
+        } else if have.as_deref().is_some_and(|text| text != lesson.disposed) {
+            return Err("the lesson changed after its disposition was committed".to_owned());
+        }
+        // An absent file is the crash window after removal, before its commit.
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let message = format!("Remove closed lesson {}\n\nOp-Key: {}", lesson.path, op.key);
+        self.git(&[
+            "-c",
+            "user.useConfigOnly=false",
+            "commit",
+            "--quiet",
+            "--only",
+            "-m",
+            &message,
+            "--",
+            &literal,
+        ])?;
+        Ok(())
+    }
+
     /// Whether a commit already carries this op's key: a retried tool call was done.
     pub fn already_applied(&self, key: &str) -> bool {
         self.applied_commit(key).is_some()
@@ -159,6 +219,12 @@ impl Notes {
         }
         self.save_intent(&op)?;
         if op.committed {
+            return self.write_states(&op);
+        }
+        if let Some(lesson) = &op.lesson_close {
+            self.apply_lesson(&op, lesson)?;
+            op.committed = true;
+            self.save_intent(&op)?;
             return self.write_states(&op);
         }
         for (from, to) in &op.renames {

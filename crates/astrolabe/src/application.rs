@@ -33,6 +33,31 @@ pub fn sync(notes: &Notes) -> Result<String, String> {
     result
 }
 
+/// A session's explicit sync does local recovery here and leaves network work to a
+/// detached process, so a slow fetch or push cannot consume the pre-command hook timeout.
+pub fn request_sync(notes: &Notes) -> Result<String, String> {
+    let held = notes.lock()?;
+    let leftovers = reconcile(notes);
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "Unfinished writes failed again, so sync could not start: {}; check astrolabe notes status.",
+            leftovers.join("; ")
+        ));
+    }
+    let remote = notes.has_remote();
+    drop(held);
+    if !remote {
+        Ok("Sync unavailable: no remote configured; check astrolabe notes status.".to_owned())
+    } else if notes.spawn_sync() {
+        Ok("Background sync started; check astrolabe notes status for the result.".to_owned())
+    } else {
+        Err(
+            "Background sync could not start; check astrolabe notes status for the result."
+                .to_owned(),
+        )
+    }
+}
+
 pub fn board(notes: &Notes) -> Result<PathBuf, String> {
     crate::home_effects::board(notes)
 }
