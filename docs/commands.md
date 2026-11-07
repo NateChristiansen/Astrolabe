@@ -216,7 +216,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--status <state>` | Set `proposed`, `ready`, `active`, `review`, `blocked`, `done` or `abandoned`. Review means built and checked, waiting for review, acceptance or landing. |
 | `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
-| `--decision "chose X over Y: reason"` | Append a dated decision. |
+| `--decision "chose X over Y: reason"` | Append a dated decision. Repeat the flag for several; each is recorded, in the order given. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
 | `--plan-file <path>` | Replace the saved plan with a UTF-8 text file. |
 | `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |

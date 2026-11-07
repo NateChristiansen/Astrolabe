@@ -650,10 +650,14 @@ fn save_inner(
         .flag("status")
         .map(|s| one_of("status", s, &STATUSES))
         .transpose()?;
-    let decision = cmd
-        .flag("decision")
+    // Each one given is recorded, in order: agents pass several, and keeping only the last
+    // dropped the others without a word.
+    let decisions: Vec<&str> = cmd
+        .flags_all("decision")
+        .into_iter()
         .map(str::trim)
-        .filter(|d| !d.is_empty());
+        .filter(|d| !d.is_empty())
+        .collect();
     // Given empty, it clears the condition; left out, it's cleared too unless the effort
     // stays blocked or in review (below).
     let waits_for = cmd.flag("waits-for").map(str::trim);
@@ -711,7 +715,7 @@ fn save_inner(
     if body.is_none()
         && body_plan.is_none()
         && status.is_none()
-        && decision.is_none()
+        && decisions.is_empty()
         && waits_for.is_none()
         && plan_file.is_none()
         && journal_text.is_none()
@@ -815,7 +819,7 @@ fn save_inner(
             status: status.as_deref(),
             waits_for,
             reason,
-            decision,
+            decisions: &decisions,
             initiative,
         };
         return save_target(
@@ -884,7 +888,7 @@ fn save_inner(
         status: status.as_deref(),
         waits_for,
         reason,
-        decision,
+        decisions: &decisions,
         initiative,
     }
     .apply(&mut file, &day)?;
@@ -1073,14 +1077,14 @@ struct Change<'a> {
     status: Option<&'a str>,
     waits_for: Option<&'a str>,
     reason: Option<&'a str>,
-    decision: Option<&'a str>,
+    decisions: &'a [&'a str],
     initiative: Option<&'a str>,
 }
 
 impl Change<'_> {
     /// Applies the change; gives the status from before it.
     fn apply(&self, file: &mut EffortFile, day: &str) -> Result<String, String> {
-        if let Some(d) = self.decision {
+        for d in self.decisions {
             file.add_decision(&format!("{day}: {d}"));
         }
         // Why the work stopped goes with the record of choices, dated, so it outlives later

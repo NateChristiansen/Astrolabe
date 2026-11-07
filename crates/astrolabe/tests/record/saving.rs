@@ -1179,3 +1179,87 @@ fn reactivating_the_same_record_keeps_reads_without_refreshing_other_notes() {
         assert!(!ok && out.contains("effort read 1"), "{out}");
     }
 }
+
+#[test]
+fn every_decision_given_is_recorded_in_order() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // Each set of decisions lands under Decisions as given: nothing dropped, nothing reordered.
+    let in_order = |text: &str, lines: &[&str]| {
+        let decisions = text.split("## Decisions").nth(1).unwrap_or_default();
+        let at: Vec<_> = lines.iter().map(|l| decisions.find(l)).collect();
+        at.iter().all(Option::is_some) && at.windows(2).all(|w| w[0] < w[1])
+    };
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"ink over paint: cheaper\" --decision \"   \" --decision \"curves over corners: smoother\"",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        in_order(
+            &text,
+            &[
+                ": ink over paint: cheaper",
+                ": curves over corners: smoother"
+            ]
+        ) && text
+            .split("## Decisions")
+            .nth(1)
+            .unwrap_or_default()
+            .matches("\n- ")
+            .count()
+            == 2,
+        "a blank one is skipped, the rest kept\n{text}"
+    );
+    // By number, from a session bound to another effort.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --effort 1 --decision \"one pass over two: faster\" --decision \"GPU over CPU: no readback\"",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        in_order(
+            &text,
+            &[
+                ": curves over corners: smoother",
+                ": one pass over two: faster",
+                ": GPU over CPU: no readback"
+            ]
+        ),
+        "{text}"
+    );
+    // On a bound initiative page.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe initiative new --title \"Ink\" <<'ASTROLABE'\nMake ink smooth.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe activate --initiative ink");
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"tether first: it unblocks goo\" --decision \"one machine: Deck only\" <<'ASTROLABE'\nUnder way.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Saved initiative ink"), "{out}");
+    let page = std::fs::read_to_string(mac.notes.join("initiatives/ink.md")).unwrap();
+    assert!(
+        in_order(
+            &page,
+            &[
+                ": tether first: it unblocks goo",
+                ": one machine: Deck only"
+            ]
+        ),
+        "{page}"
+    );
+}
