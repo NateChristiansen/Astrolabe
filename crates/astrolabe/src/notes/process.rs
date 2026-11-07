@@ -5,24 +5,25 @@ use std::process::{Command, Stdio};
 
 impl Notes {
     /// Runs `astrolabe notes sync` as its own process, so a hook or a save returns at once and
-    /// the push survives the app closing.
-    pub fn spawn_sync(&self) {
+    /// the push survives the app closing. Returns whether the process was launched, not
+    /// whether synchronization finished.
+    pub fn spawn_sync(&self) -> bool {
         // Noted in a file of its own (its mtime), so a turn end doesn't ask again while this
         // one is still on its way, and nothing here rewrites the sync record unlocked.
         let _ = write_text(&self.state.join(ASKED), "");
         // Tests run syncs in order themselves; a marker says one was asked for.
         if std::env::var_os("ASTROLABE_NO_DETACHED_SYNC").is_some() {
-            let _ = write_text(&self.state.join("sync-requested"), "");
-            return;
+            return write_text(&self.state.join("sync-requested"), "").is_ok();
         }
-        self.spawn_detached(&["notes", "sync"], "sync.log");
+        self.spawn_detached(&["notes", "sync"], "sync.log")
     }
 
     /// Runs this program again with `args`, in the notes checkout, as its own process that
-    /// outlives the caller, its output appended to `log` in the state folder.
-    pub fn spawn_detached(&self, args: &[&str], log: &str) {
+    /// outlives the caller, its output appended to `log` in the state folder. Returns whether
+    /// the process was launched.
+    pub fn spawn_detached(&self, args: &[&str], log: &str) -> bool {
         let Ok(exe) = std::env::current_exe() else {
-            return;
+            return false;
         };
         let log = self.state.join(log);
         let out = File::options().create(true).append(true).open(&log).ok();
@@ -39,7 +40,7 @@ impl Notes {
         // app never sees end-of-stream and refuses the hook's reply (seen in Claude Code on the
         // PC, 2026-11-03). The child gets its own files above.
         keep_stdio_here();
-        let _ = cmd.spawn();
+        cmd.spawn().is_ok()
     }
 }
 

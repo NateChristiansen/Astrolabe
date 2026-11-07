@@ -141,6 +141,8 @@ Involvement and authority follow the owner's instructions; see [choosing how the
 
 `astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state.
 
+Without a notes remote, a successful save reports `saved locally; sync unavailable: no remote configured`. With a remote, `background sync started` means the background process was launched, not that a push finished. A launch failure is reported separately; the local save still succeeds.
+
 ```sh
 astrolabe effort save --status active --journal "Added upload retries that keep the original selection." <<'ASTROLABE'
 Failed uploads can now be retried without choosing the files again.

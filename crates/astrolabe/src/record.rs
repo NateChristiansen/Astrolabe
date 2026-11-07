@@ -561,11 +561,19 @@ fn save_inner(
     // "merge" to "playtest" with status still blocked and sat unpushed for nine hours.
     let state_changed = status.as_deref().is_some_and(|s| s != before)
         || file.prop("waits_for").unwrap_or("") != waits_before;
-    if state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS {
-        notes.spawn_sync();
-    }
+    let sync_started = (state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS)
+        .then(|| notes.spawn_sync());
+    let saved = if matches!(&pulled, Pull::Offline(why) if why == "no remote") {
+        "saved locally; sync unavailable: no remote configured"
+    } else {
+        match sync_started {
+            Some(true) => "committed, background sync started",
+            Some(false) => "committed; background sync could not start",
+            None => "committed",
+        }
+    };
     let mut head = format!(
-        "Saved effort {number}: status {}{}{}; committed{}.",
+        "Saved effort {number}: status {}{}{}; {saved}.",
         file.prop("status").unwrap_or("?"),
         if cmd.body.is_some() {
             ", Current state replaced"
@@ -576,8 +584,7 @@ fn save_inner(
             ", journal line written"
         } else {
             ""
-        },
-        if state_changed { ", push started" } else { "" }
+        }
     );
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
