@@ -38,6 +38,14 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
         let (out, ok) = mac.bash("w1", cmd);
         assert!(!ok && out.contains("worker under effort 1"), "{out}");
     }
+    // A patch that quotes one is an edit: Codex's patch tool carries the patch as `command`,
+    // and this context line, run by a shell, would be a real command substitution.
+    let patch = "*** Begin Patch\n*** Update File: docs/commands.md\n@@\n `astrolabe effort save` updates the bound effort.\n+It says when the notes have no remote.\n*** End Patch\n";
+    let input = json!({"session_id": "w1", "cwd": mac.demo, "tool_name": "apply_patch", "tool_use_id": "call-2", "tool_input": {"command": patch}});
+    assert_eq!(mac.hook_json("pre-command", input), None);
+    // Through a shell, the same words are still refused.
+    let (out, ok) = mac.bash("w1", &format!("echo {}", patch.lines().nth(3).unwrap()));
+    assert!(!ok && out.contains("worker under effort 1"), "{out}");
     // Still a worker after a resume and after loading the effort again without the flag.
     assert!(
         mac.session_start("w1", "resume")
