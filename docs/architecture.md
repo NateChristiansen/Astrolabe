@@ -8,7 +8,7 @@ The installed program's `on` and `off` commands control one machine switch. When
 
 Loading an effort adds its settings and current state, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
 
-Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive context. Workers leave notes reporting to the agent that dispatched them.
+Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 
 Effort involvement and authority are context supplied to agents. They aren't enforced permissions.
 
@@ -27,6 +27,8 @@ The hook performs the write before the app runs that read. This lets effort comm
 For a change, plan or investigation that needs a lasting record, the agent runs `astrolabe effort new` with a title and a goal. The program creates and commits the note, assigns its number and binds it to the session. New work defaults to `check in at plan` involvement and `edit` authority unless the owner specifies otherwise.
 
 The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
+
+A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page under `initiatives/` and every effort it names as proposed, grouped by the `initiative` property the board reads, in one commit. Pieces stay for one change. An initiative may run as an orchestrator with workers when the owner picks that: each worker owns its effort's record, and the orchestrator marks each effort done by number after review and writes one journal line a day for the initiative, so ten workers don't make ten lines.
 
 Recording commands also run through the pre-command hook. The hook can write to the separate notes checkout even when the app's tool sandbox cannot. Without interception, the executable reports an already-recorded result, an unfinished write, or that nothing was recorded; running it directly doesn't create or save an effort.
 

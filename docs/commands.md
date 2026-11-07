@@ -8,6 +8,7 @@ Exact syntax and options for the installed program and agent-session commands. F
 - [Board and notes](#board-and-notes)
 - [Load an effort](#load-an-effort)
 - [Create an effort](#create-an-effort)
+- [Create an initiative](#create-an-initiative)
 - [Save an effort](#save-an-effort)
 - [Journal](#journal)
 - [Hook entry point](#hook-entry-point)
@@ -117,7 +118,7 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | Command | Result |
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
-| `astrolabe activate --effort <number> --worker` | Load context for a dispatched worker. The worker leaves notes reporting to its dispatcher. |
+| `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and marks the effort done with `effort save --effort <number>`. |
 | `astrolabe activate --status` | Show the loaded effort and this session's guard proof. |
 | `astrolabe activate --off` | Unload the effort; the machine switch and guard stay on. |
 
@@ -151,9 +152,38 @@ ASTROLABE
 
 Involvement and authority follow the owner's instructions; see [choosing how the agent works](usage.md#choose-how-the-agent-works).
 
+## Create an initiative
+
+`astrolabe initiative new` files an initiative page and every effort it names in one commit, so a plan that names ten efforts is one command. The body is the page. Its `## Efforts` section (any heading starting with "Efforts") lists the efforts in order, one paragraph each: the title on the first line, the goal on the lines below. Each becomes a `proposed` effort grouped under the title; the section is rewritten as a numbered list of links to them, and everything else in the body is kept as written.
+
+```sh
+astrolabe initiative new --title "Saving and progression" <<'ASTROLABE'
+A fresh profile plays from the first gallery to the final valley, and the hub remembers.
+
+## Efforts and order
+Progress facts file
+The per-profile record: facts with reset generations and a union merge.
+
+Route and locked levels
+Which tool each level teaches, the route as data, locked cards with hints.
+
+## What completion means
+- A fresh profile reaches the valley and the ending records.
+ASTROLABE
+```
+
+| Option | Values and default |
+| --- | --- |
+| `--title "<name>"` | Required. The initiative's name, as the `initiative` property of its efforts, and the page's file name under `initiatives/`. |
+| `--repo <name>` | As for `effort new`: required from the notes checkout, refused elsewhere. |
+| `--involvement "<value>"` | Applied to every effort filed; default `check in at plan`. |
+| `--authority <value>` | Applied to every effort filed; default `edit`. |
+
+The session stays bound to its own effort: the spike that planned the initiative joins it with `effort save --initiative "<name>"` and closes as the record. No journal line is written. An initiative is filed once; a page that already exists is refused, and a later effort joins the group with `--initiative` on `effort new` or `effort save`. The page's `status` and the efforts' order are then the owner's to edit; the board groups efforts by the property, not the page.
+
 ## Save an effort
 
-`astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state.
+`astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state. With `--effort <number>` it changes another effort's state instead; see below.
 
 Without a notes remote, a successful save reports `saved locally; sync unavailable: no remote configured`. With a remote, `background sync started` means the background process was launched, not that a push finished. A launch failure is reported separately; the local save still succeeds.
 
@@ -180,6 +210,8 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |
 | `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
+| `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. |
+| `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
 
 Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
 
@@ -208,7 +240,7 @@ astrolabe effort save --tick "First repo note"
 
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
 
-`save` has no flags for changing the title, repo, involvement, authority, initiative or priority. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
+`save` has no flags for changing the title, repo, involvement, authority or priority. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
 
 ### Multiline input and quoting
 

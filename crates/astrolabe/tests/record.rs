@@ -422,6 +422,8 @@ impl Drop for Kill {
 
 #[path = "record/home.rs"]
 mod home;
+#[path = "record/initiatives.rs"]
+mod initiatives;
 #[path = "record/lessons.rs"]
 mod lessons;
 #[path = "record/recovery.rs"]

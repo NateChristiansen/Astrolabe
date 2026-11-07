@@ -2,7 +2,7 @@
 //! words become an effort note, at most one journal line and a commit; the session is bound to the effort; code stamps what it
 //! can observe (time, machine, provider, session, branch, head, unpushed, dirty), without asking the agent to reconstruct them.
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
-use crate::effort::{EffortCommand, EffortFile, FORMS, slug};
+use crate::effort::{EffortCommand, EffortFile, FORMS, InitiativePage, slug};
 use crate::notes::{self, JournalLine, Notes, Op, Pull, RECENT_MS, RepoFacts};
 use crate::session::{Field, SessionState};
 use serde_json::Value;
@@ -212,24 +212,20 @@ fn new_inner(
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
     let facts = RepoFacts::read(cwd);
-    let mut file = EffortFile {
-        title: format!("{number} {title}"),
+    let mut file = effort_note(
+        number,
+        title,
         current,
-        ..Default::default()
-    };
-    file.title = format!("{number:04} {title}");
-    for (k, v) in [
-        ("status", status.as_str()),
-        ("repo", repo.as_str()),
-        ("initiative", cmd.flag("initiative").unwrap_or("")),
-        ("priority", cmd.flag("priority").unwrap_or("none")),
-        ("involvement", involvement.as_str()),
-        ("authority", authority.as_str()),
-        ("waits_for", ""),
-        ("created", day.as_str()),
-    ] {
-        file.set(k, v);
-    }
+        &Settings {
+            status: &status,
+            repo: &repo,
+            initiative: cmd.flag("initiative").unwrap_or(""),
+            priority: cmd.flag("priority").unwrap_or("none"),
+            involvement: &involvement,
+            authority: &authority,
+        },
+        &day,
+    );
     stamp(
         &mut file,
         session,
@@ -297,6 +293,203 @@ fn new_inner(
         );
     }
     let text = format!("{head}\n\n{}", activation.text());
+    crate::application::finish(&notes, key, &text);
+    Ok(text)
+}
+
+/// The properties a new effort note starts with.
+struct Settings<'a> {
+    status: &'a str,
+    repo: &'a str,
+    initiative: &'a str,
+    priority: &'a str,
+    involvement: &'a str,
+    authority: &'a str,
+}
+
+/// A new effort note before its stamp: the title with its number, the goal as Current state,
+/// and the properties in the order the board reads them.
+fn effort_note(
+    number: u32,
+    title: &str,
+    current: String,
+    settings: &Settings<'_>,
+    day: &str,
+) -> EffortFile {
+    let mut file = EffortFile {
+        title: format!("{number:04} {title}"),
+        current,
+        ..Default::default()
+    };
+    for (k, v) in [
+        ("status", settings.status),
+        ("repo", settings.repo),
+        ("initiative", settings.initiative),
+        ("priority", settings.priority),
+        ("involvement", settings.involvement),
+        ("authority", settings.authority),
+        ("waits_for", ""),
+        ("created", day),
+    ] {
+        file.set(k, v);
+    }
+    file
+}
+
+/// `astrolabe initiative new`, in the hook: the page and every effort it names, filed as
+/// proposed under it in one commit, so a plan that names ten efforts is one command and not
+/// twenty turns. The session's own effort stays bound: the spike that planned them is where
+/// the plan was approved, and it closes as their record.
+pub fn initiative(
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> Done {
+    match initiative_inner(cmd, key, session, provider, cwd) {
+        Ok(text) => Done { text, ok: true },
+        Err(why) => Done {
+            text: format!("Initiative NOT filed: {why}. {}", activate::STILL_ON),
+            ok: false,
+        },
+    }
+}
+
+fn initiative_inner(
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> Result<String, String> {
+    let title = cmd
+        .flag("title")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or("--title is needed")?;
+    let body = cmd
+        .body
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| {
+            format!("the page goes in the body, with its `## Efforts` section.\n{FORMS}")
+        })?;
+    // Refused before the lock, reconcile and pull: a refused body changes nothing.
+    let page = InitiativePage::parse(body)?;
+    let goals: Vec<String> = page
+        .efforts
+        .iter()
+        .map(|(t, goal)| as_current(goal).map_err(|why| format!("effort {t:?}: {why}")))
+        .collect::<Result<_, _>>()?;
+    let involvement = one_of(
+        "involvement",
+        cmd.flag("involvement").unwrap_or("check in at plan"),
+        &INVOLVEMENTS,
+    )?;
+    let authority = one_of(
+        "authority",
+        cmd.flag("authority").unwrap_or("edit"),
+        &AUTHORITIES,
+    )?;
+    let (registry, notes) = notes_here()?;
+    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
+    let page_rel = format!("initiatives/{}.md", slug(title));
+    let _held = notes.lock()?;
+    let leftovers = crate::application::reconcile(&notes);
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
+    if notes.already_applied(key) {
+        let result = notes
+            .intents()
+            .into_iter()
+            .find(|op| op.key == key)
+            .and_then(|op| op.result);
+        return Ok(result.unwrap_or_else(|| format!(
+            "Initiative {title:?} was already filed by this same call (a retry); nothing new was written. Its page is {page_rel}"
+        )));
+    }
+    let pulled = crate::application::pull(&notes);
+    if notes.root.join(&page_rel).exists() {
+        return Err(format!(
+            "{page_rel} exists already: an initiative is filed once, and a later effort joins it with --initiative {title:?} on `effort new` or `effort save`"
+        ));
+    }
+    let start = notes.next_number();
+    let (day, _) = notes::local_day_time();
+    let facts = RepoFacts::read(cwd);
+    let settings = Settings {
+        status: "proposed",
+        repo: &repo,
+        initiative: title,
+        priority: "none",
+        involvement: &involvement,
+        authority: &authority,
+    };
+    let mut files = Vec::new();
+    let mut filed = Vec::new();
+    let mut lines = Vec::new();
+    for (i, ((name, _), goal)) in page.efforts.iter().zip(goals).enumerate() {
+        let number = start + i as u32;
+        let rel = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(name));
+        let mut file = effort_note(number, name, goal, &settings, &day);
+        stamp(
+            &mut file,
+            session,
+            provider,
+            stamp_facts(cwd, facts.as_ref()),
+        );
+        files.push((rel.clone(), file.render()));
+        lines.push(format!("{number:04} {name}"));
+        filed.push((number, rel));
+    }
+    files.push((page_rel.clone(), page.render(title, &repo, &day, &filed)));
+    let count = filed.len();
+    let op = Op {
+        lesson_close: None,
+        key: key.to_owned(),
+        files,
+        renames: Vec::new(),
+        // No journal line: filing is state, not history; the planning session's own line
+        // tells the plan.
+        journal: Vec::new(),
+        message: format!("initiative {title}: {count} efforts filed"),
+        base: None,
+        // The session stays on its own effort.
+        states: Vec::new(),
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: rebaseline(cwd),
+    };
+    notes.apply(&op)?;
+    notes.spawn_sync();
+    let bound = read_state(&notes.state, session)
+        .ok()
+        .flatten()
+        .and_then(|s| s.effort.as_deref().map(str::to_owned));
+    let mut text = format!(
+        "Initiative {title:?} filed as {page_rel} with {count} efforts, each proposed under it, committed:\n{}\n{}",
+        lines.join("\n"),
+        match bound {
+            Some(n) => format!(
+                "This session stays on effort {n}; if that effort planned them, it joins the initiative with `astrolabe effort save --initiative \"{title}\"` and closes as their record."
+            ),
+            None => "This session is bound to no effort.".to_owned(),
+        }
+    );
+    if let Pull::Diverged(why) = &pulled {
+        text += &format!(
+            " Notes diverged from origin before this ({}); the numbers may collide with the other machine's and be renumbered later.",
+            why.lines().next().unwrap_or_default()
+        );
+    }
     crate::application::finish(&notes, key, &text);
     Ok(text)
 }

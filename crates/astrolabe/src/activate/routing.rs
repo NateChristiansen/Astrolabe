@@ -366,6 +366,9 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                         &[powershell],
                     ),
                     "journal" => crate::record::journal(&parsed, &op_key, session, &cwd),
+                    "initiative" => {
+                        crate::record::initiative(&parsed, &op_key, session, provider(input), &cwd)
+                    }
                     _ => crate::record::save(&parsed, &op_key, session, provider(input), &cwd),
                 };
                 (done.text, done.ok, Some(parsed.digest()), Some(op_key))

@@ -23,14 +23,18 @@ pub const SAVE_FLAGS: [&str; 11] = [
     "initiative",
     "effort",
 ];
+/// `initiative new` files every effort as proposed under the title, so it takes no status,
+/// initiative or priority; involvement and authority apply to all of them.
+pub const INITIATIVE_FLAGS: [&str; 4] = ["title", "repo", "involvement", "authority"];
 
 /// The one delimiter, quoted so the shell expands nothing in the body.
 pub const DELIMITER: &str = "ASTROLABE";
 
-/// What an `astrolabe effort …` or `astrolabe journal …` command says.
+/// What an `astrolabe effort …`, `astrolabe journal …` or `astrolabe initiative new …`
+/// command says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffortCommand {
-    /// `new`, `save` or `journal`.
+    /// `new`, `save`, `journal` or `initiative`.
     pub verb: String,
     /// `--key value` pairs, in order, keys without the dashes.
     pub flags: Vec<(String, String)>,
@@ -59,7 +63,11 @@ impl EffortCommand {
             let named = program == "astrolabe"
                 || program.ends_with("/astrolabe")
                 || program.ends_with("\\astrolabe");
-            named && matches!(words.next().map(String::as_str), Some("effort" | "journal"))
+            named
+                && matches!(
+                    words.next().map(String::as_str),
+                    Some("effort" | "journal" | "initiative")
+                )
         })
     }
 
@@ -80,6 +88,15 @@ impl EffortCommand {
                     return Err(format!("`effort {other}` isn't a verb; use new or save"));
                 }
                 None => return Err("`effort` needs a verb: new or save".to_owned()),
+            },
+            Some("initiative") => match words.next_word()?.as_deref() {
+                Some("new") => "initiative".to_owned(),
+                Some(other) => {
+                    return Err(format!(
+                        "`initiative {other}` isn't a verb; `initiative new` files a page and its efforts"
+                    ));
+                }
+                None => return Err("`initiative` needs its verb: new".to_owned()),
             },
             Some("journal") => {
                 // The sentence as one quoted word, or in the body; never both. From the
@@ -121,7 +138,11 @@ impl EffortCommand {
                     body: Some(text.to_owned()),
                 });
             }
-            _ => return Err("the second word must be `effort` or `journal`".to_owned()),
+            _ => {
+                return Err(
+                    "the second word must be `effort`, `journal` or `initiative`".to_owned(),
+                );
+            }
         };
         let mut flags = Vec::new();
         while let Some(word) = words.next_word()? {
@@ -137,15 +158,15 @@ impl EffortCommand {
             if value.starts_with("--") {
                 return Err(format!("--{key} needs a value, not another flag"));
             }
-            let allowed: &[&str] = if verb == "new" {
-                &NEW_FLAGS
-            } else {
-                &SAVE_FLAGS
+            let (allowed, of): (&[&str], &str) = match verb.as_str() {
+                "new" => (&NEW_FLAGS, "effort new"),
+                "initiative" => (&INITIATIVE_FLAGS, "initiative new"),
+                _ => (&SAVE_FLAGS, "effort save"),
             };
             if !allowed.contains(&key) {
                 let named: Vec<String> = allowed.iter().map(|f| format!("--{f}")).collect();
                 return Err(format!(
-                    "--{key} isn't a flag of `effort {verb}`; its flags are {}",
+                    "--{key} isn't a flag of `{of}`; its flags are {}",
                     named.join(", ")
                 ));
             }
@@ -198,6 +219,7 @@ POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over 
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
 Another effort's state, from the session that dispatched it:  astrolabe effort save --effort <n> --status done --decision \"…\"  (only --status, --waits-for, --reason, --decision and --initiative go with --effort).\n\
+An initiative and its efforts, filed as proposed in one step, the body being its page:\n  astrolabe initiative new --title \"<name>\" <<'ASTROLABE'\n  <purpose>\n\n  ## Efforts\n  <first effort's title>\n  <its goal>\n\n  <next title>\n  <its goal>\n  ASTROLABE\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
@@ -579,8 +601,35 @@ mod tests {
     }
 
     #[test]
+    fn an_initiative_command_parses_with_its_own_flags() {
+        let text = "astrolabe initiative new --title \"Smooth ink\" --authority read <<'ASTROLABE'\nPurpose.\n\n## Efforts\nA\ngoal a\nASTROLABE\n";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(cmd.verb, "initiative");
+        assert_eq!(cmd.flag("title"), Some("Smooth ink"));
+        assert_eq!(cmd.flag("authority"), Some("read"));
+        assert_eq!(
+            cmd.body.as_deref(),
+            Some("Purpose.\n\n## Efforts\nA\ngoal a")
+        );
+        for (text, why) in [
+            (
+                "astrolabe initiative new --status proposed",
+                "isn't a flag of `initiative new`",
+            ),
+            ("astrolabe initiative list", "isn't a verb"),
+            ("astrolabe initiative", "needs its verb"),
+        ] {
+            let err = EffortCommand::parse(text).unwrap_err();
+            assert!(err.contains(why), "{text:?}: {err}");
+        }
+    }
+
+    #[test]
     fn only_effort_commands_are_claimed() {
         assert!(EffortCommand::is_effort_command("astrolabe effort save"));
+        assert!(EffortCommand::is_effort_command(
+            "astrolabe initiative new --title t"
+        ));
         assert!(EffortCommand::is_effort_command(
             "& ~/.local/bin/astrolabe effort new"
         ));

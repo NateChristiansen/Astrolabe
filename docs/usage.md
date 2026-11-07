@@ -10,6 +10,8 @@ Open a session in your project and ask for work as usual:
 
 The agent records the work in an **effort**. It keeps that note updated with progress, decisions and what comes next, and adds a short account of what changed to your journal.
 
+A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files its page and all of its efforts in one step, and the board groups them under its name. You can run those efforts one at a time, or ask an agent to orchestrate them through workers.
+
 ## Choose how the agent works
 
 Tell the agent how involved you want to be:
