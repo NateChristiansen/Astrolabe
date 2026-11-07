@@ -90,6 +90,9 @@ pub struct SessionState {
     /// The name Astrolabe last gave the session, so a rename by the owner after it is kept.
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub named: Field<String>,
+    /// The name the session's agent was last told to rename it to, with the app's own tool.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub told: Field<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -264,15 +264,13 @@ impl Activation {
         let provider = self.state.provider.as_deref().unwrap_or_default();
         if let Some(name) = self.state.name.as_deref()
             && self.state.named.as_deref() != Some(name)
+            && self.state.told.as_deref() != Some(name)
             && let Some(line) = rename(provider, name)
         {
             self.head += &format!("\n\n{line}");
-            // Claude's hook records the name when it gives it at the next prompt; recorded
-            // here, it would never give it in an app with no rename tool.
-            if provider == "codex" {
-                let name = name.to_owned();
-                self.state.named.set(name);
-            }
+            // Told, not named: Claude's hook still gives the name where the app has no tool.
+            let name = name.to_owned();
+            self.state.told.set(name);
         }
         self
     }
@@ -380,6 +378,7 @@ pub fn switch_on(
         name: session_name(&effort.number, &effort.title).into(),
         // Whatever effort it was on: the name the session carries is the same one.
         named: previous.map(|p| p.named.clone()).unwrap_or_default(),
+        told: previous.map(|p| p.told.clone()).unwrap_or_default(),
         // Unknown fields survive a resume, so a newer writer can share the record.
         extra: same.map(|p| p.extra.clone()).unwrap_or_default(),
         ..Default::default()

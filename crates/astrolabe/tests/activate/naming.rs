@@ -49,8 +49,8 @@ fn a_claude_session_is_named_at_the_next_prompt_once_and_an_owner_rename_stays()
             && !text.contains("set_thread_title"),
         "{text}"
     );
-    // The desktop app's own title reads as a custom one: binding an effort wins over it.
-    let first = prompt(&f, "s1", Some("Auto title"));
+    // No tool, as in a terminal, where an unnamed session has no custom title: the hook names it.
+    let first = prompt(&f, "s1", None);
     assert_eq!(title(&first), Some("70 Demo"));
     assert_eq!(
         first.unwrap()["hookSpecificOutput"]["hookEventName"],
@@ -65,6 +65,33 @@ fn a_claude_session_is_named_at_the_next_prompt_once_and_an_owner_rename_stays()
     let resumed =
         json!({"session_id": "s1", "cwd": f.demo, "source": "resume", "session_title": "Mine"});
     assert_eq!(title(&answer(&f, "session-start", resumed, &[])), None);
+}
+
+/// Catches: the agent's own rename read as the owner's, so it's never recorded and the agent
+/// is told again; or an owner rename made before the next prompt overwritten by the hook.
+#[test]
+fn a_rename_by_the_agent_is_recorded_and_one_by_the_owner_before_a_prompt_stays() {
+    let f = Fixture::new();
+    assert!(f.bash("a1", &f.demo, "astrolabe activate --effort 70").1);
+    assert_eq!(
+        prompt(&f, "a1", Some("70 Demo")),
+        None,
+        "already called that"
+    );
+    let (again, ok) = f.bash("a1", &f.demo, "astrolabe activate --effort 70");
+    assert!(
+        ok && !again.contains("set_session_title"),
+        "recorded: {again}"
+    );
+    assert_eq!(prompt(&f, "a1", Some("Mine")), None);
+    // The owner renames it after the agent was told, before their next message.
+    assert!(f.bash("o1", &f.demo, "astrolabe activate --effort 70").1);
+    assert_eq!(prompt(&f, "o1", Some("Mine")), None);
+    let (again, ok) = f.bash("o1", &f.demo, "astrolabe activate --effort 70");
+    assert!(
+        ok && !again.contains("set_session_title"),
+        "told once: {again}"
+    );
 }
 
 /// Catches: a launched worker waiting for a prompt that never comes, or a title on compact.

@@ -239,6 +239,8 @@ fn new_inner(
     let text = file.render();
     // The session's one probe token, so the proof from session start carries in.
     let token = activate::session_token(session);
+    // The names the session carries from an effort it was on before, if any.
+    let previous = read_state(&dir, session).ok().flatten();
     let state = SessionState {
         session: session.to_owned().into(),
         provider: provider.to_owned().into(),
@@ -258,9 +260,13 @@ fn new_inner(
         saves: 0.into(),
         // From the heading the note gets, as a later load reads it.
         name: activate::session_name(&number.to_string(), &format!("{number:04} {title}")).into(),
-        // The name the session carries from an effort it was on before, if any.
-        named: (read_state(&dir, session).ok().flatten())
-            .map(|p| p.named)
+        named: previous
+            .as_ref()
+            .map(|p| p.named.clone())
+            .unwrap_or_default(),
+        told: previous
+            .as_ref()
+            .map(|p| p.told.clone())
             .unwrap_or_default(),
         ..Default::default()
     };
@@ -293,12 +299,12 @@ fn new_inner(
         shells,
     )?
     .mid_session();
-    // A Codex agent was just told to rename its thread: recorded, so loading this effort
-    // again doesn't ask it to undo a rename the owner makes after.
-    if activation.state.named != state.named
+    // The agent was just told to rename its session: recorded, so loading this effort again
+    // doesn't ask it to undo a rename the owner makes after.
+    if activation.state.told != state.told
         && let Ok(Some(mut saved)) = read_state(&dir, session)
     {
-        saved.named = activation.state.named.clone();
+        saved.told = activation.state.told.clone();
         let _ = notes::write_text(&state_path(&dir, session), &saved.to_string());
     }
     let mut head = format!(

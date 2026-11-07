@@ -294,15 +294,19 @@ pub(super) fn naming(input: &Value, session: &str, at_start: bool) -> Option<Str
         return None;
     }
     let current = input["session_title"].as_str().filter(|t| !t.is_empty());
-    if let (Some(named), Some(current)) = (named, current)
-        && current != named
-    {
+    // Called that already, by its agent with the app's own tool: recorded, nothing to give.
+    let already = current == Some(name.as_str());
+    // A name that's none of Astrolabe's, after it named the session or told the agent to:
+    // the owner's. Still Astrolabe's earlier name, the agent had no tool, so the hook gives it.
+    let told = state.told.as_deref() == Some(name.as_str());
+    let owners = current.is_some_and(|c| !already && Some(c) != named && (named.is_some() || told));
+    if owners {
         return None;
     }
     state.named.set(name.clone());
     // Unrecorded, a name given now would read as the owner's next time.
     write_json(&state_path(&dir, session), &state).ok()?;
-    Some(name)
+    (!already).then_some(name)
 }
 
 pub(crate) fn provider(input: &Value) -> &'static str {
