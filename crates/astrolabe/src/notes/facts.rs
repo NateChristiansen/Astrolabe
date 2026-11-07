@@ -2,6 +2,12 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+/// How many untracked files, and how many of their bytes, the print reads whole. Opening a
+/// file is the cost (about 3 ms each on Windows with a virus scanner), so this caps a
+/// save's wait at about a second however much is untracked.
+const READ_FILES: u32 = 256;
+const READ_BYTES: u64 = 8 << 20;
+
 /// What a session's product repo looks like right now, for the stamp and the nudge.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoFacts {
@@ -9,8 +15,9 @@ pub struct RepoFacts {
     pub head: String,
     pub unpushed: Option<u32>,
     pub dirty: bool,
-    /// HEAD, the content of `git diff HEAD` and the untracked files' contents, hashed: the
-    /// same tree gives the same print, and a second edit to a dirty file changes it. In the
+    /// HEAD, the content of `git diff HEAD` and each untracked file's name, size and modified
+    /// time (and the first few files' contents), hashed: the same tree gives the same print,
+    /// and a second edit to a dirty file changes it. In the
     /// notes checkout HEAD is left out, since there every save and pull moves it by the
     /// plugin's own hand; hand edits and new files still count.
     pub fingerprint: String,
@@ -48,6 +55,11 @@ impl RepoFacts {
             print.update(head.as_bytes());
         }
         print.update(diff.as_bytes());
+        // Untracked files count by name, size and modified time, and the first few by their
+        // bytes too, so a quick same-size edit still shows. Reading every one doesn't scale:
+        // a checkout holding a 2.5 GB node_modules took 43 s, past the hook's time limit, and
+        // its saves were dropped (2026-11-06).
+        let (mut files_left, mut bytes_left) = (READ_FILES, READ_BYTES);
         let mut entries = status.split(|b| *b == 0).filter(|e| !e.is_empty());
         while let Some(entry) = entries.next() {
             // A rename or copy carries its old name as the next entry.
@@ -61,8 +73,23 @@ impl RepoFacts {
                 continue;
             };
             print.update(entry);
-            if let Ok(bytes) = std::fs::read(top.join(path_of(name))) {
-                print.update(&bytes);
+            let path = top.join(path_of(name));
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            print.update(meta.len().to_le_bytes());
+            print.update(modified.to_le_bytes());
+            if files_left > 0 && meta.len() <= bytes_left {
+                files_left -= 1;
+                bytes_left -= meta.len();
+                if let Ok(bytes) = std::fs::read(&path) {
+                    print.update(&bytes);
+                }
             }
         }
         let fingerprint = print

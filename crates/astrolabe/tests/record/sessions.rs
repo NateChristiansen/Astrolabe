@@ -417,6 +417,28 @@ fn activation_reads_the_same_current_state_a_save_does() {
 }
 
 #[test]
+fn many_untracked_files_still_move_the_print_without_reading_them_all() {
+    let dir = TempDir::new();
+    let repo = dir.0.join("proj");
+    std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    // More files than the print reads whole: the last ones count by size and time.
+    for i in 0..400 {
+        write(&repo.join(format!("node_modules/{i:03}.js")), "x");
+    }
+    let print = || {
+        astrolabe::notes::RepoFacts::read(&repo)
+            .unwrap()
+            .fingerprint
+    };
+    let first = print();
+    assert_eq!(first, print(), "the same tree, the same print");
+    write(&repo.join("node_modules/399.js"), "xy");
+    assert_ne!(first, print(), "an edit past the files read whole");
+}
+
+#[test]
 fn the_print_reads_untracked_files_under_a_root_ending_in_a_space_and_odd_byte_names() {
     let dir = TempDir::new();
     // Windows drops a trailing space from a folder name, so only Unix can have such a root.

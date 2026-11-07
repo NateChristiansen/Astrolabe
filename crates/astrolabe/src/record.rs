@@ -733,7 +733,7 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     }
     (
         format!(
-            "NOT recorded: the plugin's hook didn't take this command, so nothing was written and this session isn't bound. Run it alone, exactly as written. If it still fails: Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.\n{FORMS}"
+            "NOT recorded: the plugin's hook didn't take this command, so nothing was written. Run it alone, exactly as written. If it fails again while `astrolabe activate --status` says this session is on for an effort, the hook most likely ran out of the time the app gives it: stop retrying and tell the owner. Otherwise Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.\n{FORMS}"
         ),
         false,
     )
