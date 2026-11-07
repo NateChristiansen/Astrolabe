@@ -361,6 +361,28 @@ fn reason(answer: &Value) -> &str {
         .unwrap()
 }
 
+#[test]
+fn every_authority_keeps_notes_saving_independent_of_project_pushes() {
+    let f = Fixture::new();
+    let rule = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker leaves that saving to its dispatcher.";
+    for authority in ["read", "edit", "push"] {
+        write(
+            &f.notes().join("efforts/0070-demo.md"),
+            &EFFORT.replace("authority: edit", &format!("authority: {authority}")),
+        );
+        let (loaded, ok) = f.bash(authority, &f.demo, "astrolabe activate --effort 70");
+        assert!(ok, "{loaded}");
+        let resumed = f.session_start(authority, &f.demo, &[]).unwrap();
+        for text in [loaded, resumed] {
+            assert!(text.contains(rule), "{authority}: {text}");
+            assert!(text.contains(&format!("authority: {authority}:")), "{text}");
+            if authority == "edit" {
+                assert!(text.contains("but don't push"), "{text}");
+            }
+        }
+    }
+}
+
 #[path = "activate/hooks.rs"]
 mod hooks;
 #[path = "activate/proof.rs"]
