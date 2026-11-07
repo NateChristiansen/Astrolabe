@@ -202,7 +202,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | Option | Effect |
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `blocked`, `done` or `abandoned`. |
-| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. |
+| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
@@ -213,7 +213,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. |
 | `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
 
-Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked, so the first save after the owner answers takes the effort out of Needs you. Give `--waits-for` again on a save made while still waiting. For example:
 
 ```sh
 astrolabe effort save --status blocked --waits-for "owner: try upload retries"
