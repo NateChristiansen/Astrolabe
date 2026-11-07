@@ -1,6 +1,6 @@
 //! Provider hook inputs, command dispatch and activation transitions.
 use super::context::{
-    Activation, WORKER_RULE, blocked_state, fresh, refused, switch_initiative, switch_on,
+    Activation, WORKER_RULE, blocked, fresh, refused, switch_initiative, switch_on,
 };
 use super::proof::{session_shells, status};
 use super::tickets::{leave, leave_with, print_command, reissue, ticket_text, write_json};
@@ -218,7 +218,12 @@ pub fn gate(event: &str) {
             match read_state(dir, session) {
                 Ok(None) => guard(),
                 Ok(Some(state)) => match block_reason(dir, &state, session) {
-                    Some(why) => hook::say(&hook::deny(&blocked_state(&state, &why))),
+                    Some(why) => hook::say(&hook::deny(&blocked(
+                        state.record_kind(),
+                        state.bound_key().unwrap_or_default(),
+                        &why,
+                        None,
+                    ))),
                     None => {
                         if !child {
                             let _ =
@@ -640,7 +645,8 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                                 None => activation.fitted(),
                             },
                             Err(why) => format!(
-                                "Astrolabe stays on for effort {effort}, guard included, but couldn't save its reload: {why}. Tell the owner."
+                                "Astrolabe stays on for {}, guard included, but couldn't save its reload: {why}. Tell the owner.",
+                                state.record_label()
                             ),
                         }
                     }
@@ -654,10 +660,13 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                             write_json(&fallback_block(&dir, session), &body)
                                 .map_err(|f| format!("{e}; {f}"))
                         }) {
-                            Ok(()) => blocked_state(&state, &why),
-                            Err(e) => format!(
-                                "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({e}), so only the guard is on and other commands are NOT blocked. Treat this session's effort context as missing: tell the owner, repair it and run `astrolabe activate --effort {effort}`, or drop the effort with `astrolabe activate --off` (the guard keeps running)."
+                            Ok(()) => blocked(
+                                state.record_kind(),
+                                state.bound_key().unwrap_or_default(),
+                                &why,
+                                None,
                             ),
+                            Err(e) => blocked(state.record_kind(), &effort, &why, Some(&e)),
                         }
                     }
                 },

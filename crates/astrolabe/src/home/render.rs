@@ -240,15 +240,15 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         let effort = line.effort.as_str();
         let num = if let Some(slug) = line.initiative_slug() {
             let rel = format!("initiatives/{slug}.md");
-            let title = std::fs::read_to_string(root.join(&rel))
-                .ok()
-                .and_then(|text| crate::effort::EffortFile::parse(&text).ok())
-                .map(|f| f.title)
-                .unwrap_or_else(|| slug.to_owned());
+            let title = rows
+                .initiative_titles
+                .get(slug)
+                .map(String::as_str)
+                .unwrap_or(slug);
             format!(
                 "<span class=\"num\"><a href=\"{}\">{}</a></span>",
                 esc(&links.href(root, &rel)),
-                esc(&title)
+                esc(title)
             )
         } else {
             match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {

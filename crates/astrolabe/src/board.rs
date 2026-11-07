@@ -9,6 +9,7 @@ use std::path::Path;
 pub struct BoardData {
     pub efforts: Vec<EffortRow>,
     pub initiative_attention: Vec<EffortRow>,
+    pub initiative_titles: std::collections::BTreeMap<String, String>,
     pub today: String,
     pub journal: String,
     pub journal_lines: Vec<JournalEntry>,
@@ -99,9 +100,11 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         });
     }
     let mut initiative_attention = Vec::new();
+    let mut initiative_titles = std::collections::BTreeMap::new();
     if let Ok(pages) = crate::effort::initiative_catalog(&notes.root) {
         for page in pages {
             let file = &page.file;
+            initiative_titles.insert(page.slug.clone(), file.title.clone());
             if file
                 .prop("waits_for")
                 .is_none_or(|w| !w.starts_with("owner:"))
@@ -146,6 +149,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     BoardData {
         efforts: rows,
         initiative_attention,
+        initiative_titles,
         today: day,
         journal_lines: notes::parse_journal(&journal),
         journal,

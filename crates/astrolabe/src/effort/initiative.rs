@@ -72,10 +72,15 @@ impl InitiativePage {
                 continue;
             };
             if title == "effort" || title.starts_with("effort ") {
-                let mut words = title.split_whitespace();
-                words.next();
-                let number = words.next().and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0)
-                    .ok_or("a join paragraph begins exactly `effort <n>`, with an existing effort number")?;
+                let digits: String = title
+                    .strip_prefix("effort ")
+                    .unwrap_or("")
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                let number = digits.parse::<u32>().ok().filter(|n| *n > 0).ok_or(
+                    "a join paragraph begins exactly `effort <n>`, with an existing effort number",
+                )?;
                 if joins.contains(&number) {
                     return Err(format!("duplicate effort {number} in join"));
                 }
@@ -141,8 +146,6 @@ impl InitiativePage {
             out += &format!("\n{}\n", self.after);
         }
         let mut file = super::EffortFile::parse(&out).expect("validated initiative body");
-        file.set("involvement", "check in at plan");
-        file.set("authority", "edit");
         file.set("waits_for", "");
         file.render_initiative()
     }
@@ -468,5 +471,49 @@ mod preservation_tests {
         assert!(out.contains("```md\n## example\n```\n"));
         assert!(out.contains("\nPurpose text.\n"));
         assert_eq!(out.matches("## Purpose").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn join_numbers_allow_punctuation_and_trailing_prose() {
+        let page = InitiativePage::parse(
+            "## Efforts\neffort 42.\n\neffort 43, the baseline\nAdditional explanation.\n",
+        )
+        .unwrap();
+        assert_eq!(page.joins, vec![42, 43]);
+        for invalid in ["effort .42", "effort 0.", "effort 999999999999999."] {
+            assert!(InitiativePage::parse(&format!("## Efforts\n{invalid}\n")).is_err());
+        }
+    }
+
+    #[test]
+    fn saving_without_purpose_text_never_inserts_an_empty_purpose_section() {
+        for text in [
+            "# Empty\n",
+            "# Empty\n\n## Current state\nActive.\n\n## Decisions\n\n## Order\nOne.\n",
+        ] {
+            let mut file = super::super::EffortFile::parse(text).unwrap();
+            for state in ["First.", "Second."] {
+                file.current = state.into();
+                let rendered = file.render_initiative();
+                assert!(!rendered.contains("## Purpose"), "{rendered}");
+                file = super::super::EffortFile::parse(&rendered).unwrap();
+            }
+        }
+        let page = InitiativePage::parse("## Efforts\nChild\nA goal.\n").unwrap();
+        assert!(
+            !page
+                .render(
+                    "Empty",
+                    "demo",
+                    "2026-01-01",
+                    &[(1, "efforts/0001-child.md".into())]
+                )
+                .contains("## Purpose")
+        );
     }
 }

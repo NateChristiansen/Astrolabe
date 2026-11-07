@@ -614,8 +614,13 @@ pub(super) fn freshness(notes: &Path, effort: &Effort, cwd: &Path) -> String {
 pub(super) fn refused(effort: &str, why: &str, previous: Option<&SessionState>) -> String {
     let kept = match previous {
         Some(p) => format!(
-            "Effort {} stays loaded as it was.",
-            p.effort.as_deref().unwrap_or_default()
+            "{} {} stays loaded as it was.",
+            if p.initiative_key().is_some() {
+                "Initiative"
+            } else {
+                "Effort"
+            },
+            p.bound_key().unwrap_or_default()
         ),
         None => "No effort is loaded in this session.".to_owned(),
     };
@@ -785,20 +790,14 @@ pub(super) fn active_efforts(
     Ok((repos, efforts))
 }
 
-pub(super) fn blocked(effort: &str, why: &str) -> String {
-    format!(
-        "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or drop the effort with `astrolabe activate --off` (the guard keeps running)."
-    )
-}
-
-/// Keep repair instructions tied to the kind of page that failed to reload.
-pub(super) fn blocked_state(state: &SessionState, why: &str) -> String {
-    let key = state.bound_key().unwrap_or_default();
-    let text = blocked(key, why);
-    if state.initiative_key().is_some() {
-        text.replace(&format!("effort {key}"), &format!("initiative {key}"))
-            .replace(&format!("--effort {key}"), &format!("--initiative {key}"))
-    } else {
-        text
+/// The repair command uses the bound record's kind, including when no block could be saved.
+pub(super) fn blocked(kind: &str, key: &str, why: &str, recording_error: Option<&str>) -> String {
+    if let Some(error) = recording_error {
+        return format!(
+            "Astrolabe stays on for {kind} {key} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({error}), so only the guard is on and other commands are NOT blocked. Treat this session's {kind} context as missing: tell the owner, repair it and run `astrolabe activate --{kind} {key}`, or drop the {kind} with `astrolabe activate --off` (the guard keeps running)."
+        );
     }
+    format!(
+        "Astrolabe stays on for {kind} {key} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the {kind}'s current context. Repair it, then run `astrolabe activate --{kind} {key}`; or drop the {kind} with `astrolabe activate --off` (the guard keeps running)."
+    )
 }

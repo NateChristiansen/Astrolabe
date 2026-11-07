@@ -166,6 +166,19 @@ pub(super) const PROP_ORDER: [&str; 16] = [
     "dirty",
 ];
 
+/// Initiative managed properties have a separate, single ordering definition.
+const INITIATIVE_PROP_ORDER: [&str; 9] = [
+    "status",
+    "repo",
+    "involvement",
+    "authority",
+    "waits_for",
+    "created",
+    "updated",
+    "saved_by",
+    "session",
+];
+
 impl EffortFile {
     pub fn parse(text: &str) -> Result<Self, String> {
         let original_text = text.to_owned();
@@ -428,27 +441,10 @@ impl EffortFile {
 
     /// Initiative records always carry both managed sections, even before a decision.
     pub fn render_initiative(&self) -> String {
-        let mut file = self.clone();
-        file.props.sort_by_key(|(k, _)| {
-            [
-                "status",
-                "repo",
-                "involvement",
-                "authority",
-                "waits_for",
-                "created",
-                "updated",
-                "saved_by",
-                "session",
-            ]
-            .iter()
-            .position(|p| p == k)
-            .unwrap_or(9)
-        });
-        if let Some(original) = &file.original {
-            file.render_preserved(original, true)
+        if let Some(original) = &self.original {
+            self.render_preserved(original, true)
         } else {
-            file.render_fresh(true)
+            self.render_fresh(true)
         }
     }
 
@@ -476,13 +472,6 @@ impl EffortFile {
             out.push_str("\n## Purpose\n");
             out.push_str(&preamble);
             preamble.clear();
-        }
-        if initiative
-            && !has_purpose
-            && preamble.trim().is_empty()
-            && !out.contains("\n## Purpose\n")
-        {
-            out.push_str("\n## Purpose\n");
         }
         let mut written = Vec::new();
         for (start, end, heading) in spans {
@@ -532,17 +521,7 @@ impl EffortFile {
         };
         let mut written = Vec::new();
         let order: &[&str] = if initiative {
-            &[
-                "status",
-                "repo",
-                "involvement",
-                "authority",
-                "waits_for",
-                "created",
-                "updated",
-                "saved_by",
-                "session",
-            ]
+            &INITIATIVE_PROP_ORDER
         } else {
             &PROP_ORDER
         };

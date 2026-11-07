@@ -152,7 +152,7 @@ ASTROLABE
 | `--status <state>` | `proposed`, `ready` or `active`; default `active`. |
 | `--involvement "<value>"` | `each step`, `check in at plan` or `autonomous`; default `check in at plan`. |
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
-| `--initiative "<name>"` | Optional grouping; default empty. |
+| `--initiative "<name>"` | Optional grouping; default empty. Existing page titles and aliases are stored as their canonical slug. A name without a page is kept as given. |
 | `--priority <label>` | Default `none`. The board recognizes `low`, `high` and `urgent` (`top` also sorts as urgent); other labels sort normally. |
 | `--issue <n>` | The GitHub issue the work answers, or a list such as `"5, 7"`; default none. The session context then says to end the landing commit with `Fixes #<n>`, because the landing script pushes straight to main with no pull request, and GitHub closes an issue only when a closing keyword in a commit reaches the default branch. |
 
@@ -162,7 +162,7 @@ Involvement and authority follow the owner's instructions; see [choosing how the
 
 `astrolabe initiative new` files a page alone or with its efforts in one commit. Omit `## Efforts` for a page only. An Efforts section (any heading starting with "Efforts") accepts either new efforts, with a title and goal per paragraph, or existing efforts, with each paragraph beginning exactly `effort <number>` and optional explanatory prose. Do not mix the two forms. New efforts start `proposed`; both forms write the canonical page slug as membership. Joins preserve every other part of each effort and allocate no numbers. Duplicate, missing or conflicting members refuse the entire operation.
 
-Pages carry status, repo, involvement, authority, wait and save stamps, followed by Current state, Decisions and Purpose. The first save of a legacy page inserts missing managed sections and puts its unheaded purpose under `## Purpose`, preserving that text, links, fences and other sections. Existing Purpose headings are reused. Titles and slugs resolve ignoring case and surrounding `[[ ]]`; ambiguous titles or slugs are refused.
+Pages carry status, repo, involvement, authority, wait and save stamps, followed by Current state and Decisions, with Purpose when there is purpose text. The first save of a legacy page inserts missing managed sections and puts its unheaded purpose under `## Purpose`, preserving that text, links, fences and other sections. Existing Purpose headings are reused. Titles and slugs resolve ignoring case and surrounding `[[ ]]`; ambiguous titles or slugs are refused.
 
 ```sh
 astrolabe initiative new --title "Saving and progression" <<'ASTROLABE'
@@ -220,7 +220,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |
 | `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
-| `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. |
+| `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. Existing page names resolve to their slug; unknown names stay as given. Omitting this option leaves membership untouched. |
 | `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
 
 When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.

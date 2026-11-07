@@ -114,6 +114,18 @@ fn line_id(key: &str, n: usize) -> String {
     format!("{}{n}", &key[..key.len().min(10)])
 }
 
+/// Existing pages have one spelling on write. Unknown names remain usable until the
+/// separate membership-validation change; omitted flags never enter this resolver.
+fn canonical_membership(root: &Path, name: &str) -> Result<String, String> {
+    if name.is_empty() {
+        return Ok(String::new());
+    }
+    let pages = crate::effort::initiative_catalog(root)?;
+    Ok(crate::effort::resolve_initiative(&pages, name)
+        .map(|page| page.slug.clone())
+        .unwrap_or_else(|_| name.to_owned()))
+}
+
 /// `astrolabe effort new`, in the hook.
 pub fn new(
     cmd: &EffortCommand,
@@ -209,6 +221,7 @@ fn new_inner(
         };
     }
     let pulled = crate::application::pull(&notes);
+    let initiative = canonical_membership(&notes.root, cmd.flag("initiative").unwrap_or(""))?;
     let number = notes.next_number();
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
@@ -220,7 +233,7 @@ fn new_inner(
         &Settings {
             status: &status,
             repo: &repo,
-            initiative: cmd.flag("initiative").unwrap_or(""),
+            initiative: &initiative,
             priority: cmd.flag("priority").unwrap_or("none"),
             involvement: &involvement,
             authority: &authority,
@@ -655,7 +668,7 @@ fn save_inner(
     let unticks = cmd.flags_all("untick");
     let pieces_file = cmd.flag("pieces-file");
     // An empty value clears the grouping, so an effort can leave an initiative.
-    let initiative = cmd.flag("initiative").map(str::trim);
+    let initiative = cmd.flag("initiative");
     let target = cmd
         .flag("effort")
         .map(|n| {
@@ -804,6 +817,10 @@ fn save_inner(
         ));
     }
     let pulled = crate::application::pull(&notes);
+    let initiative = initiative
+        .map(|name| canonical_membership(&notes.root, name))
+        .transpose()?;
+    let initiative = initiative.as_deref();
     if let Some(target) = target {
         let change = Change {
             status: status.as_deref(),
@@ -1139,9 +1156,9 @@ fn save_target(
     notes.apply(&op)?;
     let saved = saved_text(pulled, notes.spawn_sync());
     let mut head = format!(
-        "Saved effort {target}: status {}; {saved}. This session's effort {} is unchanged.",
+        "Saved effort {target}: status {}; {saved}. This session's {} is unchanged.",
         file.prop("status").unwrap_or("?"),
-        state.effort.as_deref().unwrap_or_default()
+        state.record_label()
     );
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
@@ -1245,9 +1262,11 @@ fn journal_inner(
     let (registry, notes) = notes_here()?;
     let dir = notes.state.clone();
     let bound = read_state(&dir, session)?;
-    if let Some(n) = bound.as_ref().and_then(|s| s.effort.as_deref()) {
+    if let Some(state) = bound.as_ref().filter(|s| s.bound_key().is_some()) {
         return Err(format!(
-            "this session has effort {n}; its journal line goes on the effort: `astrolabe effort save --journal \"…\"`"
+            "this session has {}; its journal line goes on the {}: `astrolabe effort save --journal \"…\"`",
+            state.record_label(),
+            state.record_kind()
         ));
     }
     let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;

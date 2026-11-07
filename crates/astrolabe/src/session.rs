@@ -150,14 +150,17 @@ impl SessionState {
             _ => None,
         }
     }
+    pub fn record_kind(&self) -> &'static str {
+        if self.initiative_key().is_some() {
+            "initiative"
+        } else {
+            "effort"
+        }
+    }
     pub fn record_label(&self) -> String {
         format!(
             "{} {}",
-            if self.initiative_key().is_some() {
-                "initiative"
-            } else {
-                "effort"
-            },
+            self.record_kind(),
             self.bound_key().unwrap_or_default()
         )
     }

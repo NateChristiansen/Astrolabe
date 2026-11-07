@@ -84,7 +84,7 @@ fn an_initiative_and_its_efforts_are_filed_in_one_step() {
         "astrolabe effort save --status done --initiative \"Smooth ink\" <<'ASTROLABE'\nDone: the plan is filed as its efforts.\n\nNothing left here.\nASTROLABE\n",
     );
     assert!(ok, "{out}");
-    assert!(mac.effort_text(1).contains("initiative: Smooth ink"));
+    assert!(mac.effort_text(1).contains("initiative: smooth-ink"));
     // The same command typed again with no hook explains itself from the ticket.
     let (plain, ok) = mac.plain(INITIATIVE);
     assert!(
@@ -333,7 +333,7 @@ fn page_only_filing_keeps_the_binding_and_allocates_no_effort() {
     let mac = world.machine("mac");
     assert!(mac.bash("lead", NEW).1);
     let before = mac.log().lines().count();
-    let command = "astrolabe initiative new --title \"Empty project\" <<'ASTROLABE'\nA purpose for later work.\nASTROLABE\n";
+    let command = "astrolabe initiative new --title \"Empty project\" --involvement autonomous --authority read <<'ASTROLABE'\nA purpose for later work.\nASTROLABE\n";
     let (out, ok) = mac.bash("lead", command);
     assert!(
         ok && out.contains("0 created")
@@ -349,6 +349,9 @@ fn page_only_filing_keeps_the_binding_and_allocates_no_effort() {
             && page.contains("## Purpose\n\nA purpose for later work."),
         "{page}"
     );
+    let file = astrolabe::effort::EffortFile::parse(&page).unwrap();
+    assert_eq!(file.prop("involvement"), Some("autonomous"));
+    assert_eq!(file.prop("authority"), Some("read"));
     assert_eq!(mac.log().lines().count(), before + 1);
     let (out, ok) = mac.bash("lead", command);
     assert!(ok && out.contains("retry"), "{out}");
@@ -382,7 +385,7 @@ fn joins_accept_existing_aliases_and_change_only_membership_atomically() {
     git(&mac.notes, &["commit", "-qm", "members"]);
     let original = mac.effort_text(2);
     let before = mac.log().lines().count();
-    let command = "astrolabe initiative new --title \"Smooth curves\" <<'ASTROLABE'\nKeep curves smooth.\n\n## Efforts\neffort 2\n\neffort 3 already delivers this\n\neffort 4\n\neffort 5\nASTROLABE\n";
+    let command = "astrolabe initiative new --title \"Smooth curves\" <<'ASTROLABE'\nKeep curves smooth.\n\n## Efforts\neffort 2.\n\neffort 3, already delivers this\n\neffort 4\n\neffort 5\nASTROLABE\n";
     let (out, ok) = mac.bash("lead", command);
     assert!(
         ok && out.contains("4 joined") && out.contains("stays on effort 1"),
@@ -671,4 +674,196 @@ fn unfinished_join_recovery_finishes_all_files_in_one_commit() {
         mac.log().lines().next(),
         Some("initiative Curves: 1 efforts filed")
     );
+}
+
+#[test]
+fn an_initiative_binding_refuses_a_repository_journal_line() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    let before = mac.log();
+    let (out, ok) = mac.bash("lead", "astrolabe journal \"Smoothed the curves.\"");
+    assert!(
+        !ok && out.contains("initiative smooth-lines") && out.contains("effort save --journal"),
+        "{out}"
+    );
+    assert_eq!(mac.log(), before);
+    assert!(mac.journal_today().is_empty());
+}
+
+#[test]
+fn explicit_membership_writes_canonicalize_existing_pages_and_keep_unknown_names() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    for (i, name) in [
+        "smooth-lines",
+        "Smooth lines",
+        "[[smooth-lines]]",
+        "[[Smooth lines]]",
+        "No page yet",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let cmd = format!(
+            "astrolabe effort new --title \"Member {i}\" --initiative \"{name}\" <<'ASTROLABE'\nSmooth curves.\nASTROLABE\n"
+        );
+        let (out, ok) = mac.bash("worker", &cmd);
+        assert!(ok, "{out}");
+        let file = astrolabe::effort::EffortFile::parse(&mac.effort_text(i as u32 + 1)).unwrap();
+        assert_eq!(
+            file.prop("initiative"),
+            Some(if i < 4 { "smooth-lines" } else { name })
+        );
+    }
+    // An old spelling stays untouched when the caller omits --initiative, even after
+    // a page is filed for it. An explicit save then canonicalizes the same value.
+    write(
+        &mac.notes.join("initiatives/later-page.md"),
+        "---\nrepo: demo\nstatus: ready\n---\n# No page yet\n",
+    );
+    let (out, ok) = mac.bash(
+        "worker",
+        "astrolabe effort save --decision \"Kept the existing membership\"",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(5).contains("initiative: No page yet\n"));
+    let (out, ok) = mac.bash(
+        "worker",
+        "astrolabe effort save --initiative \"[[No page yet]]\"",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(5).contains("initiative: later-page\n"));
+    let (out, ok) = mac.bash(
+        "worker",
+        "astrolabe effort save --initiative \"Unknown future page\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(5)
+            .contains("initiative: Unknown future page\n")
+    );
+}
+
+#[test]
+fn dispatcher_saves_from_an_initiative_report_the_binding_and_canonicalize_membership() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    assert!(mac.bash("worker", NEW).1);
+    let before = std::fs::read_to_string(mac.notes.join("initiatives/smooth-lines.md")).unwrap();
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort save --effort 1 --status ready --initiative \"[[Smooth lines]]\"",
+    );
+    assert!(
+        ok && out.contains("This session's initiative smooth-lines is unchanged"),
+        "{out}"
+    );
+    assert!(mac.effort_text(1).contains("initiative: smooth-lines\n"));
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("initiatives/smooth-lines.md")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_refused_effort_activation_identifies_the_initiative_that_stays_loaded() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    let (out, ok) = mac.bash("lead", "astrolabe activate --effort 999");
+    assert!(
+        !ok && out.contains("Initiative smooth-lines stays loaded as it was"),
+        "{out}"
+    );
+    assert!(
+        mac.bash("lead", "astrolabe activate --status")
+            .0
+            .contains("initiative smooth-lines")
+    );
+}
+
+#[test]
+fn initiative_journal_titles_come_from_the_board_snapshot() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    assert!(
+        mac.bash(
+            "lead",
+            "astrolabe effort save --journal \"Smoothed the curves.\""
+        )
+        .1
+    );
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    let rows = astrolabe::board::rows_in(&notes, None, true);
+    assert_eq!(
+        rows.initiative_titles
+            .get("smooth-lines")
+            .map(String::as_str),
+        Some("Smooth lines")
+    );
+    // Rendering must keep the title from the snapshot even if the file disappears.
+    std::fs::remove_file(mac.notes.join("initiatives/smooth-lines.md")).unwrap();
+    let html = astrolabe::home::render(
+        &rows,
+        &mac.notes,
+        astrolabe::notes::now_ms(),
+        astrolabe::home::Look::default(),
+    );
+    assert!(
+        html.contains("Smooth lines</a></span>") && html.contains("Smoothed the curves."),
+        "{html}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unrecordable_reload_block_still_gives_the_initiative_repair_command() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let mac = world.machine("mac");
+    legacy_page(&mac);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    std::fs::remove_file(mac.notes.join("initiatives/smooth-lines.md")).unwrap();
+    let hash = Sha256::digest(mac.state().display().to_string());
+    let folder: String = hash.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let fallback = std::env::temp_dir().join(format!("astrolabe-blocked-{folder}-lead.json"));
+    std::fs::create_dir(&fallback).unwrap();
+    let permissions = std::fs::metadata(mac.state()).unwrap().permissions();
+    std::fs::set_permissions(mac.state(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let out = mac.session_start("lead", "resume");
+    std::fs::set_permissions(mac.state(), permissions).unwrap();
+    std::fs::remove_dir(fallback).unwrap();
+    assert!(
+        out.contains("couldn't record a block") && out.contains("NOT blocked"),
+        "{out}"
+    );
+    assert!(
+        out.contains("initiative smooth-lines") && out.contains("--initiative smooth-lines"),
+        "{out}"
+    );
+    assert!(!out.contains("--effort smooth-lines"), "{out}");
 }

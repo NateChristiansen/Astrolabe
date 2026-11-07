@@ -185,7 +185,15 @@ pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
         state.repo.as_deref().unwrap_or_default()
     );
     if let Some(why) = block_reason(dir, &state, session) {
-        return format!("{on} {}", super::context::blocked_state(&state, &why));
+        return format!(
+            "{on} {}",
+            super::context::blocked(
+                state.record_kind(),
+                state.bound_key().unwrap_or_default(),
+                &why,
+                None
+            )
+        );
     }
     format!(
         "{on} {}",
