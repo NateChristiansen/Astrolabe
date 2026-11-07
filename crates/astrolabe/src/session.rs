@@ -93,6 +93,9 @@ pub struct SessionState {
     /// The name the session's agent was last told to rename it to, with the app's own tool.
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub told: Field<String>,
+    /// Whether the session took up its effort's work, or only filed it for later.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub taken: Field<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

@@ -152,3 +152,20 @@ fn a_codex_agent_is_told_to_rename_its_thread_when_it_picks_an_effort_up() {
         .unwrap();
     assert!(!context.contains("set_thread_title"), "{context}");
 }
+
+/// Catches: a session that took an effort up keeping a stale name after the effort is
+/// renumbered or retitled.
+#[test]
+fn a_taken_effort_names_the_session_as_it_reads_now_on_resume() {
+    let f = Fixture::new();
+    assert!(f.bash("r1", &f.demo, "astrolabe activate --effort 70").1);
+    assert_eq!(title(&prompt(&f, "r1", None)), Some("70 Demo"));
+    let effort = f.dir.0.join("notes/efforts/0070-demo.md");
+    std::fs::write(&effort, EFFORT.replace("0070 Demo", "0070 Demo two")).unwrap();
+    let resumed =
+        json!({"session_id": "r1", "cwd": f.demo, "source": "resume", "session_title": "70 Demo"});
+    assert_eq!(
+        title(&answer(&f, "session-start", resumed, &[])),
+        Some("70 Demo two")
+    );
+}

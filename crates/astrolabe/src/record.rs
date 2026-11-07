@@ -270,6 +270,7 @@ fn new_inner(
                 .filter(|n| !n.is_missing())
                 .unwrap_or(Field::Other(Value::Null)),
         },
+        taken: (status == "active").into(),
         named: previous
             .as_ref()
             .map(|p| p.named.clone())

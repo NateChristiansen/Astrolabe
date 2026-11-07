@@ -258,6 +258,7 @@ impl Activation {
     /// Taken up by name, as `activate --effort` does: the session takes the effort's name.
     pub fn picked_up(mut self) -> Self {
         self.state.name.set(self.picked.clone());
+        self.state.taken.set(true);
         self
     }
 
@@ -384,11 +385,13 @@ pub fn switch_on(
             .map(Field::Known)
             .unwrap_or(Field::Other(Value::Null)),
         mark: false.into(),
-        // Kept through a resume: a session that filed this effort for later keeps its name.
-        name: match same.map(|p| &p.name) {
-            Some(kept) if !kept.is_missing() => kept.clone(),
-            _ => picked.clone().into(),
+        // Kept through a resume only for an effort filed for later: one taken up takes its
+        // name as it reads now, renumbered or retitled.
+        name: match same.filter(|p| p.taken.as_ref() == Some(&false)) {
+            Some(kept) => kept.name.clone(),
+            None => picked.clone().into(),
         },
+        taken: same.map_or(true.into(), |p| p.taken.clone()),
         // Whatever effort it was on: the name the session carries is the same one.
         named: previous.map(|p| p.named.clone()).unwrap_or_default(),
         told: previous.map(|p| p.told.clone()).unwrap_or_default(),
