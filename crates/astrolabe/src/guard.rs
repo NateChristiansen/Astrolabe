@@ -11,7 +11,7 @@ use serde_json::Value;
 const MAX_DEPTH: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Dialect {
+pub(crate) enum Dialect {
     Sh,
     Ps,
     Cmd,
@@ -39,6 +39,7 @@ struct Parser {
     escape: char,
     commands: Vec<Vec<Word>>,
     broken: bool,
+    literal_error: Option<&'static str>,
 }
 
 fn parse(text: &str, dialect: Dialect, depth: usize) -> Parser {
@@ -54,9 +55,32 @@ fn parse(text: &str, dialect: Dialect, depth: usize) -> Parser {
         escape,
         commands: Vec::new(),
         broken: false,
+        literal_error: None,
     };
     parser.list(None, depth);
     parser
+}
+
+const ONE_COMMAND: &str =
+    "run one literal command alone, without chaining, redirection or expansion";
+
+/// The guard's parser, restricted to a single command whose words are all literal.
+/// Parsing retains structural errors even when only one nonempty command remains.
+pub(crate) fn literal_words(text: &str, dialect: Dialect) -> Result<Vec<String>, String> {
+    let parsed = parse(text, dialect, 0);
+    if let Some(why) = parsed.literal_error {
+        return Err(why.into());
+    }
+    if parsed.broken {
+        return Err("an unfinished quote".into());
+    }
+    if parsed.commands.iter().flatten().any(|word| word.dynamic) {
+        return Err("shell expansion isn't a literal command".into());
+    }
+    let [command] = parsed.commands.as_slice() else {
+        return Err(ONE_COMMAND.into());
+    };
+    Ok(command.iter().map(|word| word.text.clone()).collect())
 }
 
 /// Everything flat: `&&`, `;`, pipes, subshells and substitutions all just separate
@@ -82,31 +106,29 @@ impl Parser {
             self.at += 1;
             match c {
                 c if c == self.escape => {
+                    if self.peek().is_none() {
+                        self.literal_error.get_or_insert("an unfinished escape");
+                    }
                     let next = self.peek().filter(|next| *next != '\n');
                     self.at += 1;
                     if let Some(next) = next {
                         word.get_or_insert_default().text.push(next);
                     }
                 }
-                '\'' => {
-                    let rest = &self.chars[self.at..];
-                    let end = rest.iter().position(|c| *c == '\'');
-                    self.broken |= end.is_none();
-                    let end = end.unwrap_or(rest.len());
-                    word.get_or_insert_default().text.extend(&rest[..end]);
-                    self.at += end + 1;
-                }
+                '\'' => self.single_quoted(word.get_or_insert_default()),
                 '"' => self.double_quoted(word.get_or_insert_default(), depth),
                 '$' => self.dollar(word.get_or_insert_default(), depth),
                 ' ' | '\t' | '\r' => {
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
                 }
                 '#' if word.is_none() && self.dialect != Dialect::Cmd => {
+                    self.literal_error.get_or_insert(ONE_COMMAND);
                     while self.peek().is_some_and(|c| c != '\n') {
                         self.at += 1;
                     }
                 }
                 '<' | '>' => {
+                    self.literal_error.get_or_insert(ONE_COMMAND);
                     // The 2 in `2>`.
                     word.take_if(|w| w.text.chars().all(|c| c.is_ascii_digit()));
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
@@ -121,6 +143,7 @@ impl Parser {
                     }
                 }
                 c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
+                    self.literal_error.get_or_insert(ONE_COMMAND);
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
                     self.finish(&mut command);
                     match c {
@@ -133,6 +156,21 @@ impl Parser {
                 }
                 '`' if self.dialect == Dialect::Sh => {
                     self.substitution(word.get_or_insert_default(), '`', depth);
+                }
+                '*' | '?' | '[' | '{' | '~' if self.dialect == Dialect::Sh => {
+                    self.literal_error
+                        .get_or_insert("shell expansion isn't a literal command");
+                    word.get_or_insert_default().text.push(c);
+                }
+                '@' if self.dialect == Dialect::Ps && word.is_none() => {
+                    self.literal_error
+                        .get_or_insert("shell expansion isn't a literal command");
+                    word.get_or_insert_default().text.push(c);
+                }
+                '%' | '!' if self.dialect == Dialect::Cmd => {
+                    self.literal_error
+                        .get_or_insert("shell expansion isn't a literal command");
+                    word.get_or_insert_default().text.push(c);
                 }
                 _ => word.get_or_insert_default().text.push(c),
             }
@@ -164,10 +202,28 @@ impl Parser {
         }
     }
 
+    fn single_quoted(&mut self, word: &mut Word) {
+        while let Some(c) = self.peek() {
+            self.at += 1;
+            if c == '\'' {
+                if self.dialect != Dialect::Ps || self.peek() != Some('\'') {
+                    return;
+                }
+                self.at += 1;
+            }
+            word.text.push(c);
+        }
+        self.broken = true;
+    }
+
     fn double_quoted(&mut self, word: &mut Word, depth: usize) {
         while let Some(c) = self.peek() {
             self.at += 1;
             match c {
+                '"' if self.dialect == Dialect::Ps && self.peek() == Some('"') => {
+                    self.at += 1;
+                    word.text.push('"');
+                }
                 '"' => return,
                 '\\' | '`' if c == self.escape => {
                     let Some(next) = self.peek() else { continue };
@@ -189,6 +245,8 @@ impl Parser {
 
     /// Just past a `$`.
     fn dollar(&mut self, word: &mut Word, depth: usize) {
+        self.literal_error
+            .get_or_insert("shell expansion isn't a literal command");
         if self.peek() == Some('(') {
             self.at += 1;
             self.substitution(word, ')', depth);
@@ -626,4 +684,80 @@ fn normal(path: &str, windows: bool) -> String {
         }
     }
     format!("{prefix}/{}", parts.join("/"))
+}
+
+#[cfg(test)]
+mod literal_tests {
+    use super::{Dialect, literal_words};
+
+    #[test]
+    fn literal_words_follow_the_shells_quote_and_escape_rules() {
+        for (dialect, command, expected) in [
+            (
+                Dialect::Sh,
+                "gh issue create --title 'Owner'\\''s issue'",
+                "Owner's issue",
+            ),
+            (
+                Dialect::Ps,
+                "gh issue create --title 'Owner''s issue'",
+                "Owner's issue",
+            ),
+            (
+                Dialect::Ps,
+                "gh issue create --title \"Say \"\"yes\"\"\"",
+                "Say \"yes\"",
+            ),
+            (
+                Dialect::Sh,
+                "gh issue create --title \"Say \\\"yes\\\"\"",
+                "Say \"yes\"",
+            ),
+            (
+                Dialect::Sh,
+                "gh issue create --title 'a; $b > c'",
+                "a; $b > c",
+            ),
+            (Dialect::Sh, "gh issue create --title one\\\ntwo", "onetwo"),
+            (Dialect::Sh, "gh issue create --title ''", ""),
+        ] {
+            let words = literal_words(command, dialect).unwrap();
+            assert_eq!(
+                words,
+                ["gh", "issue", "create", "--title", expected],
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_single_complete_literal_command_can_get_an_approval() {
+        for command in [
+            "git push --force;",
+            "git push --force &&",
+            "(git push --force)",
+            "git push --force > output",
+            "git push --force 2>&1",
+            "git push --force # comment",
+            "git push --force\necho done",
+            "git push --force $remote",
+            "git push --force $(echo origin)",
+            "git push --force `echo origin`",
+            "git push --force *",
+            "git push --force {a,b}",
+            "git push --force 'unfinished",
+            "git push --force \"unfinished",
+            "git push --force \\",
+            "",
+        ] {
+            assert!(literal_words(command, Dialect::Sh).is_err(), "{command}");
+        }
+        for command in [
+            "gh @args",
+            "gh issue create --title $title",
+            "gh issue create --title 'unfinished",
+        ] {
+            assert!(literal_words(command, Dialect::Ps).is_err(), "{command}");
+        }
+    }
 }

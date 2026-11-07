@@ -383,6 +383,8 @@ fn every_authority_keeps_notes_saving_independent_of_project_pushes() {
     }
 }
 
+#[path = "activate/allow.rs"]
+mod allow;
 #[path = "activate/hooks.rs"]
 mod hooks;
 #[path = "activate/proof.rs"]

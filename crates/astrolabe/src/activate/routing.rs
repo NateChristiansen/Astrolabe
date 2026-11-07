@@ -276,6 +276,40 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
         ));
     }
+    if words.get(..2) == Some(&["astrolabe", "allow"]) {
+        if child {
+            return Some(hook::deny(
+                "A subagent can't record an owner approval; report to the parent session.",
+            ));
+        }
+        let Some(session) = session else {
+            return Some(hook::deny(
+                "No approval recorded: the hook didn't name a session.",
+            ));
+        };
+        let powershell = in_powershell(provider(input), &input["tool_name"]);
+        let result = state_dir()
+            .ok_or_else(|| "no state folder".to_owned())
+            .and_then(|dir| {
+                if let Ok(Some(state)) = read_state(&dir, session)
+                    && let Some(why) = block_reason(&dir, &state, session)
+                {
+                    return Err(why);
+                }
+                // As with activation, prepare a readable result before committing a change.
+                let ticket = leave(&dir, super::allow::SUCCESS, true)?;
+                if let Err(why) = super::allow::mint(&dir, input, command, session, powershell) {
+                    reissue(&dir, &ticket, &format!("Approval refused: {why}."))?;
+                }
+                Ok(ticket)
+            });
+        return Some(match result {
+            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+            Err(why) => hook::deny(&format!(
+                "Astrolabe couldn't record or show the approval: {why}."
+            )),
+        });
+    }
     // An effort command is done here, in the hook, bound to the session the app named, and
     // the app runs only a print of the result (see `record`).
     if crate::effort::EffortCommand::is_effort_command(command) {

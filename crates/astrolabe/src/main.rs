@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,6 +39,9 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        ["allow", ..] => fail(
+            "No approval recorded: astrolabe allow must run alone through the plugin's pre-command hook with an effort loaded.",
+        ),
         [first @ ("effort" | "journal"), rest @ ..] => {
             // Only the hook does the work; here the body is read so the command can be told
             // apart from one the hook already answered.
