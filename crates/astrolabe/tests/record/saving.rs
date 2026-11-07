@@ -552,6 +552,101 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
 }
 
 #[test]
+fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A second effort rebinds the session; the first is now another's record.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    let worker_note = mac.effort_text(1);
+    let own_note = mac.effort_text(2);
+    // Only state goes by number: its text is the worker's, the journal line this session's.
+    for cmd in [
+        "astrolabe effort save --effort 1 --status active <<'ASTROLABE'\nMine.\n\nNext: n.\nASTROLABE\n",
+        "astrolabe effort save --effort 1 --journal \"Did the thing.\"",
+        "astrolabe effort save --effort 1 --tick x",
+        "astrolabe effort save --effort 1 --plan-file plan.md",
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(
+            !ok && out.contains("never its text") && out.contains("Nothing was written"),
+            "{cmd}: {out}"
+        );
+    }
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 2 --status done");
+    assert!(!ok && out.contains("this session's own"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 9 --status done");
+    assert!(!ok && out.contains("no effort 9"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort one --status done");
+    assert!(!ok && out.contains("effort number"), "{out}");
+    assert_eq!(
+        mac.effort_text(1),
+        worker_note,
+        "a refused save wrote nothing"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --effort 1 --status active --decision \"ink over paint: cheaper\" --initiative \"Ink\"",
+    );
+    assert!(
+        ok && out.contains("Saved effort 1: status active")
+            && out.contains("effort 2 is unchanged"),
+        "{out}"
+    );
+    let text = mac.effort_text(1);
+    for line in [
+        "status: active",
+        "initiative: Ink",
+        ": ink over paint: cheaper",
+        "saved_by: mac · claude",
+        "session: s1",
+        "## Current state\nsmooth the ink across frames, with café in it\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    assert_eq!(
+        mac.effort_text(2),
+        own_note,
+        "the bound effort is untouched"
+    );
+    // Already active, so a checkpoint; the status change below names itself.
+    assert_eq!(mac.log().lines().next(), Some("0001: checkpoint"));
+    assert!(
+        !mac.notes.join("journal").exists(),
+        "no journal line by number"
+    );
+    // Done, then the session's own effort joins the initiative too, or leaves it.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status done");
+    assert!(ok && out.contains("status done"), "{out}");
+    assert!(mac.effort_text(1).contains("status: done"));
+    assert_eq!(mac.log().lines().next(), Some("0001: done"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"Ink\"");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(2).contains("initiative: Ink"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"\"");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(2).contains("initiative: \"\""));
+    // Another repo's effort is out of reach, as it is for activation.
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let other = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("repo: demo", "repo: other");
+    std::fs::write(&path, other).unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status active");
+    assert!(!ok && out.contains("repo \"other\""), "{out}");
+    // A worker saves only its own effort.
+    assert!(mac.bash("w1", "astrolabe activate --effort 2 --worker").1);
+    let (out, ok) = mac.bash("w1", "astrolabe effort save --effort 1 --status active");
+    assert!(!ok && out.contains("worker"), "{out}");
+}
+
+#[test]
 fn a_crlf_copy_of_the_effort_between_saves_is_not_a_change() {
     // Git for Windows checks text out with CRLF (its system `core.autocrlf=true`), so a
     // pull can rewrite the file with nothing in it changed.

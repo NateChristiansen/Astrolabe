@@ -344,6 +344,16 @@ fn save_inner(
     let ticks = cmd.flags_all("tick");
     let unticks = cmd.flags_all("untick");
     let pieces_file = cmd.flag("pieces-file");
+    // An empty value clears the grouping, so an effort can leave an initiative.
+    let initiative = cmd.flag("initiative").map(str::trim);
+    let target = cmd
+        .flag("effort")
+        .map(|n| {
+            n.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("--effort takes an effort number, not {n:?}"))
+        })
+        .transpose()?;
     // Conflicts are checked on the pieces they name, not the words: "Tether" and
     // "Tether cap" are one item.
     if let Some(j) = journal_text {
@@ -370,9 +380,34 @@ fn save_inner(
         && ticks.is_empty()
         && unticks.is_empty()
         && pieces_file.is_none()
+        && initiative.is_none()
     {
         return Err(format!(
             "nothing to save: give a Current state body, or a flag.\n{FORMS}"
+        ));
+    }
+    // Another effort's record is changed in its state only: the dispatcher was never
+    // delivered its text, so a body here would overwrite what its worker wrote, and the
+    // day's journal line is this session's own effort's (one per initiative, not per worker).
+    if target.is_some()
+        && (body.is_some()
+            || body_plan.is_some()
+            || plan_file.is_some()
+            || journal_text.is_some()
+            || pieces_file.is_some()
+            || !ticks.is_empty()
+            || !unticks.is_empty())
+    {
+        return Err("with --effort <n> a save changes that effort's state, never its text: only --status, --waits-for, --reason, --decision and --initiative go with it. Its Current state, plan and pieces are its own session's to write, and the day's journal line goes on this session's effort. Nothing was written".to_owned());
+    }
+    if target.is_some() && state.worker.is_true() {
+        return Err(format!(
+            "this session is a worker under effort {number}: it saves that effort only; the session that dispatched it marks the others. Nothing was written"
+        ));
+    }
+    if target.is_some_and(|t| t.to_string() == number) {
+        return Err(format!(
+            "effort {number} is this session's own: save it without --effort. Nothing was written"
         ));
     }
     if status.as_deref() == Some("blocked") && waits_for.is_none() {
@@ -434,6 +469,18 @@ fn save_inner(
         ));
     }
     let pulled = crate::application::pull(&notes);
+    if let Some(target) = target {
+        let change = Change {
+            status: status.as_deref(),
+            waits_for,
+            reason,
+            decision,
+            initiative,
+        };
+        return save_target(
+            &notes, cmd, key, session, provider, cwd, &state, target, &change, &pulled,
+        );
+    }
     let path = notes.root.join(&rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
     let on_disk_hash = notes::content_hash(&on_disk);
@@ -471,14 +518,6 @@ fn save_inner(
     if let Some(plan) = plan {
         file.plan = Some(plan.trim().to_owned());
     }
-    if let Some(d) = decision {
-        file.add_decision(&format!("{day}: {d}"));
-    }
-    // Why the work stopped goes with the record of choices, dated, so it outlives later saves
-    // and a revival; Current state is replaced on every save.
-    if let Some(r) = reason {
-        file.add_decision(&format!("{day}: abandoned: {r}"));
-    }
     if let Some(p) = &pieces {
         file.set_pieces(p);
     }
@@ -501,17 +540,14 @@ fn save_inner(
             file.tick(at, false);
         }
     }
-    let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
-    if let Some(w) = waits_for {
-        file.set("waits_for", w);
+    let (before, waits_before) = Change {
+        status: status.as_deref(),
+        waits_for,
+        reason,
+        decision,
+        initiative,
     }
-    let before = file.prop("status").unwrap_or("").to_owned();
-    if let Some(s) = &status {
-        file.set("status", s);
-        if s != "blocked" && waits_for.is_none() {
-            file.set("waits_for", "");
-        }
-    }
+    .apply(&mut file, &day);
     // The journal is the owner's history and only the agent's sentence goes in it; one per
     // effort per day, the later replacing the earlier.
     let journal = journal_text
@@ -596,6 +632,136 @@ fn save_inner(
         head += &format!(" {l}");
     }
     crate::application::finish(&notes, key, &head);
+    Ok(head)
+}
+
+/// The part of a save that changes an effort's state rather than its text: what a session
+/// writes on its own effort beside Current state, and all a dispatcher may write on a
+/// worker's.
+struct Change<'a> {
+    status: Option<&'a str>,
+    waits_for: Option<&'a str>,
+    reason: Option<&'a str>,
+    decision: Option<&'a str>,
+    initiative: Option<&'a str>,
+}
+
+impl Change<'_> {
+    /// Applies the change; gives the status and waiting condition from before it.
+    fn apply(&self, file: &mut EffortFile, day: &str) -> (String, String) {
+        if let Some(d) = self.decision {
+            file.add_decision(&format!("{day}: {d}"));
+        }
+        // Why the work stopped goes with the record of choices, dated, so it outlives later
+        // saves and a revival; Current state is replaced on every save.
+        if let Some(r) = self.reason {
+            file.add_decision(&format!("{day}: abandoned: {r}"));
+        }
+        if let Some(i) = self.initiative {
+            file.set("initiative", i);
+        }
+        let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
+        if let Some(w) = self.waits_for {
+            file.set("waits_for", w);
+        }
+        let before = file.prop("status").unwrap_or("").to_owned();
+        if let Some(s) = self.status {
+            file.set("status", s);
+            if s != "blocked" && self.waits_for.is_none() {
+                file.set("waits_for", "");
+            }
+        }
+        (before, waits_before)
+    }
+}
+
+/// `astrolabe effort save --effort <n> …`: another effort's state, from the session that
+/// dispatched its worker. The worker owns the text (it was delivered the note; this session
+/// wasn't), so only the state changes, and the stamp names this session without the branch
+/// facts, which are the worker's checkout's, not this one's.
+#[allow(clippy::too_many_arguments)]
+fn save_target(
+    notes: &Notes,
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    state: &SessionState,
+    target: u32,
+    change: &Change<'_>,
+    pulled: &Pull,
+) -> Result<String, String> {
+    let (_, rel) = notes
+        .numbers()
+        .into_iter()
+        .find(|(n, _)| *n == target)
+        .ok_or_else(|| format!("no effort {target} in the notes"))?;
+    let path = notes.root.join(&rel);
+    let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+    let on_disk_hash = notes::content_hash(&on_disk);
+    let mut file = EffortFile::parse(&on_disk)?;
+    // A project session reaches only its project's efforts, as activation does.
+    let mine = state.repo.as_deref().unwrap_or_default();
+    let theirs = file.prop("repo").unwrap_or_default();
+    if theirs != mine {
+        return Err(format!(
+            "effort {target} is for repo {theirs:?}, not this session's {mine:?}. Nothing was written"
+        ));
+    }
+    let (day, _) = notes::local_day_time();
+    let (before, waits_before) = change.apply(&mut file, &day);
+    file.set("updated", &notes::local_stamp());
+    file.set(
+        "saved_by",
+        &format!("{} · {provider}", notes::machine_name()),
+    );
+    file.set("session", session);
+    let text = file.render();
+    let now = notes::now_ms();
+    let message = match change.status {
+        Some(s) if s != before => format!("{target:04}: {s}"),
+        _ => format!("{target:04}: checkpoint"),
+    };
+    let op = Op {
+        lesson_close: None,
+        key: key.to_owned(),
+        files: vec![(rel, text)],
+        renames: Vec::new(),
+        journal: Vec::new(),
+        message,
+        base: Some(on_disk_hash),
+        // This session's own record is untouched: its effort wasn't saved.
+        states: Vec::new(),
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: None,
+    };
+    notes.apply(&op)?;
+    let state_changed = change.status.is_some_and(|s| s != before)
+        || file.prop("waits_for").unwrap_or("") != waits_before;
+    let sync_started = (state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS)
+        .then(|| notes.spawn_sync());
+    let saved = if matches!(pulled, Pull::Offline(why) if why == "no remote") {
+        "saved locally; sync unavailable: no remote configured"
+    } else {
+        match sync_started {
+            Some(true) => "committed, background sync started",
+            Some(false) => "committed; background sync could not start",
+            None => "committed",
+        }
+    };
+    let mut head = format!(
+        "Saved effort {target}: status {}; {saved}. This session's effort {} is unchanged.",
+        file.prop("status").unwrap_or("?"),
+        state.effort.as_deref().unwrap_or_default()
+    );
+    if matches!(pulled, Pull::Diverged(_)) {
+        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
+    }
+    crate::application::finish(notes, key, &head);
     Ok(head)
 }
 

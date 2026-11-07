@@ -10,7 +10,7 @@ pub const NEW_FLAGS: [&str; 7] = [
     "initiative",
     "priority",
 ];
-pub const SAVE_FLAGS: [&str; 9] = [
+pub const SAVE_FLAGS: [&str; 11] = [
     "status",
     "decision",
     "waits-for",
@@ -20,6 +20,8 @@ pub const SAVE_FLAGS: [&str; 9] = [
     "tick",
     "untick",
     "pieces-file",
+    "initiative",
+    "effort",
 ];
 
 /// The one delimiter, quoted so the shell expands nothing in the body.
@@ -195,6 +197,7 @@ pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
+Another effort's state, from the session that dispatched it:  astrolabe effort save --effort <n> --status done --decision \"…\"  (only --status, --waits-for, --reason, --decision and --initiative go with --effort).\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
