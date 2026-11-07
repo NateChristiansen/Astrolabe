@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save> …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save> …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]|--preview [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -73,6 +73,7 @@ fn main() {
         ["home", rest @ ..] => {
             let mut open = false;
             let mut serve = false;
+            let mut preview = false;
             let mut port: Option<u16> = None;
             let mut theme = None;
             let mut palette = None;
@@ -82,6 +83,7 @@ fn main() {
                 match *word {
                     "--open" => open = true,
                     "--serve" => serve = true,
+                    "--preview" => preview = true,
                     "--port" => match words.next().and_then(|w| w.parse().ok()) {
                         Some(p) => port = Some(p),
                         None => fail("--port takes a number"),
@@ -112,7 +114,27 @@ fn main() {
                     _ => usage(),
                 }
             }
+            if preview && (serve || handover.is_some()) {
+                fail("--preview runs its own server; leave out --serve");
+            }
             match notes_here() {
+                // Beside the machine's server, for trying a build: nothing it's given is
+                // saved, and a port of 0 by default, so it never takes the machine's.
+                Ok(notes) if preview => {
+                    let mut look = astrolabe::home::look(&notes);
+                    look.theme = theme.unwrap_or(look.theme);
+                    look.palette = palette.unwrap_or(look.palette);
+                    match astrolabe::home::listen(port.unwrap_or(0)) {
+                        Ok((listener, url)) => {
+                            println!("{url}");
+                            if open && let Err(why) = open_in_browser(&url) {
+                                fail(&why);
+                            }
+                            astrolabe::home::preview(&notes, listener, look);
+                        }
+                        Err(why) => fail(&why),
+                    }
+                }
                 Ok(notes) => {
                     if (theme.is_some() || palette.is_some())
                         && let Err(why) = astrolabe::home::set_look(&notes, theme, palette)
