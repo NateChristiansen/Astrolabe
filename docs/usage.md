@@ -20,6 +20,8 @@ Tell the agent how involved you want to be:
 
 You also choose its authority: **read** to investigate and report, **edit** to make changes and local commits, or **push** to share its branch. New efforts default to edit.
 
+Authority applies to project changes and pushes; notes save and sync on their own at every authority level.
+
 For example:
 
 > Fix the broken links. Work autonomously and keep the changes local.
