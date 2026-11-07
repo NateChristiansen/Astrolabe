@@ -149,6 +149,7 @@ ASTROLABE
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
 | `--initiative "<name>"` | Optional grouping; default empty. |
 | `--priority <label>` | Default `none`. The board recognizes `low`, `high` and `urgent` (`top` also sorts as urgent); other labels sort normally. |
+| `--issue <n>` | The GitHub issue the work answers, or a list such as `"5, 7"`; default none. The session context then says to end the landing commit with `Fixes #<n>`, because the landing script pushes straight to main with no pull request, and GitHub closes an issue only when a closing keyword in a commit reaches the default branch. |
 
 Involvement and authority follow the owner's instructions; see [choosing how the agent works](usage.md#choose-how-the-agent-works).
 
@@ -213,6 +214,8 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. |
 | `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
 
+When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
+
 A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked, so the first save after the owner answers takes the effort out of Needs you. Give `--waits-for` again on a save made while still waiting. For example:
 
 ```sh
@@ -240,7 +243,7 @@ astrolabe effort save --tick "First repo note"
 
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
 
-`save` has no flags for changing the title, repo, involvement, authority or priority. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
+`save` has no flags for changing the title, repo, involvement, authority, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
 
 ### Multiline input and quoting
 

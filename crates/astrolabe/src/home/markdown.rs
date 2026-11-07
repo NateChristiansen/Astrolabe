@@ -43,6 +43,7 @@ pub(super) fn note_page(
         "repo",
         "priority",
         "initiative",
+        "issue",
         "involvement",
         "authority",
         "waits_for",

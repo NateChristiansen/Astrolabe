@@ -48,7 +48,7 @@ pub(super) const AUTHORITY: [(&str, &str); 3] = [
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
 /// What every session needs: when work gets an effort, and how to start one.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. From the notes checkout, the owner's seat, `effort new` and `astrolabe journal` need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. From the notes checkout, the owner's seat, `effort new` and `astrolabe journal` need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes.";
 
 /// What a session with an effort needs: how to save, journal and record decisions. Printed by
 /// `effort new` and `activate`, so a session that never records doesn't carry it.
@@ -71,6 +71,8 @@ pub struct Effort {
     pub repos: Vec<String>,
     pub involvement: String,
     pub authority: String,
+    /// The GitHub issues it answers, as numbers; empty for most.
+    pub issues: Vec<String>,
     pub current: String,
     /// The file as read, hashed: what a save compares against, from the same read.
     pub hash: String,
@@ -156,6 +158,15 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
         repos,
         involvement: one_of("involvement", &INVOLVEMENT)?,
         authority: one_of("authority", &AUTHORITY)?,
+        issues: (props.iter())
+            .find(|(k, _)| k == "issue")
+            .map(|(_, v)| {
+                (v.split(','))
+                    .map(|n| n.trim().trim_start_matches('#').to_owned())
+                    .filter(|n| !n.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
         current: current
             .filter(|c| !c.is_empty())
             .ok_or_else(|| format!("{file} has no `## Current state` section"))?,
@@ -335,6 +346,7 @@ pub fn switch_on(
         Settings from {file}, set by the owner. Agents never raise them, because they're the owner's call:\n\
         - involvement: {inv}: {inv_m}.\n\
         - authority: {auth}: {auth_m}. It's a ceiling inside {repo} and this effort's scope, and never covers posting or destructive actions, because those reach other people or can't be undone. Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.\n\
+        {issue}\
         - A narrower current instruction from the owner wins, because it's the newest word.\n\
         - In this build these settings are context, not enforced, apart from the guard. Switching on wrote only Astrolabe's own state file; that isn't leave to edit project files.\n\n\
         {GUARD_SCOPE}\n\n\
@@ -349,6 +361,7 @@ pub fn switch_on(
         auth = effort.authority,
         auth_m = meaning(&AUTHORITY, &effort.authority),
         proof = proof_steps(&token, shells),
+        issue = issue_line(&effort.issues),
     );
     // A worker stays a worker through resume and reload, and is told so each time.
     let mut head = head;
@@ -356,6 +369,21 @@ pub fn switch_on(
         head += &format!("\n\n{WORKER_RULE}");
     }
     Ok(Activation { state, head, parts })
+}
+
+/// The effort's GitHub issues, and the keyword that closes each when its commit reaches main.
+/// Nothing else closes them: the landing script pushes straight to main, with no pull request.
+fn issue_line(issues: &[String]) -> String {
+    if issues.is_empty() {
+        return String::new();
+    }
+    let tags: Vec<String> = issues.iter().map(|n| format!("#{n}")).collect();
+    let fixes: Vec<String> = issues.iter().map(|n| format!("`Fixes #{n}`")).collect();
+    format!(
+        "- issue: {}: this work answers it on GitHub. The commit that lands it says {} on a line of its own, because only that keyword reaching main closes the issue; marking the effort done reports any it hasn't.\n",
+        tags.join(", "),
+        fixes.join(" and ")
+    )
 }
 
 /// What the stamp says against the repo here: who saved last and when, and what moved since.

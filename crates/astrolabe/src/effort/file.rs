@@ -88,10 +88,11 @@ pub struct EffortFile {
 }
 
 /// The order properties are written in; unknown ones follow, as read.
-pub(super) const PROP_ORDER: [&str; 15] = [
+pub(super) const PROP_ORDER: [&str; 16] = [
     "status",
     "repo",
     "initiative",
+    "issue",
     "priority",
     "involvement",
     "authority",
