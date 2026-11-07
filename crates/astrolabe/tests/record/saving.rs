@@ -373,8 +373,16 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Goo\"");
     assert!(!ok && out.contains("more than one piece"), "{out}");
+    assert!(
+        out.contains("Goo at speed") && out.contains("Goo splats"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), text, "an ambiguous tick must not save");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Nothing\"");
     assert!(!ok && out.contains("no piece starts with"), "{out}");
+    for label in ["Tether cap", "Goo at speed", "Goo splats"] {
+        assert!(out.contains(label), "{out}");
+    }
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save --tick \"Goo at\" --untick \"Goo at speed\"",
@@ -404,6 +412,104 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     assert!(ok, "{out}");
     let v: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["efforts"][0]["pieces"], json!({"done": 1, "total": 3}));
+}
+
+#[test]
+fn inline_code_pieces_can_be_ticked_without_changing_their_text() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let piece = "First repo note: `astrolabe repo add <name>` from that repo";
+    write(&mac.demo.join("pieces.md"), &format!("- [ ] {piece}\n"));
+    assert!(
+        mac.bash("s1", "astrolabe effort save --pieces-file pieces.md")
+            .1
+    );
+    let before = mac.effort_text(1);
+    // The hook refuses shell-sensitive values and tells the agent a usable alternative.
+    for value in [piece, "First $repo note", "First \"repo\" note"] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --tick \"{value}\""));
+        assert!(!ok, "{out}");
+        assert!(
+            out.contains("no $, backtick or inner double quote"),
+            "{out}"
+        );
+        assert!(
+            out.contains("unambiguous prefix") && out.contains("--tick \"First repo note\""),
+            "{out}"
+        );
+        assert_eq!(mac.effort_text(1), before);
+    }
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"first repo note\"");
+    assert!(ok, "{out}");
+    assert_eq!(
+        mac.effort_text(1),
+        before.replace(&format!("- [ ] {piece}"), &format!("- [x] {piece}"))
+    );
+}
+
+#[test]
+fn an_exact_piece_label_wins_over_longer_labels_even_when_already_checked() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Repo note\n- [ ] Repo note examples\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick \"repo note\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("- [x] Repo note\n- [ ] Repo note examples")
+    );
+    // A different command avoids replaying the previous receipt. The exact checked label
+    // still wins rather than checking the longer unfinished label.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Repo note\"");
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("- [x] Repo note\n- [ ] Repo note examples")
+    );
+    // Unticking is outside this change: its existing prefix rule still considers the
+    // longer label even when the value is an exact label.
+    let before = mac.effort_text(1);
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --untick \"Repo note\"");
+    assert!(!ok && out.contains("more than one piece"), "{out}");
+    assert_eq!(mac.effort_text(1), before);
+}
+
+#[test]
+fn tick_prefixes_consider_only_unfinished_pieces_and_resolve_before_any_ticks() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [x] Repo setup\n- [ ] Repo note\n",
+    );
+    // Both prefixes select the same unfinished piece. Resolve them once so the second
+    // cannot fail or select another piece after the first tick changes the checklist.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick Repo --tick \"Repo n\"",
+    );
+    assert!(ok, "{out}");
+    let before = mac.effort_text(1);
+    assert!(before.contains("- [x] Repo setup\n- [x] Repo note"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick Repo");
+    assert!(
+        !ok && out.contains("no piece starts with") && out.contains("unfinished"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Repo setup") && out.contains("Repo note"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), before);
 }
 
 #[test]

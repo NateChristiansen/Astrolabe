@@ -162,8 +162,8 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
 | `--plan-file <path>` | Replace the saved plan with a UTF-8 text file. |
 | `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |
-| `--tick "<piece>"` | Check a piece by its label or a unique prefix, ignoring case. Repeat to check several. |
-| `--untick "<piece>"` | Uncheck a piece using the same matching rules. Repeat as needed. |
+| `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
+| `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 
 Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
 
@@ -182,6 +182,12 @@ File paths are relative to the session's working directory unless absolute. A pi
 ```markdown
 - [x] Keep the upload selection
 - [ ] Check slow connections
+```
+
+Flag values refuse `$`, backticks and inner double quotes. For a piece such as ``First repo note: `astrolabe repo add <name>` from that repo``, use an unambiguous prefix without changing the piece's text:
+
+```sh
+astrolabe effort save --tick "First repo note"
 ```
 
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.

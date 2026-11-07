@@ -196,7 +196,7 @@ POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over 
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
-Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
+Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
 pub(super) fn is_assignment(word: &str) -> bool {

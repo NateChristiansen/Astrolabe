@@ -483,20 +483,20 @@ fn save_inner(
     if !ticks.is_empty() || !unticks.is_empty() {
         let on: Vec<usize> = ticks
             .iter()
-            .map(|l| file.piece_at(l))
+            .map(|l| file.piece_at(l, true))
             .collect::<Result<_, _>>()?;
         let off: Vec<usize> = unticks
             .iter()
-            .map(|l| file.piece_at(l))
+            .map(|l| file.piece_at(l, false))
             .collect::<Result<_, _>>()?;
         if let Some(i) = on.iter().position(|i| off.contains(i)) {
             return Err(format!("{:?} is both ticked and unticked", ticks[i]));
         }
-        for label in &ticks {
-            file.tick(label, true)?;
+        for at in on {
+            file.tick(at, true);
         }
-        for label in &unticks {
-            file.tick(label, false)?;
+        for at in off {
+            file.tick(at, false);
         }
     }
     let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
