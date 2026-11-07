@@ -32,7 +32,7 @@ The agent records these choices with the effort, so they carry over when you res
 
 Astrolabe starts the board automatically. Open your [local board](http://localhost:4747/) or ask an agent to open it for you. The address above is the default.
 
-The board shows active work, what needs your attention and what you could pick up next. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it.
+The board shows active work, what needs your attention and what you could pick up next. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it. Ideas use a full-width grid that adapts to your screen, with priority first and the latest updates next. When nothing is in motion, the overview moves straight to the work you could pick up.
 
 The journal gives you a short history of what changed. Both the board and journal update as agents record their work.
 
