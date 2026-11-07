@@ -645,3 +645,73 @@ fn an_abandoned_effort_keeps_its_reason_in_decisions() {
         "{text}"
     );
 }
+
+#[test]
+fn an_effort_for_an_issue_says_how_to_close_it_and_reports_it_when_done() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue five <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("isn't a list of issue numbers"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue \"#5, 6\" <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("- issue: #5, #6: this work answers it on GitHub. The commit that lands it says `Fixes #5` and `Fixes #6`"),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(1).contains("issue: 5, 6\n"),
+        "{}",
+        mac.effort_text(1)
+    );
+    // A reload carries the line too, so a fresh session that lands the work sees it.
+    assert!(mac.session_start("s1", "resume").contains("`Fixes #5`"));
+    // Main here, as last fetched, closes 5 but not 6.
+    git(
+        &mac.demo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Smooth ink\n\nFixes #5",
+        ],
+    );
+    git(
+        &mac.demo,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("Main here has a commit that closes #5."),
+        "{out}"
+    );
+    assert!(
+        out.contains("No commit on main here, as of the last fetch, closes #6")
+            && out.contains("`Fixes #6`"),
+        "{out}"
+    );
+    // Only the save that marks it done reports.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok && !out.contains("closes"), "{out}");
+}
+
+#[test]
+fn an_effort_with_no_issue_says_nothing_about_issues() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok && !out.contains("- issue:"), "{out}");
+    assert!(!mac.effort_text(1).contains("issue:"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok && !out.contains("issue"), "{out}");
+}

@@ -148,6 +148,7 @@ ASTROLABE
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
 | `--initiative "<name>"` | Optional grouping; default empty. |
 | `--priority <label>` | Default `none`. The board recognizes `low`, `high` and `urgent` (`top` also sorts as urgent); other labels sort normally. |
+| `--issue <n>` | The GitHub issue the work answers, or a list such as `"5, 7"`; default none. The session context then says to end the landing commit with `Fixes #<n>`, because the landing script pushes straight to main with no pull request, and GitHub closes an issue only when a closing keyword in a commit reaches the default branch. |
 
 Involvement and authority follow the owner's instructions; see [choosing how the agent works](usage.md#choose-how-the-agent-works).
 
@@ -181,6 +182,8 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 
+When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
+
 Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
 
 ```sh
@@ -208,7 +211,7 @@ astrolabe effort save --tick "First repo note"
 
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
 
-`save` has no flags for changing the title, repo, involvement, authority, initiative or priority. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
+`save` has no flags for changing the title, repo, involvement, authority, initiative, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
 
 ### Multiline input and quoting
 

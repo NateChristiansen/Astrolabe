@@ -11,8 +11,8 @@ use std::path::PathBuf;
 pub mod lesson;
 mod validation;
 use validation::{
-    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, one_of, shift_plan_headings,
-    split_plan,
+    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, closes, issues, one_of,
+    shift_plan_headings, split_plan,
 };
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
@@ -169,6 +169,7 @@ fn new_inner(
         cmd.flag("authority").unwrap_or("edit"),
         &AUTHORITIES,
     )?;
+    let issue = cmd.flag("issue").map(issues).transpose()?;
     let (registry, notes) = notes_here()?;
     let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let dir = notes.state.clone();
@@ -229,6 +230,9 @@ fn new_inner(
         ("created", day.as_str()),
     ] {
         file.set(k, v);
+    }
+    if let Some(issue) = &issue {
+        file.set("issue", issue);
     }
     stamp(
         &mut file,
@@ -595,8 +599,63 @@ fn save_inner(
     for l in notes_lines {
         head += &format!(" {l}");
     }
+    if status.as_deref() == Some("done")
+        && before != "done"
+        && let Some(issue) = file.prop("issue").filter(|i| !i.is_empty())
+    {
+        head += &format!(" {}", issue_report(cwd, issue));
+    }
     crate::application::finish(&notes, key, &head);
     Ok(head)
+}
+
+/// Whether main here already holds a commit that closes each issue the effort answers, read
+/// from the last fetch: an effort can be done while the issue it answers stays open, because
+/// the issue number never reached the landed commit (2026-11-07: five fixed issues sat open).
+fn issue_report(cwd: &Path, issue: &str) -> String {
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let main = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
+        .into_iter()
+        .find(|r| {
+            crate::worktree::git(
+                cwd,
+                &[&os("rev-parse"), &os("--verify"), &os("--quiet"), &os(r)],
+            )
+            .is_ok()
+        });
+    let log =
+        main.map(|r| crate::worktree::git(cwd, &[&os("log"), &os("--format=%B%x00"), &os(r)]));
+    let Some(Ok(log)) = log else {
+        return format!(
+            "This effort answers issue {issue}, but there's no origin main here to check it against; make sure GitHub closes it."
+        );
+    };
+    let messages: Vec<&str> = log.split('\0').collect();
+    let (closed, open): (Vec<&str>, Vec<&str>) = issue
+        .split(", ")
+        .partition(|n| messages.iter().any(|m| closes(m, n)));
+    let tag = |ns: &[&str]| {
+        ns.iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut said = Vec::new();
+    if !closed.is_empty() {
+        said.push(format!(
+            "Main here has a commit that closes {}.",
+            tag(&closed)
+        ));
+    }
+    if !open.is_empty() {
+        let fixes: Vec<String> = open.iter().map(|n| format!("`Fixes #{n}`")).collect();
+        said.push(format!(
+            "No commit on main here, as of the last fetch, closes {}, so GitHub won't close it on its own. Land a commit that says {}, or ask the owner before closing it by hand.",
+            tag(&open),
+            fixes.join(" and ")
+        ));
+    }
+    said.join(" ")
 }
 
 /// The ticket is written; the intent that held the result can go.
