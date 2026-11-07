@@ -45,8 +45,18 @@ impl InitiativePage {
             before.remove(at);
         }
         let mut efforts = Vec::new();
-        for paragraph in lines[start + 1..end].join("\n").split("\n\n") {
-            let mut parts = paragraph.trim().lines().map(str::trim);
+        // A blank line is one with nothing but whitespace, as Markdown reads it, so a line
+        // of spaces between two efforts still separates them (review, 2026-11-07).
+        let mut paragraphs: Vec<Vec<&str>> = vec![Vec::new()];
+        for line in &lines[start + 1..end] {
+            if line.trim().is_empty() {
+                paragraphs.push(Vec::new());
+            } else if let Some(last) = paragraphs.last_mut() {
+                last.push(line);
+            }
+        }
+        for paragraph in paragraphs {
+            let mut parts = paragraph.into_iter().map(str::trim);
             let Some(title) = parts.next().filter(|t| !t.is_empty()) else {
                 continue;
             };
@@ -108,7 +118,7 @@ mod tests {
 
     #[test]
     fn the_body_is_the_page_and_its_efforts_section_names_the_efforts() {
-        let body = "# Ink\n\nSmooth the ink.\n\n```\n## Efforts\nnot this one\n```\n\n## Efforts and order\n1. Tether cap\nCap the tether.\n\n- Goo at speed\nKeep goo stable\nat speed.\n\n## What completion means\n- never splits\n";
+        let body = "# Ink\n\nSmooth the ink.\n\n```\n## Efforts\nnot this one\n```\n\n## Efforts and order\n1. Tether cap\nCap the tether.\n  \n- Goo at speed\nKeep goo stable\nat speed.\n\n## What completion means\n- never splits\n";
         let page = InitiativePage::parse(body).unwrap();
         assert_eq!(
             page.before,

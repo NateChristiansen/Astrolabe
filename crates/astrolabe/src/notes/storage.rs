@@ -270,7 +270,7 @@ impl Notes {
         // and a path git doesn't know would fail the commit. Hand edits under these paths
         // ride along on purpose; anything else the owner staged stays staged and out.
         let mut changed = Vec::new();
-        for path in ["efforts", "journal", ".gitattributes"] {
+        for path in ["efforts", "journal", "initiatives", ".gitattributes"] {
             if self.root.join(path).exists()
                 && !self
                     .git(&["status", "--porcelain", "--", path])?

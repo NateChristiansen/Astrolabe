@@ -57,6 +57,13 @@ fn an_initiative_and_its_efforts_are_filed_in_one_step() {
         Some("initiative Smooth ink: 2 efforts filed")
     );
     assert!(!mac.notes.join("journal").exists());
+    // The page is in that commit, not left untracked for the sync to miss.
+    assert!(
+        git(&mac.notes, &["status", "--porcelain", "--", "initiatives"])
+            .trim()
+            .is_empty(),
+        "the page is committed"
+    );
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "1");
