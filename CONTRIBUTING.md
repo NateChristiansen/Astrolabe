@@ -13,6 +13,8 @@ Run `scripts/check` before each commit. It runs formatting checks, clippy with w
 
 Building alone does not install the plugin. Follow the [installation guide](docs/install.md) to try your build in an agent app. After changing the program, rebuild and run the new executable with `install`; after changing the plugin, refresh the app's installed copy and start a fresh session.
 
+To see a home change without replacing the one you use, run `target/debug/astrolabe home --preview --port 4799`. It serves your notes read-only from that build, beside the installed home, and saves nothing: `--theme` and `--palette` apply to the preview alone, and it leaves the machine's port and server as they are. Without `--port` it picks a free one and prints the address. It runs until you stop it, so restart it after a rebuild.
+
 ## Project documentation
 
 - [Installation](docs/install.md): setup, updates, and migration.

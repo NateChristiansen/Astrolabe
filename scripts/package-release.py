@@ -50,6 +50,13 @@ CASES
 '''
     generated = replace_once(generated, anchor, verify)
     generated = replace_once(generated, 'say "everything\'s installed!"', 'say "Download verified and staged."')
+    # cargo-dist sees the existing command ahead of our temporary stage on PATH.
+    # The final `astrolabe install` checks the real destination instead.
+    generated = replace_once(generated, '''    _shadowed_bins="$(check_for_shadowed_bins "$_install_dir" "$_bins")"
+    if [ -n "$_shadowed_bins" ]; then
+        warn "The following commands are shadowed by other commands in your PATH:$_shadowed_bins"
+    fi
+''', '')
     # The generated installer executes only in a subshell and only writes into staging.
     return '''#!/usr/bin/env sh
 # Download a verified release, then install it without changing notes or app settings.

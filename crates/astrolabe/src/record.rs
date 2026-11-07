@@ -684,7 +684,11 @@ fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
 
 /// The ticket is written; the intent that held the result can go.
 pub fn forget(key: &str) {
-    if let Ok((_, notes)) = notes_here() {
+    // Another save may already be scanning recovery intents. Removing one outside the
+    // lock can make that scan report a missing file as a broken, unfinished write.
+    if let Ok((_, notes)) = notes_here()
+        && let Ok(_held) = notes.lock()
+    {
         notes.forget(key);
     }
 }
