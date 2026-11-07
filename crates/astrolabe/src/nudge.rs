@@ -95,7 +95,6 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
-        Ok(Some(state)) if state.worker.is_true() => return None,
         Ok(Some(mut state)) => {
             let facts = RepoFacts::read(&cwd);
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
@@ -185,8 +184,9 @@ pub fn at_end(session: &str) {
     push_pending();
 }
 
-/// A detached push once the batching window has passed with commits origin lacks. Every turn
-/// end checks, because a session that saves and then sits open never reaches SessionEnd.
+/// A detached push when commits origin lacks are left: a save's own push that failed or was
+/// skipped. Every turn end checks, because a session that saves and then sits open never
+/// reaches SessionEnd.
 pub fn push_due() {
     let Some(dir) = state_dir() else { return };
     let Ok(root) = crate::activate::notes_root() else {
@@ -197,8 +197,7 @@ pub fn push_due() {
     // One request at a time: a sync asked for in the last minute is still running or
     // waiting on the lock, and a timed-out one has set its own backoff. An ask stamped in
     // the future (a clock set back) counts as old.
-    if now - notes.last_push_ms() > notes::PUSH_EVERY_MS
-        && !(0..=notes::RECENT_MS).contains(&(now - notes.last_request_ms()))
+    if !(0..=notes::RECENT_MS).contains(&(now - notes.last_request_ms()))
         && notes.backing_off().is_none()
         && notes.unpublished() > 0
     {

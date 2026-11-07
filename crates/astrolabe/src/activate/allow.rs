@@ -1,0 +1,192 @@
+//! A quoted approval is an agent's claim, bound by the hook to one exact command.
+use super::{now_ms, read_state, state_path};
+use crate::{guard, hook};
+use fs4::fs_std::FileExt;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+pub(crate) const HINT: &str = "If the owner approved this exact command, run `astrolabe allow --once \"<command>\" --said \"<their words>\"` alone, then run it again within five minutes.";
+pub(super) const SUCCESS: &str = "Recorded the claimed owner approval. Run that exact command once in this session and working directory within five minutes.";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lease {
+    command: String,
+    said: String,
+    session: String,
+    cwd: String,
+    minted_ms: i64,
+    expires_ms: i64,
+}
+
+pub(crate) fn covered(reason: &str) -> bool {
+    matches!(
+        reason,
+        "force-push" | "a gh call that posts or changes something"
+    )
+}
+
+pub(crate) fn cwd(input: &Value) -> Option<PathBuf> {
+    let base = PathBuf::from(input["cwd"].as_str()?);
+    let workdir = ["workdir", "cwd", "working_directory"]
+        .iter()
+        .find_map(|key| input["tool_input"][key].as_str());
+    Some(workdir.map_or_else(|| base.clone(), |p| base.join(p)))
+}
+
+fn lock(dir: &Path, session: &str) -> Result<std::fs::File, String> {
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(state_path(dir, session).with_extension("allow.lock"))
+        .map_err(|e| e.to_string())?;
+    FileExt::lock_exclusive(&file).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+fn lease_path(dir: &Path, session: &str) -> PathBuf {
+    state_path(dir, session).with_extension("allow.json")
+}
+
+fn read_leases(dir: &Path, session: &str) -> Result<Vec<Lease>, String> {
+    match std::fs::read(lease_path(dir, session)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// Lease writers hold the allow lock; ordinary session writers never touch this file.
+fn persist(dir: &Path, session: &str, leases: &[Lease]) -> Result<(), String> {
+    let path = lease_path(dir, session);
+    super::tickets::write_json(&path, &leases)?;
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn log(dir: &Path, event: &str, lease: &Lease) -> Result<(), String> {
+    let line = json!({"at_ms": now_ms(), "event": event, "command": lease.command,
+        "said": lease.said, "session_id": lease.session, "cwd": lease.cwd});
+    let mut file = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(dir.join(hook::DENIAL_LOG))
+        .map_err(|e| e.to_string())?;
+    file.write_all(format!("{line}\n").as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+pub(super) fn mint(
+    dir: &Path,
+    input: &Value,
+    command: &str,
+    session: &str,
+    powershell: bool,
+) -> Result<(), String> {
+    let dialect = if powershell {
+        guard::Dialect::Ps
+    } else {
+        guard::Dialect::Sh
+    };
+    let parsed = guard::literal_words(command.trim(), dialect)?;
+    let [program, verb, once, exact, said, quote] = parsed.as_slice() else {
+        return Err("use astrolabe allow --once \"<exact command>\" --said \"<the owner's words>\", run alone".into());
+    };
+    if program != "astrolabe"
+        || verb != "allow"
+        || once != "--once"
+        || said != "--said"
+        || quote.trim().is_empty()
+    {
+        return Err("use --once and a nonempty --said quote, run alone".into());
+    }
+    let target = guard::literal_words(exact, dialect)?;
+    let cwd = cwd(input).ok_or("the hook didn't name a working directory")?;
+    let scope = guard::Scope {
+        root: None,
+        cwd: Some(hook::comparable(&cwd)),
+    };
+    let reason = guard::decide(
+        input["tool_name"].as_str().unwrap_or("Bash"),
+        &json!({"command":exact}),
+        &scope,
+    )
+    .ok_or("the guard wouldn't deny that command, so it needs no lease")?;
+    if !covered(&reason) {
+        return Err(format!(
+            "a lease cannot cover {reason}; only force pushes and GitHub writes are supported"
+        ));
+    }
+    // A nested shell could hide a second operation behind the first covered denial.
+    // This command deliberately accepts direct git/gh invocations only.
+    let program = target
+        .first()
+        .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p));
+    if !matches!(program, Some("git" | "git.exe" | "gh" | "gh.exe")) {
+        return Err(
+            "the approved command must invoke git or gh directly, without a wrapper".into(),
+        );
+    }
+    let _held = lock(dir, session)?;
+    read_state(dir, session)?.ok_or("load an effort before recording an approval")?;
+    let mut leases = read_leases(dir, session)?;
+    let at = now_ms();
+    let lease = Lease {
+        command: exact.clone(),
+        said: quote.clone(),
+        session: session.into(),
+        cwd: hook::comparable(&cwd),
+        minted_ms: at,
+        expires_ms: at + 300_000,
+    };
+    log(dir, "lease-minted", &lease)?;
+    leases.push(lease);
+    persist(dir, session, &leases)?;
+    Ok(())
+}
+
+pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, String> {
+    if !covered(reason) || input["agent_id"].as_str().is_some_and(|s| !s.is_empty()) {
+        return Ok(false);
+    }
+    let Some(session) = input["session_id"].as_str() else {
+        return Ok(false);
+    };
+    let Some(command) = guard::command_field(&input["tool_input"]).and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let Some(cwd) = cwd(input) else {
+        return Ok(false);
+    };
+    let _held = lock(dir, session)?;
+    let Some(_) = read_state(dir, session)? else {
+        return Ok(false);
+    };
+    let mut leases = read_leases(dir, session)?;
+    let now = now_ms();
+    let Some(index) = leases.iter().position(|lease| {
+        lease.session == session
+            && lease.command == command
+            && lease.cwd == hook::comparable(&cwd)
+            && now >= lease.minted_ms
+            && now < lease.expires_ms
+    }) else {
+        return Ok(false);
+    };
+    let lease = leases.remove(index);
+    persist(dir, session, &leases)?;
+    log(dir, "lease-used", &lease)?;
+    Ok(true)
+}

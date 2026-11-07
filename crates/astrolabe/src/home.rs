@@ -12,7 +12,7 @@ mod server;
 mod settings;
 
 pub use render::render;
-pub use server::{ensure_serving, hold, listen, serve};
+pub use server::{HANDOVER_FLAG, HANDOVER_WAIT, ensure_serving, hold, listen, preview, serve};
 pub use settings::{Look, Palette, SERVE_PORT, Theme, look, port, set_look, set_port, url};
 
 pub const FILE: &str = "home.html";
@@ -189,7 +189,9 @@ mod tests {
         assert!(page.contains("nothing yet today"));
         assert!(page.contains("nothing open"));
         assert!(
-            page.contains("class=\"empty\">nothing in flight<"),
+            page.contains("<section class=\"col active\" hidden></section>")
+                && !page.contains("<span>In motion</span>")
+                && page.contains("Room for what’s next."),
             "{page}"
         );
         assert!(
@@ -203,6 +205,69 @@ mod tests {
             "no lessons, no section and no count"
         );
         assert!(!page.contains("open draft"), "no drafts, no count");
+    }
+
+    #[test]
+    fn ideas_keep_their_order_and_space_with_or_without_active_work() {
+        let ideas: Vec<_> = (1..=15)
+            .map(|n| {
+                row(
+                    n,
+                    "proposed",
+                    json!({
+                        "priority": if n == 1 { "high" } else { "none" },
+                        "updated": format!("2026-11-05T12:{n:02}-07:00"),
+                    }),
+                )
+            })
+            .collect();
+        for busy in [false, true] {
+            let mut efforts = ideas.clone();
+            if busy {
+                efforts.extend([
+                    row(20, "active", json!({})),
+                    row(21, "ready", json!({})),
+                    row(22, "blocked", json!({"waits_for": "a build"})),
+                    row(
+                        23,
+                        "active",
+                        json!({"needs_owner": true, "waits_for": "owner: review"}),
+                    ),
+                ]);
+            }
+            let page = board_html(
+                &serde_json::from_value(json!({"efforts": efforts})).unwrap(),
+                Path::new("/n"),
+                NOW,
+                Links::Served,
+            );
+            let idea_section = section(&page, "ideas");
+            assert!(idea_section.contains("class=\"cards ideas-grid\""));
+            assert_eq!(idea_section.matches("class=\"card ").count(), 15);
+            let mut previous = 0;
+            for n in std::iter::once(1).chain((2..=15).rev()) {
+                let position = idea_section
+                    .find(&format!("href=\"/efforts/{n:04}-e.md\""))
+                    .unwrap();
+                assert!(
+                    position > previous,
+                    "priority and recency order stays row-major"
+                );
+                previous = position;
+            }
+            if busy {
+                assert!(section(&page, "active").contains("Effort 20"));
+                assert!(section(&page, "needsyou").contains("Effort 23"));
+                // Ideas follows the closed status row, rather than occupying one lane.
+                assert!(page.contains("</section>\n</div><section class=\"col ideas\">"));
+                assert!(page.find("class=\"col ready\"") < page.find("class=\"col blocked\""));
+                assert!(page.find("class=\"col blocked\"") < page.find("class=\"col ideas\""));
+            } else {
+                assert!(page.contains("<section class=\"col active\" hidden></section>"));
+                assert!(!page.contains("<span>In motion</span>"));
+                assert!(!page.contains("class=\"stack\""));
+            }
+        }
     }
 
     #[test]

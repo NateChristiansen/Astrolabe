@@ -88,10 +88,11 @@ pub struct EffortFile {
 }
 
 /// The order properties are written in; unknown ones follow, as read.
-pub(super) const PROP_ORDER: [&str; 15] = [
+pub(super) const PROP_ORDER: [&str; 16] = [
     "status",
     "repo",
     "initiative",
+    "issue",
     "priority",
     "involvement",
     "authority",
@@ -276,34 +277,57 @@ impl EffortFile {
         Some((done, total))
     }
 
-    /// The one item whose text starts with `label`; refused when none or more than one does,
-    /// so a tick never lands on the wrong piece.
-    pub fn piece_at(&self, label: &str) -> Result<usize, String> {
+    /// When ticking, an exact label wins; otherwise a unique unfinished prefix selects the
+    /// item. Unticking keeps its existing unique-prefix match across all pieces.
+    pub fn piece_at(&self, label: &str, done: bool) -> Result<usize, String> {
         let label = label.trim();
         let text = self
             .pieces()
             .ok_or("this effort has no `## Pieces` checklist; add one with --pieces-file")?;
         let wanted = label.to_lowercase();
-        let matches: Vec<usize> = text
+        let items: Vec<(usize, &str)> = text
             .lines()
             .enumerate()
-            .filter(|(_, l)| {
-                piece_box(l).is_some() && piece_text(l).to_lowercase().starts_with(&wanted)
-            })
-            .map(|(i, _)| i)
+            .filter(|(_, l)| piece_box(l).is_some())
             .collect();
+        let exact: Vec<_> = items
+            .iter()
+            .filter(|(_, l)| piece_text(l).to_lowercase() == wanted)
+            .collect();
+        let matches: Vec<_> = if !done || exact.is_empty() {
+            items
+                .iter()
+                .filter(|(_, l)| {
+                    (!done || piece_box(l) == Some(false))
+                        && piece_text(l).to_lowercase().starts_with(&wanted)
+                })
+                .collect()
+        } else {
+            exact
+        };
+        let names = |items: &[&(usize, &str)]| {
+            items
+                .iter()
+                .map(|(_, l)| format!("- {}", piece_text(l)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         match matches.as_slice() {
-            [one] => Ok(*one),
-            [] => Err(format!("no piece starts with {label:?}")),
+            [one] => Ok(one.0),
+            [] => Err(format!(
+                "no piece starts with {label:?}{}; available pieces:\n{}",
+                if done { " among unfinished pieces" } else { "" },
+                names(&items.iter().collect::<Vec<_>>())
+            )),
             _ => Err(format!(
-                "{label:?} names more than one piece; say more of it"
+                "{label:?} names more than one piece; say more of it:\n{}",
+                names(&matches)
             )),
         }
     }
 
-    /// Ticks or unticks one item by its label.
-    pub fn tick(&mut self, label: &str, done: bool) -> Result<(), String> {
-        let at = self.piece_at(label)?;
+    /// Ticks or unticks an item resolved by `piece_at` before any checklist changes.
+    pub fn tick(&mut self, at: usize, done: bool) {
         let text = self.pieces().unwrap_or_default();
         let lines: Vec<String> = text
             .lines()
@@ -318,7 +342,6 @@ impl EffortFile {
             })
             .collect();
         self.set_pieces(&lines.join("\n"));
-        Ok(())
     }
 
     pub fn render(&self) -> String {

@@ -23,6 +23,22 @@ pub fn refresh(notes: &Notes) -> (Vec<String>, Pull) {
     result
 }
 
+/// The board server's pull while a page is open: what a pickup does (leftovers finished,
+/// then a pull), but skipped while a writer holds the lock, and with the tree left alone
+/// unless origin has something new. None when skipped.
+pub fn background_pull(notes: &Notes) -> Option<Pull> {
+    let _held = notes.try_lock()?;
+    let leftovers = notes.reconcile();
+    let result = if leftovers.is_empty() {
+        notes.pull_if_behind()
+    } else {
+        // Nothing moves under an unfinished write.
+        Pull::Offline("unfinished writes".to_owned())
+    };
+    refresh_views(notes);
+    Some(result)
+}
+
 pub fn sync(notes: &Notes) -> Result<String, String> {
     let result = notes.sync();
     if notes.take_changes()
@@ -31,6 +47,31 @@ pub fn sync(notes: &Notes) -> Result<String, String> {
         crate::home_effects::redraw(notes);
     }
     result
+}
+
+/// A session's explicit sync does local recovery here and leaves network work to a
+/// detached process, so a slow fetch or push cannot consume the pre-command hook timeout.
+pub fn request_sync(notes: &Notes) -> Result<String, String> {
+    let held = notes.lock()?;
+    let leftovers = reconcile(notes);
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "Unfinished writes failed again, so sync could not start: {}; check astrolabe notes status.",
+            leftovers.join("; ")
+        ));
+    }
+    let remote = notes.has_remote();
+    drop(held);
+    if !remote {
+        Ok("Sync unavailable: no remote configured; check astrolabe notes status.".to_owned())
+    } else if notes.spawn_sync() {
+        Ok("Background sync started; check astrolabe notes status for the result.".to_owned())
+    } else {
+        Err(
+            "Background sync could not start; check astrolabe notes status for the result."
+                .to_owned(),
+        )
+    }
 }
 
 pub fn board(notes: &Notes) -> Result<PathBuf, String> {

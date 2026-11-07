@@ -2,16 +2,17 @@
 //! words become an effort note, at most one journal line and a commit; the session is bound to the effort; code stamps what it
 //! can observe (time, machine, provider, session, branch, head, unpushed, dirty), without asking the agent to reconstruct them.
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
-use crate::effort::{EffortCommand, EffortFile, FORMS, slug};
+use crate::effort::{EffortCommand, EffortFile, FORMS, InitiativePage, slug};
 use crate::notes::{self, JournalLine, Notes, Op, Pull, RECENT_MS, RepoFacts};
 use crate::session::{Field, SessionState};
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
+pub mod lesson;
 mod validation;
 use validation::{
-    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, one_of, shift_plan_headings,
-    split_plan,
+    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, closes, issues, one_of,
+    shift_plan_headings, split_plan,
 };
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
@@ -168,6 +169,7 @@ fn new_inner(
         cmd.flag("authority").unwrap_or("edit"),
         &AUTHORITIES,
     )?;
+    let issue = cmd.flag("issue").map(issues).transpose()?;
     let (registry, notes) = notes_here()?;
     let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let dir = notes.state.clone();
@@ -211,23 +213,22 @@ fn new_inner(
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
     let facts = RepoFacts::read(cwd);
-    let mut file = EffortFile {
-        title: format!("{number} {title}"),
+    let mut file = effort_note(
+        number,
+        title,
         current,
-        ..Default::default()
-    };
-    file.title = format!("{number:04} {title}");
-    for (k, v) in [
-        ("status", status.as_str()),
-        ("repo", repo.as_str()),
-        ("initiative", cmd.flag("initiative").unwrap_or("")),
-        ("priority", cmd.flag("priority").unwrap_or("none")),
-        ("involvement", involvement.as_str()),
-        ("authority", authority.as_str()),
-        ("waits_for", ""),
-        ("created", day.as_str()),
-    ] {
-        file.set(k, v);
+        &Settings {
+            status: &status,
+            repo: &repo,
+            initiative: cmd.flag("initiative").unwrap_or(""),
+            priority: cmd.flag("priority").unwrap_or("none"),
+            involvement: &involvement,
+            authority: &authority,
+        },
+        &day,
+    );
+    if let Some(issue) = &issue {
+        file.set("issue", issue);
     }
     stamp(
         &mut file,
@@ -255,9 +256,16 @@ fn new_inner(
         last_save_ms: notes::now_ms().into(),
         mark: false.into(),
         saves: 0.into(),
+        // From the heading the note gets, as a later load reads it.
+        name: activate::session_name(&number.to_string(), &format!("{number:04} {title}")).into(),
+        // The name the session carries from an effort it was on before, if any.
+        named: (read_state(&dir, session).ok().flatten())
+            .map(|p| p.named)
+            .unwrap_or_default(),
         ..Default::default()
     };
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
         renames: Vec::new(),
@@ -285,6 +293,14 @@ fn new_inner(
         shells,
     )?
     .mid_session();
+    // A Codex agent was just told to rename its thread: recorded, so loading this effort
+    // again doesn't ask it to undo a rename the owner makes after.
+    if activation.state.named != state.named
+        && let Ok(Some(mut saved)) = read_state(&dir, session)
+    {
+        saved.named = activation.state.named.clone();
+        let _ = notes::write_text(&state_path(&dir, session), &saved.to_string());
+    }
     let mut head = format!(
         "Effort {number} created as {file_name}, status {status}, bound to this session and committed. Say your reading in one line (involvement {involvement} · authority {authority} · one piece or multi-step) and proceed.",
     );
@@ -295,6 +311,203 @@ fn new_inner(
         );
     }
     let text = format!("{head}\n\n{}", activation.text());
+    crate::application::finish(&notes, key, &text);
+    Ok(text)
+}
+
+/// The properties a new effort note starts with.
+struct Settings<'a> {
+    status: &'a str,
+    repo: &'a str,
+    initiative: &'a str,
+    priority: &'a str,
+    involvement: &'a str,
+    authority: &'a str,
+}
+
+/// A new effort note before its stamp: the title with its number, the goal as Current state,
+/// and the properties in the order the board reads them.
+fn effort_note(
+    number: u32,
+    title: &str,
+    current: String,
+    settings: &Settings<'_>,
+    day: &str,
+) -> EffortFile {
+    let mut file = EffortFile {
+        title: format!("{number:04} {title}"),
+        current,
+        ..Default::default()
+    };
+    for (k, v) in [
+        ("status", settings.status),
+        ("repo", settings.repo),
+        ("initiative", settings.initiative),
+        ("priority", settings.priority),
+        ("involvement", settings.involvement),
+        ("authority", settings.authority),
+        ("waits_for", ""),
+        ("created", day),
+    ] {
+        file.set(k, v);
+    }
+    file
+}
+
+/// `astrolabe initiative new`, in the hook: the page and every effort it names, filed as
+/// proposed under it in one commit, so a plan that names ten efforts is one command and not
+/// twenty turns. The session's own effort stays bound: the spike that planned them is where
+/// the plan was approved, and it closes as their record.
+pub fn initiative(
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> Done {
+    match initiative_inner(cmd, key, session, provider, cwd) {
+        Ok(text) => Done { text, ok: true },
+        Err(why) => Done {
+            text: format!("Initiative NOT filed: {why}. {}", activate::STILL_ON),
+            ok: false,
+        },
+    }
+}
+
+fn initiative_inner(
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> Result<String, String> {
+    let title = cmd
+        .flag("title")
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or("--title is needed")?;
+    let body = cmd
+        .body
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| {
+            format!("the page goes in the body, with its `## Efforts` section.\n{FORMS}")
+        })?;
+    // Refused before the lock, reconcile and pull: a refused body changes nothing.
+    let page = InitiativePage::parse(body)?;
+    let goals: Vec<String> = page
+        .efforts
+        .iter()
+        .map(|(t, goal)| as_current(goal).map_err(|why| format!("effort {t:?}: {why}")))
+        .collect::<Result<_, _>>()?;
+    let involvement = one_of(
+        "involvement",
+        cmd.flag("involvement").unwrap_or("check in at plan"),
+        &INVOLVEMENTS,
+    )?;
+    let authority = one_of(
+        "authority",
+        cmd.flag("authority").unwrap_or("edit"),
+        &AUTHORITIES,
+    )?;
+    let (registry, notes) = notes_here()?;
+    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
+    let page_rel = format!("initiatives/{}.md", slug(title));
+    let _held = notes.lock()?;
+    let leftovers = crate::application::reconcile(&notes);
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
+    if notes.already_applied(key) {
+        let result = notes
+            .intents()
+            .into_iter()
+            .find(|op| op.key == key)
+            .and_then(|op| op.result);
+        return Ok(result.unwrap_or_else(|| format!(
+            "Initiative {title:?} was already filed by this same call (a retry); nothing new was written. Its page is {page_rel}"
+        )));
+    }
+    let pulled = crate::application::pull(&notes);
+    if notes.root.join(&page_rel).exists() {
+        return Err(format!(
+            "{page_rel} exists already: an initiative is filed once, and a later effort joins it with --initiative {title:?} on `effort new` or `effort save`"
+        ));
+    }
+    let start = notes.next_number();
+    let (day, _) = notes::local_day_time();
+    let facts = RepoFacts::read(cwd);
+    let settings = Settings {
+        status: "proposed",
+        repo: &repo,
+        initiative: title,
+        priority: "none",
+        involvement: &involvement,
+        authority: &authority,
+    };
+    let mut files = Vec::new();
+    let mut filed = Vec::new();
+    let mut lines = Vec::new();
+    for (i, ((name, _), goal)) in page.efforts.iter().zip(goals).enumerate() {
+        let number = start + i as u32;
+        let rel = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(name));
+        let mut file = effort_note(number, name, goal, &settings, &day);
+        stamp(
+            &mut file,
+            session,
+            provider,
+            stamp_facts(cwd, facts.as_ref()),
+        );
+        files.push((rel.clone(), file.render()));
+        lines.push(format!("{number:04} {name}"));
+        filed.push((number, rel));
+    }
+    files.push((page_rel.clone(), page.render(title, &repo, &day, &filed)));
+    let count = filed.len();
+    let op = Op {
+        lesson_close: None,
+        key: key.to_owned(),
+        files,
+        renames: Vec::new(),
+        // No journal line: filing is state, not history; the planning session's own line
+        // tells the plan.
+        journal: Vec::new(),
+        message: format!("initiative {title}: {count} efforts filed"),
+        base: None,
+        // The session stays on its own effort.
+        states: Vec::new(),
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: rebaseline(cwd),
+    };
+    notes.apply(&op)?;
+    notes.spawn_sync();
+    let bound = read_state(&notes.state, session)
+        .ok()
+        .flatten()
+        .and_then(|s| s.effort.as_deref().map(str::to_owned));
+    let mut text = format!(
+        "Initiative {title:?} filed as {page_rel} with {count} efforts, each proposed under it, committed:\n{}\n{}",
+        lines.join("\n"),
+        match bound {
+            Some(n) => format!(
+                "This session stays on effort {n}; if that effort planned them, it joins the initiative with `astrolabe effort save --initiative \"{title}\"` and closes as their record."
+            ),
+            None => "This session is bound to no effort.".to_owned(),
+        }
+    );
+    if let Pull::Diverged(why) = &pulled {
+        text += &format!(
+            " Notes diverged from origin before this ({}); the numbers may collide with the other machine's and be renumbered later.",
+            why.lines().next().unwrap_or_default()
+        );
+    }
     crate::application::finish(&notes, key, &text);
     Ok(text)
 }
@@ -317,7 +530,7 @@ fn save_inner(
     provider: &str,
     cwd: &Path,
 ) -> Result<String, String> {
-    let (_registry, notes) = notes_here()?;
+    let (registry, notes) = notes_here()?;
     let dir = notes.state.clone();
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
@@ -332,16 +545,25 @@ fn save_inner(
         .flag("decision")
         .map(str::trim)
         .filter(|d| !d.is_empty());
-    let waits_for = cmd
-        .flag("waits-for")
-        .map(str::trim)
-        .filter(|w| !w.is_empty());
+    // Given empty, it clears the condition; left out, it's cleared too unless the effort
+    // stays blocked (below).
+    let waits_for = cmd.flag("waits-for").map(str::trim);
     let reason = cmd.flag("reason").map(str::trim).filter(|r| !r.is_empty());
     let plan_file = cmd.flag("plan-file");
     let journal_text = cmd.flag("journal").map(str::trim).filter(|j| !j.is_empty());
     let ticks = cmd.flags_all("tick");
     let unticks = cmd.flags_all("untick");
     let pieces_file = cmd.flag("pieces-file");
+    // An empty value clears the grouping, so an effort can leave an initiative.
+    let initiative = cmd.flag("initiative").map(str::trim);
+    let target = cmd
+        .flag("effort")
+        .map(|n| {
+            n.trim()
+                .parse::<u32>()
+                .map_err(|_| format!("--effort takes an effort number, not {n:?}"))
+        })
+        .transpose()?;
     // Conflicts are checked on the pieces they name, not the words: "Tether" and
     // "Tether cap" are one item.
     if let Some(j) = journal_text {
@@ -368,12 +590,37 @@ fn save_inner(
         && ticks.is_empty()
         && unticks.is_empty()
         && pieces_file.is_none()
+        && initiative.is_none()
     {
         return Err(format!(
             "nothing to save: give a Current state body, or a flag.\n{FORMS}"
         ));
     }
-    if status.as_deref() == Some("blocked") && waits_for.is_none() {
+    // Another effort's record is changed in its state only: the dispatcher was never
+    // delivered its text, so a body here would overwrite what its worker wrote, and the
+    // day's journal line is this session's own effort's (one per initiative, not per worker).
+    if target.is_some()
+        && (body.is_some()
+            || body_plan.is_some()
+            || plan_file.is_some()
+            || journal_text.is_some()
+            || pieces_file.is_some()
+            || !ticks.is_empty()
+            || !unticks.is_empty())
+    {
+        return Err("with --effort <n> a save changes that effort's state, never its text: only --status, --waits-for, --reason, --decision and --initiative go with it. Its Current state, plan and pieces are its own session's to write, and the day's journal line goes on this session's effort. Nothing was written".to_owned());
+    }
+    if target.is_some() && state.worker.is_true() {
+        return Err(format!(
+            "this session is a worker under effort {number}: it saves that effort only; the session that dispatched it marks the others. Nothing was written"
+        ));
+    }
+    if target.is_some_and(|t| t.to_string() == number) {
+        return Err(format!(
+            "effort {number} is this session's own: save it without --effort. Nothing was written"
+        ));
+    }
+    if status.as_deref() == Some("blocked") && waits_for.is_none_or(str::is_empty) {
         return Err("blocked needs --waits-for \"<what it waits on>\": the home view shows what could be picked up next by that condition, and v1 had blocked work nobody could tell how to unblock".to_owned());
     }
     if status.as_deref() == Some("abandoned") && reason.is_none() {
@@ -432,6 +679,18 @@ fn save_inner(
         ));
     }
     let pulled = crate::application::pull(&notes);
+    if let Some(target) = target {
+        let change = Change {
+            status: status.as_deref(),
+            waits_for,
+            reason,
+            decision,
+            initiative,
+        };
+        return save_target(
+            &notes, cmd, key, session, provider, cwd, &state, target, &change, &pulled,
+        );
+    }
     let path = notes.root.join(&rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
     let on_disk_hash = notes::content_hash(&on_disk);
@@ -469,47 +728,36 @@ fn save_inner(
     if let Some(plan) = plan {
         file.plan = Some(plan.trim().to_owned());
     }
-    if let Some(d) = decision {
-        file.add_decision(&format!("{day}: {d}"));
-    }
-    // Why the work stopped goes with the record of choices, dated, so it outlives later saves
-    // and a revival; Current state is replaced on every save.
-    if let Some(r) = reason {
-        file.add_decision(&format!("{day}: abandoned: {r}"));
-    }
     if let Some(p) = &pieces {
         file.set_pieces(p);
     }
     if !ticks.is_empty() || !unticks.is_empty() {
         let on: Vec<usize> = ticks
             .iter()
-            .map(|l| file.piece_at(l))
+            .map(|l| file.piece_at(l, true))
             .collect::<Result<_, _>>()?;
         let off: Vec<usize> = unticks
             .iter()
-            .map(|l| file.piece_at(l))
+            .map(|l| file.piece_at(l, false))
             .collect::<Result<_, _>>()?;
         if let Some(i) = on.iter().position(|i| off.contains(i)) {
             return Err(format!("{:?} is both ticked and unticked", ticks[i]));
         }
-        for label in &ticks {
-            file.tick(label, true)?;
+        for at in on {
+            file.tick(at, true);
         }
-        for label in &unticks {
-            file.tick(label, false)?;
-        }
-    }
-    let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
-    if let Some(w) = waits_for {
-        file.set("waits_for", w);
-    }
-    let before = file.prop("status").unwrap_or("").to_owned();
-    if let Some(s) = &status {
-        file.set("status", s);
-        if s != "blocked" && waits_for.is_none() {
-            file.set("waits_for", "");
+        for at in off {
+            file.tick(at, false);
         }
     }
+    let before = Change {
+        status: status.as_deref(),
+        waits_for,
+        reason,
+        decision,
+        initiative,
+    }
+    .apply(&mut file, &day)?;
     // The journal is the owner's history and only the agent's sentence goes in it; one per
     // effort per day, the later replacing the earlier.
     let journal = journal_text
@@ -543,6 +791,7 @@ fn save_inner(
         _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
     };
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: vec![(rel.clone(), text)],
         renames: Vec::new(),
@@ -557,15 +806,11 @@ fn save_inner(
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
-    // A new waits-for is a state change the other machine must see: effort 6 went from
-    // "merge" to "playtest" with status still blocked and sat unpushed for nine hours.
-    let state_changed = status.as_deref().is_some_and(|s| s != before)
-        || file.prop("waits_for").unwrap_or("") != waits_before;
-    if state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS {
-        notes.spawn_sync();
-    }
+    // Every save, so the other machine's board follows it: a checkpoint held for a batching
+    // window sat unpushed for as long as its session stayed quiet.
+    let saved = saved_text(&pulled, notes.spawn_sync());
     let mut head = format!(
-        "Saved effort {number}: status {}{}{}; committed{}.",
+        "Saved effort {number}: status {}{}{}; {saved}.",
         file.prop("status").unwrap_or("?"),
         if cmd.body.is_some() {
             ", Current state replaced"
@@ -576,8 +821,7 @@ fn save_inner(
             ", journal line written"
         } else {
             ""
-        },
-        if state_changed { ", push started" } else { "" }
+        }
     );
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
@@ -585,13 +829,219 @@ fn save_inner(
     for l in notes_lines {
         head += &format!(" {l}");
     }
+    if status.as_deref() == Some("done")
+        && before != "done"
+        && let Some(issue) = file.prop("issue").filter(|i| !i.is_empty())
+    {
+        // Main of the effort's own repo: from the notes checkout, its registered checkout;
+        // elsewhere, this folder only when it's that repo, never another's history.
+        let repos: Vec<&str> = (file.prop("repo").unwrap_or("").split(','))
+            .map(str::trim)
+            .collect();
+        let checkout = if activate::in_notes(cwd) {
+            repos.first().and_then(|r| registry.checkout(r))
+        } else {
+            repo_of(&notes, &registry, cwd, None)
+                .ok()
+                .filter(|r| repos.contains(&r.as_str()))
+                .map(|_| cwd.to_path_buf())
+        };
+        head += &format!(" {}", issue_report(checkout.as_deref(), issue));
+    }
     crate::application::finish(&notes, key, &head);
     Ok(head)
 }
 
+/// The part of a save that changes an effort's state rather than its text: what a session
+/// writes on its own effort beside Current state, and all a dispatcher may write on a
+/// worker's.
+struct Change<'a> {
+    status: Option<&'a str>,
+    waits_for: Option<&'a str>,
+    reason: Option<&'a str>,
+    decision: Option<&'a str>,
+    initiative: Option<&'a str>,
+}
+
+impl Change<'_> {
+    /// Applies the change; gives the status from before it.
+    fn apply(&self, file: &mut EffortFile, day: &str) -> Result<String, String> {
+        if let Some(d) = self.decision {
+            file.add_decision(&format!("{day}: {d}"));
+        }
+        // Why the work stopped goes with the record of choices, dated, so it outlives later
+        // saves and a revival; Current state is replaced on every save.
+        if let Some(r) = self.reason {
+            file.add_decision(&format!("{day}: abandoned: {r}"));
+        }
+        if let Some(i) = self.initiative {
+            file.set("initiative", i);
+        }
+        let before = file.prop("status").unwrap_or("").to_owned();
+        if let Some(s) = self.status {
+            file.set("status", s);
+        }
+        // A wait is set by the save made just before waiting, so a later save means the work
+        // moved on: one without --waits-for clears it unless the effort is still blocked.
+        // Before this, only a status change cleared it, and an agent saving progress after
+        // the owner answered left the effort in Needs you.
+        let blocked = file.prop("status") == Some("blocked");
+        if blocked && self.waits_for == Some("") {
+            return Err("a blocked effort keeps what it waits on: give the new condition, or a status that isn't blocked. Nothing was written".to_owned());
+        }
+        match self.waits_for {
+            Some(w) => file.set("waits_for", w),
+            None if !blocked => file.set("waits_for", ""),
+            None => {}
+        }
+        Ok(before)
+    }
+}
+
+/// `astrolabe effort save --effort <n> …`: another effort's state, from the session that
+/// dispatched its worker. The worker owns the text (it was delivered the note; this session
+/// wasn't), so only the state changes, and the stamp names this session without the branch
+/// facts, which are the worker's checkout's, not this one's.
+#[allow(clippy::too_many_arguments)]
+fn save_target(
+    notes: &Notes,
+    cmd: &EffortCommand,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    state: &SessionState,
+    target: u32,
+    change: &Change<'_>,
+    pulled: &Pull,
+) -> Result<String, String> {
+    let (_, rel) = notes
+        .numbers()
+        .into_iter()
+        .find(|(n, _)| *n == target)
+        .ok_or_else(|| format!("no effort {target} in the notes"))?;
+    let path = notes.root.join(&rel);
+    let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+    let on_disk_hash = notes::content_hash(&on_disk);
+    let mut file = EffortFile::parse(&on_disk)?;
+    // A project session reaches only its project's efforts, as activation does.
+    let mine = state.repo.as_deref().unwrap_or_default();
+    let theirs = file.prop("repo").unwrap_or_default();
+    if theirs != mine {
+        return Err(format!(
+            "effort {target} is for repo {theirs:?}, not this session's {mine:?}. Nothing was written"
+        ));
+    }
+    let (day, _) = notes::local_day_time();
+    let before = change.apply(&mut file, &day)?;
+    file.set("updated", &notes::local_stamp());
+    file.set(
+        "saved_by",
+        &format!("{} · {provider}", notes::machine_name()),
+    );
+    file.set("session", session);
+    let text = file.render();
+    let message = match change.status {
+        Some(s) if s != before => format!("{target:04}: {s}"),
+        _ => format!("{target:04}: checkpoint"),
+    };
+    let op = Op {
+        lesson_close: None,
+        key: key.to_owned(),
+        files: vec![(rel, text)],
+        renames: Vec::new(),
+        journal: Vec::new(),
+        message,
+        base: Some(on_disk_hash),
+        // This session's own record is untouched: its effort wasn't saved.
+        states: Vec::new(),
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: None,
+    };
+    notes.apply(&op)?;
+    let saved = saved_text(pulled, notes.spawn_sync());
+    let mut head = format!(
+        "Saved effort {target}: status {}; {saved}. This session's effort {} is unchanged.",
+        file.prop("status").unwrap_or("?"),
+        state.effort.as_deref().unwrap_or_default()
+    );
+    if matches!(pulled, Pull::Diverged(_)) {
+        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
+    }
+    crate::application::finish(notes, key, &head);
+    Ok(head)
+}
+
+/// Whether main here already holds a commit that closes each issue the effort answers, read
+/// from the last fetch: an effort can be done while the issue it answers stays open, because
+/// the issue number never reached the landed commit (2026-11-07: five fixed issues sat open).
+fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
+    // Split on any comma: a hand-edited `5,6` is two issues, as the session context reads it.
+    let issues: Vec<&str> = (issue.split(','))
+        .map(|n| n.trim().trim_start_matches('#'))
+        .filter(|n| !n.is_empty())
+        .collect();
+    let tag = |ns: &[&str]| {
+        ns.iter()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let Some(cwd) = checkout else {
+        return format!(
+            "This effort answers issue {}, but this folder isn't a checkout of its repo, so nothing checked whether main closes it; make sure GitHub does.",
+            tag(&issues)
+        );
+    };
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let main = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
+        .into_iter()
+        .find(|r| {
+            crate::worktree::git(
+                cwd,
+                &[&os("rev-parse"), &os("--verify"), &os("--quiet"), &os(r)],
+            )
+            .is_ok()
+        });
+    let log =
+        main.map(|r| crate::worktree::git(cwd, &[&os("log"), &os("--format=%B%x00"), &os(r)]));
+    let Some(Ok(log)) = log else {
+        return format!(
+            "This effort answers issue {}, but there's no origin main here to check it against; make sure GitHub closes it.",
+            tag(&issues)
+        );
+    };
+    let messages: Vec<&str> = log.split('\0').collect();
+    let (closed, open): (Vec<&str>, Vec<&str>) =
+        (issues.iter().copied()).partition(|n| messages.iter().any(|m| closes(m, n)));
+    let mut said = Vec::new();
+    if !closed.is_empty() {
+        said.push(format!(
+            "Main here has a commit that closes {}.",
+            tag(&closed)
+        ));
+    }
+    if !open.is_empty() {
+        let fixes: Vec<String> = open.iter().map(|n| format!("`Fixes #{n}`")).collect();
+        said.push(format!(
+            "No commit on main here, as of the last fetch, closes {}, so GitHub won't close it on its own. Land a commit that says {}, or ask the owner before closing it by hand.",
+            tag(&open),
+            fixes.join(" and ")
+        ));
+    }
+    said.join(" ")
+}
+
 /// The ticket is written; the intent that held the result can go.
 pub fn forget(key: &str) {
-    if let Ok((_, notes)) = notes_here() {
+    // Another save may already be scanning recovery intents. Removing one outside the
+    // lock can make that scan report a missing file as a broken, unfinished write.
+    if let Ok((_, notes)) = notes_here()
+        && let Ok(_held) = notes.lock()
+    {
         notes.forget(key);
     }
 }
@@ -640,6 +1090,7 @@ fn journal_inner(
     let pulled = crate::application::pull(&notes);
     let (day, _) = notes::local_day_time();
     let op = Op {
+        lesson_close: None,
         key: key.to_owned(),
         files: Vec::new(),
         renames: Vec::new(),
@@ -662,9 +1113,7 @@ fn journal_inner(
         rebaseline: None,
     };
     notes.apply(&op)?;
-    if notes::now_ms() - notes.last_push_ms() > notes::PUSH_EVERY_MS {
-        notes.spawn_sync();
-    }
+    notes.spawn_sync();
     let mut head = format!("Journal line written for {day} and committed.");
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
@@ -766,4 +1215,16 @@ pub fn refresh_notes() -> Option<String> {
         ));
     }
     (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+/// How a save's reply says where its commit went: kept here when there's no remote, else
+/// whether the background push could start.
+fn saved_text(pulled: &Pull, sync_started: bool) -> &'static str {
+    if matches!(pulled, Pull::Offline(why) if why == "no remote") {
+        "saved locally; sync unavailable: no remote configured"
+    } else if sync_started {
+        "committed, background sync started"
+    } else {
+        "committed; background sync could not start"
+    }
 }

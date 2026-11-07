@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|effort <new|save> …|journal \"<sentence>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save> …|initiative new …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]|--preview [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,7 +39,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        [first @ ("effort" | "journal"), rest @ ..] => {
+        ["lesson", rest @ ..] => {
+            let (text, ok) = astrolabe::record::lesson::plain(rest);
+            println!("{text}");
+            if !ok {
+                std::process::exit(1);
+            }
+        }
+        ["allow", ..] => fail(
+            "No approval recorded: astrolabe allow must run alone through the plugin's pre-command hook with an effort loaded.",
+        ),
+        [first @ ("effort" | "journal" | "initiative"), rest @ ..] => {
             // Only the hook does the work; here the body is read so the command can be told
             // apart from one the hook already answered.
             let body = read_piped_stdin();
@@ -63,18 +73,29 @@ fn main() {
         ["home", rest @ ..] => {
             let mut open = false;
             let mut serve = false;
+            let mut preview = false;
             let mut port: Option<u16> = None;
             let mut theme = None;
             let mut palette = None;
+            let mut handover: Option<u16> = None;
             let mut words = rest.iter();
             while let Some(word) = words.next() {
                 match *word {
                     "--open" => open = true,
                     "--serve" => serve = true,
+                    "--preview" => preview = true,
                     "--port" => match words.next().and_then(|w| w.parse().ok()) {
                         Some(p) => port = Some(p),
                         None => fail("--port takes a number"),
                     },
+                    // Not for people: a server whose program was replaced starts its
+                    // successor with this and the port it was asked for.
+                    w if w == astrolabe::home::HANDOVER_FLAG => {
+                        match words.next().and_then(|w| w.parse().ok()) {
+                            Some(p) => handover = Some(p),
+                            None => fail("--handover takes a number"),
+                        }
+                    }
                     "--theme" => {
                         match words.next().and_then(|w| astrolabe::home::Theme::parse(w)) {
                             Some(t) => theme = Some(t),
@@ -93,35 +114,76 @@ fn main() {
                     _ => usage(),
                 }
             }
+            if preview && (serve || handover.is_some()) {
+                fail("--preview runs its own server; leave out --serve");
+            }
             match notes_here() {
+                // Beside the machine's server, for trying a build: nothing it's given is
+                // saved, and a port of 0 by default, so it never takes the machine's.
+                Ok(notes) if preview => {
+                    let mut look = astrolabe::home::look(&notes);
+                    look.theme = theme.unwrap_or(look.theme);
+                    look.palette = palette.unwrap_or(look.palette);
+                    match astrolabe::home::listen(port.unwrap_or(0)) {
+                        Ok((listener, url)) => {
+                            println!("{url}");
+                            if open && let Err(why) = open_in_browser(&url) {
+                                fail(&why);
+                            }
+                            astrolabe::home::preview(&notes, listener, look);
+                        }
+                        Err(why) => fail(&why),
+                    }
+                }
                 Ok(notes) => {
                     if (theme.is_some() || palette.is_some())
                         && let Err(why) = astrolabe::home::set_look(&notes, theme, palette)
                     {
                         fail(&why);
                     }
-                    if let Some(port) = port
+                    // A server taking over keeps the machine's setting as it is: the port
+                    // it's given is where the last one listened, maybe one picked for 0.
+                    if handover.is_none()
+                        && let Some(port) = port
                         && let Err(why) = astrolabe::home::set_port(&notes, port)
                     {
                         fail(&why);
                     }
                     let port = port.unwrap_or_else(|| astrolabe::home::port(&notes));
                     if serve {
-                        // The machine's one server; a second leaves, naming the first.
-                        let Some(hold) = astrolabe::home::hold(&notes) else {
-                            println!("{}", astrolabe::home::url(&notes));
-                            eprintln!("already serving");
-                            return;
+                        // The machine's one server; a second leaves, naming the first. One
+                        // taking over waits for the last to exit and free the lock and port.
+                        let deadline = std::time::Instant::now()
+                            + handover.map_or(std::time::Duration::ZERO, |_| {
+                                astrolabe::home::HANDOVER_WAIT
+                            });
+                        let bound = loop {
+                            let held = astrolabe::home::hold(&notes)
+                                .map(|hold| (hold, astrolabe::home::listen(port)));
+                            match held {
+                                Some((hold, Ok(listening))) => break Ok((hold, listening)),
+                                _ if std::time::Instant::now() < deadline => {
+                                    std::thread::sleep(std::time::Duration::from_millis(100));
+                                }
+                                Some((_, Err(why))) => break Err(Some(why)),
+                                None => break Err(None),
+                            }
                         };
-                        match astrolabe::home::listen(port) {
-                            Ok((listener, url)) => {
+                        match bound {
+                            Ok((hold, (listener, url))) => {
                                 println!("{url}");
                                 if open && let Err(why) = open_in_browser(&url) {
                                     fail(&why);
                                 }
-                                astrolabe::home::serve(&notes, listener, hold, port);
+                                let requested = handover.unwrap_or(port);
+                                astrolabe::home::serve(&notes, listener, hold, requested);
                             }
-                            Err(why) => fail(&why),
+                            Err(None) => {
+                                println!("{}", astrolabe::home::url(&notes));
+                                eprintln!("already serving");
+                                return;
+                            }
+                            Err(Some(why)) => fail(&why),
                         }
                     }
                     // The file first, then the server if none is up; the address is what

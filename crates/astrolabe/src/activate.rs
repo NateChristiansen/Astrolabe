@@ -6,14 +6,17 @@ pub(crate) use crate::session::state_path;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub(crate) mod allow;
 mod context;
+mod housekeeping;
 mod proof;
 mod repos;
 mod routing;
 mod tickets;
 
 pub use context::{
-    Activation, Effort, GUARD_SCOPE, RECORD_RULE, SAVE_RULE, WORKER_RULE, read_effort, switch_on,
+    Activation, Effort, GUARD_SCOPE, RECORD_RULE, SAVE_RULE, WORKER_RULE, read_effort,
+    session_name, switch_on,
 };
 pub(crate) use context::{STILL_ON, no_note};
 pub(crate) use proof::session_token;

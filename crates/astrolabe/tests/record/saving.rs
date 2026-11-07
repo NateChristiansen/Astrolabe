@@ -115,6 +115,54 @@ fn current_state_and_blocked_status_are_saved() {
 }
 
 #[test]
+fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    let body = "<<'ASTROLABE'\nWorking on it.\nASTROLABE\n";
+    // A check-in while active: the owner answers, and the next save carries no status.
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!("astrolabe effort save --waits-for \"owner: look at the plan\" {body}"),
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: look at the plan\"")
+    );
+    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("waits_for: \"\"") && text.contains("status: active"),
+        "{text}"
+    );
+    // Blocked keeps its condition across a progress save.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: should it be X?\"")
+    );
+    // ...and can't be emptied while it stays blocked.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --waits-for \"\"");
+    assert!(!ok && out.contains("blocked effort keeps"), "{out}");
+    // An empty value clears it alongside a status that isn't blocked.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active --waits-for \"\"",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("waits_for: \"\""));
+}
+
+#[test]
 fn prose_validation_refuses_unsupported_shapes() {
     let world = World::new();
     let mac = world.machine("mac");
@@ -373,8 +421,16 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Goo\"");
     assert!(!ok && out.contains("more than one piece"), "{out}");
+    assert!(
+        out.contains("Goo at speed") && out.contains("Goo splats"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), text, "an ambiguous tick must not save");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Nothing\"");
     assert!(!ok && out.contains("no piece starts with"), "{out}");
+    for label in ["Tether cap", "Goo at speed", "Goo splats"] {
+        assert!(out.contains(label), "{out}");
+    }
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save --tick \"Goo at\" --untick \"Goo at speed\"",
@@ -407,6 +463,112 @@ fn pieces_are_matched_by_name_and_survive_saves() {
 }
 
 #[test]
+fn inline_code_pieces_can_be_ticked_without_changing_their_text() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let piece = "First repo note: `astrolabe repo add <name>` from that repo";
+    write(&mac.demo.join("pieces.md"), &format!("- [ ] {piece}\n"));
+    assert!(
+        mac.bash("s1", "astrolabe effort save --pieces-file pieces.md")
+            .1
+    );
+    let before = mac.effort_text(1);
+    // The hook refuses shell-sensitive values and tells the agent a usable alternative.
+    for value in [piece, "First $repo note", "First \"repo\" note"] {
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --tick \"{value}\""));
+        assert!(!ok, "{out}");
+        assert!(
+            out.contains("no $, backtick or inner double quote"),
+            "{out}"
+        );
+        assert!(
+            out.contains("unambiguous prefix") && out.contains("--tick \"First repo note\""),
+            "{out}"
+        );
+        assert_eq!(mac.effort_text(1), before);
+    }
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"first repo note\"");
+    assert!(ok, "{out}");
+    // Every save restamps `updated` to the minute, so the minute may roll over between
+    // the two saves; only the tick is what this test is about.
+    let without_updated = |text: &str| -> String {
+        text.lines()
+            .filter(|line| !line.starts_with("updated:"))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    assert_eq!(
+        without_updated(&mac.effort_text(1)),
+        without_updated(&before.replace(&format!("- [ ] {piece}"), &format!("- [x] {piece}")))
+    );
+}
+
+#[test]
+fn an_exact_piece_label_wins_over_longer_labels_even_when_already_checked() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Repo note\n- [ ] Repo note examples\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick \"repo note\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("- [x] Repo note\n- [ ] Repo note examples")
+    );
+    // A different command avoids replaying the previous receipt. The exact checked label
+    // still wins rather than checking the longer unfinished label.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Repo note\"");
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("- [x] Repo note\n- [ ] Repo note examples")
+    );
+    // Unticking is outside this change: its existing prefix rule still considers the
+    // longer label even when the value is an exact label.
+    let before = mac.effort_text(1);
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --untick \"Repo note\"");
+    assert!(!ok && out.contains("more than one piece"), "{out}");
+    assert_eq!(mac.effort_text(1), before);
+}
+
+#[test]
+fn tick_prefixes_consider_only_unfinished_pieces_and_resolve_before_any_ticks() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [x] Repo setup\n- [ ] Repo note\n",
+    );
+    // Both prefixes select the same unfinished piece. Resolve them once so the second
+    // cannot fail or select another piece after the first tick changes the checklist.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --pieces-file pieces.md --tick Repo --tick \"Repo n\"",
+    );
+    assert!(ok, "{out}");
+    let before = mac.effort_text(1);
+    assert!(before.contains("- [x] Repo setup\n- [x] Repo note"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --tick Repo");
+    assert!(
+        !ok && out.contains("no piece starts with") && out.contains("unfinished"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Repo setup") && out.contains("Repo note"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), before);
+}
+
+#[test]
 fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     let world = World::new();
     let mac = world.machine("mac");
@@ -435,6 +597,101 @@ fn a_save_over_a_changed_file_is_refused_then_goes_through_from_the_new_text() {
     );
     assert!(ok, "{out}");
     assert!(mac.effort_text(1).contains("OWNER EDIT kept"));
+}
+
+#[test]
+fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A second effort rebinds the session; the first is now another's record.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    let worker_note = mac.effort_text(1);
+    let own_note = mac.effort_text(2);
+    // Only state goes by number: its text is the worker's, the journal line this session's.
+    for cmd in [
+        "astrolabe effort save --effort 1 --status active <<'ASTROLABE'\nMine.\n\nNext: n.\nASTROLABE\n",
+        "astrolabe effort save --effort 1 --journal \"Did the thing.\"",
+        "astrolabe effort save --effort 1 --tick x",
+        "astrolabe effort save --effort 1 --plan-file plan.md",
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(
+            !ok && out.contains("never its text") && out.contains("Nothing was written"),
+            "{cmd}: {out}"
+        );
+    }
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 2 --status done");
+    assert!(!ok && out.contains("this session's own"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 9 --status done");
+    assert!(!ok && out.contains("no effort 9"), "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort one --status done");
+    assert!(!ok && out.contains("effort number"), "{out}");
+    assert_eq!(
+        mac.effort_text(1),
+        worker_note,
+        "a refused save wrote nothing"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --effort 1 --status active --decision \"ink over paint: cheaper\" --initiative \"Ink\"",
+    );
+    assert!(
+        ok && out.contains("Saved effort 1: status active")
+            && out.contains("effort 2 is unchanged"),
+        "{out}"
+    );
+    let text = mac.effort_text(1);
+    for line in [
+        "status: active",
+        "initiative: Ink",
+        ": ink over paint: cheaper",
+        "saved_by: mac · claude",
+        "session: s1",
+        "## Current state\nsmooth the ink across frames, with café in it\n",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    assert_eq!(
+        mac.effort_text(2),
+        own_note,
+        "the bound effort is untouched"
+    );
+    // Already active, so a checkpoint; the status change below names itself.
+    assert_eq!(mac.log().lines().next(), Some("0001: checkpoint"));
+    assert!(
+        !mac.notes.join("journal").exists(),
+        "no journal line by number"
+    );
+    // Done, then the session's own effort joins the initiative too, or leaves it.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status done");
+    assert!(ok && out.contains("status done"), "{out}");
+    assert!(mac.effort_text(1).contains("status: done"));
+    assert_eq!(mac.log().lines().next(), Some("0001: done"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"Ink\"");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(2).contains("initiative: Ink"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --initiative \"\"");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(2).contains("initiative: \"\""));
+    // Another repo's effort is out of reach, as it is for activation.
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let other = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("repo: demo", "repo: other");
+    std::fs::write(&path, other).unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status active");
+    assert!(!ok && out.contains("repo \"other\""), "{out}");
+    // A worker saves only its own effort.
+    assert!(mac.bash("w1", "astrolabe activate --effort 2 --worker").1);
+    let (out, ok) = mac.bash("w1", "astrolabe effort save --effort 1 --status active");
+    assert!(!ok && out.contains("worker"), "{out}");
 }
 
 #[test]
@@ -530,4 +787,103 @@ fn an_abandoned_effort_keeps_its_reason_in_decisions() {
         text.contains("Revived.") && text.contains(": abandoned: the brush rewrite replaced it"),
         "{text}"
     );
+}
+
+#[test]
+fn an_effort_for_an_issue_says_how_to_close_it_and_reports_it_when_done() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue five <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("isn't a list of issue numbers"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue \"#5, 6\" <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("- issue: #5, #6: this work answers it on GitHub. The commit that lands it says `Fixes #5` and `Fixes #6`"),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(1).contains("issue: 5, 6\n"),
+        "{}",
+        mac.effort_text(1)
+    );
+    // A reload carries the line too, so a fresh session that lands the work sees it.
+    assert!(mac.session_start("s1", "resume").contains("`Fixes #5`"));
+    // Main here, as last fetched, closes 5 but not 6.
+    git(
+        &mac.demo,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Smooth ink\n\nFixes #5",
+        ],
+    );
+    git(
+        &mac.demo,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("Main here has a commit that closes #5."),
+        "{out}"
+    );
+    assert!(
+        out.contains("No commit on main here, as of the last fetch, closes #6")
+            && out.contains("`Fixes #6`"),
+        "{out}"
+    );
+    // Only the save that marks it done reports.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok && !out.contains("closes"), "{out}");
+}
+
+#[test]
+fn an_effort_with_no_issue_says_nothing_about_issues() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok && !out.contains("- issue:"), "{out}");
+    assert!(!mac.effort_text(1).contains("issue:"));
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status done");
+    assert!(ok && !out.contains("issue"), "{out}");
+}
+
+#[test]
+fn the_done_report_never_reads_another_repo_s_history() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue 7 <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    // The notes checkout's own main says Fixes #7; that's not the project's main.
+    git(
+        &mac.notes,
+        &["commit", "-q", "--allow-empty", "-m", "Fixes #7"],
+    );
+    git(
+        &mac.notes,
+        &["update-ref", "refs/remotes/origin/HEAD", "HEAD"],
+    );
+    let (out, ok) = mac.bash_from(
+        "s1",
+        &mac.notes,
+        "astrolabe effort save --status done",
+        None,
+    );
+    assert!(ok, "{out}");
+    assert!(!out.contains("has a commit that closes #7"), "{out}");
+    assert!(out.contains("#7"), "{out}");
 }

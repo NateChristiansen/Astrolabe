@@ -41,7 +41,7 @@ impl Notes {
         }
     }
 
-    fn has_remote(&self) -> bool {
+    pub(crate) fn has_remote(&self) -> bool {
         self.git(&["remote"]).is_ok_and(|r| !r.trim().is_empty())
     }
 
@@ -51,14 +51,36 @@ impl Notes {
     /// one that won't reapply stays in the stash, named by id until it's gone, and the tree
     /// is set back to what was pulled, so no save commits a conflict marker.
     pub fn pull(&self) -> Pull {
+        match self.fetch() {
+            Ok(()) => self.rebase(),
+            Err(offline) => offline,
+        }
+    }
+
+    /// A pull that leaves the tree alone unless origin has commits this checkout lacks, for
+    /// the board server's background pulls: hand edits aren't stashed and reapplied every
+    /// minute when nothing came in.
+    pub fn pull_if_behind(&self) -> Pull {
+        if let Err(offline) = self.fetch() {
+            return offline;
+        }
+        match self.git(&["rev-list", "--count", "HEAD..@{upstream}"]) {
+            Ok(n) if n.trim() == "0" => Pull::Pulled,
+            Ok(_) => self.rebase(),
+            Err(why) => Pull::Offline(why),
+        }
+    }
+
+    /// The fetch half of a pull, bounded and backed off after a timeout.
+    fn fetch(&self) -> Result<(), Pull> {
         if !self.has_remote() {
-            return Pull::Offline("no remote".to_owned());
+            return Err(Pull::Offline("no remote".to_owned()));
         }
         if let Some(left) = self.backing_off() {
-            return Pull::Offline(format!(
+            return Err(Pull::Offline(format!(
                 "a network call timed out lately; no fetch for another {} s",
                 left / 1000
-            ));
+            )));
         }
         if let Err(why) = self.git_timed(&["fetch", "--quiet"]) {
             self.record_sync("offline", &why);
@@ -66,8 +88,13 @@ impl Notes {
                 self.record_backoff();
             }
             self.changed();
-            return Pull::Offline(why);
+            return Err(Pull::Offline(why));
         }
+        Ok(())
+    }
+
+    /// The rebase half of a pull, onto what the last fetch brought.
+    fn rebase(&self) -> Pull {
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let stashes_before = self.stashes();
         match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
@@ -310,6 +337,7 @@ impl Notes {
             hash(&files.iter().map(|(_, t)| t.as_str()).collect::<String>())
         );
         let op = Op {
+            lesson_close: None,
             key: key.clone(),
             files,
             renames: Vec::new(),

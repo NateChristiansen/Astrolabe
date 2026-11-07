@@ -80,10 +80,22 @@ pub(crate) fn guard(bytes: &[u8], data: Option<&Path>) {
     });
     let Some(reason) = reason else { return };
     if let Some(data) = data {
+        let used = std::panic::catch_unwind(|| {
+            let input: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
+            crate::activate::allow::consume(data, &input, &reason)
+        });
+        if matches!(used, Ok(Ok(true))) {
+            return;
+        }
         let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason, data));
     }
+    let hint = if crate::activate::allow::covered(&reason) {
+        format!(" {}", crate::activate::allow::HINT)
+    } else {
+        String::new()
+    };
     say(&deny(&format!(
-        "Astrolabe denied {reason}. Ask the owner if this is really needed."
+        "Astrolabe denied {reason}. Ask the owner if this is really needed.{hint}"
     )));
 }
 

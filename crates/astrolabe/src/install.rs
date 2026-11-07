@@ -63,17 +63,134 @@ pub fn command(args: &[&str]) -> Result<String, String> {
     }
     let directory = match directory {
         Some(path) => path,
-        None => {
-            let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-                .filter(|v| !v.is_empty())
-                .ok_or("cannot find your home folder")?;
-            PathBuf::from(home).join(".local/bin")
-        }
+        None => default_directory()?,
     };
-    install(
+    let result = install(
         &std::env::current_exe().map_err(|e| e.to_string())?,
         &directory,
-    )
+    )?;
+    Ok(format!("{result}{}", path_warning(&directory)))
+}
+
+pub(crate) fn default_directory() -> Result<PathBuf, String> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|v| !v.is_empty())
+        .ok_or("cannot find your home folder")?;
+    Ok(PathBuf::from(home).join(".local/bin"))
+}
+
+// Only compare PATH with the final destination, never the download's temporary stage.
+fn path_warning(directory: &Path) -> String {
+    let Some(path) = std::env::var_os("PATH") else {
+        return String::new();
+    };
+    let installed = directory.join(names()[0]);
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT".into())
+            .split(';')
+            .filter(|ext| !ext.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    let found = std::env::split_paths(&path).find_map(|dir| {
+        extensions.iter().find_map(|ext| {
+            let file = dir.join(format!("astrolabe{ext}"));
+            let metadata = fs::metadata(&file).ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o111 == 0 {
+                    return None;
+                }
+            }
+            Some(file)
+        })
+    });
+    match found {
+        Some(found) if fs::canonicalize(&found).ok() != fs::canonicalize(&installed).ok() => {
+            format!(
+                "\nPATH finds {} before the installed program. Run {} directly or adjust PATH to use the installed copy.",
+                found.display(),
+                installed.display()
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+fn check_pending(directory: &Path) -> Result<(), String> {
+    let pending = directory.join(PENDING);
+    if fs::symlink_metadata(&pending).is_ok() {
+        return Err(format!(
+            "an installation was interrupted; recover using {} before retrying",
+            pending.display()
+        ));
+    }
+    Ok(())
+}
+
+fn read_receipt(directory: &Path) -> Result<Option<Receipt>, String> {
+    if regular(&directory.join(RECEIPT))? {
+        let bytes = fs::read(directory.join(RECEIPT)).map_err(|e| e.to_string())?;
+        let receipt: Receipt = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("invalid installation receipt: {e}"))?;
+        if receipt.format != 1 {
+            return Err("unknown installation receipt format".into());
+        }
+        Ok(Some(receipt))
+    } else {
+        Ok(None)
+    }
+}
+
+fn verify_program(directory: &Path, receipt: &Option<Receipt>) -> Result<bool, String> {
+    let exists = regular(&directory.join(names()[0]))?;
+    if exists {
+        let path = directory.join(names()[0]);
+        match receipt {
+            Some(receipt) if digest(&path)? != receipt.sha256 => {
+                return Err(format!(
+                    "{} changed outside this installer; move it aside yourself before updating",
+                    path.display()
+                ));
+            }
+            Some(_) => {}
+            None => {
+                return Err(format!(
+                    "{} already exists without an installation receipt; move it aside yourself before installing",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(exists)
+}
+
+/// Read-only ownership check for update routing. An unreceipted build is not an install;
+/// a damaged or interrupted installation is an error, never a reason to select another.
+pub(crate) fn installed_program(directory: &Path) -> Result<Option<PathBuf>, String> {
+    check_pending(directory)?;
+    let receipt = read_receipt(directory)?;
+    if receipt.is_none() {
+        return Ok(None);
+    }
+    if !verify_program(directory, &receipt)? {
+        return Err(format!(
+            "{} has an installation receipt but its program is missing; repair the installation before updating",
+            directory.display()
+        ));
+    }
+    Ok(Some(
+        fs::canonicalize(directory)
+            .map_err(|e| e.to_string())?
+            .join(names()[0]),
+    ))
 }
 
 /// Only files owned by this installer are replaced; anything else is left for the user to
@@ -93,47 +210,11 @@ pub fn install(source: &Path, directory: &Path) -> Result<String, String> {
     if !FileExt::try_lock_exclusive(&lock).map_err(|e| e.to_string())? {
         return Err("another Astrolabe installer is running".into());
     }
+    check_pending(&directory)?;
     let pending = directory.join(PENDING);
-    if fs::symlink_metadata(&pending).is_ok() {
-        return Err(format!(
-            "an installation was interrupted; recover using {} before retrying",
-            pending.display()
-        ));
-    }
     let files = names();
-    let existed = [
-        regular(&directory.join(files[0]))?,
-        regular(&directory.join(files[1]))?,
-    ];
-    let receipt = if existed[1] {
-        let bytes = fs::read(directory.join(RECEIPT)).map_err(|e| e.to_string())?;
-        let receipt: Receipt = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("invalid installation receipt: {e}"))?;
-        if receipt.format != 1 {
-            return Err("unknown installation receipt format".into());
-        }
-        Some(receipt)
-    } else {
-        None
-    };
-    if existed[0] {
-        let path = directory.join(files[0]);
-        match &receipt {
-            Some(receipt) if digest(&path)? != receipt.sha256 => {
-                return Err(format!(
-                    "{} changed outside this installer; move it aside yourself before updating",
-                    path.display()
-                ));
-            }
-            Some(_) => {}
-            None => {
-                return Err(format!(
-                    "{} already exists without an installation receipt; move it aside yourself before installing",
-                    path.display()
-                ));
-            }
-        }
-    }
+    let receipt = read_receipt(&directory)?;
+    let existed = [verify_program(&directory, &receipt)?, receipt.is_some()];
     // The old compatibility copy goes only when it is the receipted build; anything else
     // under that name is not this installer's to touch.
     let old_copy = directory.join(retired());

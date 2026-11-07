@@ -2,13 +2,13 @@
 use super::FILE;
 use super::markdown::note_page;
 use super::render::{Links, SERVE_REFRESH_SECS, page};
-use super::settings::{SERVE_PORT, look, port, saved_port, url};
+use super::settings::{Look, SERVE_PORT, look, port, saved_port, url};
 use crate::notes::{self, Notes};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The machine's one server holds this file; a second `--serve` sees it and leaves.
@@ -24,6 +24,33 @@ pub(super) const IDLE_SECS_VAR: &str = "ASTROLABE_HOME_IDLE_SECS";
 pub(super) const NO_DETACHED_VAR: &str = "ASTROLABE_NO_DETACHED_SYNC";
 
 pub(super) const REQUESTED_MARKER: &str = "home-requested";
+
+/// How often the notes are pulled while a page holds the stream, so a machine that's only
+/// being looked at still shows the other machines' saves.
+pub(super) const PULL_EVERY_SECS: u64 = 60;
+
+/// A page load asks for a pull at most this often.
+pub(super) const ASK_GAP: Duration = Duration::from_secs(10);
+
+/// Tests set a shorter pull interval, in seconds.
+pub(super) const PULL_EVERY_VAR: &str = "ASTROLABE_HOME_PULL_SECS";
+
+/// What the server's threads share: when a request last came, how many pages hold the
+/// stream, and whether a page load asked for a pull.
+#[derive(Default)]
+pub(super) struct Watch {
+    seen: AtomicI64,
+    viewers: AtomicUsize,
+    wanted: AtomicBool,
+}
+
+impl Watch {
+    fn new() -> Arc<Self> {
+        let watch = Self::default();
+        watch.seen.store(notes::now_ms(), Ordering::SeqCst);
+        Arc::new(watch)
+    }
+}
 
 /// The machine's server lock, held for the server's life; None when another holds it.
 pub fn hold(notes: &Notes) -> Option<std::fs::File> {
@@ -91,6 +118,28 @@ pub fn ensure_serving(notes: &Notes) -> Option<String> {
     Some(url(notes))
 }
 
+/// How often the server looks at the program file it was started from.
+pub(super) const PROGRAM_EVERY: Duration = Duration::from_secs(2);
+
+/// Passed to the server that takes over from one whose program was replaced, with the port
+/// the first was asked for: it waits for the first to let go instead of leaving.
+pub const HANDOVER_FLAG: &str = "--handover";
+
+/// How long a server taking over waits for the lock and the port.
+pub const HANDOVER_WAIT: Duration = Duration::from_secs(10);
+
+/// A program file's size, change time and, where there is one, file number, which an
+/// install's rename changes even when a build kept the size and time; None when the file
+/// isn't there, as mid-install.
+pub(super) fn stamp(path: &Path) -> Option<(u64, std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let number = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let number = 0;
+    Some((meta.len(), meta.modified().ok()?, number))
+}
+
 /// Binds the board's localhost listener; the URL is printed before serving starts.
 pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
     let listener = TcpListener::bind(("127.0.0.1", port))
@@ -108,46 +157,125 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
 /// connection is told to come back.
 pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requested: u16) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let busy = Arc::new(AtomicUsize::new(0));
-    let last = Arc::new(AtomicI64::new(notes::now_ms()));
+    let watch = Watch::new();
     let idle = std::env::var(IDLE_SECS_VAR)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(IDLE_SECS);
-    let seen = Arc::clone(&last);
+    let seen = Arc::clone(&watch);
     let watched = Notes::new(notes.root.clone(), notes.state.clone());
+    // Taken now, before an install can rename this process's file aside.
+    let program = std::env::current_exe().ok();
+    let started = program.as_deref().and_then(stamp);
     std::thread::spawn(move || {
         // The lock lives as long as this thread, which is as long as the process.
         let _hold = hold;
-        let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000));
+        let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000)).min(PROGRAM_EVERY);
+        let mut pending = None;
         loop {
             std::thread::sleep(every);
-            let quiet = notes::now_ms() - seen.load(Ordering::SeqCst);
+            let quiet = notes::now_ms() - seen.seen.load(Ordering::SeqCst);
             // The lock goes with the process; the next change starts a server again, on
             // the port the machine now wants if that changed.
             let moved = saved_port(&watched).unwrap_or(SERVE_PORT) != requested;
             if moved || quiet >= (idle * 1000) as i64 {
                 std::process::exit(0);
             }
+            // A new program in this one's place: the same stamp twice running, so a file
+            // still being written isn't started, then the new one takes over on this port.
+            let Some(path) = program.as_deref() else {
+                continue;
+            };
+            let now = stamp(path);
+            if now.is_none() || now == started {
+                pending = None;
+                continue;
+            }
+            if pending != now {
+                pending = now;
+                continue;
+            }
+            let (port, requested) = (port.to_string(), requested.to_string());
+            watched.spawn_program(
+                path,
+                &[
+                    "home",
+                    "--serve",
+                    "--port",
+                    &port,
+                    HANDOVER_FLAG,
+                    &requested,
+                ],
+                "home.log",
+            );
+            std::process::exit(0);
         }
     });
+    let puller = Arc::clone(&watch);
+    let pulled = Notes::new(notes.root.clone(), notes.state.clone());
+    std::thread::spawn(move || pull_while_watched(&pulled, &puller));
+    accept(notes, listener, &watch, None);
+}
+
+/// A second home beside the machine's, for trying a build: the same notes, read only, on
+/// its own port, with `fixed` as its look. It takes no lock and saves no setting, and it
+/// runs until stopped, so the machine's server and its port are left as they are. It never
+/// pulls either: that stays with the machine's server.
+pub fn preview(notes: &Notes, listener: TcpListener, fixed: Look) {
+    accept(notes, listener, &Watch::new(), Some(fixed));
+}
+
+/// Answers connections, one thread each, until the listener fails; `fixed` is the look for
+/// every page, or None to read the machine's for each one.
+fn accept(notes: &Notes, listener: TcpListener, watch: &Arc<Watch>, fixed: Option<Look>) {
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let busy = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        last.store(notes::now_ms(), Ordering::SeqCst);
+        watch.seen.store(notes::now_ms(), Ordering::SeqCst);
         if busy.load(Ordering::SeqCst) >= HANDLERS {
             let _ = stream.write_all(BUSY);
             continue;
         }
         let notes = Notes::new(notes.root.clone(), notes.state.clone());
         let count = Arc::clone(&busy);
-        let seen = Arc::clone(&last);
+        let seen = Arc::clone(watch);
         count.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new().spawn(move || {
-            handle(&notes, stream, port, &seen);
+            handle(&notes, stream, port, &seen, fixed);
             count.fetch_sub(1, Ordering::SeqCst);
         });
         if spawned.is_err() {
             busy.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Pulls the notes every `PULL_EVERY_SECS` while a page holds the stream, and soon after a
+/// page load asks. A pull that brings commits moves the files, so the open pages re-read
+/// through the stream as they would for a local save. Never pushes: that stays with sessions.
+fn pull_while_watched(notes: &Notes, watch: &Watch) {
+    let every = std::env::var(PULL_EVERY_VAR)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(PULL_EVERY_SECS)
+        .max(1);
+    let every = Duration::from_secs(every);
+    let mut last: Option<Instant> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let since = last.map(|at| at.elapsed());
+        // A page reloading after a pull it caused doesn't ask for another straight away.
+        let asked = watch.wanted.load(Ordering::SeqCst)
+            && since.is_none_or(|t| t >= every.min(ASK_GAP))
+            && watch.wanted.swap(false, Ordering::SeqCst);
+        let due = watch.viewers.load(Ordering::SeqCst) > 0 && since.is_none_or(|t| t >= every);
+        if asked || due {
+            // A writer holding the lock is mid-save and pulled first itself; this one is tried
+            // again on the next tick, once the lock is free.
+            if crate::application::background_pull(notes).is_some() {
+                last = Some(Instant::now());
+            }
         }
     }
 }
@@ -161,17 +289,30 @@ pub(super) const REQUEST_BOUND: usize = 16 * 1024;
 
 pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
-pub(super) fn handle(notes: &Notes, mut stream: TcpStream, port: u16, seen: &AtomicI64) {
+pub(super) fn handle(
+    notes: &Notes,
+    mut stream: TcpStream,
+    port: u16,
+    watch: &Watch,
+    fixed: Option<Look>,
+) {
     let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let (status, kind, body, head_only) = match request(&mut stream) {
         Some(head) if is_events(&head, port) => {
-            events(notes, stream, seen);
+            watch.viewers.fetch_add(1, Ordering::SeqCst);
+            events(notes, stream, &watch.seen);
+            watch.viewers.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         Some(head) => {
             let head_only = head.split_whitespace().next() == Some("HEAD");
-            let (status, kind, body) = answer(notes, &head, port);
+            let drawn = fixed.unwrap_or_else(|| look(notes));
+            let (status, kind, body) = answer(notes, &head, port, drawn);
+            // A page loaded: pull soon, without the answer waiting on the network.
+            if !head_only && status.starts_with("200") {
+                watch.wanted.store(true, Ordering::SeqCst);
+            }
             (status, kind, body, head_only)
         }
         None => (
@@ -330,7 +471,12 @@ pub(super) fn request(stream: &mut TcpStream) -> Option<String> {
 /// One response: the board at `/`, an effort as a page at its own path, nothing anywhere else.
 /// Only a request addressed to this loopback port is answered, so a page on another origin
 /// that reaches the socket by a rebound name gets nothing.
-pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, String) {
+pub(super) fn answer(
+    notes: &Notes,
+    head: &str,
+    port: u16,
+    drawn: Look,
+) -> (&'static str, &'static str, String) {
     let mut lines = head.lines();
     let mut words = lines.next().unwrap_or_default().split_whitespace();
     let (method, target, version) = (words.next(), words.next(), words.next());
@@ -353,7 +499,7 @@ pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'s
             &rows,
             &notes.root,
             notes::now_ms(),
-            look(notes),
+            drawn,
             SERVE_REFRESH_SECS,
             Links::Served,
         );
@@ -381,7 +527,7 @@ pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'s
                 &crate::record::rows_in(notes, None, true),
                 &notes.root,
                 notes::now_ms(),
-                look(notes),
+                drawn,
             ),
         );
     }

@@ -18,8 +18,6 @@ use std::process::{Command, Stdio};
 const NETWORK_SECS: u64 = 15;
 /// Back off after a network timeout so later hooks do not pay the same delay repeatedly.
 const BACKOFF_MS: i64 = 5 * 60 * 1000;
-/// A push is batched: at a state change, at session end, at start, or this long after the last.
-pub const PUSH_EVERY_MS: i64 = 10 * 60 * 1000;
 const INTENTS: &str = "ops";
 /// Touched when a detached sync is asked for; its mtime throttles the Stop hook's asks.
 const ASKED: &str = "sync-asked";
@@ -43,6 +41,9 @@ pub struct Held(#[allow(dead_code)] File);
 /// A planned write, applied whole and idempotently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Op {
+    /// Two ordered lesson commits, recovered through the same intent as a save.
+    #[serde(default)]
+    pub lesson_close: Option<LessonClose>,
     /// Random, minted by the hook; reused for a retry of the same tool call.
     pub key: String,
     /// Relative path and full text, replaced whole.
@@ -74,6 +75,13 @@ pub struct Op {
     /// the fingerprint reads. Kept in the intent so a replay does the same.
     #[serde(default)]
     pub rebaseline: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LessonClose {
+    pub path: String,
+    pub original: String,
+    pub disposed: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,13 +134,28 @@ impl Notes {
         Ok(Held(file))
     }
 
+    /// The writer lock if it's free now; None while a writer holds it, so a background
+    /// caller skips a turn instead of queueing behind a save.
+    pub fn try_lock(&self) -> Option<Held> {
+        std::fs::create_dir_all(&self.state).ok()?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.state.join(LOCK))
+            .ok()?;
+        FileExt::try_lock_exclusive(&file)
+            .ok()?
+            .then_some(Held(file))
+    }
+
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
         crate::worktree::git(&self.root, &args)
     }
 
     /// Files the index holds unmerged: a save can't stage those, so nothing is written.
-    fn refuse_unmerged(&self) -> Result<(), String> {
+    pub(crate) fn refuse_unmerged(&self) -> Result<(), String> {
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .unwrap_or_default();
@@ -220,6 +243,7 @@ impl Notes {
             }
         }
         let mut op = Op {
+            lesson_close: None,
             key: key.clone(),
             files,
             renames: vec![(old_rel.clone(), new_rel.clone())],

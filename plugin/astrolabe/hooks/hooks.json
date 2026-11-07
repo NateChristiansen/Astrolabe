@@ -4,6 +4,9 @@
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe hook session-start --if-active", "timeout": 20 } ] }
     ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe hook prompt --if-active", "timeout": 5 } ] }
+    ],
     "PreToolUse": [
       { "hooks": [ { "type": "command", "command": "~/.local/bin/astrolabe hook pre-command --if-active", "timeout": 20 } ] }
     ],

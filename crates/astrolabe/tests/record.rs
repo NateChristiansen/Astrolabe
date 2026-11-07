@@ -131,7 +131,12 @@ impl Machine {
 
     /// The binary with this machine's environment, for a caller that spawns it itself.
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        self.command_from(Path::new(env!("CARGO_BIN_EXE_astrolabe")), cwd, args)
+    }
+
+    /// `command` with the program at `exe`, for a copy a test replaces.
+    fn command_from(&self, exe: &Path, cwd: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(exe);
         cmd.args(args)
             .current_dir(cwd)
             .env(STATE_VAR, self.state())
@@ -191,6 +196,16 @@ impl Machine {
         if let Some(agent) = agent {
             input["agent_id"] = agent.into();
         }
+        self.shell(input, cwd, command)
+    }
+
+    /// The same as Codex sends it, which adds a turn id.
+    fn bash_codex(&self, session: &str, command: &str) -> (String, bool) {
+        let input = json!({"session_id": session, "turn_id": "t1", "cwd": self.demo, "tool_name": "shell_command", "tool_use_id": "call-1", "tool_input": {"command": command}});
+        self.shell(input, &self.demo, command)
+    }
+
+    fn shell(&self, input: Value, cwd: &Path, command: &str) -> (String, bool) {
         let (out, ok) = self.run(
             cwd,
             &["hook", "pre-command", "--if-active"],
@@ -229,8 +244,8 @@ impl Machine {
         let command = hso["updatedInput"]["command"].as_str().unwrap();
         // The app runs a read of the ticket's text; the ticket's own `--show` says the same
         // and carries whether it worked.
-        let path = command
-            .strip_prefix("cat '")
+        let path = (command.strip_prefix("cat '"))
+            .or_else(|| command.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))
             .and_then(|p| p.strip_suffix('\''))
             .unwrap_or_else(|| panic!("{command}"));
         let printed = std::fs::read_to_string(path).unwrap();
@@ -417,6 +432,10 @@ impl Drop for Kill {
 
 #[path = "record/home.rs"]
 mod home;
+#[path = "record/initiatives.rs"]
+mod initiatives;
+#[path = "record/lessons.rs"]
+mod lessons;
 #[path = "record/recovery.rs"]
 mod recovery;
 #[path = "record/saving.rs"]

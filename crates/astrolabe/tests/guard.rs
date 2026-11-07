@@ -136,6 +136,27 @@ fn a_denial_is_json_with_exit_0_and_logged() {
     assert_eq!(entry["agent_id"], "child");
 }
 
+#[test]
+fn approval_guidance_is_only_given_for_force_pushes_and_github_writes() {
+    let data = temp("approval-hint");
+    let hint = "If the owner approved this exact command, run `astrolabe allow --once \"<command>\" --said \"<their words>\"` alone, then run it again within five minutes.";
+    for (command, covered) in [
+        ("git push --force", true),
+        ("gh issue create", true),
+        ("pkill node", false),
+        ("git reset --hard", false),
+    ] {
+        let input = json!({"session_id":"s1", "cwd":data, "tool_name":"Bash", "tool_input":{"command":command}});
+        let (stdout, code) = run_hook(&data, input.to_string().as_bytes());
+        assert_eq!(code, 0);
+        let answer: Value = serde_json::from_str(&stdout).unwrap();
+        let reason = answer["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert_eq!(reason.contains(hint), covered, "{reason}");
+    }
+}
+
 /// An allow must be silence: a hook's explicit allow removes the client's prompt.
 #[test]
 fn anything_else_is_silence_with_exit_0() {

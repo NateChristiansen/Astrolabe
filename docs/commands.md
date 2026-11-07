@@ -8,6 +8,7 @@ Exact syntax and options for the installed program and agent-session commands. F
 - [Board and notes](#board-and-notes)
 - [Load an effort](#load-an-effort)
 - [Create an effort](#create-an-effort)
+- [Create an initiative](#create-an-initiative)
 - [Save an effort](#save-an-effort)
 - [Journal](#journal)
 - [Hook entry point](#hook-entry-point)
@@ -60,7 +61,7 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 - **release** installs the newest published release and registers the plugin at its tag.
 - **nightly** installs the rolling `nightly` prerelease, which every push to `main` replaces, and registers the plugin at the `nightly` tag, the same commit as the program.
 
-It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program.
+It verifies the running installation against its receipt before downloading. A repo build hands off to the verified user-local installation; a receipted custom installation updates in place. Missing or damaged installations stop with a repair message. It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program.
 
 An app whose marketplace already follows the channel's tag keeps its registration. The command refreshes that marketplace, then compares the app's installed copy of the plugin with the marketplace's, file by file. If any file differs, it removes and re-adds the plugin. Both apps keep the installed copy by the plugin's version, and that version stays the same across nightlies, so the apps' own update commands report a changed nightly as current. The command says it's already up to date only when the program is the newest build and every app's copy matches.
 
@@ -70,7 +71,7 @@ An app whose marketplace already follows the channel's tag keeps its registratio
 
 ### `home`
 
-Write the standalone `home.html`, ensure the local board server is running, and print its path and address. The plugin starts the server automatically during normal use.
+Write the standalone `home.html`, ensure the local board server is running, and print its path and address. The plugin starts the server automatically during normal use. When the program file is replaced, as by `update` or `install`, the running server starts the new program on the same port within a few seconds and exits, and an open board reloads itself.
 
 | Option | Effect |
 | --- | --- |
@@ -106,6 +107,14 @@ The output contains `efforts`, `today`, today's raw `journal` and parsed `journa
 
 `notes status` reports unpublished changes, divergence and unfinished writes. `notes sync` retries pending writes and synchronization with the notes remote. See [troubleshooting](troubleshooting.md) for failures and [using another machine](usage.md#use-another-machine) for setup.
 
+Run `astrolabe notes sync` alone in an agent session: the plugin's hook recovers unfinished writes locally, starts background sync and reports whether it started. Use `astrolabe notes status` for the result. In a terminal without the hook it runs synchronization directly as before.
+
+### `lesson close`
+
+Run `astrolabe lesson close lessons/<name>.md --as "<disposition>"` alone in an agent session. The hook validates the request, pulls the notes, then appends the disposition as the refreshed lesson's last line, commits only that lesson, removes it in a second commit and requests background sync. Both commit subjects name the lesson; unrelated staged work stays staged. Interrupted closes resume through the notes recovery path without repeating the disposition.
+
+The path is relative to the notes checkout and must name a Markdown file inside `lessons/`, without symbolic links. A missing file, an outside path, a non-Markdown file or an empty disposition is refused without changes. The disposition must be one line. Without hook interception, the command closes nothing.
+
 ## Load an effort
 
 These commands run through the plugin in an agent session with Astrolabe on. Normally you ask the agent to **pick up 12** and it handles the command.
@@ -113,11 +122,17 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | Command | Result |
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
-| `astrolabe activate --effort <number> --worker` | Load context for a dispatched worker. The worker leaves notes reporting to its dispatcher. |
+| `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and marks the effort done with `effort save --effort <number>`. |
 | `astrolabe activate --status` | Show the loaded effort and this session's guard proof. |
 | `astrolabe activate --off` | Unload the effort; the machine switch and guard stay on. |
 
 Run each command alone. The notes checkout can load any effort; a project checkout loads efforts for that project. Running the executable outside the hook doesn't load an effort.
+
+## Allow one approved command
+
+Run `astrolabe allow --once "<exact command>" --said "<the owner's words>"` alone through the plugin's hook with an effort loaded. Use literal quoting for your shell. It records a five-minute lease for one force push or GitHub write that the guard would otherwise deny. Use a direct `git` or `gh` invocation; chained commands, shell wrappers, expansion and other guard reasons are refused. Running the executable outside the hook records nothing.
+
+Run the approved command byte for byte in the same session and working directory. The hook consumes the lease before letting it through, even if execution then fails. Minting and using a lease each append a line with the command and quote to the existing denial log. The hook can't read chat: the quote records the agent's claim of the owner's words.
 
 ## Create an effort
 
@@ -138,12 +153,44 @@ ASTROLABE
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
 | `--initiative "<name>"` | Optional grouping; default empty. |
 | `--priority <label>` | Default `none`. The board recognizes `low`, `high` and `urgent` (`top` also sorts as urgent); other labels sort normally. |
+| `--issue <n>` | The GitHub issue the work answers, or a list such as `"5, 7"`; default none. The session context then says to end the landing commit with `Fixes #<n>`, because the landing script pushes straight to main with no pull request, and GitHub closes an issue only when a closing keyword in a commit reaches the default branch. |
 
 Involvement and authority follow the owner's instructions; see [choosing how the agent works](usage.md#choose-how-the-agent-works).
 
+## Create an initiative
+
+`astrolabe initiative new` files an initiative page and every effort it names in one commit, so a plan that names ten efforts is one command. The body is the page. Its `## Efforts` section (any heading starting with "Efforts") lists the efforts in order, one paragraph each: the title on the first line, the goal on the lines below. Each becomes a `proposed` effort grouped under the title; the section is rewritten as a numbered list of links to them, and everything else in the body is kept as written.
+
+```sh
+astrolabe initiative new --title "Saving and progression" <<'ASTROLABE'
+A fresh profile plays from the first gallery to the final valley, and the hub remembers.
+
+## Efforts and order
+Progress facts file
+The per-profile record: facts with reset generations and a union merge.
+
+Route and locked levels
+Which tool each level teaches, the route as data, locked cards with hints.
+
+## What completion means
+- A fresh profile reaches the valley and the ending records.
+ASTROLABE
+```
+
+| Option | Values and default |
+| --- | --- |
+| `--title "<name>"` | Required. The initiative's name, as the `initiative` property of its efforts, and the page's file name under `initiatives/`. |
+| `--repo <name>` | As for `effort new`: required from the notes checkout, refused elsewhere. |
+| `--involvement "<value>"` | Applied to every effort filed; default `check in at plan`. |
+| `--authority <value>` | Applied to every effort filed; default `edit`. |
+
+The session stays bound to its own effort: the spike that planned the initiative joins it with `effort save --initiative "<name>"` and closes as the record. No journal line is written. An initiative is filed once; a page that already exists is refused, and a later effort joins the group with `--initiative` on `effort new` or `effort save`. The page's `status` and the efforts' order are then the owner's to edit; the board groups efforts by the property, not the page.
+
 ## Save an effort
 
-`astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state.
+`astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state. With `--effort <number>` it changes another effort's state instead; see below.
+
+Without a notes remote, a successful save reports `saved locally; sync unavailable: no remote configured`. With a remote, `background sync started` means the background process was launched, not that a push finished. A launch failure is reported separately; the local save still succeeds.
 
 ```sh
 astrolabe effort save --status active --journal "Added upload retries that keep the original selection." <<'ASTROLABE'
@@ -160,16 +207,20 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | Option | Effect |
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `blocked`, `done` or `abandoned`. |
-| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. |
+| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
 | `--plan-file <path>` | Replace the saved plan with a UTF-8 text file. |
 | `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |
-| `--tick "<piece>"` | Check a piece by its label or a unique prefix, ignoring case. Repeat to check several. |
-| `--untick "<piece>"` | Uncheck a piece using the same matching rules. Repeat as needed. |
+| `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
+| `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
+| `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. |
+| `--effort <number>` | Change another effort's state from this session, as a dispatcher does for its workers: only `--status`, `--waits-for`, `--reason`, `--decision` and `--initiative` go with it. A body, plan, pieces or journal line is refused, because that effort's text is its own session's and the day's journal line goes on this session's effort. The target must be in this session's repo. The bound effort and session state are untouched. |
 
-Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
+When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
+
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked, so the first save after the owner answers takes the effort out of Needs you. Give `--waits-for` again on a save made while still waiting. For example:
 
 ```sh
 astrolabe effort save --status blocked --waits-for "owner: try upload retries"
@@ -188,9 +239,15 @@ File paths are relative to the session's working directory unless absolute. A pi
 - [ ] Check slow connections
 ```
 
+Flag values refuse `$`, backticks and inner double quotes. For a piece such as ``First repo note: `astrolabe repo add <name>` from that repo``, use an unambiguous prefix without changing the piece's text:
+
+```sh
+astrolabe effort save --tick "First repo note"
+```
+
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
 
-`save` has no flags for changing the title, repo, involvement, authority, initiative or priority. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
+`save` has no flags for changing the title, repo, involvement, authority, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
 
 ### Multiline input and quoting
 
@@ -226,6 +283,6 @@ Supply the entry as one double-quoted argument, or in a body using the [multilin
 
 ## Hook entry point
 
-`hook <event> --if-active` is called by the plugin, with the app's event JSON on stdin. Events are `session-start`, `pre-command`, `post-tool`, `stop` and `session-end`. Hooks do nothing while the machine switch is off. See [the hook manifest](../plugin/astrolabe/hooks/hooks.json) and [architecture](architecture.md#hooks-and-session-binding) for integration details.
+`hook <event> --if-active` is called by the plugin, with the app's event JSON on stdin. Events are `session-start`, `prompt`, `pre-command`, `post-tool`, `stop` and `session-end`. Hooks do nothing while the machine switch is off. See [the hook manifest](../plugin/astrolabe/hooks/hooks.json) and [architecture](architecture.md#hooks-and-session-binding) for integration details.
 
 [Installation](install.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)
