@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +16,54 @@ class ReleaseTests(unittest.TestCase):
             package_release.shell_installer('changed installer', {})
         with self.assertRaises(ValueError):
             package_release.powershell_installer('changed installer', {})
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX shell staging wrapper')
+    def test_staging_suppresses_only_the_temporary_path_warning(self):
+        # The relevant cargo-dist hooks plus a staged stand-in. The real receipt
+        # refusal must still reach the caller and keep its failing exit status.
+        generated = r'''say() { printf '%s\n' "$*"; }
+warn() { printf '%s\n' "$*" >&2; }
+verify() {
+        if [ -n "${_checksum_style:-}" ]; then
+            verify_checksum "$_file" "$_checksum_style" "$_checksum_value"
+        else
+            say "no checksums to verify" 1>&2
+        fi
+}
+check_for_shadowed_bins() { printf ' astrolabe'; }
+finish() {
+    say "everything's installed!"
+    _shadowed_bins="$(check_for_shadowed_bins "$_install_dir" "$_bins")"
+    if [ -n "$_shadowed_bins" ]; then
+        warn "The following commands are shadowed by other commands in your PATH:$_shadowed_bins"
+    fi
+}
+_install_dir=$ASTROLABE_UNMANAGED_INSTALL
+_bins=astrolabe
+cat > "$_install_dir/astrolabe" <<'STAGED'
+#!/usr/bin/env sh
+printf '%s\n' "$@"
+printf 'real installation diagnostic\n' >&2
+exit "$FIXTURE_INSTALL_EXIT"
+STAGED
+chmod +x "$_install_dir/astrolabe"
+finish
+'''
+        wrapped = package_release.shell_installer(generated, {})
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'install.sh'
+            script.write_text(wrapped)
+            for exit_code in [0, 17]:
+                result = subprocess.run(['sh', str(script), '--dir', 'a folder with spaces'],
+                                        env=dict(os.environ, FIXTURE_INSTALL_EXIT=str(exit_code)),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                self.assertIn('Download verified and staged.', result.stdout)
+                self.assertIn('install\n--dir\na folder with spaces\n', result.stdout)
+                self.assertIn('real installation diagnostic', result.stderr)
+                self.assertNotIn('shadowed', result.stdout + result.stderr)
+        with self.assertRaises(ValueError):
+            package_release.shell_installer(generated.replace('check_for_shadowed_bins "$_install_dir"', 'changed_check "$_install_dir"'), {})
 
     def test_missing_target_cannot_be_packaged_as_a_complete_release(self):
         with tempfile.TemporaryDirectory() as directory:

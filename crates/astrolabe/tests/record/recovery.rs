@@ -73,15 +73,17 @@ fn two_saves_at_once_both_land_under_the_lock() {
     );
     assert!(ok, "{out}");
     let mac = std::sync::Arc::new(mac);
-    let handles: Vec<_> = ["s1", "s2"].into_iter().map(|s| {
-        let mac = mac.clone();
-        std::thread::spawn(move || {
-            let mut input = json!({"session_id": s, "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": format!("c-{s}"), "tool_input": {"command": format!("astrolabe effort save --journal \"from {s}\"")}});
-            input["x"] = Value::Null;
-            let (out, ok) = mac.run(&mac.demo, &["hook", "pre-command", "--if-active"], &input.to_string());
-            assert!(ok && out.contains("permissionDecision"), "{out}");
+    let handles: Vec<_> = ["s1", "s2"]
+        .into_iter()
+        .map(|s| {
+            let mac = mac.clone();
+            std::thread::spawn(move || {
+                let (out, ok) =
+                    mac.bash(s, &format!("astrolabe effort save --journal \"from {s}\""));
+                assert!(ok, "{out}");
+            })
         })
-    }).collect();
+        .collect();
     for h in handles {
         h.join().unwrap();
     }
