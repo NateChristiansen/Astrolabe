@@ -41,7 +41,7 @@ impl Notes {
         }
     }
 
-    fn has_remote(&self) -> bool {
+    pub(crate) fn has_remote(&self) -> bool {
         self.git(&["remote"]).is_ok_and(|r| !r.trim().is_empty())
     }
 
@@ -337,6 +337,7 @@ impl Notes {
             hash(&files.iter().map(|(_, t)| t.as_str()).collect::<String>())
         );
         let op = Op {
+            lesson_close: None,
             key: key.clone(),
             files,
             renames: Vec::new(),

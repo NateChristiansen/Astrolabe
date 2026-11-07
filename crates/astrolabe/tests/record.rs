@@ -131,7 +131,12 @@ impl Machine {
 
     /// The binary with this machine's environment, for a caller that spawns it itself.
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        self.command_from(Path::new(env!("CARGO_BIN_EXE_astrolabe")), cwd, args)
+    }
+
+    /// `command` with the program at `exe`, for a copy a test replaces.
+    fn command_from(&self, exe: &Path, cwd: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(exe);
         cmd.args(args)
             .current_dir(cwd)
             .env(STATE_VAR, self.state())
@@ -417,6 +422,10 @@ impl Drop for Kill {
 
 #[path = "record/home.rs"]
 mod home;
+#[path = "record/initiatives.rs"]
+mod initiatives;
+#[path = "record/lessons.rs"]
+mod lessons;
 #[path = "record/recovery.rs"]
 mod recovery;
 #[path = "record/saving.rs"]

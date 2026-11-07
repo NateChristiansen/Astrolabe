@@ -140,14 +140,13 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         // Kept in the page so a test and the live swap can find the column by name.
         "<section class=\"col needsyou\" hidden></section>\n".to_owned()
     };
-    // Ready, blocked and ideas sit below the active grid; an empty one is a few words
-    // under the work instead of a dashed box.
+    // Ready and blocked share a row below active work. Ideas get their own full-width
+    // grid; empty sections leave a few words instead of reserving layout space.
     let mut stack = String::new();
     let mut quiet = Vec::new();
     for (key, title, slot, none) in [
         ("ready", "Up next", 2, "nothing ready"),
         ("blocked", "Waiting", 3, "nothing blocked"),
-        ("ideas", "Ideas", 4, "no ideas parked"),
     ] {
         let column = &columns[slot];
         if column.is_empty() {
@@ -161,14 +160,27 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         }
     }
     let active = if columns[1].is_empty() {
-        "<p class=\"empty\">nothing in flight</p>\n".to_owned()
+        // Keep the section addressable across live updates without repeating the hero.
+        "<section class=\"col active\" hidden></section>\n".to_owned()
     } else {
-        cards_of(&columns[1], false)
+        format!(
+            "<section class=\"col active\">{}<div class=\"cards grid\">{}</div></section>\n",
+            heading("In motion", columns[1].len()),
+            cards_of(&columns[1], false)
+        )
+    };
+    let ideas = if columns[4].is_empty() {
+        quiet.push("no ideas parked");
+        String::new()
+    } else {
+        format!(
+            "<section class=\"col ideas\">{}<div class=\"cards ideas-grid\">{}</div></section>\n",
+            heading("Ideas", columns[4].len()),
+            cards_of(&columns[4], true)
+        )
     };
     board += &format!(
-        "<div class=\"work{}\"><section class=\"col active\">{}<div class=\"cards grid\">{active}</div></section>\n{}</div>\n",
-        if stack.is_empty() { " solo" } else { "" },
-        heading("In motion", columns[1].len()),
+        "<div class=\"work\">{active}{}{ideas}</div>\n",
         if stack.is_empty() {
             String::new()
         } else {

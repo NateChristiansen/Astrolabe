@@ -118,8 +118,7 @@ pub(super) fn unreadable(input: &Value) -> Option<&'static str> {
     let Some(tool) = input["tool_name"].as_str().filter(|t| !t.is_empty()) else {
         return Some("no tool named");
     };
-    // The guard's own exceptions: their `command` isn't a shell's.
-    if tool.starts_with("mcp__") || tool == "apply_patch" {
+    if crate::guard::not_a_shell(tool) {
         return None;
     }
     let shell = is_shell_tool(tool);
@@ -263,6 +262,13 @@ pub(crate) fn provider(input: &Value) -> &'static str {
 /// The hook's answer to `astrolabe activate …`: done here, for this session, and the command
 /// rewritten to print it. Only a plain command is taken, so it's exactly what the hook read.
 pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<Value> {
+    // A patch that quotes one of these commands is an edit, not a command (lesson, 2026-11-06).
+    if crate::guard::not_a_shell(input["tool_name"].as_str().unwrap_or_default()) {
+        return None;
+    }
+    if let Some(answer) = super::housekeeping::command(input, session, child) {
+        return Some(answer);
+    }
     let tool_input = &input["tool_input"];
     let key = if tool_input.get("command").is_some() {
         "command"
@@ -276,6 +282,40 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
         ));
     }
+    if words.get(..2) == Some(&["astrolabe", "allow"]) {
+        if child {
+            return Some(hook::deny(
+                "A subagent can't record an owner approval; report to the parent session.",
+            ));
+        }
+        let Some(session) = session else {
+            return Some(hook::deny(
+                "No approval recorded: the hook didn't name a session.",
+            ));
+        };
+        let powershell = in_powershell(provider(input), &input["tool_name"]);
+        let result = state_dir()
+            .ok_or_else(|| "no state folder".to_owned())
+            .and_then(|dir| {
+                if let Ok(Some(state)) = read_state(&dir, session)
+                    && let Some(why) = block_reason(&dir, &state, session)
+                {
+                    return Err(why);
+                }
+                // As with activation, prepare a readable result before committing a change.
+                let ticket = leave(&dir, super::allow::SUCCESS, true)?;
+                if let Err(why) = super::allow::mint(&dir, input, command, session, powershell) {
+                    reissue(&dir, &ticket, &format!("Approval refused: {why}."))?;
+                }
+                Ok(ticket)
+            });
+        return Some(match result {
+            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+            Err(why) => hook::deny(&format!(
+                "Astrolabe couldn't record or show the approval: {why}."
+            )),
+        });
+    }
     // An effort command is done here, in the hook, bound to the session the app named, and
     // the app runs only a print of the result (see `record`).
     if crate::effort::EffortCommand::is_effort_command(command) {
@@ -285,24 +325,31 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 "A subagent can't create or save an effort: one session writes an effort's record, the one the owner talks to. Report to it instead.",
             ));
         }
-        // A worker was dispatched by another agent under its effort: it writes nothing to
-        // the notes, because last night's thirteen lane records were read by no one and the
-        // dispatcher reports for the lot (owner, 2026-11-04).
-        if let Some(dir) = state_dir()
-            && let Ok(Some(state)) = read_state(&dir, session)
-            && state.worker.is_true()
-        {
-            return Some(hook::deny(&format!(
-                "This session is a worker under effort {}: it creates, saves and journals nothing; the session that dispatched it writes the notes. Report to it instead.",
-                state.effort.as_deref().unwrap_or_default()
-            )));
-        }
+        // A worker was dispatched to its effort by another agent: it saves that effort's own
+        // record, and nothing else, because the dispatcher files the efforts, reviews and
+        // closes them, and writes the one journal line a day for the lot: last night's
+        // thirteen lane lines were read by no one (owner, 2026-11-04 and 2026-11-07).
+        let worker = state_dir()
+            .and_then(|dir| read_state(&dir, session).ok().flatten())
+            .filter(|state| state.worker.is_true())
+            .map(|state| state.effort.as_deref().unwrap_or_default().to_owned());
         let powershell = in_powershell(provider(input), &input["tool_name"]);
         let cwd = input["cwd"]
             .as_str()
             .map(PathBuf::from)
             .unwrap_or_else(|| ".".into());
         let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
+            Ok(parsed)
+                if worker.is_some()
+                    && (parsed.verb != "save"
+                        || parsed.flag("journal").is_some()
+                        || parsed.flag("effort").is_some()) =>
+            {
+                return Some(hook::deny(&format!(
+                    "This session is a worker under effort {}: it saves that effort's state, decisions and pieces, and nothing else; the session that dispatched it files efforts, writes the day's journal line and marks the others. Report to it instead.",
+                    worker.unwrap_or_default()
+                )));
+            }
             Ok(parsed) => {
                 // The same tool call retried gets the same key, so it can't commit twice.
                 let op_key = match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
@@ -319,6 +366,9 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                         &[powershell],
                     ),
                     "journal" => crate::record::journal(&parsed, &op_key, session, &cwd),
+                    "initiative" => {
+                        crate::record::initiative(&parsed, &op_key, session, provider(input), &cwd)
+                    }
                     _ => crate::record::save(&parsed, &op_key, session, provider(input), &cwd),
                 };
                 (done.text, done.ok, Some(parsed.digest()), Some(op_key))

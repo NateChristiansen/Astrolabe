@@ -361,6 +361,48 @@ fn reason(answer: &Value) -> &str {
         .unwrap()
 }
 
+#[test]
+fn every_authority_keeps_notes_saving_independent_of_project_pushes() {
+    let f = Fixture::new();
+    let rule = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.";
+    for authority in ["read", "edit", "push"] {
+        write(
+            &f.notes().join("efforts/0070-demo.md"),
+            &EFFORT.replace("authority: edit", &format!("authority: {authority}")),
+        );
+        let (loaded, ok) = f.bash(authority, &f.demo, "astrolabe activate --effort 70");
+        assert!(ok, "{loaded}");
+        let resumed = f.session_start(authority, &f.demo, &[]).unwrap();
+        for text in [loaded, resumed] {
+            assert!(text.contains(rule), "{authority}: {text}");
+            assert!(text.contains(&format!("authority: {authority}:")), "{text}");
+            if authority == "edit" {
+                assert!(text.contains("but don't push"), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_session_text_offers_initiatives_and_the_orchestrator_pattern() {
+    let f = Fixture::new();
+    write(&f.notes().join("efforts/0070-demo.md"), EFFORT);
+    let (loaded, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{loaded}");
+    for text in [
+        "Pieces are for one change",
+        "A plan that names efforts ends in an initiative",
+        "`astrolabe initiative new --title \"<name>\"`",
+        "An initiative may run as orchestrator and workers when the owner picks it",
+        "`astrolabe effort save --effort <n> --status done`",
+    ] {
+        assert!(loaded.contains(text), "{text}\n{loaded}");
+    }
+    assert!(!loaded.contains("not as efforts of their own"), "{loaded}");
+}
+
+#[path = "activate/allow.rs"]
+mod allow;
 #[path = "activate/hooks.rs"]
 mod hooks;
 #[path = "activate/proof.rs"]

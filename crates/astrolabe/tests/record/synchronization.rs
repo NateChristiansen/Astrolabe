@@ -291,7 +291,10 @@ fn every_save_asks_for_a_push_and_a_quiet_session_catches_up() {
     assert!(mac.sync_requested(), "a new waits-for asks for a push");
     mac.set_last_push(0);
     let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nStill the playtest.\nASTROLABE\n");
-    assert!(ok && out.contains("committed, push started"), "{out}");
+    assert!(
+        ok && out.contains("committed, background sync started"),
+        "{out}"
+    );
     assert!(mac.sync_requested(), "a plain checkpoint asks too");
     mac.set_last_push(0);
     let (out, ok) = mac.bash("s2", "astrolabe journal \"Tried the ink at two widths.\"");
@@ -455,4 +458,90 @@ fn an_offline_pickup_still_begins_astrolabe_is_on_with_the_note_after() {
         start.contains("\n\nNotes not refreshed from origin"),
         "{start}"
     );
+}
+
+#[test]
+fn a_save_without_a_remote_reports_local_success_even_when_sync_is_due() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    git(&mac.notes, &["remote", "remove", "origin"]);
+    let before = git(&mac.notes, &["rev-parse", "HEAD"]);
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status ready");
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("saved locally; sync unavailable: no remote configured"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("push started") && !out.contains("sync started"),
+        "{out}"
+    );
+    assert!(mac.effort_text(1).contains("status: ready"));
+    assert_ne!(git(&mac.notes, &["rev-parse", "HEAD"]), before);
+    assert!(git(&mac.notes, &["status", "--porcelain"]).is_empty());
+    // A plain checkpoint still explains the missing remote.
+    mac.set_last_push(0);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"Kept local saves available\"",
+    );
+    assert!(
+        ok && out.contains("saved locally; sync unavailable: no remote configured"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("push started") && !out.contains("sync started"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_save_reports_a_background_launch_without_claiming_a_finished_push() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let _ = mac.sync_requested();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status ready");
+    assert!(
+        ok && out.contains("committed, background sync started"),
+        "{out}"
+    );
+    assert!(mac.sync_requested());
+    assert!(
+        !out.contains("pushed") && !out.contains("push started"),
+        "{out}"
+    );
+    // The launch marker stands in for a background process: origin is unchanged until sync.
+    assert!(!git(&mac.notes, &["log", "origin/main..HEAD", "--oneline"]).is_empty());
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("pushed"), "{out}");
+    assert!(git(&mac.notes, &["log", "origin/main..HEAD", "--oneline"]).is_empty());
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"Kept background sync automatic\"",
+    );
+    // A plain checkpoint right after a push starts another: every save goes out.
+    assert!(
+        ok && out.contains("committed, background sync started"),
+        "{out}"
+    );
+    assert!(mac.sync_requested(), "{out}");
+}
+
+#[test]
+fn a_save_still_succeeds_when_background_sync_cannot_start() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let _ = mac.sync_requested();
+    // Make the test launch marker unwritable without breaking local note writes.
+    std::fs::create_dir(mac.state().join("sync-requested")).unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --status ready");
+    assert!(
+        ok && out.contains("committed; background sync could not start"),
+        "{out}"
+    );
+    assert!(mac.effort_text(1).contains("status: ready"));
+    assert!(git(&mac.notes, &["status", "--porcelain"]).is_empty());
 }

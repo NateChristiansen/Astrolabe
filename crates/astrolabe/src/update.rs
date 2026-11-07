@@ -288,7 +288,7 @@ fn last_line(bytes: &[u8]) -> String {
         .to_owned()
 }
 
-/// Run the target's published installer into the folder this program runs from. The
+/// Run the target's published installer into the verified installation folder. The
 /// installer checks the archive's hash, keeps the old files in a backup and refuses any
 /// file it didn't write; its own output is shown as it runs.
 fn install(git_ref: &str, scratch: &Path, folder: &Path) -> Result<(), String> {
@@ -336,6 +336,26 @@ fn shown(cli: &str, words: &[String]) -> String {
     format!("{cli} {}", words.join(" "))
 }
 
+/// A receipted custom install wins. Build outputs fall back only to the normal install,
+/// not to an arbitrary executable found on PATH.
+fn update_program(running: &Path, default: Option<&Path>) -> Result<PathBuf, String> {
+    let folder = running
+        .parent()
+        .ok_or("can't tell which folder this program runs from")?;
+    if let Some(program) = crate::install::installed_program(folder)? {
+        return Ok(program);
+    }
+    if let Some(default) = default
+        && let Some(program) = crate::install::installed_program(default)?
+    {
+        return Ok(program);
+    }
+    Err(format!(
+        "{} is not a receipted installation, and no verified user-local installation was found. Install Astrolabe with the published installer or `astrolabe install` before updating; build outputs are left alone.",
+        running.display()
+    ))
+}
+
 pub fn command(args: &[&str]) -> Result<String, String> {
     let mut chosen = None;
     let mut dry_run = false;
@@ -359,6 +379,26 @@ pub fn command(args: &[&str]) -> Result<String, String> {
                 );
             }
         }
+    }
+
+    let running = std::env::current_exe().map_err(|e| e.to_string())?;
+    let default = crate::install::default_directory().ok();
+    let installed = update_program(&running, default.as_deref())?;
+    let running = std::fs::canonicalize(&running).map_err(|e| e.to_string())?;
+    if installed != running {
+        // The installed copy knows its own channel and exact build identity. In
+        // particular, a current development build must not skip an older install.
+        println!("Using installed Astrolabe at {}.", installed.display());
+        let status = Command::new(&installed)
+            .arg("update")
+            .args(args)
+            .status()
+            .map_err(|e| format!("couldn't run installed Astrolabe: {e}"))?;
+        return if status.success() {
+            Ok(String::new())
+        } else {
+            Err("the installed copy's update failed; its message is above".into())
+        };
     }
 
     // Each app is found by its command; one that isn't there is skipped, not an error.
@@ -395,6 +435,7 @@ fn run(
     force: bool,
 ) -> Result<String, String> {
     let folder = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
         .map_err(|e| e.to_string())?
         .parent()
         .ok_or("can't tell which folder this program runs from")?
@@ -527,6 +568,93 @@ mod tests {
             Some(None)
         );
         assert_eq!(codex_ref("[marketplaces.other]\nref = \"main\"\n"), None);
+    }
+
+    #[test]
+    fn update_routes_only_to_intact_installations() {
+        let root =
+            std::env::temp_dir().join(format!("astrolabe-update-route-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        let name = if cfg!(windows) {
+            "astrolabe.exe"
+        } else {
+            "astrolabe"
+        };
+        let build = root.join("build").join(name);
+        std::fs::write(&build, "development build").unwrap();
+        let default = root.join("user local");
+        assert!(
+            update_program(&build, Some(&default))
+                .unwrap_err()
+                .contains("no verified")
+        );
+        assert!(!default.exists(), "routing does not create an installation");
+        crate::install::install(&build, &default).unwrap();
+        let expected = std::fs::canonicalize(&default).unwrap().join(name);
+        assert_eq!(update_program(&build, Some(&default)).unwrap(), expected);
+        assert_eq!(update_program(&expected, None).unwrap(), expected);
+        let custom = root.join("custom install");
+        crate::install::install(&build, &custom).unwrap();
+        let custom_program = std::fs::canonicalize(&custom).unwrap().join(name);
+        assert_eq!(
+            update_program(&custom_program, Some(&default)).unwrap(),
+            custom_program
+        );
+
+        // A damaged custom install must not silently redirect to the healthy default.
+        std::fs::write(&custom_program, "changed outside installer").unwrap();
+        assert!(
+            update_program(&custom_program, Some(&default))
+                .unwrap_err()
+                .contains("changed outside")
+        );
+        std::fs::remove_file(&custom_program).unwrap();
+        assert!(
+            update_program(&custom_program, Some(&default))
+                .unwrap_err()
+                .contains("program is missing")
+        );
+        std::fs::write(custom.join(".astrolabe-install.json"), "invalid").unwrap();
+        assert!(
+            update_program(&custom_program, Some(&default))
+                .unwrap_err()
+                .contains("invalid installation receipt")
+        );
+        std::fs::write(custom.join(".astrolabe-install-pending"), "recovery").unwrap();
+        assert!(
+            update_program(&custom_program, Some(&default))
+                .unwrap_err()
+                .contains("interrupted")
+        );
+
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&expected).unwrap();
+            std::os::unix::fs::symlink(&build, &expected).unwrap();
+            assert!(
+                update_program(&build, Some(&default))
+                    .unwrap_err()
+                    .contains("not a regular file")
+            );
+            std::fs::remove_file(&expected).unwrap();
+            std::fs::copy(&build, &expected).unwrap();
+            std::fs::remove_file(default.join(".astrolabe-install.json")).unwrap();
+            std::os::unix::fs::symlink(
+                custom.join(".astrolabe-install.json"),
+                default.join(".astrolabe-install.json"),
+            )
+            .unwrap();
+            assert!(
+                update_program(&build, Some(&default))
+                    .unwrap_err()
+                    .contains("not a regular file")
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&build).unwrap(),
+            "development build"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn nightly(current: bool) -> Target {

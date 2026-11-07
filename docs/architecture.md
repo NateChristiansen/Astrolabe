@@ -8,7 +8,7 @@ The installed program's `on` and `off` commands control one machine switch. When
 
 Loading an effort adds its settings and current state, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
 
-Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive context. Workers leave notes reporting to the agent that dispatched them.
+Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 
 Effort involvement and authority are context supplied to agents. They aren't enforced permissions.
 
@@ -28,6 +28,8 @@ For a change, plan or investigation that needs a lasting record, the agent runs 
 
 The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
 
+A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page under `initiatives/` and every effort it names as proposed, grouped by the `initiative` property the board reads, in one commit. Pieces stay for one change. An initiative may run as an orchestrator with workers when the owner picks that: each worker owns its effort's record, and the orchestrator marks each effort done by number after review and writes one journal line a day for the initiative, so ten workers don't make ten lines.
+
 Recording commands also run through the pre-command hook. The hook can write to the separate notes checkout even when the app's tool sandbox cannot. Without interception, the executable reports an already-recorded result, an unfinished write, or that nothing was recorded; running it directly doesn't create or save an effort.
 
 The Stop hook compares the repo's HEAD, diff and untracked contents with the last saved state. Edit and commit events can also mark a session as changed. It nudges once per change and avoids a repeated stop loop. A nudge is a reminder, not a mandatory save gate. Findings left only in chat can go undetected.
@@ -44,7 +46,7 @@ Pushes run in the background after every save, and again at a turn end, session 
 
 The journal uses Git's union merge driver. Hidden entry metadata identifies the effort and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate effort entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 
-When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/` and `journal/`, plus `.gitattributes`, including hand edits there. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
+When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/`, `journal/` and `initiatives/`, plus `.gitattributes`, including hand edits there. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
 
 ## Files and local state
 
@@ -67,7 +69,7 @@ The notes checkout is registered locally as `agent`. Target repos with remotes a
 
 ## Serving the board
 
-Session starts and notes changes ensure a local server is running. Starting it from the hooks saves the owner from configuring a separate startup service. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. The `home` command can set the port, open the browser or run the server in the foreground.
+Session starts and notes changes ensure a local server is running. Starting it from the hooks saves the owner from configuring a separate startup service. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. It also watches the program file it started from: once a new one sits there, it starts that program on the same port and exits, so an update reaches the board without a manual restart. The `home` command can set the port, open the browser or run the server in the foreground.
 
 The page receives change notifications and refreshes the board, tree or open note in place. It preserves the reader's scroll and navigation. The notes tree groups efforts and journal entries by month, newest first.
 
@@ -78,6 +80,8 @@ Appearance settings are saved per machine; a browser's own choice takes preceden
 ## The shell guard
 
 The pre-command hook checks commands submitted through the app's shell tools. It denies machine-wide kills, force pushes, hard resets, posting through `gh`, and recursive deletes outside the worktree.
+
+`astrolabe allow --once "<exact command>" --said "<the owner's words>"` follows the activation routing: the hook writes and the app reads its result file. With an effort loaded, it records the command, quote, session, working directory, mint time and five-minute expiry in a separate lease file beside the session state, under a per-session lease lock. Session-state writers never rewrite leases, so concurrent hooks cannot erase or restore approvals through stale session state. Only force pushes and GitHub writes qualify. After an ordinary denial, the hook checks for an unexpired byte-for-byte match in that session and directory, durably consumes it before returning no denial, and logs minting and use in `guard-denials.log`. Missing, corrupt or unwritable state keeps the command denied. Classification in `guard.rs` remains pure. The hook can't read chat, so the quote records the agent's claim of the owner's words.
 
 Loading or creating an effort asks the session to prove interception with both an allowed control and a denied probe. A new session has no proven protection until that check succeeds. `astrolabe activate --status` checks that the control ran, the probe was denied and its marker wasn't created. A subagent's proof doesn't prove the parent session's hook.
 

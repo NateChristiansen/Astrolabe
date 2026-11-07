@@ -502,8 +502,10 @@ fn only_gated_plugin_hooks_are_available() {
     }
     let (help, ok) = f.run(&f.demo, &["--help"], "", &[]);
     assert!(ok);
-    // `notes init` is new; the retired one was v1's top-level `init`.
-    let help = help.replace("notes <init <folder>|", "notes <");
+    // `notes init` and `initiative new` are new; the retired one was v1's top-level `init`.
+    let help = help
+        .replace("notes <init <folder>|", "notes <")
+        .replace("initiative new …|", "");
     for retired in ["init", "doctor", "serve [--db", "where", "mcp"] {
         assert!(
             !help.contains(retired),

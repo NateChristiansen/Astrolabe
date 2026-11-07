@@ -258,3 +258,88 @@ mod plan_heading_tests {
         assert_eq!(shift_plan_headings(""), (String::new(), false));
     }
 }
+
+/// `--issue 5` or `--issue "5, 7"`: the GitHub issues this effort answers, kept as `5, 7`.
+pub(super) fn issues(value: &str) -> Result<String, String> {
+    let mut numbers = Vec::new();
+    for part in value.split(',') {
+        let n = part.trim().trim_start_matches('#');
+        if n.is_empty()
+            || !n.bytes().all(|b| b.is_ascii_digit())
+            || n.trim_start_matches('0').is_empty()
+        {
+            return Err(format!(
+                "--issue {value:?} isn't a list of issue numbers, as in `--issue 5` or `--issue \"5, 7\"`"
+            ));
+        }
+        numbers.push(n.trim_start_matches('0').to_owned());
+    }
+    Ok(numbers.join(", "))
+}
+
+/// GitHub's closing keywords: one of these, an optional colon, then `#N`, closes issue N
+/// when the commit reaches the default branch.
+const CLOSING: [&str; 9] = [
+    "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
+];
+
+/// Whether a commit message closes issue `n` in its own repo.
+pub(crate) fn closes(message: &str, n: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    let mark = format!("#{n}");
+    let mut from = 0;
+    while let Some(at) = text[from..].find(&mark).map(|i| i + from) {
+        from = at + mark.len();
+        if text[from..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        let before = text[..at].trim_end();
+        let before = before.strip_suffix(':').unwrap_or(before).trim_end();
+        let hit = CLOSING.iter().any(|word| {
+            before.strip_suffix(word).is_some_and(|rest| {
+                rest.is_empty() || !rest.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+            })
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_lists_are_numbers() {
+        assert_eq!(issues("5").unwrap(), "5");
+        assert_eq!(issues("#3, 07").unwrap(), "3, 7");
+        for bad in ["", "five", "5,", "0", "5 7", "-1"] {
+            assert!(issues(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn closing_keywords_match_github_forms_only() {
+        for yes in [
+            "Fixes #5",
+            "fix #5",
+            "CLOSES: #5",
+            "body\n\nResolved #5.",
+            "Fixes #5\nFixes #6",
+        ] {
+            assert!(closes(yes, "5"), "{yes}");
+        }
+        for no in [
+            "See #5",
+            "Fixes #55",
+            "prefixes #5",
+            "Fixes #5a",
+            "Fixes 5",
+            "Refs #5, fixes #6",
+        ] {
+            assert!(!closes(no, "5"), "{no}");
+        }
+    }
+}

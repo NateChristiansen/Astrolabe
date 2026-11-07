@@ -10,6 +10,8 @@ Open a session in your project and ask for work as usual:
 
 The agent records the work in an **effort**. It keeps that note updated with progress, decisions and what comes next, and adds a short account of what changed to your journal.
 
+A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files its page and all of its efforts in one step, and the board groups them under its name. You can run those efforts one at a time, or ask an agent to orchestrate them through workers.
+
 ## Choose how the agent works
 
 Tell the agent how involved you want to be:
@@ -19,6 +21,8 @@ Tell the agent how involved you want to be:
 - **Work autonomously:** let it finish and report back.
 
 You also choose its authority: **read** to investigate and report, **edit** to make changes and local commits, or **push** to share its branch. New efforts default to edit.
+
+Authority applies to project changes and pushes; notes save and sync on their own at every authority level.
 
 For example:
 
@@ -30,7 +34,7 @@ The agent records these choices with the effort, so they carry over when you res
 
 Astrolabe starts the board automatically. Open your [local board](http://localhost:4747/) or ask an agent to open it for you. The address above is the default.
 
-The board shows active work, what needs your attention and what you could pick up next. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it.
+The board shows active work, what needs your attention and what you could pick up next. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it. Ideas use a full-width grid that adapts to your screen, with priority first and the latest updates next. When nothing is in motion, the overview moves straight to the work you could pick up.
 
 The journal gives you a short history of what changed. Both the board and journal update as agents record their work, including work recorded on your other machines: an open board pulls their saves about once a minute.
 
