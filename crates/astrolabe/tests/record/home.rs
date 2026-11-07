@@ -463,6 +463,92 @@ fn the_board_is_served_fresh_on_localhost() {
     );
 }
 
+#[test]
+fn a_replaced_program_takes_over_on_the_same_port() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::{Duration, Instant, SystemTime};
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The server runs from a copy, so the test can replace it the way an install does.
+    let built = Path::new(env!("CARGO_BIN_EXE_astrolabe"));
+    let bin = mac.dir.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = bin.join(built.file_name().unwrap());
+    std::fs::copy(built, &exe).unwrap();
+    let mut child = Kill(
+        mac.command_from(&exe, &mac.notes, &["home", "--serve", "--port", "0"])
+            .env("ASTROLABE_HOME_IDLE_SECS", "8")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut url = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut url);
+        let _ = tx.send(url);
+    });
+    let url = rx
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap_or_else(|e| server_failed(&mut child.0, &format!("no server URL: {e}")));
+    let addr = url
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|u| u.strip_suffix('/'))
+        .unwrap_or_else(|| server_failed(&mut child.0, &format!("invalid server URL: {url:?}")))
+        .to_owned();
+    let serving = || {
+        let Ok(mut s) = std::net::TcpStream::connect(&addr) else {
+            return false;
+        };
+        let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
+        let _ = s.write_all(format!("GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes());
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out.starts_with("HTTP/1.1 200")
+    };
+    assert!(serving(), "the first server answers");
+    // An install's swap: the old file renamed aside, the new one renamed into its place.
+    let new = bin.join("astrolabe.new");
+    std::fs::copy(built, &new).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&new)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(5))
+        .unwrap();
+    std::fs::rename(&exe, bin.join("astrolabe.old")).unwrap();
+    std::fs::rename(&new, &exe).unwrap();
+    // The first server hands over and leaves; the one it started answers on the same port.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let exited = loop {
+        if let Ok(Some(status)) = child.0.try_wait() {
+            break Some(status);
+        }
+        if Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        exited.is_some_and(|s| s.success()),
+        "the replaced server leaves: {exited:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !serving() {
+        let log = std::fs::read_to_string(mac.state().join("home.log")).unwrap_or_default();
+        assert!(
+            Instant::now() < deadline,
+            "nothing took over on {addr}; home.log: {log}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn server_failed(child: &mut std::process::Child, why: &str) -> ! {
     use std::io::Read;
     let _ = child.kill();
