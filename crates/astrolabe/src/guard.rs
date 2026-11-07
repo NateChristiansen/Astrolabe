@@ -323,10 +323,14 @@ pub fn command_text(command: &Value) -> String {
     }
 }
 
+/// Tools whose `command` isn't a shell's: Codex's patch tool puts the patch text there. A
+/// tool unknown here that has a `command` is read as a shell, so a new one stays covered.
+pub fn not_a_shell(tool: &str) -> bool {
+    tool.starts_with("mcp__") || tool == "apply_patch"
+}
+
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
-    // Their `command` isn't a shell's: Codex's patch tool puts the patch text there. A tool
-    // unknown here that has a `command` is read as a shell, so a new one stays covered.
-    if tool.starts_with("mcp__") || tool == "apply_patch" {
+    if not_a_shell(tool) {
         return None;
     }
     let windows = (scope.root.as_deref()).is_some_and(|r| has_drive(r) || r.starts_with(r"\\"));

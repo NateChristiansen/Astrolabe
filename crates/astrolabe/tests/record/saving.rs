@@ -442,9 +442,17 @@ fn inline_code_pieces_can_be_ticked_without_changing_their_text() {
     }
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"first repo note\"");
     assert!(ok, "{out}");
+    // Every save restamps `updated` to the minute, so the minute may roll over between
+    // the two saves; only the tick is what this test is about.
+    let without_updated = |text: &str| -> String {
+        text.lines()
+            .filter(|line| !line.starts_with("updated:"))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
     assert_eq!(
-        mac.effort_text(1),
-        before.replace(&format!("- [ ] {piece}"), &format!("- [x] {piece}"))
+        without_updated(&mac.effort_text(1)),
+        without_updated(&before.replace(&format!("- [ ] {piece}"), &format!("- [x] {piece}")))
     );
 }
 

@@ -118,8 +118,7 @@ pub(super) fn unreadable(input: &Value) -> Option<&'static str> {
     let Some(tool) = input["tool_name"].as_str().filter(|t| !t.is_empty()) else {
         return Some("no tool named");
     };
-    // The guard's own exceptions: their `command` isn't a shell's.
-    if tool.starts_with("mcp__") || tool == "apply_patch" {
+    if crate::guard::not_a_shell(tool) {
         return None;
     }
     let shell = is_shell_tool(tool);
@@ -263,6 +262,10 @@ pub(crate) fn provider(input: &Value) -> &'static str {
 /// The hook's answer to `astrolabe activate …`: done here, for this session, and the command
 /// rewritten to print it. Only a plain command is taken, so it's exactly what the hook read.
 pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) -> Option<Value> {
+    // A patch that quotes one of these commands is an edit, not a command (lesson, 2026-11-06).
+    if crate::guard::not_a_shell(input["tool_name"].as_str().unwrap_or_default()) {
+        return None;
+    }
     if let Some(answer) = super::housekeeping::command(input, session, child) {
         return Some(answer);
     }
