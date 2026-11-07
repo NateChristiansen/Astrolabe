@@ -279,6 +279,6 @@ Supply the entry as one double-quoted argument, or in a body using the [multilin
 
 ## Hook entry point
 
-`hook <event> --if-active` is called by the plugin, with the app's event JSON on stdin. Events are `session-start`, `pre-command`, `post-tool`, `stop` and `session-end`. Hooks do nothing while the machine switch is off. See [the hook manifest](../plugin/astrolabe/hooks/hooks.json) and [architecture](architecture.md#hooks-and-session-binding) for integration details.
+`hook <event> --if-active` is called by the plugin, with the app's event JSON on stdin. Events are `session-start`, `prompt`, `pre-command`, `post-tool`, `stop` and `session-end`. Hooks do nothing while the machine switch is off. See [the hook manifest](../plugin/astrolabe/hooks/hooks.json) and [architecture](architecture.md#hooks-and-session-binding) for integration details.
 
 [Installation](install.md) · [Troubleshooting](troubleshooting.md) · [Using Astrolabe](usage.md) · [Project overview](../README.md)

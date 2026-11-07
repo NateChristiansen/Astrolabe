@@ -242,13 +242,67 @@ pub fn gate(event: &str) {
                 }
             });
             let text = std::panic::catch_unwind(|| session_start(&input, session?));
+            // After the reload, so the name is the effort's as it stands now.
+            let name = std::panic::catch_unwind(|| naming(&input, session?, true))
+                .ok()
+                .flatten();
+            let mut inner = json!({"hookEventName": "SessionStart"});
             if let Ok(Some(text)) = text {
-                let inner = json!({"hookEventName": "SessionStart", "additionalContext": text});
+                inner["additionalContext"] = text.into();
+            }
+            if let Some(name) = name {
+                inner["sessionTitle"] = name.into();
+            }
+            if inner.as_object().is_some_and(|o| o.len() > 1) {
+                hook::say(&json!({ "hookSpecificOutput": inner }));
+            }
+        }
+        // Each prompt, for a session that picked an effort up since the last one: no hook
+        // before a command can name a session, so this is the soonest after a mid-session bind.
+        "prompt" if !child => {
+            if let Ok(Some(name)) = std::panic::catch_unwind(|| naming(&input, session?, false)) {
+                let inner = json!({"hookEventName": "UserPromptSubmit", "sessionTitle": name});
                 hook::say(&json!({ "hookSpecificOutput": inner }));
             }
         }
         _ => {}
     }
+}
+
+/// The name to give a Claude session now, if any, recorded as given. Only the effort's name,
+/// once per change of it, and never over a rename the owner made after Astrolabe's: the app
+/// tells the hook the session's current custom name. Before Astrolabe has named a session it
+/// can't tell the owner's name from the desktop app's own, so binding an effort wins then.
+/// Codex hooks can't name a thread; its agent is told to (see `mid_session`).
+pub(super) fn naming(input: &Value, session: &str, at_start: bool) -> Option<String> {
+    if provider(input) != "claude" {
+        return None;
+    }
+    // Claude takes a session-start name only for these; a later prompt names the rest.
+    let source = input["source"].as_str();
+    if at_start && source.is_some_and(|s| !["startup", "resume", "fork"].contains(&s)) {
+        return None;
+    }
+    let dir = state_dir()?;
+    let mut state = read_state(&dir, session).ok().flatten()?;
+    if state.provider.as_deref().is_some_and(|p| p != "claude") {
+        return None;
+    }
+    let name = state.name.as_deref()?.to_owned();
+    let named = state.named.as_deref();
+    if named == Some(name.as_str()) {
+        return None;
+    }
+    let current = input["session_title"].as_str().filter(|t| !t.is_empty());
+    if let (Some(named), Some(current)) = (named, current)
+        && current != named
+    {
+        return None;
+    }
+    state.named.set(name.clone());
+    // Unrecorded, a name given now would read as the owner's next time.
+    write_json(&state_path(&dir, session), &state).ok()?;
+    Some(name)
 }
 
 pub(crate) fn provider(input: &Value) -> &'static str {

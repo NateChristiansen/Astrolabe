@@ -405,6 +405,8 @@ fn the_session_text_offers_initiatives_and_the_orchestrator_pattern() {
 mod allow;
 #[path = "activate/hooks.rs"]
 mod hooks;
+#[path = "activate/naming.rs"]
+mod naming;
 #[path = "activate/proof.rs"]
 mod proof;
 #[path = "activate/repositories.rs"]

@@ -14,13 +14,15 @@ Effort involvement and authority are context supplied to agents. They aren't enf
 
 ## Hooks and session binding
 
-The [hook manifest](../plugin/astrolabe/hooks/hooks.json) calls `~/.local/bin/astrolabe` at session start, before shell commands, after supported edits, at stop, and at session end. The fixed location avoids depending on the PATH inherited by a desktop app.
+The [hook manifest](../plugin/astrolabe/hooks/hooks.json) calls `~/.local/bin/astrolabe` at session start, when a prompt is sent, before shell commands, after supported edits, at stop, and at session end. The fixed location avoids depending on the PATH inherited by a desktop app.
 
 The plugin uses a shared folder with a marketplace file for each supported app. Claude Code uses its plugin layout; Codex accepts that compatibility layout. On Windows the hook command is expanded by PowerShell in Codex and by Git Bash or sh in Claude Code. These app-specific installation details are in the [setup guide](install.md#2-install-the-plugin-in-your-agent-app).
 
 The agent runs `astrolabe activate --effort <number>` as a standalone shell command. The pre-command hook receives the app's session identifier and binds the effort there. It then replaces the command with a plain read of the result file: `cat` in a POSIX shell or `Get-Content -Raw` in PowerShell.
 
 The hook performs the write before the app runs that read. This lets effort commands work during planning, including when the app permits only read commands. A command that the hook didn't intercept doesn't load an effort or claim guard protection.
+
+A session on an effort is named after it, as the effort's number and title ("83 Name sessions after their effort"), so the owner can see which agent is on what. Claude Code takes the name from a hook: at session start for a session already on an effort, or at the next prompt for one that picked an effort up mid-session, since no hook before a command can set it. Each name is given once, and a rename the owner makes after it is kept. Before then the hook can't tell the owner's name from the app's own title, so binding an effort replaces either. Codex hooks can't name a thread, so a Codex agent that picks up an effort is told to rename its thread with the Codex app's own tool; a thread started outside the app has no such tool and isn't listed there.
 
 ## Recording work
 

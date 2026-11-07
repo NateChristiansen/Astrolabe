@@ -15,7 +15,8 @@ mod routing;
 mod tickets;
 
 pub use context::{
-    Activation, Effort, GUARD_SCOPE, RECORD_RULE, SAVE_RULE, WORKER_RULE, read_effort, switch_on,
+    Activation, Effort, GUARD_SCOPE, RECORD_RULE, SAVE_RULE, WORKER_RULE, read_effort,
+    session_name, switch_on,
 };
 pub(crate) use context::{STILL_ON, no_note};
 pub(crate) use proof::session_token;

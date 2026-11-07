@@ -84,6 +84,12 @@ pub struct SessionState {
     pub mark: Field<bool>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub worker: Field<bool>,
+    /// What the app should call this session: the effort's number and title.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub name: Field<String>,
+    /// The name Astrolabe last gave the session, so a rename by the owner after it is kept.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub named: Field<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

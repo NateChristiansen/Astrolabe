@@ -54,6 +54,31 @@ pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner'
 /// `effort new` and `activate`, so a session that never records doesn't carry it.
 pub const SAVE_RULE: &str = "Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the same with the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path and only for the thing the owner has to open. The first sentence says the state in plain words; the second paragraph gives each choice with its reason; the last says what's next and what isn't checked. Numbers only when they're the result (\"200 ms instead of 310\"), never the evidence trail (no p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nUse `astrolabe lesson close` for a lesson's disposition. A choice that leaves Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Any other shape is refused with the accepted forms. Plan mode doesn't block these commands and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode create the effort first, and when the owner approves the plan, save it on the effort: --plan-file <path> with the plan file the app named, or, where the app keeps no plan file (Codex), the plan in the body after a line `## Plan`, below the Current state paragraphs. Pieces are for one change: a `## Pieces` checklist in the effort, `--pieces-file <path>` sets the list, `--tick \"<piece>\"` marks one landed. A plan that names efforts ends in an initiative, not in one effort's checklist: `astrolabe initiative new --title \"<name>\"` with the page in its body and a `## Efforts` section (one paragraph per effort, the title then its goal) files the page and every effort as proposed in one step, and the spike closes as their record with --initiative \"<name>\" on its save. An initiative may run as orchestrator and workers when the owner picks it: each worker loads its effort with `astrolabe activate --effort <n> --worker` and saves its own state and decisions; the orchestrator reviews, lands, marks each done with `astrolabe effort save --effort <n> --status done`, and writes the day's one journal line for the initiative on its own effort. The journal is the owner's history, read days later beside the effort's note: one line per effort per day, as they would say it, past tense, plain words, about 25 words, two sentences at most, like \"Deck guests see drawn pieces 200 ms late now, down from 310, by skipping the GPU readback. Dropped the stand-in and send-ahead.\" It says what changed, and why when the why matters, and nothing the note doesn't say, since the line outlives the session. Never where it stands (no \"Merged.\", no leftover, no next step): the board shows status. It names things, never files, ids or other efforts, in the game's own terms (\"tool presses\", not \"tool presses on Hot Wheels\"), and says \"my\", never \"the owner's\". Pass --journal on the save that finishes something worth telling, or before you stop with it unfinished (\"Started …\"); a later line the same day replaces the earlier, so small things batch, and a decision gets a line only when it's a direction they'd want to remember. States: proposed, ready, active, blocked (needs --waits-for; \"owner: <question>\" when it waits on them), done, abandoned (needs --reason). A save without --waits-for clears what the effort waits on unless it stays blocked, so the first save after the owner answers takes it out of Needs you; give --waits-for again on a save made while still waiting. Under autonomous, mark done on your own checks; under check in at plan or each step, save with --waits-for \"owner: look at …\" and mark done after their look. A Stop-hook message about saving is the plugin, not the owner: act on it or say nothing changed, never treat it as a request. The owner's home is served on this machine at the address `astrolabe home` prints (localhost:4747 unless set), started by the plugin at any change and stopped when idle: the board, the notes tree beside it, each note as a page, following every save. `astrolabe home --open` opens it; `--theme dark` and `--palette iris` set its look per machine. The same page is written as home.html at the notes checkout root for a machine with no server.";
 
+/// What the app should call a session on an effort: its number without the zeros, then its
+/// title without the number the note's heading leads with, so the owner sees who's on what.
+pub fn session_name(number: &str, title: &str) -> String {
+    let title = title.trim();
+    let digits = title
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(title.len());
+    let (lead, rest) = title.split_at(digits);
+    let same = !lead.is_empty() && lead.parse::<u64>().ok() == number.parse::<u64>().ok();
+    let title = if same { rest.trim_start() } else { title };
+    match title.is_empty() {
+        true => number.to_owned(),
+        false => format!("{number} {title}"),
+    }
+}
+
+/// Said to a Codex session that picks up an effort: its hooks can't name a thread, but the
+/// Codex app gives its agents a tool that can. A thread started outside the app has no such
+/// tool and isn't listed there, so it skips this.
+fn codex_rename(name: &str) -> String {
+    format!(
+        "Rename this thread to \"{name}\" now with the app's thread-rename tool (`set_thread_title` in the Codex app), so the owner can see which effort it's on. If you have no such tool, skip this and don't mention it."
+    )
+}
+
 /// Said to a worker on binding: what it may not do, and why.
 pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it saves that effort's state, decisions and pieces as above, and nothing else in the owner's notes. No journal line, no new effort, no other effort's record and no lesson close, because the dispatcher reviews, lands and marks it done, writes the one journal line a day for its initiative, and triages lessons. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
 
@@ -220,6 +245,13 @@ impl Activation {
     pub fn mid_session(mut self) -> Self {
         self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
+        // Only here: a resumed thread was named when it picked the effort up, and a launched
+        // worker runs outside the app. Claude's hook names its session itself (see `naming`).
+        if let (Some("codex"), Some(name)) =
+            (self.state.provider.as_deref(), self.state.name.as_deref())
+        {
+            self.head += &format!("\n\n{}", codex_rename(name));
+        }
         self
     }
 
@@ -323,6 +355,9 @@ pub fn switch_on(
             .map(Field::Known)
             .unwrap_or(Field::Other(Value::Null)),
         mark: false.into(),
+        name: session_name(&effort.number, &effort.title).into(),
+        // Whatever effort it was on: the name the session carries is the same one.
+        named: previous.map(|p| p.named.clone()).unwrap_or_default(),
         // Unknown fields survive a resume, so a newer writer can share the record.
         extra: same.map(|p| p.extra.clone()).unwrap_or_default(),
         ..Default::default()

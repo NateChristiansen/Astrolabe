@@ -256,6 +256,11 @@ fn new_inner(
         last_save_ms: notes::now_ms().into(),
         mark: false.into(),
         saves: 0.into(),
+        name: activate::session_name(&number.to_string(), title).into(),
+        // The name the session carries from an effort it was on before, if any.
+        named: (read_state(&dir, session).ok().flatten())
+            .map(|p| p.named)
+            .unwrap_or_default(),
         ..Default::default()
     };
     let op = Op {

@@ -206,6 +206,7 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
     let hooks = read("astrolabe/hooks/hooks.json");
     for (event, slug) in [
         ("SessionStart", "session-start"),
+        ("UserPromptSubmit", "prompt"),
         ("PreToolUse", "pre-command"),
     ] {
         let command = &hooks["hooks"][event][0]["hooks"][0]["command"];
