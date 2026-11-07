@@ -18,8 +18,6 @@ use std::process::{Command, Stdio};
 const NETWORK_SECS: u64 = 15;
 /// Back off after a network timeout so later hooks do not pay the same delay repeatedly.
 const BACKOFF_MS: i64 = 5 * 60 * 1000;
-/// A push is batched: at a state change, at session end, at start, or this long after the last.
-pub const PUSH_EVERY_MS: i64 = 10 * 60 * 1000;
 const INTENTS: &str = "ops";
 /// Touched when a detached sync is asked for; its mtime throttles the Stop hook's asks.
 const ASKED: &str = "sync-asked";
@@ -124,6 +122,21 @@ impl Notes {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         FileExt::lock_exclusive(&file).map_err(|e| format!("notes lock: {e}"))?;
         Ok(Held(file))
+    }
+
+    /// The writer lock if it's free now; None while a writer holds it, so a background
+    /// caller skips a turn instead of queueing behind a save.
+    pub fn try_lock(&self) -> Option<Held> {
+        std::fs::create_dir_all(&self.state).ok()?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.state.join(LOCK))
+            .ok()?;
+        FileExt::try_lock_exclusive(&file)
+            .ok()?
+            .then_some(Held(file))
     }
 
     pub fn git(&self, args: &[&str]) -> Result<String, String> {

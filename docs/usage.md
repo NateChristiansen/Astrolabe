@@ -32,7 +32,7 @@ Astrolabe starts the board automatically. Open your [local board](http://localho
 
 The board shows active work, what needs your attention and what you could pick up next. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it.
 
-The journal gives you a short history of what changed. Both the board and journal update as agents record their work.
+The journal gives you a short history of what changed. Both the board and journal update as agents record their work, including work recorded on your other machines: an open board pulls their saves about once a minute.
 
 ## Pick up an effort
 

@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The machine's one server holds this file; a second `--serve` sees it and leaves.
@@ -24,6 +24,25 @@ pub(super) const IDLE_SECS_VAR: &str = "ASTROLABE_HOME_IDLE_SECS";
 pub(super) const NO_DETACHED_VAR: &str = "ASTROLABE_NO_DETACHED_SYNC";
 
 pub(super) const REQUESTED_MARKER: &str = "home-requested";
+
+/// How often the notes are pulled while a page holds the stream, so a machine that's only
+/// being looked at still shows the other machines' saves.
+pub(super) const PULL_EVERY_SECS: u64 = 60;
+
+/// A page load asks for a pull at most this often.
+pub(super) const ASK_GAP: Duration = Duration::from_secs(10);
+
+/// Tests set a shorter pull interval, in seconds.
+pub(super) const PULL_EVERY_VAR: &str = "ASTROLABE_HOME_PULL_SECS";
+
+/// What the server's threads share: when a request last came, how many pages hold the
+/// stream, and whether a page load asked for a pull.
+#[derive(Default)]
+pub(super) struct Watch {
+    seen: AtomicI64,
+    viewers: AtomicUsize,
+    wanted: AtomicBool,
+}
 
 /// The machine's server lock, held for the server's life; None when another holds it.
 pub fn hold(notes: &Notes) -> Option<std::fs::File> {
@@ -109,12 +128,13 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
 pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requested: u16) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let busy = Arc::new(AtomicUsize::new(0));
-    let last = Arc::new(AtomicI64::new(notes::now_ms()));
+    let watch = Arc::new(Watch::default());
+    watch.seen.store(notes::now_ms(), Ordering::SeqCst);
     let idle = std::env::var(IDLE_SECS_VAR)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(IDLE_SECS);
-    let seen = Arc::clone(&last);
+    let seen = Arc::clone(&watch);
     let watched = Notes::new(notes.root.clone(), notes.state.clone());
     std::thread::spawn(move || {
         // The lock lives as long as this thread, which is as long as the process.
@@ -122,7 +142,7 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
         let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000));
         loop {
             std::thread::sleep(every);
-            let quiet = notes::now_ms() - seen.load(Ordering::SeqCst);
+            let quiet = notes::now_ms() - seen.seen.load(Ordering::SeqCst);
             // The lock goes with the process; the next change starts a server again, on
             // the port the machine now wants if that changed.
             let moved = saved_port(&watched).unwrap_or(SERVE_PORT) != requested;
@@ -131,16 +151,19 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
             }
         }
     });
+    let puller = Arc::clone(&watch);
+    let pulled = Notes::new(notes.root.clone(), notes.state.clone());
+    std::thread::spawn(move || pull_while_watched(&pulled, &puller));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        last.store(notes::now_ms(), Ordering::SeqCst);
+        watch.seen.store(notes::now_ms(), Ordering::SeqCst);
         if busy.load(Ordering::SeqCst) >= HANDLERS {
             let _ = stream.write_all(BUSY);
             continue;
         }
         let notes = Notes::new(notes.root.clone(), notes.state.clone());
         let count = Arc::clone(&busy);
-        let seen = Arc::clone(&last);
+        let seen = Arc::clone(&watch);
         count.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new().spawn(move || {
             handle(&notes, stream, port, &seen);
@@ -148,6 +171,35 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
         });
         if spawned.is_err() {
             busy.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Pulls the notes every `PULL_EVERY_SECS` while a page holds the stream, and soon after a
+/// page load asks. A pull that brings commits moves the files, so the open pages re-read
+/// through the stream as they would for a local save. Never pushes: that stays with sessions.
+fn pull_while_watched(notes: &Notes, watch: &Watch) {
+    let every = std::env::var(PULL_EVERY_VAR)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(PULL_EVERY_SECS)
+        .max(1);
+    let every = Duration::from_secs(every);
+    let mut last: Option<Instant> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let since = last.map(|at| at.elapsed());
+        // A page reloading after a pull it caused doesn't ask for another straight away.
+        let asked = watch.wanted.load(Ordering::SeqCst)
+            && since.is_none_or(|t| t >= every.min(ASK_GAP))
+            && watch.wanted.swap(false, Ordering::SeqCst);
+        let due = watch.viewers.load(Ordering::SeqCst) > 0 && since.is_none_or(|t| t >= every);
+        if asked || due {
+            // A writer holding the lock is mid-save and pulled first itself; this one is tried
+            // again on the next tick, once the lock is free.
+            if crate::application::background_pull(notes).is_some() {
+                last = Some(Instant::now());
+            }
         }
     }
 }
@@ -161,17 +213,23 @@ pub(super) const REQUEST_BOUND: usize = 16 * 1024;
 
 pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
-pub(super) fn handle(notes: &Notes, mut stream: TcpStream, port: u16, seen: &AtomicI64) {
+pub(super) fn handle(notes: &Notes, mut stream: TcpStream, port: u16, watch: &Watch) {
     let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let (status, kind, body, head_only) = match request(&mut stream) {
         Some(head) if is_events(&head, port) => {
-            events(notes, stream, seen);
+            watch.viewers.fetch_add(1, Ordering::SeqCst);
+            events(notes, stream, &watch.seen);
+            watch.viewers.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         Some(head) => {
             let head_only = head.split_whitespace().next() == Some("HEAD");
             let (status, kind, body) = answer(notes, &head, port);
+            // A page loaded: pull soon, without the answer waiting on the network.
+            if !head_only && status.starts_with("200") {
+                watch.wanted.store(true, Ordering::SeqCst);
+            }
             (status, kind, body, head_only)
         }
         None => (

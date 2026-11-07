@@ -499,7 +499,6 @@ fn save_inner(
             file.tick(label, false)?;
         }
     }
-    let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
     if let Some(w) = waits_for {
         file.set("waits_for", w);
     }
@@ -557,15 +556,11 @@ fn save_inner(
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
-    // A new waits-for is a state change the other machine must see: effort 6 went from
-    // "merge" to "playtest" with status still blocked and sat unpushed for nine hours.
-    let state_changed = status.as_deref().is_some_and(|s| s != before)
-        || file.prop("waits_for").unwrap_or("") != waits_before;
-    if state_changed || now - notes.last_push_ms() > notes::PUSH_EVERY_MS {
-        notes.spawn_sync();
-    }
+    // Every save, so the other machine's board follows it: a checkpoint held for a batching
+    // window sat unpushed for as long as its session stayed quiet.
+    notes.spawn_sync();
     let mut head = format!(
-        "Saved effort {number}: status {}{}{}; committed{}.",
+        "Saved effort {number}: status {}{}{}; committed, push started.",
         file.prop("status").unwrap_or("?"),
         if cmd.body.is_some() {
             ", Current state replaced"
@@ -577,7 +572,6 @@ fn save_inner(
         } else {
             ""
         },
-        if state_changed { ", push started" } else { "" }
     );
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";
@@ -662,9 +656,7 @@ fn journal_inner(
         rebaseline: None,
     };
     notes.apply(&op)?;
-    if notes::now_ms() - notes.last_push_ms() > notes::PUSH_EVERY_MS {
-        notes.spawn_sync();
-    }
+    notes.spawn_sync();
     let mut head = format!("Journal line written for {day} and committed.");
     if matches!(pulled, Pull::Diverged(_)) {
         head += " Notes diverged from origin; resolve in the notes checkout when you can.";

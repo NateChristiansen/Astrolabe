@@ -463,6 +463,126 @@ fn the_board_is_served_fresh_on_localhost() {
     );
 }
 
+#[test]
+fn a_board_left_open_pulls_the_other_machines_saves() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::{Duration, Instant};
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    let mut child = Kill(
+        pc.command(&pc.notes, &["home", "--serve", "--port", "0"])
+            .env("ASTROLABE_HOME_IDLE_SECS", "60")
+            .env("ASTROLABE_HOME_PULL_SECS", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut url = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut url);
+        let _ = tx.send(url);
+    });
+    let url = rx
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap_or_else(|e| server_failed(&mut child.0, &format!("no server URL: {e}")));
+    let addr = url
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|u| u.strip_suffix('/'))
+        .unwrap_or_else(|| server_failed(&mut child.0, &format!("invalid server URL: {url:?}")))
+        .to_owned();
+    let arrived = || pc.notes.join(shelf("0001-smooth-ink.md")).exists();
+    let owner = pc.notes.join("knowledge/owner.md");
+    // A pull in flight resets the tree before it puts hand edits back: wait for the rebase
+    // to be gone and the edit to be back before looking.
+    let settled = || {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while (pc.notes.join(".git/rebase-merge").exists()
+            || std::fs::read_to_string(&owner).unwrap_or_default() != "OWNER-TEXT edited by hand")
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    // The other machine saves and pushes; with no page open here, nothing is fetched. The
+    // owner's seat is mid-edit meanwhile.
+    write(&owner, "OWNER-TEXT edited by hand");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!arrived(), "no page open, no pull");
+    // A page holding the stream: the save is pulled within the interval, and the page hears.
+    let mut events = std::net::TcpStream::connect(&addr).unwrap();
+    events
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    events
+        .write_all(format!("GET /events HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut heard = String::new();
+    let mut buf = [0u8; 1024];
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !(arrived() && heard.contains("event: changed")) && Instant::now() < deadline {
+        if let Ok(n) = events.read(&mut buf) {
+            heard.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+    }
+    if !arrived() {
+        server_failed(
+            &mut child.0,
+            &format!("the open board didn't pull the other machine's save: {heard}"),
+        );
+    }
+    assert!(heard.contains("event: changed"), "{heard}");
+    // The hand edit survived the pull and nothing was left stashed.
+    settled();
+    assert_eq!(
+        std::fs::read_to_string(&owner).unwrap(),
+        "OWNER-TEXT edited by hand"
+    );
+    assert!(git(&pc.notes, &["stash", "list"]).trim().is_empty());
+    // With nothing new on origin, later ticks fetch but leave the tree and HEAD alone.
+    let reflog = git(&pc.notes, &["reflog", "--format=%H"]);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(
+        git(&pc.notes, &["reflog", "--format=%H"]),
+        reflog,
+        "no rebase ran"
+    );
+    assert!(git(&pc.notes, &["status", "--porcelain"]).contains("owner.md"));
+    // The next save arrives too, and the hand edit survives it.
+    assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: which cap?\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let file = pc.notes.join(shelf("0001-smooth-ink.md"));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !std::fs::read_to_string(&file)
+        .unwrap_or_default()
+        .contains("which cap?")
+        && Instant::now() < deadline
+    {
+        let _ = events.read(&mut buf);
+    }
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("which cap?")
+    );
+    settled();
+    assert_eq!(
+        std::fs::read_to_string(&owner).unwrap(),
+        "OWNER-TEXT edited by hand"
+    );
+    drop(events);
+}
+
 fn server_failed(child: &mut std::process::Child, why: &str) -> ! {
     use std::io::Read;
     let _ = child.kill();

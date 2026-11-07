@@ -23,6 +23,22 @@ pub fn refresh(notes: &Notes) -> (Vec<String>, Pull) {
     result
 }
 
+/// The board server's pull while a page is open: what a pickup does (leftovers finished,
+/// then a pull), but skipped while a writer holds the lock, and with the tree left alone
+/// unless origin has something new. None when skipped.
+pub fn background_pull(notes: &Notes) -> Option<Pull> {
+    let _held = notes.try_lock()?;
+    let leftovers = notes.reconcile();
+    let result = if leftovers.is_empty() {
+        notes.pull_if_behind()
+    } else {
+        // Nothing moves under an unfinished write.
+        Pull::Offline("unfinished writes".to_owned())
+    };
+    refresh_views(notes);
+    Some(result)
+}
+
 pub fn sync(notes: &Notes) -> Result<String, String> {
     let result = notes.sync();
     if notes.take_changes()

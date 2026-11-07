@@ -40,7 +40,7 @@ Before writing, Astrolabe attempts to pull notes with a bounded wait. A pull tim
 
 If a pull brings in two efforts with the same number, the newer one is renumbered, its Decisions record the change, and its journal entries follow it.
 
-Pushes run in the background after state changes, periodically during activity, at session end, and at the next session start for pending work. `notes status` reports unpublished or diverged state; `notes sync` retries synchronization explicitly. These commands use the installed executable, as shown in the [command reference](commands.md#board-and-notes).
+Pushes run in the background after every save, and again at a turn end, session end or the next session start for anything still unpublished. While a board page is open, its server pulls once a minute and when a page loads, so a machine that's only being looked at still follows the others. That pull is skipped while a save holds the lock, and it only rebases when origin has new commits, so hand edits in the checkout aren't stashed when nothing came in. The server never pushes. `notes status` reports unpublished or diverged state; `notes sync` retries synchronization explicitly. These commands use the installed executable, as shown in the [command reference](commands.md#board-and-notes).
 
 The journal uses Git's union merge driver. Hidden entry metadata identifies the effort and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate effort entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 

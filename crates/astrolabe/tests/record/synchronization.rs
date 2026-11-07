@@ -276,12 +276,13 @@ fn recorded_backoff_skips_fetch_until_it_expires() {
 }
 
 #[test]
-fn a_quiet_session_still_pushes_and_a_new_wait_is_a_state_change() {
+fn every_save_asks_for_a_push_and_a_quiet_session_catches_up() {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
-    let _ = mac.sync_requested();
-    // Same status, a new question for the owner: the other machine must see it.
+    assert!(mac.sync_requested(), "a new effort asks for a push");
+    // A status change, a new question for the owner, and a plain checkpoint all ask, however
+    // recent the last push: the other machine's board follows each one.
     mac.set_last_push(0);
     assert!(mac.bash("s1", "astrolabe effort save --status blocked --waits-for \"owner: merge it\" <<'ASTROLABE'\nWaiting.\n\nNo choice yet.\n\nAsk.\nASTROLABE\n").1);
     assert!(mac.sync_requested(), "a status change asks for a push");
@@ -289,32 +290,24 @@ fn a_quiet_session_still_pushes_and_a_new_wait_is_a_state_change() {
     assert!(mac.bash("s1", "astrolabe effort save --waits-for \"owner: playtest it\" <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nPlaytest.\nASTROLABE\n").1);
     assert!(mac.sync_requested(), "a new waits-for asks for a push");
     mac.set_last_push(0);
-    assert!(mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nStill the playtest.\nASTROLABE\n").1);
-    assert!(
-        !mac.sync_requested(),
-        "a plain checkpoint inside the window waits"
-    );
-    // The session sits open with commits unpublished: a turn end inside the window does
-    // nothing, one past it pushes.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save <<'ASTROLABE'\nMerged.\n\nNo choice.\n\nStill the playtest.\nASTROLABE\n");
+    assert!(ok && out.contains("committed, push started"), "{out}");
+    assert!(mac.sync_requested(), "a plain checkpoint asks too");
+    mac.set_last_push(0);
+    let (out, ok) = mac.bash("s2", "astrolabe journal \"Tried the ink at two widths.\"");
+    assert!(ok, "{out}");
+    assert!(mac.sync_requested(), "a journal line asks too");
+    // Asked a moment ago: that one is still on its way, so the turn end doesn't ask.
     assert!(mac.stop("s1", false, false).is_none());
-    assert!(!mac.sync_requested());
-    mac.set_last_push(11 * 60 * 1000);
+    assert!(!mac.sync_requested(), "one ask at a time");
+    // The session sits open with commits unpublished (the save's push never landed): the
+    // next turn end asks again, however recent the last push.
     mac.forget_ask();
     assert!(mac.stop("s1", false, false).is_none());
     assert!(
         mac.sync_requested(),
-        "the Stop hook pushes once the window has passed"
+        "the Stop hook pushes what the save's push left"
     );
-    // Asked a moment ago: that one is still on its way, so the next turn end doesn't ask.
-    assert!(mac.stop("s1", false, false).is_none());
-    assert!(!mac.sync_requested(), "one ask at a time");
-    // A save's own ask counts the same.
-    mac.forget_ask();
-    assert!(mac.bash("s1", "astrolabe effort save --status active <<'ASTROLABE'\nBack on it.\n\nNo choice.\n\nMore.\nASTROLABE\n").1);
-    assert!(mac.sync_requested());
-    mac.set_last_push(11 * 60 * 1000);
-    assert!(mac.stop("s1", false, false).is_none());
-    assert!(!mac.sync_requested(), "the save just asked");
     // Backing off after a timed-out network call: no ask until it ends.
     mac.forget_ask();
     mac.set_sync("backoff_until_ms", (Machine::now_ms() + 60_000).into());

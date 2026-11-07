@@ -36,7 +36,7 @@ Check the property named in the error at the top of the effort note. Its repo mu
 
 ## Notes haven't reached another machine
 
-Ask the agent to check whether your notes have synced, or use the [notes sync commands](commands.md#board-and-notes). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
+An open board pulls other machines' saves about once a minute; a save that still hasn't shown up may not have been pushed from the machine that made it. Ask the agent to check whether your notes have synced, or use the [notes sync commands](commands.md#board-and-notes). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
 
 
 [Installation](install.md) · [Using Astrolabe](usage.md) · [Command reference](commands.md)
