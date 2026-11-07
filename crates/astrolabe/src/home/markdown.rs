@@ -35,6 +35,18 @@ pub(super) fn note_page(
             .trim_matches('"');
         (!value.is_empty() && value != "none").then(|| value.to_owned())
     };
+    // An effort that's part of an initiative links to its page on a line of its own,
+    // which stands in for the initiative's pill. The page is found the way the board
+    // finds it, by slug or title, so the two never disagree.
+    let part_of = prop("initiative").and_then(|name| {
+        let pages = crate::effort::initiative_catalog(root).ok()?;
+        let page = crate::effort::resolve_initiative(&pages, &name).ok()?;
+        Some(format!(
+            "<p class=\"part-of\">Part of <a href=\"/{}\">{} →</a></p>",
+            esc(&percent(&format!("initiatives/{}.md", page.slug))),
+            esc(&page.file.title)
+        ))
+    });
     // What the owner reads sits under the title; what the program keeps (the save's
     // branch, head and the like) is a small list of facts beside the outline.
     let mut pills = Vec::new();
@@ -49,6 +61,9 @@ pub(super) fn note_page(
         "waits_for",
     ] {
         let Some(value) = prop(key) else { continue };
+        if key == "initiative" && part_of.is_some() {
+            continue;
+        }
         let class = match key {
             "status" => format!(" status-{}", esc(&value)),
             _ => String::new(),
@@ -193,6 +208,7 @@ pub(super) fn note_page(
     } else {
         format!("<div class=\"props\">{}</div>", pills.join(""))
     };
+    let props = format!("{}{props}", part_of.unwrap_or_default());
     // The properties follow the title; a note without one starts with them.
     let rendered = match rendered.find("</h1>") {
         Some(i) => format!("{}{props}{}", &rendered[..i + 5], &rendered[i + 5..]),

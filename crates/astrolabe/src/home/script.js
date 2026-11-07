@@ -7,7 +7,7 @@ var sessionRead=function(k){try{return sessionStorage.getItem(k)}catch(e){return
 var sessionSave=function(k,v){try{sessionStorage.setItem(k,v)}catch(e){}};
 var root=document.documentElement,app=$('.app'),main=$('#main'),tree=$('#tree');
 var board=!!$('#board'),initialCrumb=$('#crumb').innerHTML;
-var views=['overview','efforts','journal','notes'];
+var views=['overview','efforts','initiatives','journal','notes'];
 var currentView=board?'overview':'note';
 var positions={},initialized=false;
 var scrollKey=function(view){return 'astrolabe-scroll:'+location.pathname+':'+view};
@@ -28,7 +28,7 @@ var setView=function(view,reset){
  if(initialized)rememberScroll();currentView=view;root.dataset.view=view;
  $('#content').hidden=view==='notes';$('#notes-browser').hidden=view!=='notes';
  document.querySelectorAll('.nav-link').forEach(function(a){if(a.dataset.view===(view==='note'?'notes':view))a.setAttribute('aria-current','page');else a.removeAttribute('aria-current')});
- $('#crumb').innerHTML=view==='note'?initialCrumb:'<b>'+({overview:'Overview',efforts:'Efforts',journal:'Journal',notes:'Notes'}[view])+'</b>';
+ $('#crumb').innerHTML=view==='note'?initialCrumb:'<b>'+({overview:'Overview',efforts:'Efforts',initiatives:'Initiatives',journal:'Journal',notes:'Notes'}[view])+'</b>';
  main.scrollTop=reset?0:(positions[view]??Number(sessionRead(scrollKey(view))||0));
  if(reset){positions[view]=0;sessionSave(scrollKey(view),'0')}
 };
@@ -80,7 +80,7 @@ if(!board){try{
  if(previous&&referrer&&referrer.origin===location.origin){
   var destination=new URL(previous.href,location.href),back=$('.back-link');
   if(back&&destination.origin===location.origin&&destination.pathname===referrer.pathname){
-   back.href=destination.href;back.textContent='← Back to '+({overview:'overview',efforts:'efforts',journal:'journal',notes:'notes',note:'previous note'}[previous.label]||'overview');
+   back.href=destination.href;back.textContent='← Back to '+({overview:'overview',efforts:'efforts',initiatives:'initiatives',journal:'journal',notes:'notes',note:'previous note'}[previous.label]||'overview');
    back.addEventListener('click',function(e){if(!e.metaKey&&!e.ctrlKey&&!e.shiftKey&&!e.altKey){e.preventDefault();history.back()}});
   }
  }

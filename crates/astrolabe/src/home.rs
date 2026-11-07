@@ -101,6 +101,9 @@ mod tests {
             ] {
                 assert!(!column.contains(absent), "{absent}: {column}");
             }
+            // A page's whole card opens it; a group without a page isn't a link.
+            assert_eq!(column.matches("<li class=\"ini linked\">").count(), 4);
+            assert_eq!(column.matches("<li class=\"ini\">").count(), 2);
             assert!(html.contains("<span class=\"pill tag\">Shared work</span>"));
             assert!(!html.contains("<span class=\"pill tag\">shared-work</span>"));
             let done = html.split("Done this fortnight").nth(1).unwrap();
@@ -110,6 +113,43 @@ mod tests {
             assert!(done.contains("efforts/0001-member.md"));
             assert!(!done.contains("Old work"));
         }
+    }
+
+    #[test]
+    fn an_effort_page_links_to_its_initiative_under_the_title() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let page = |initiative: &str| {
+            super::markdown::note_page(
+                &format!("---\nstatus: active\ninitiative: {initiative}\n---\n# 0042 Member\n"),
+                "efforts/0042-member.md",
+                &rows,
+                &notes.root,
+                NOW,
+                Look::default(),
+            )
+        };
+        let linked = page("shared-work");
+        assert!(
+            linked.contains(
+                "</h1><p class=\"part-of\">Part of <a href=\"/initiatives/shared-work.md\">Shared work →</a></p><div class=\"props\">"
+            ),
+            "{linked}"
+        );
+        assert!(!linked.contains("<i>initiative</i>"), "{linked}");
+        assert!(
+            page("\"[[shared-work]]\"").contains("<a href=\"/initiatives/shared-work.md\">"),
+            "a wikilink names the same page"
+        );
+        assert!(
+            page("Shared work").contains("<a href=\"/initiatives/shared-work.md\">"),
+            "so does its title"
+        );
+        // A legacy tag with no page keeps its pill and gets no link.
+        let legacy = page("loose-tools");
+        assert!(!legacy.contains("class=\"part-of\""), "{legacy}");
+        assert!(legacy.contains("<i>initiative</i>loose-tools"), "{legacy}");
+        std::fs::remove_dir_all(notes.root).unwrap();
     }
 
     #[test]

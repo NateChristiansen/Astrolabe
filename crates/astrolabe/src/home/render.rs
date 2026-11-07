@@ -267,7 +267,16 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                 None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
             }
         };
-        journal += &format!("<li>{num}<span>{}</span></li>\n", esc(line.text.as_str()));
+        // A line that names a page is a card: its link covers the whole line.
+        let linked = if num.contains("<a ") {
+            " class=\"linked\""
+        } else {
+            ""
+        };
+        journal += &format!(
+            "<li{linked}>{num}<span>{}</span></li>\n",
+            esc(line.text.as_str())
+        );
     }
     if journal.is_empty() {
         journal = "<li class=\"empty\">nothing yet today</li>\n".to_owned();
@@ -497,6 +506,7 @@ pub(super) fn shell(
     };
     let navigation = [("overview", "Overview", "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"),
         ("efforts", "Efforts", "m3 7 9-4 9 4-9 4z M3 12l9 4 9-4 M3 17l9 4 9-4"),
+        ("initiatives", "Initiatives", "M5 21V3 M5 4h12l-2.5 4.5L17 13H5"),
         ("journal", "Journal", "M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5"),
         ("notes", "Notes", "M3 7V4h6l3 3h9v13H3z")]
         .iter().map(|(view, label, path)| format!(r#"<a class="nav-link" data-view="{view}" href="{home}#{view}" aria-label="{label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg><span>{label}</span></a>"#)).collect::<String>();
@@ -689,7 +699,9 @@ fn initiative_html(
     };
     let percent = (100 * p.done).checked_div(p.total).unwrap_or(0);
     format!(
-        "<li class=\"ini\"><span>{title}</span><span class=\"num\">{counts}</span>{state}{edge}<span class=\"track\"><i style=\"width:{percent}%\"></i></span></li>\n"
+        "<li class=\"ini{}\"><span>{title}</span><span class=\"num\">{counts}</span>{state}{edge}<span class=\"track\"><i style=\"width:{percent}%\"></i></span></li>\n",
+        // A page's whole card opens it; a group without one has nowhere to go.
+        if has_page { " linked" } else { "" }
     )
 }
 
