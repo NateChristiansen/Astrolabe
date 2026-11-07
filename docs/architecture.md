@@ -67,7 +67,7 @@ The notes checkout is registered locally as `agent`. Target repos with remotes a
 
 ## Serving the board
 
-Session starts and notes changes ensure a local server is running. Starting it from the hooks saves the owner from configuring a separate startup service. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. The `home` command can set the port, open the browser or run the server in the foreground.
+Session starts and notes changes ensure a local server is running. Starting it from the hooks saves the owner from configuring a separate startup service. A lock keeps one server per machine. It normally listens at [localhost:4747](http://localhost:4747/), and stops after a day without a request. It also watches the program file it started from: once a new one sits there, it starts that program on the same port and exits, so an update reaches the board without a manual restart. The `home` command can set the port, open the browser or run the server in the foreground.
 
 The page receives change notifications and refreshes the board, tree or open note in place. It preserves the reader's scroll and navigation. The notes tree groups efforts and journal entries by month, newest first.
 

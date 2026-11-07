@@ -91,6 +91,28 @@ pub fn ensure_serving(notes: &Notes) -> Option<String> {
     Some(url(notes))
 }
 
+/// How often the server looks at the program file it was started from.
+pub(super) const PROGRAM_EVERY: Duration = Duration::from_secs(2);
+
+/// Passed to the server that takes over from one whose program was replaced, with the port
+/// the first was asked for: it waits for the first to let go instead of leaving.
+pub const HANDOVER_FLAG: &str = "--handover";
+
+/// How long a server taking over waits for the lock and the port.
+pub const HANDOVER_WAIT: Duration = Duration::from_secs(10);
+
+/// A program file's size, change time and, where there is one, file number, which an
+/// install's rename changes even when a build kept the size and time; None when the file
+/// isn't there, as mid-install.
+pub(super) fn stamp(path: &Path) -> Option<(u64, std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let number = std::os::unix::fs::MetadataExt::ino(&meta);
+    #[cfg(not(unix))]
+    let number = 0;
+    Some((meta.len(), meta.modified().ok()?, number))
+}
+
 /// Binds the board's localhost listener; the URL is printed before serving starts.
 pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
     let listener = TcpListener::bind(("127.0.0.1", port))
@@ -116,10 +138,14 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
         .unwrap_or(IDLE_SECS);
     let seen = Arc::clone(&last);
     let watched = Notes::new(notes.root.clone(), notes.state.clone());
+    // Taken now, before an install can rename this process's file aside.
+    let program = std::env::current_exe().ok();
+    let started = program.as_deref().and_then(stamp);
     std::thread::spawn(move || {
         // The lock lives as long as this thread, which is as long as the process.
         let _hold = hold;
-        let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000));
+        let every = Duration::from_millis((idle * 1000 / 2).clamp(100, 60_000)).min(PROGRAM_EVERY);
+        let mut pending = None;
         loop {
             std::thread::sleep(every);
             let quiet = notes::now_ms() - seen.load(Ordering::SeqCst);
@@ -129,6 +155,34 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
             if moved || quiet >= (idle * 1000) as i64 {
                 std::process::exit(0);
             }
+            // A new program in this one's place: the same stamp twice running, so a file
+            // still being written isn't started, then the new one takes over on this port.
+            let Some(path) = program.as_deref() else {
+                continue;
+            };
+            let now = stamp(path);
+            if now.is_none() || now == started {
+                pending = None;
+                continue;
+            }
+            if pending != now {
+                pending = now;
+                continue;
+            }
+            let (port, requested) = (port.to_string(), requested.to_string());
+            watched.spawn_program(
+                path,
+                &[
+                    "home",
+                    "--serve",
+                    "--port",
+                    &port,
+                    HANDOVER_FLAG,
+                    &requested,
+                ],
+                "home.log",
+            );
+            std::process::exit(0);
         }
     });
     for stream in listener.incoming() {

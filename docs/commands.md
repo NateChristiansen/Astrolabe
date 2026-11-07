@@ -66,7 +66,7 @@ It runs the published installer, which checks the download, keeps a backup and r
 
 ### `home`
 
-Write the standalone `home.html`, ensure the local board server is running, and print its path and address. The plugin starts the server automatically during normal use.
+Write the standalone `home.html`, ensure the local board server is running, and print its path and address. The plugin starts the server automatically during normal use. When the program file is replaced, as by `update` or `install`, the running server starts the new program on the same port within a few seconds and exits, and an open board reloads itself.
 
 | Option | Effect |
 | --- | --- |

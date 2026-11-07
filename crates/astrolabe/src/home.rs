@@ -12,7 +12,7 @@ mod server;
 mod settings;
 
 pub use render::render;
-pub use server::{ensure_serving, hold, listen, serve};
+pub use server::{HANDOVER_FLAG, HANDOVER_WAIT, ensure_serving, hold, listen, serve};
 pub use settings::{Look, Palette, SERVE_PORT, Theme, look, port, set_look, set_port, url};
 
 pub const FILE: &str = "home.html";

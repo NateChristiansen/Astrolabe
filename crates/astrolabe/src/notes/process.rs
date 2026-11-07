@@ -25,6 +25,12 @@ impl Notes {
         let Ok(exe) = std::env::current_exe() else {
             return false;
         };
+        self.spawn_program(&exe, args, log)
+    }
+
+    /// `spawn_detached` with the program named: the board server hands over to the file it
+    /// was started from, which is no longer this process's own once an install renamed it.
+    pub fn spawn_program(&self, exe: &std::path::Path, args: &[&str], log: &str) -> bool {
         let log = self.state.join(log);
         let out = File::options().create(true).append(true).open(&log).ok();
         let err = File::options().create(true).append(true).open(&log).ok();
