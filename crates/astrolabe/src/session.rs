@@ -66,6 +66,9 @@ pub struct SessionState {
     pub token: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub delivered: Field<String>,
+    /// When this exact note version was delivered; older replies cannot answer its wait.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub delivered_ms: Field<i64>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub baseline: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
@@ -100,6 +103,7 @@ impl SessionState {
     }
     pub fn saved(&mut self, delivered: String, baseline: Option<String>, at_ms: i64) {
         self.delivered.set(delivered);
+        self.delivered_ms.set(at_ms);
         self.baseline = baseline
             .map(Field::Known)
             .unwrap_or(Field::Other(Value::Null));

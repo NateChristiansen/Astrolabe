@@ -150,6 +150,7 @@ fn close_inner(
         disposed.push_str(disposition.trim());
         disposed.push('\n');
         let op = Op {
+            reply_after_ms: None,
             key: key.to_owned(),
             lesson_close: Some(LessonClose {
                 path: rel.to_owned(),

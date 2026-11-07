@@ -249,6 +249,7 @@ fn new_inner(
         at_ms: notes::now_ms().into(),
         token: token.into(),
         delivered: notes::content_hash(&text).into(),
+        delivered_ms: notes::now_ms().into(),
         baseline: facts
             .as_ref()
             .map(|f| Field::Known(f.fingerprint.clone()))
@@ -265,6 +266,7 @@ fn new_inner(
         ..Default::default()
     };
     let op = Op {
+        reply_after_ms: None,
         lesson_close: None,
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
@@ -469,6 +471,7 @@ fn initiative_inner(
     files.push((page_rel.clone(), page.render(title, &repo, &day, &filed)));
     let count = filed.len();
     let op = Op {
+        reply_after_ms: None,
         lesson_close: None,
         key: key.to_owned(),
         files,
@@ -701,6 +704,7 @@ fn save_inner(
     if delivered != on_disk_hash {
         // Delivered anew, so the next save from this text goes through.
         state.delivered.set(on_disk_hash.clone());
+        state.delivered_ms.set(notes::now_ms());
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
         let pieces = file
             .pieces()
@@ -791,6 +795,7 @@ fn save_inner(
         _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
     };
     let op = Op {
+        reply_after_ms: None,
         lesson_close: None,
         key: key.to_owned(),
         files: vec![(rel.clone(), text)],
@@ -946,6 +951,7 @@ fn save_target(
         _ => format!("{target:04}: checkpoint"),
     };
     let op = Op {
+        reply_after_ms: None,
         lesson_close: None,
         key: key.to_owned(),
         files: vec![(rel, text)],
@@ -1090,6 +1096,7 @@ fn journal_inner(
     let pulled = crate::application::pull(&notes);
     let (day, _) = notes::local_day_time();
     let op = Op {
+        reply_after_ms: None,
         lesson_close: None,
         key: key.to_owned(),
         files: Vec::new(),

@@ -207,7 +207,13 @@ pub fn gate(event: &str) {
                         state.effort.as_deref().unwrap_or_default(),
                         &why,
                     ))),
-                    None => guard(),
+                    None => {
+                        if !child {
+                            let _ =
+                                std::panic::catch_unwind(|| crate::reply::check(&input, session));
+                        }
+                        guard()
+                    }
                 },
                 Err(why) => hook::say(&hook::deny(&format!(
                     "Astrolabe is on for this session but can't read its state ({why}), so it can't judge this command. Repair: run `astrolabe activate --off` (the guard keeps running), then load the effort again."
@@ -222,6 +228,9 @@ pub fn gate(event: &str) {
             }
         }
         "stop" if !child => {
+            if let Some(session) = session {
+                let _ = std::panic::catch_unwind(|| crate::reply::check(&input, session));
+            }
             let answer = std::panic::catch_unwind(|| crate::nudge::at_stop(&input, session?));
             if let Ok(Some(answer)) = answer {
                 hook::say(&answer);
@@ -545,7 +554,7 @@ pub(super) fn fallback_block(dir: &Path, session: &str) -> PathBuf {
 }
 
 /// Why this session's shell commands are blocked, if a reload failed.
-pub(super) fn block_reason(dir: &Path, state: &SessionState, session: &str) -> Option<String> {
+pub(crate) fn block_reason(dir: &Path, state: &SessionState, session: &str) -> Option<String> {
     if let Some(why) = state.reload_failed.as_deref() {
         return Some(why.to_owned());
     }

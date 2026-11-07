@@ -318,8 +318,31 @@ impl Notes {
             .as_deref()
             .map(|cwd| RepoFacts::read(cwd).map(|f| f.fingerprint));
         for (path, state) in &op.states {
-            let mut state = state.clone();
-            if let Some(print) = &print {
+            let mut rebaseline = true;
+            let mut state = if let Some(after) = op.reply_after_ms {
+                // Other tools can mark work or switch efforts while git commits. A reply
+                // patches the latest matching checkpoint, never restores an old snapshot.
+                let Some(mut current) = std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                else {
+                    continue;
+                };
+                if current["session"] != state["session"]
+                    || current["effort"] != state["effort"]
+                    || current["delivered"].as_str() != op.base.as_deref()
+                    || current["delivered_ms"].as_i64() != Some(after)
+                {
+                    continue;
+                }
+                rebaseline = current["baseline"] == state["baseline"];
+                current["delivered"] = state["delivered"].clone();
+                current["delivered_ms"] = state["delivered_ms"].clone();
+                current
+            } else {
+                state.clone()
+            };
+            if rebaseline && let Some(print) = &print {
                 state["baseline"] = print.clone().into();
             }
             write_text(path, &state.to_string())?;

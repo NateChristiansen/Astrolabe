@@ -216,7 +216,9 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 
 When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
 
-A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked, so the first save after the owner answers takes the effort out of Needs you. Give `--waits-for` again on a save made while still waiting. For example:
+A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Unsupported or ambiguous transcripts leave the wait alone.
+
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
 
 ```sh
 astrolabe effort save --status blocked --waits-for "owner: try upload retries"

@@ -44,6 +44,10 @@ pub struct Op {
     /// Two ordered lesson commits, recovered through the same intent as a save.
     #[serde(default)]
     pub lesson_close: Option<LessonClose>,
+    /// A reply only advances the matching delivery checkpoint, preserving intervening
+    /// session edits. Persist the expected time so recovery follows the same rule.
+    #[serde(default)]
+    pub reply_after_ms: Option<i64>,
     /// Random, minted by the hook; reused for a retry of the same tool call.
     pub key: String,
     /// Relative path and full text, replaced whole.
@@ -243,6 +247,7 @@ impl Notes {
             }
         }
         let mut op = Op {
+            reply_after_ms: None,
             lesson_close: None,
             key: key.clone(),
             files,
