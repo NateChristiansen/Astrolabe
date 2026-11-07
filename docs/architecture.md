@@ -6,7 +6,7 @@ This guide explains how the plugin, notes and local board work together. For nor
 
 The installed program's `on` and `off` commands control one machine switch. When off, plugin hooks do nothing. When on, new sessions receive the owner note, the Rules section of the voice note, recording instructions, and a suggestion of the current repo's active efforts. Shell commands are guarded even before an effort is loaded.
 
-Loading an effort adds its settings and current state, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
+Loading an effort adds its settings, current state, Pieces and linked initiative title when present, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
 
 Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 
@@ -28,9 +28,11 @@ A session on an effort is named after it, as the effort's number and title ("83 
 
 For a change, plan or investigation that needs a lasting record, the agent runs `astrolabe effort new` with a title and a goal. The program creates and commits the note, assigns its number and binds it to the session. New work defaults to `check in at plan` involvement and `edit` authority unless the owner specifies otherwise.
 
-The agent saves a short current state, decisions, an optional plan and a checklist of pieces. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
+The agent saves a short current state, decisions and an optional plan. An approved plan with several landable steps includes a Pieces checklist of independently checkable outcomes; a one-step fix or spike needs none. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
 
-A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page under `initiatives/` and every effort it names as proposed, grouped by the `initiative` property the board reads, in one commit. Pieces stay for one change. An initiative may run as an orchestrator with workers when the owner picks that: each worker owns its effort's record, and the orchestrator marks each effort done by number after review and writes one journal line a day for the initiative, so ten workers don't make ten lines.
+A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page alone, with new proposed efforts, or around existing efforts. Membership is an effort's `initiative` property naming the page; a planning-only spike stays outside and is linked as provenance. Progress is derived from member statuses, never a checklist of efforts. The orchestrator binds with `activate --initiative <slug>` and saves its state, decisions, owner questions and daily journal line on that page. Workers save only their effort and journal nothing; their briefs and reports live under `.agents/<initiative slug>/` in the notes.
+
+Efforts can be proposed, ready, active, review, blocked, done or abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment. Status changes to active, review, blocked, done or abandoned require Current state. After `effort read <number>`, a dispatcher can save that effort's body and ticks by number with stale writes refused, including across repos sharing an initiative. Initiatives have no review status and close explicitly with an acceptance sentence and no open members.
 
 Recording commands also run through the pre-command hook. The hook can write to the separate notes checkout even when the app's tool sandbox cannot. Without interception, the executable reports an already-recorded result, an unfinished write, or that nothing was recorded; running it directly doesn't create or save an effort.
 
@@ -38,7 +40,7 @@ The Stop hook compares the repo's HEAD, diff and untracked contents with the las
 
 The pre-command and Stop hooks silently check for a new human reply when their bound effort has an owner wait. They read at most the last 64 KiB of the provider transcript (plus a bounded 64 KiB session header for Codex), requiring explicit human provenance and the original message time after delivery of the current note version. Claude queued replies use their original timestamp. Background messages, stale replies, other sessions and workers cannot clear the wait. Missing or changed transcript formats leave it unchanged; the next ordinary save remains the fallback. No transcript text enters model context.
 
-The automatic transition clears only `waits_for`, changes active/blocked to active, and updates the note timestamp. It preserves progress text, journal and save-nudge bookkeeping. It uses the existing local write lock and durable intent, checks the delivered note hash, refreshes the board, and syncs in the background. It skips busy locks and pending recovery rather than delaying a tool. Unlike explicit saves it does not fetch before writing; remote conflicts still use the normal sync protections. A reply is activity, not approval.
+The automatic transition clears only `waits_for`, changes active/blocked to active (review efforts stay untouched), and updates the note timestamp. It preserves progress text, journal and save-nudge bookkeeping. It uses the existing local write lock and durable intent, checks the delivered note hash, refreshes the board, and syncs in the background. It skips busy locks and pending recovery rather than delaying a tool. Unlike explicit saves it does not fetch before writing; remote conflicts still use the normal sync protections. A reply is activity, not approval.
 
 ## Synchronization and recovery
 
@@ -50,7 +52,7 @@ If a pull brings in two efforts with the same number, the newer one is renumbere
 
 Pushes run in the background after every save, and again at a turn end, session end or the next session start for anything still unpublished. While a board page is open, its server pulls once a minute and when a page loads, so a machine that's only being looked at still follows the others. That pull is skipped while a save holds the lock, and it only rebases when origin has new commits, so hand edits in the checkout aren't stashed when nothing came in. The server never pushes. `notes status` reports unpublished or diverged state; `notes sync` retries synchronization explicitly. These commands use the installed executable, as shown in the [command reference](commands.md#board-and-notes).
 
-The journal uses Git's union merge driver. Hidden entry metadata identifies the effort and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate effort entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
+The journal uses Git's union merge driver. Hidden entry metadata identifies the effort or initiative and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 
 When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/`, `journal/` and `initiatives/`, plus `.gitattributes`, including hand edits there. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
 
@@ -64,7 +66,7 @@ Personal content lives in the notes checkout and is read at runtime:
 - `journal/<year>/<month>/<day>.md`: the owner's history, written by agents rather than generated from tool activity.
 - `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it, so unreviewed observations don't become standing instructions. Triaged entries are deleted.
 - `drafts/`: text waiting for the owner to post or decide on. The board counts it; nothing delivers it to a session. Closed drafts are deleted.
-- `initiatives/`: notes for groups of related efforts.
+- `initiatives/`: initiative records; the board reads their members from effort frontmatter.
 - `.agents/`: material agents write for each other, hidden behind the board's dot-folder toggle.
 
 The effort format is fixed by the program; there is no user-editable effort template.

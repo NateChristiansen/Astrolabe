@@ -10,7 +10,7 @@ Open a session in your project and ask for work as usual:
 
 The agent records the work in an **effort**. It keeps that note updated with progress, decisions and what comes next, and adds a short account of what changed to your journal.
 
-A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files its page and all of its efforts in one step, and the board groups them under its name. You can run those efforts one at a time, or ask an agent to orchestrate them through workers.
+A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files a page with new or existing efforts, and the board derives progress from their statuses. You can run those efforts one at a time, or ask an agent to orchestrate them through workers. The orchestrator keeps its state, decisions, questions and daily journal line on the page; workers keep their own effort records. A planning-only effort stays linked as background, outside the members.
 
 ## Choose how the agent works
 
@@ -28,7 +28,7 @@ For example:
 
 > Fix the broken links. Work autonomously and keep the changes local.
 
-The agent records these choices with the effort, so they carry over when you resume it.
+The agent records these choices with the effort, so they carry over when you resume it. An approved plan with several steps includes a checklist of pieces. Built and checked work waits in review until review, acceptance or landing; blocked work needs something resolved before it can continue.
 
 ## See where things stand
 

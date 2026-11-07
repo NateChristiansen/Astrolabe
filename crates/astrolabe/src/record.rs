@@ -384,10 +384,9 @@ fn effort_note(
     file
 }
 
-/// `astrolabe initiative new`, in the hook: the page and every effort it names, filed as
-/// proposed under it in one commit, so a plan that names ten efforts is one command and not
-/// twenty turns. The session's own effort stays bound: the spike that planned them is where
-/// the plan was approved, and it closes as their record.
+/// `astrolabe initiative new`, in the hook: file a page alone, with new proposed efforts or
+/// around existing efforts in one commit. The session's binding stays unchanged; a
+/// planning-only spike closes as provenance linked from the page, outside its membership.
 pub fn initiative(
     cmd: &EffortCommand,
     key: &str,
@@ -605,7 +604,7 @@ fn initiative_inner(
         "joined"
     };
     let mut text = format!(
-        "Initiative {title:?} filed as {page_rel} with {count} efforts: {count} {action}; {saved}.\n{}\n{}\nActivate it with `astrolabe activate --initiative {page_slug}`.",
+        "Initiative {title:?} filed as {page_rel} with {count} efforts: {count} {action}; {saved}.\n{}\n{}\nActivate it with `astrolabe activate --initiative {page_slug}`. A planning-only effort closes without --initiative; the page links it as provenance.",
         lines.join("\n"),
         match bound {
             Some(binding) => format!("This session stays on {binding}; its binding is unchanged."),

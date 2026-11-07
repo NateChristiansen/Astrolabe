@@ -122,7 +122,7 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | Command | Result |
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
-| `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and marks the effort done with `effort save --effort <number>`. |
+| `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and, after `effort read <number>`, marks it done with `effort save --effort <number> --status done` and a Current state body. |
 | `astrolabe activate --initiative <slug>` | Bind to an initiative page. A quoted title also resolves; workers and subagents cannot bind. Missing involvement and authority default to `check in at plan` and `edit`. |
 | `astrolabe activate --status` | Show the loaded effort or initiative and this session's guard proof. |
 | `astrolabe activate --off` | Unload the effort or initiative; the machine switch and guard stay on. |
@@ -187,7 +187,9 @@ ASTROLABE
 | `--involvement "<value>"` | Applied to the page and every new effort; default `check in at plan`. |
 | `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
-The existing session binding stays unchanged. No journal line is written by filing. The reply gives the activation command and actual commit/sync outcome. A planning spike can remain provenance without joining the initiative.
+The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.agents/<initiative slug>/` in the notes.
+
+The existing session binding stays unchanged. No journal line is written by filing. The reply gives the activation command and actual commit/sync outcome. A planning-only spike closes without `--initiative`; the page links it as provenance.
 
 Bind with `astrolabe activate --initiative <slug>` and save with `astrolabe effort save`. That save replaces Current state, appends dated Decisions, and accepts `--status`, `--waits-for`, `--reason` and `--journal`. The page appears in Needs you from an `owner:` wait. Its journal line is keyed by slug in the distinct `initiative:<slug>` namespace and replaces the previous line for the day, including after a merge. Initiative statuses are `proposed`, `ready`, `active`, `blocked`, `done` and `abandoned`. Done needs a nonempty acceptance statement in the body and every member done or abandoned; unreadable member records prevent closure. Pieces, ticks, plan replacement and initiative membership are unavailable on the page itself.
 
@@ -245,7 +247,7 @@ Active again after the upload check.
 ASTROLABE
 ```
 
-File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
+Pieces come with an approved plan that has more than one landable step, one independently checkable outcome per line. A one-step fix or spike needs none. A tick means its outcome is met, which can be on a branch; if landing is a deliverable, record it as a piece. File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
 
 ```markdown
 - [x] Keep the upload selection

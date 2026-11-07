@@ -390,15 +390,50 @@ fn the_session_text_offers_initiatives_and_the_orchestrator_pattern() {
     let (loaded, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok, "{loaded}");
     for text in [
-        "Pieces are for one change",
+        "Pieces come with the approved plan",
         "A plan that names efforts ends in an initiative",
         "`astrolabe initiative new --title \"<name>\"`",
-        "An initiative may run as orchestrator and workers when the owner picks it",
-        "`astrolabe effort save --effort <n> --status done`",
+        "`astrolabe activate --initiative <slug>`",
+        "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
+        "A planning-only spike closes without --initiative",
+        "Progress comes from member statuses, never a checklist of efforts",
+        "unless it stays blocked or in review",
+        "`.agents/<initiative slug>/`",
     ] {
         assert!(loaded.contains(text), "{text}\n{loaded}");
     }
     assert!(!loaded.contains("not as efforts of their own"), "{loaded}");
+}
+
+#[test]
+fn activation_delivers_pieces_and_the_linked_initiative_title_beside_current_state() {
+    let f = Fixture::new();
+    write(
+        &f.notes().join("initiatives/testing.md"),
+        "---\nrepo: demo\nstatus: active\n---\n# Testing together\n\n## Current state\n\nINITIATIVE-STATE-NOT-DELIVERED\n",
+    );
+    for membership in ["testing", "Testing together", "[[testing]]"] {
+        let effort = EFFORT.replace("[[testing]]", membership)
+            + "\n## Pieces\n\n- [x] Build the example\n- [ ] Land the example\n\n## Plan\n\nPLAN-NOT-DELIVERED\n";
+        write(&f.notes().join("efforts/0070-demo.md"), &effort);
+        let (loaded, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+        assert!(ok, "{loaded}");
+        for text in [
+            "EFFORT-70 goal.",
+            "--- efforts/0070-demo.md, Pieces",
+            "- [x] Build the example\n- [ ] Land the example",
+            "[Testing together](initiatives/testing.md)",
+        ] {
+            assert!(loaded.contains(text), "{text}\n{loaded}");
+        }
+        for text in [
+            "NOT-DELIVERED",
+            "INITIATIVE-STATE-NOT-DELIVERED",
+            "PLAN-NOT-DELIVERED",
+        ] {
+            assert!(!loaded.contains(text), "{text}\n{loaded}");
+        }
+    }
 }
 
 #[path = "activate/allow.rs"]
