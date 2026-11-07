@@ -84,12 +84,10 @@ mod tests {
                 "A legacy purpose.",
                 "no members yet",
                 "all members abandoned",
-                "unfiled work <span class=\"pill\">no page</span>",
+                "Unfiled work <span class=\"pill\">no page</span>",
                 "1 of 3 done · 1 blocked · 1 need you",
                 "loose-tools <span class=\"pill\">no page</span>",
                 "0 of 1 done · 1 to start",
-                "discarded experiment <span class=\"pill\">no page</span>",
-                "0 of 0 done · 1 abandoned",
             ] {
                 assert!(column.contains(expected), "{expected}: {column}");
             }
@@ -99,6 +97,7 @@ mod tests {
                 "not the summary",
                 "Accepted work",
                 "Abandoned page",
+                "Discarded experiment",
             ] {
                 assert!(!column.contains(absent), "{absent}: {column}");
             }
@@ -111,6 +110,38 @@ mod tests {
             assert!(done.contains("efforts/0001-member.md"));
             assert!(!done.contains("Old work"));
         }
+    }
+
+    #[test]
+    fn done_pages_keep_priority_order_and_distinct_persistent_keys() {
+        let notes = crate::board::initiative_fixture();
+        let mut rows = crate::board::rows_in(&notes, None, true);
+        let high = rows
+            .efforts
+            .iter_mut()
+            .find(|r| r.number == Some(1))
+            .unwrap();
+        high.priority = Some("high".into());
+        high.updated = Some("2026-11-01T12:00-07:00".into());
+        let second = rows
+            .initiatives
+            .iter_mut()
+            .find(|i| i.page.title.as_deref() == Some("Old work"))
+            .unwrap();
+        second.page.updated = Some("2026-11-04T12:00-07:00".into());
+        let html = board_html(&rows, &notes.root, NOW, Links::Served);
+        let done = html.split("Done this fortnight").nth(1).unwrap();
+        assert!(
+            done.find("data-n=\"1\"").unwrap()
+                < done
+                    .find("data-n=\"initiatives/accepted-work.md\"")
+                    .unwrap()
+        );
+        for path in ["initiatives/accepted-work.md", "initiatives/old-work.md"] {
+            assert_eq!(done.matches(&format!("data-n=\"{path}\"")).count(), 1);
+        }
+        assert!(!done.contains("data-n=\"0\""));
+        std::fs::remove_dir_all(notes.root).unwrap();
     }
 
     const NOW: i64 = 1_793_916_000_000; // 2026-11-05T15:00-07:00

@@ -289,20 +289,17 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
             esc(row.title.as_deref().unwrap_or_default())
         );
-        initiative_lines += &initiative_html(
-            &title,
-            row.state.as_deref(),
-            &initiative.progress,
-            true,
-            initiative.counts_unavailable,
-        );
+        initiative_lines +=
+            &initiative_html(&title, row.state.as_deref(), &initiative.progress, true);
     }
-    for (name, progress) in &rows.legacy_initiatives {
+    for group in rows.legacy_initiatives.values() {
         initiative_lines += &initiative_html(
-            &format!("{} <span class=\"pill\">no page</span>", esc(name)),
+            &format!(
+                "{} <span class=\"pill\">no page</span>",
+                esc(tag(&group.name))
+            ),
             None,
-            progress,
-            false,
+            &group.progress,
             false,
         );
     }
@@ -329,7 +326,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         })
         .collect();
     columns[5].extend(closed_pages.iter());
-    columns[5].sort_by_key(|c| -c.updated_ms.unwrap_or(0));
+    columns[5].sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     let done = &columns[5];
     board += &format!(
         "<section class=\"col done\"><details data-persist=\"closed-work\"><summary>Done this fortnight <span class=\"n\">{}</span></summary>\n{}</details></section>\n",
@@ -657,13 +654,7 @@ fn initiative_html(
     state: Option<&str>,
     p: &crate::board::InitiativeProgress,
     has_page: bool,
-    counts_unavailable: bool,
 ) -> String {
-    if counts_unavailable {
-        return format!(
-            "<li class=\"ini\"><span>{title}</span><p>member counts unavailable</p></li>\n"
-        );
-    }
     let mut counts = format!("{} of {} done", p.done, p.total);
     for (count, label) in [
         (p.review, "in review"),
@@ -726,7 +717,11 @@ pub(super) fn done_html(card: &Card, root: &Path, now_ms: i64, links: Links) -> 
     format!(
         "<li class=\"{}\" data-n=\"{}\"><svg class=\"tick\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M5 12l5 5L20 7\"/></svg><a href=\"{}\"><span class=\"num\">{}</span><span class=\"t\">{}</span></a>{repo}{age}</li>\n",
         esc(card.status()),
-        card.row.number.unwrap_or(0),
+        esc(&card
+            .row
+            .number
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| card.row.file.clone().unwrap_or_default())),
         esc(&href),
         card.row
             .number

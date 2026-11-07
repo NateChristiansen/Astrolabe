@@ -10,7 +10,7 @@ pub struct BoardData {
     pub efforts: Vec<EffortRow>,
     pub initiative_attention: Vec<EffortRow>,
     pub initiatives: Vec<InitiativeRow>,
-    pub legacy_initiatives: std::collections::BTreeMap<String, InitiativeProgress>,
+    pub legacy_initiatives: std::collections::BTreeMap<String, LegacyInitiative>,
     pub initiative_titles: std::collections::BTreeMap<String, String>,
     pub today: String,
     pub journal: String,
@@ -61,7 +61,13 @@ pub struct Lesson {
 pub struct InitiativeRow {
     pub page: EffortRow,
     pub progress: InitiativeProgress,
-    pub counts_unavailable: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LegacyInitiative {
+    pub name: String,
+    pub progress: InitiativeProgress,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,20 +108,38 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         warnings.push(error);
         Vec::new()
     });
-    let mut legacy_initiatives: std::collections::BTreeMap<String, InitiativeProgress> =
+    let mut legacy_initiatives: std::collections::BTreeMap<String, LegacyInitiative> =
+        Default::default();
+    let mut page_progress: std::collections::BTreeMap<String, InitiativeProgress> =
         Default::default();
     for (_, rel) in notes.numbers() {
         let path = notes.root.join(&rel);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                warnings.push(format!("{rel}: {error}"));
+                continue;
+            }
         };
-        let Ok(file) = EffortFile::parse(&text) else {
-            continue;
+        let file = match EffortFile::parse(&text) {
+            Ok(file) => file,
+            Err(error) => {
+                warnings.push(format!("{rel}: {error}"));
+                continue;
+            }
         };
         let status = file.prop("status").unwrap_or("");
         let needs_owner = file
             .prop("waits_for")
             .is_some_and(|w| w.starts_with("owner:"));
+        let membership = file.prop("initiative").filter(|name| !name.is_empty());
+        let page = membership.and_then(|name| crate::effort::resolve_initiative(&pages, name).ok());
+        if let Some(page) = page {
+            page_progress
+                .entry(page.slug.clone())
+                .or_default()
+                .add(status, needs_owner);
+        }
         if let Some(r) = repo
             && !file
                 .prop("repo")
@@ -123,12 +147,16 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         {
             continue;
         }
-        if let Some(name) = file.prop("initiative").filter(|name| !name.is_empty())
-            && crate::effort::resolve_initiative(&pages, name).is_err()
+        if let Some(name) = membership
+            && page.is_none()
         {
             legacy_initiatives
                 .entry(crate::effort::initiative_name(name))
-                .or_default()
+                .or_insert_with(|| LegacyInitiative {
+                    name: name.to_owned(),
+                    ..Default::default()
+                })
+                .progress
                 .add(status, needs_owner);
         }
         if !all && (status == "done" || status == "abandoned") {
@@ -147,7 +175,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
                 .map(|(done, total)| Pieces { done, total }),
             priority: file.prop("priority").map(str::to_owned),
             initiative: file.prop("initiative").map(str::to_owned),
-            initiative_title: None,
+            initiative_title: page.map(|page| page.file.title.clone()),
             repo: file.prop("repo").map(str::to_owned),
             waits_for: file.prop("waits_for").map(str::to_owned),
             updated: file.prop("updated").map(str::to_owned),
@@ -160,13 +188,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     let mut initiative_attention = Vec::new();
     let mut initiative_titles = std::collections::BTreeMap::new();
     let mut initiatives = Vec::new();
-    for row in &mut rows {
-        row.initiative_title = row
-            .initiative
-            .as_deref()
-            .and_then(|name| crate::effort::resolve_initiative(&pages, name).ok())
-            .map(|page| page.file.title.clone());
-    }
+    legacy_initiatives.retain(|_, group| group.progress.total > group.progress.done);
     for page in &pages {
         let file = &page.file;
         initiative_titles.insert(page.slug.clone(), file.title.clone());
@@ -180,24 +202,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         let needs_owner = file
             .prop("waits_for")
             .is_some_and(|w| w.starts_with("owner:"));
-        let mut progress = InitiativeProgress::default();
-        let mut counts_unavailable = false;
-        match crate::effort::initiative_members(&notes.root, page) {
-            Ok(members) => {
-                for (_, member) in members {
-                    progress.add(
-                        member.prop("status").unwrap_or(""),
-                        member
-                            .prop("waits_for")
-                            .is_some_and(|w| w.starts_with("owner:")),
-                    );
-                }
-            }
-            Err(error) => {
-                counts_unavailable = true;
-                warnings.push(error);
-            }
-        }
+        let mut progress = page_progress.remove(&page.slug).unwrap_or_default();
         progress.need_you += usize::from(needs_owner);
         let row = EffortRow {
             title: Some(file.title.clone()),
@@ -206,23 +211,10 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             repo: file.prop("repo").map(str::to_owned),
             waits_for: file.prop("waits_for").map(str::to_owned),
             needs_owner,
-            state: file.first_paragraph().map(str::to_owned).or_else(|| {
-                file.other
-                    .iter()
-                    .find(|(heading, _)| heading == "Purpose")
-                    .map(|(_, body)| body.trim().to_owned())
-                    .or_else(|| {
-                        // Legacy pages put their purpose between the title and first section.
-                        let text = page.text.replace("\r\n", "\n");
-                        let mut lines = text.lines().skip_while(|line| !line.starts_with("# "));
-                        lines.next();
-                        let purpose = lines
-                            .take_while(|line| !line.starts_with("## "))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (!purpose.trim().is_empty()).then(|| purpose.trim().to_owned())
-                    })
-            }),
+            state: file
+                .first_paragraph()
+                .map(str::to_owned)
+                .or_else(|| file.purpose()),
             next: file.last_paragraph().map(str::to_owned),
             updated: file.prop("updated").map(str::to_owned),
             ..Default::default()
@@ -233,7 +225,6 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         initiatives.push(InitiativeRow {
             page: row,
             progress,
-            counts_unavailable,
         });
     }
     let (day, _) = notes::local_day_time();
@@ -446,6 +437,89 @@ mod initiative_tests {
     use super::*;
 
     #[test]
+    fn legacy_groups_keep_first_spelling_and_only_survive_with_open_members() {
+        let notes = initiative_fixture();
+        for (n, name, status) in [
+            (20, "[[Mixed Case]]", "done"),
+            (21, "mixed case", "abandoned"),
+            (22, "MIXED CASE", "active"),
+            (23, "Closed group", "done"),
+            (24, "closed group", "abandoned"),
+        ] {
+            std::fs::write(
+                notes.root.join(format!("efforts/{n:04}-legacy.md")),
+                format!(
+                    "---\ninitiative: {name}\nstatus: {status}\nrepo: demo\n---\n# {n:04} Legacy\n"
+                ),
+            )
+            .unwrap();
+        }
+        let board = rows_in(&notes, None, false);
+        let group = &board.legacy_initiatives["mixed case"];
+        assert_eq!(group.name, "[[Mixed Case]]");
+        assert_eq!(
+            (
+                group.progress.done,
+                group.progress.total,
+                group.progress.abandoned
+            ),
+            (1, 2, 1)
+        );
+        assert!(!board.legacy_initiatives.contains_key("closed group"));
+        assert!(
+            !board
+                .legacy_initiatives
+                .contains_key("discarded experiment")
+        );
+        let html = crate::home::render(
+            &board,
+            &notes.root,
+            notes::now_ms(),
+            crate::home::Look::default(),
+        );
+        assert!(html.contains("Mixed Case <span class=\"pill\">no page</span>"));
+        assert!(!html.contains("Closed group") && !html.contains("Discarded experiment"));
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn bad_notes_do_not_erase_other_members_progress() {
+        let notes = initiative_fixture();
+        std::fs::write(notes.root.join("efforts/0020-unreadable.md"), [0xff]).unwrap();
+        std::fs::write(
+            notes.root.join("efforts/0021-malformed.md"),
+            "# Bad\n## Current state\na\n## Current state\nb\n",
+        )
+        .unwrap();
+        let board = rows_in(&notes, None, true);
+        let shared = board
+            .initiatives
+            .iter()
+            .find(|i| i.page.title.as_deref() == Some("Shared work"))
+            .unwrap();
+        assert_eq!(
+            (
+                shared.progress.done,
+                shared.progress.total,
+                shared.progress.need_you
+            ),
+            (1, 5, 3)
+        );
+        for filename in ["0020-unreadable.md", "0021-malformed.md"] {
+            assert!(board.notes.iter().any(|warning| warning.contains(filename)));
+        }
+        let html = crate::home::render(
+            &board,
+            &notes.root,
+            notes::now_ms(),
+            crate::home::Look::default(),
+        );
+        assert!(!html.contains("member counts unavailable"));
+        assert!(html.contains("1 of 5 done"));
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
     fn pages_and_member_counts_survive_effort_filters() {
         let notes = initiative_fixture();
         let board = rows_in(&notes, Some("demo"), false);
@@ -468,10 +542,11 @@ mod initiative_tests {
             (1, 5, 1, 1, 1, 1, 3)
         );
         assert_eq!(board.initiatives.len(), 7);
-        assert_eq!(board.legacy_initiatives["unfiled work"].done, 1);
-        assert_eq!(
-            board.legacy_initiatives["discarded experiment"].abandoned,
-            1
+        assert_eq!(board.legacy_initiatives["unfiled work"].progress.done, 1);
+        assert!(
+            !board
+                .legacy_initiatives
+                .contains_key("discarded experiment")
         );
         let member = board
             .efforts

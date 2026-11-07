@@ -287,6 +287,23 @@ impl EffortFile {
         self.field("Goal").or_else(|| self.paragraphs().next())
     }
 
+    /// Initiative purpose from its parsed section or original, fence-aware preamble.
+    pub fn purpose(&self) -> Option<String> {
+        if let Some((_, body)) = self.other.iter().find(|(heading, _)| heading == "Purpose") {
+            return (!body.trim().is_empty()).then(|| body.trim().to_owned());
+        }
+        let original = self.original.as_ref()?;
+        let (body, spans) = body_spans(&original.text);
+        let first = spans.first().map_or(original.text.len(), |span| span.0);
+        let mut preamble = original.text[body..first].to_owned();
+        for (start, end, heading) in spans {
+            if heading.is_empty() {
+                preamble.push_str(&original.text[start..end]);
+            }
+        }
+        (!preamble.trim().is_empty()).then(|| preamble.trim().to_owned())
+    }
+
     /// The last paragraph of Current state: what's next and what isn't checked. An older
     /// labelled block gives its `**Next:**` line.
     pub fn last_paragraph(&self) -> Option<&str> {
@@ -594,6 +611,21 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn purpose_uses_fence_aware_sections_and_preambles() {
+        let purpose =
+            "Purpose first.\n\n```md\n## Current state\n# False title\n```\n\nStill purpose.";
+        for text in [
+            format!("# Page\n\n{purpose}\n\n## Decisions\n"),
+            format!("# Page\n\n## Purpose\n{purpose}\n\n## Decisions\n"),
+            format!("{purpose}\n\n# Page\n\n## Decisions\n"),
+        ] {
+            let file = EffortFile::parse(&text.replace('\n', "\r\n")).unwrap();
+            assert_eq!(file.purpose().unwrap().replace("\r\n", "\n"), purpose);
+            assert_eq!(file.first_paragraph(), None);
+        }
+    }
 
     #[test]
     fn a_note_round_trips_and_only_its_own_sections_change() {
