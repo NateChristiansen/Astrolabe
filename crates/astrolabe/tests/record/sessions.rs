@@ -531,3 +531,25 @@ fn a_command_that_only_names_an_effort_command_runs_as_itself() {
     let (out, ok) = mac.bash("s1", "true && astrolabe effort save --status done");
     assert!(!ok && out.contains("Accepted forms"), "{out}");
 }
+
+/// Catches: a Codex agent asked again, on loading its new effort once more, to undo a rename
+/// the owner made after the first.
+#[test]
+fn a_new_effort_asks_a_codex_agent_to_rename_its_thread_once() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (text, ok) = mac.bash_codex("c1", NEW);
+    assert!(ok, "{text}");
+    let number = text
+        .strip_prefix("Effort ")
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let wanted = format!("Rename this thread to \"{number} Smooth ink\"");
+    assert!(text.contains(&wanted), "{text}");
+    let (again, ok) = mac.bash_codex("c1", &format!("astrolabe activate --effort {number}"));
+    assert!(ok && !again.contains("set_thread_title"), "{again}");
+    // Claude's hook names the session itself, so its agent isn't told to.
+    let (text, ok) = mac.bash("s1", NEW);
+    assert!(ok && !text.contains("set_thread_title"), "{text}");
+}

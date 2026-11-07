@@ -256,7 +256,8 @@ fn new_inner(
         last_save_ms: notes::now_ms().into(),
         mark: false.into(),
         saves: 0.into(),
-        name: activate::session_name(&number.to_string(), title).into(),
+        // From the heading the note gets, as a later load reads it.
+        name: activate::session_name(&number.to_string(), &format!("{number:04} {title}")).into(),
         // The name the session carries from an effort it was on before, if any.
         named: (read_state(&dir, session).ok().flatten())
             .map(|p| p.named)
@@ -292,6 +293,14 @@ fn new_inner(
         shells,
     )?
     .mid_session();
+    // A Codex agent was just told to rename its thread: recorded, so loading this effort
+    // again doesn't ask it to undo a rename the owner makes after.
+    if activation.state.named != state.named
+        && let Ok(Some(mut saved)) = read_state(&dir, session)
+    {
+        saved.named = activation.state.named.clone();
+        let _ = notes::write_text(&state_path(&dir, session), &saved.to_string());
+    }
     let mut head = format!(
         "Effort {number} created as {file_name}, status {status}, bound to this session and committed. Say your reading in one line (involvement {involvement} · authority {authority} · one piece or multi-step) and proceed.",
     );

@@ -62,7 +62,9 @@ pub fn session_name(number: &str, title: &str) -> String {
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(title.len());
     let (lead, rest) = title.split_at(digits);
-    let same = !lead.is_empty() && lead.parse::<u64>().ok() == number.parse::<u64>().ok();
+    // A number of its own, as the heading's "0083 " is, never the start of a word ("7zip").
+    let apart = rest.is_empty() || rest.starts_with(char::is_whitespace);
+    let same = !lead.is_empty() && apart && lead.parse::<u64>().ok() == number.parse::<u64>().ok();
     let title = if same { rest.trim_start() } else { title };
     match title.is_empty() {
         true => number.to_owned(),
@@ -246,11 +248,15 @@ impl Activation {
         self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
         // Only here: a resumed thread was named when it picked the effort up, and a launched
-        // worker runs outside the app. Claude's hook names its session itself (see `naming`).
+        // worker runs outside the app. Once per name, so picking the same effort up again
+        // doesn't undo the owner's rename. Claude's hook names its session itself (see `naming`).
         if let (Some("codex"), Some(name)) =
             (self.state.provider.as_deref(), self.state.name.as_deref())
+            && self.state.named.as_deref() != Some(name)
         {
             self.head += &format!("\n\n{}", codex_rename(name));
+            let name = name.to_owned();
+            self.state.named.set(name);
         }
         self
     }

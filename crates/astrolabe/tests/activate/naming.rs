@@ -31,6 +31,9 @@ fn the_name_is_the_number_then_the_title_without_its_own_number() {
     assert_eq!(session_name("83", "Name sessions"), "83 Name sessions");
     assert_eq!(session_name("83", "2026 roadmap"), "83 2026 roadmap");
     assert_eq!(session_name("7", "0007"), "7");
+    // A title that starts with the number as part of a word keeps it.
+    assert_eq!(session_name("7", "0007 7zip support"), "7 7zip support");
+    assert_eq!(session_name("7", "7zip support"), "7 7zip support");
 }
 
 /// Catches: a name given on every prompt, or over the owner's own rename.
@@ -90,6 +93,19 @@ fn a_codex_agent_is_told_to_rename_its_thread_when_it_picks_an_effort_up() {
         ok && text.contains("Rename this thread to \"70 Demo\"")
             && text.contains("set_thread_title"),
         "{text}"
+    );
+    let (again, ok) = f.run(&f.demo, &rewritten(command), "", &[]);
+    assert!(ok, "{again}");
+    let input = json!({"session_id": "c1", "turn_id": "u3", "cwd": f.demo, "tool_name": "shell_command", "tool_input": {"command": "astrolabe activate --effort 70"}});
+    let rerun = f.hook(input).unwrap();
+    let rerun = rerun["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (again, ok) = f.run(&f.demo, &rewritten(&rerun), "", &[]);
+    assert!(
+        ok && !again.contains("set_thread_title"),
+        "asked once: {again}"
     );
     let codex_prompt = json!({"session_id": "c1", "turn_id": "u2", "cwd": f.demo, "prompt": "hi"});
     assert_eq!(answer(&f, "prompt", codex_prompt, &[]), None);
