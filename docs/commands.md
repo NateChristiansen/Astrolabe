@@ -172,7 +172,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | Option | Effect |
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `blocked`, `done` or `abandoned`. |
-| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. |
+| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
@@ -181,7 +181,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 
-Setting a nonblocked status without `--waits-for` clears the previous waiting condition. For example:
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked, so the first save after the owner answers takes the effort out of Needs you. Give `--waits-for` again on a save made while still waiting. For example:
 
 ```sh
 astrolabe effort save --status blocked --waits-for "owner: try upload retries"
