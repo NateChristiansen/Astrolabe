@@ -48,8 +48,41 @@ impl<T> From<T> for Field<T> {
     }
 }
 
+/// A page and a numbered effort have distinct identities even when their keys coincide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Binding {
+    Effort {
+        key: String,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
+    Initiative {
+        key: String,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
+}
+
+impl Binding {
+    pub fn effort(key: String) -> Self {
+        Self::Effort {
+            key,
+            extra: Map::new(),
+        }
+    }
+    pub fn initiative(key: String) -> Self {
+        Self::Initiative {
+            key,
+            extra: Map::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SessionState {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub binding: Field<Binding>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub session: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
@@ -104,6 +137,31 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub fn initiative_key(&self) -> Option<&str> {
+        match self.binding.as_ref() {
+            Some(Binding::Initiative { key, .. }) => Some(key),
+            _ => None,
+        }
+    }
+    pub fn bound_key(&self) -> Option<&str> {
+        match self.binding.as_ref() {
+            Some(Binding::Effort { key, .. } | Binding::Initiative { key, .. }) => Some(key),
+            None if self.binding.is_missing() => self.effort.as_deref(),
+            _ => None,
+        }
+    }
+    pub fn record_label(&self) -> String {
+        format!(
+            "{} {}",
+            if self.initiative_key().is_some() {
+                "initiative"
+            } else {
+                "effort"
+            },
+            self.bound_key().unwrap_or_default()
+        )
+    }
+
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("session fields are JSON values")
     }
@@ -154,8 +212,7 @@ pub fn read_state(dir: &Path, session: &str) -> Result<Option<SessionState>, Str
         Err(e) => Err(format!("{}: {e}", path.display())),
         Ok(bytes) => match serde_json::from_slice::<SessionState>(&bytes) {
             Ok(state)
-                if state.session.as_deref() == Some(session)
-                    && state.effort.as_deref().is_some() =>
+                if state.session.as_deref() == Some(session) && state.bound_key().is_some() =>
             {
                 Ok(Some(state))
             }
@@ -178,6 +235,8 @@ mod tests {
             "future":{"nested":[1,true]}, "closed_ms":"unknown"});
         let mut state: SessionState = serde_json::from_value(original.clone()).unwrap();
         assert_eq!(state.to_value(), original);
+        assert_eq!(state.bound_key(), Some("3"));
+        assert_eq!(state.initiative_key(), None);
         assert!(!state.worker.is_true());
         assert!(state.token.is_missing());
         state.saved("hash".into(), None, 17);

@@ -257,7 +257,10 @@ impl Notes {
             let Ok(files) = self.git(&["show", "--name-only", "--format=", sha]) else {
                 continue;
             };
-            for file in files.lines().filter(|f| f.starts_with("efforts/")) {
+            for file in files
+                .lines()
+                .filter(|f| f.starts_with("efforts/") || f.starts_with("initiatives/"))
+            {
                 let before = self
                     .git(&["show", &format!("{sha}~1:{file}")])
                     .unwrap_or_default();
@@ -437,7 +440,7 @@ impl Notes {
         {
             let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
             lines.push(format!(
-                "Two machines saved the same effort unseen: {}. The file holds whichever landed last; both are in git. Resave it from what's there.",
+                "Two machines saved the same record unseen: {}. The file holds whichever landed last; both are in git. Resave it from what's there.",
                 names.join(", ")
             ));
         }
@@ -463,7 +466,7 @@ impl Notes {
         }
         if let Some(t) = record.get("tidy-failed") {
             lines.push(format!(
-                "A journal tidy after a merge failed ({}); the day file may show two lines for one effort until the next save.",
+                "A journal tidy after a merge failed ({}); the day file may show two lines for one record until the next save.",
                 t["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
             ));
         }

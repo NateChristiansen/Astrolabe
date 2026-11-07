@@ -1,5 +1,5 @@
 //! Per-session guard evidence and the commands that establish it.
-use super::context::{GUARD_SCOPE, blocked};
+use super::context::GUARD_SCOPE;
 use super::routing::{block_reason, in_powershell, provider};
 use super::{SWITCH, hook_id, read_state, state_dir};
 use crate::hook::{self};
@@ -180,15 +180,12 @@ pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
     };
     let token = state.token.as_deref().unwrap_or_default();
     let on = format!(
-        "Astrolabe is on for effort {} in repo {}.",
-        state.effort.as_deref().unwrap_or_default(),
+        "Astrolabe is on for {} in repo {}.",
+        state.record_label(),
         state.repo.as_deref().unwrap_or_default()
     );
     if let Some(why) = block_reason(dir, &state, session) {
-        return format!(
-            "{on} {}",
-            blocked(state.effort.as_deref().unwrap_or_default(), &why)
-        );
+        return format!("{on} {}", super::context::blocked_state(&state, &why));
     }
     format!(
         "{on} {}",

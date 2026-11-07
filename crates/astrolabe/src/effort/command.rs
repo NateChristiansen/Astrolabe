@@ -220,7 +220,8 @@ POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over 
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
 Another effort's state, from the session that dispatched it:  astrolabe effort save --effort <n> --status done --decision \"…\"  (only --status, --waits-for, --reason, --decision and --initiative go with --effort).\n\
-An initiative and its efforts, filed as proposed in one step, the body being its page:\n  astrolabe initiative new --title \"<name>\" <<'ASTROLABE'\n  <purpose>\n\n  ## Efforts\n  <first effort's title>\n  <its goal>\n\n  <next title>\n  <its goal>\n  ASTROLABE\n\
+An initiative page alone, or with efforts filed as proposed in one step, the body being its page:\n  astrolabe initiative new --title \"<name>\" <<'ASTROLABE'\n  <purpose>\n\n  ## Efforts\n  <first effort's title>\n  <its goal>\n\n  <next title>\n  <its goal>\n  ASTROLABE\n\
+Omit the Efforts section for a page only; to join existing efforts, use one paragraph beginning `effort <n>` per member, without mixing new titles. Bind with `astrolabe activate --initiative <slug>` (a quoted title also works); `effort save` then writes the initiative. Pieces and plans are unavailable there.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 

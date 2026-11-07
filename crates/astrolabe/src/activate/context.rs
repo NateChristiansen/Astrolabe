@@ -8,7 +8,7 @@ use super::{now_ms, state_dir};
 use crate::effort::frontmatter;
 use crate::hook::comparable;
 use crate::registry::AGENT;
-use crate::session::{Field, SessionState};
+use crate::session::{Binding, Field, SessionState};
 use serde_json::Value;
 use std::path::Path;
 
@@ -321,8 +321,65 @@ pub fn switch_on(
     previous: Option<&SessionState>,
     shells: &[bool],
 ) -> Result<Activation, String> {
-    let (registry, notes) = notes_and_repos()?;
+    let (_, notes) = notes_and_repos()?;
     let effort = read_effort(&notes, effort)?;
+    switch_record(effort, false, session, provider, cwd, previous, shells)
+}
+
+/// Initiative activation shares the same eligibility, delivery and guard lifecycle.
+pub fn switch_initiative(
+    name: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    previous: Option<&SessionState>,
+    shells: &[bool],
+) -> Result<Activation, String> {
+    if previous.is_some_and(|s| s.worker.is_true()) {
+        return Err(
+            "a worker cannot bind to an initiative; it saves its dispatched effort only".into(),
+        );
+    }
+    let (_, notes) = notes_and_repos()?;
+    let pages = crate::effort::initiative_catalog(&notes)?;
+    let page = crate::effort::resolve_initiative(&pages, name)?;
+    let setting = |key: &str, default: &str, allowed: &[(&str, &str)]| -> Result<String, String> {
+        let value = page.file.prop(key).unwrap_or(default);
+        if !allowed.iter().any(|(name, _)| *name == value) {
+            return Err(format!("{}: unknown {key} {value:?}", page.path));
+        }
+        Ok(value.to_owned())
+    };
+    let effort = Effort {
+        number: page.slug.clone(),
+        file: page.path.clone(),
+        title: page.file.title.clone(),
+        repos: page
+            .file
+            .prop("repo")
+            .unwrap_or("")
+            .split(',')
+            .map(|r| r.trim().to_owned())
+            .collect(),
+        involvement: setting("involvement", "check in at plan", &INVOLVEMENT)?,
+        authority: setting("authority", "edit", &AUTHORITY)?,
+        issues: Vec::new(),
+        current: page.file.current.clone(),
+        hash: crate::notes::content_hash(&page.text),
+    };
+    switch_record(effort, true, session, provider, cwd, previous, shells)
+}
+
+fn switch_record(
+    effort: Effort,
+    initiative: bool,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    previous: Option<&SessionState>,
+    shells: &[bool],
+) -> Result<Activation, String> {
+    let (registry, notes) = notes_and_repos()?;
     let repo = session_repo(&notes, &registry, &effort.repos, cwd)?;
     let read = |file: String| {
         let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"));
@@ -348,8 +405,14 @@ pub fn switch_on(
         read(format!("knowledge/repos/{repo}.md"))?,
         read("knowledge/machines.md".to_owned())?,
     ];
-    let same = previous.filter(|p| p.effort.as_deref() == Some(effort.number.as_str()));
-    let picked = session_name(&effort.number, &effort.title);
+    let same = previous.filter(|p| {
+        p.bound_key() == Some(effort.number.as_str()) && p.initiative_key().is_some() == initiative
+    });
+    let picked = if initiative {
+        effort.title.clone()
+    } else {
+        session_name(&effort.number, &effort.title)
+    };
     // One probe per session: the guard is the same hook in the same session whichever effort
     // is loaded, so the proof from session start carries into an effort created or picked up
     // later. A new token per effort made the proof stale and asked for a probe named in tool
@@ -372,7 +435,17 @@ pub fn switch_on(
     let mut state = SessionState {
         session: session.to_owned().into(),
         provider: provider.to_owned().into(),
-        effort: effort.number.clone().into(),
+        binding: if initiative {
+            Binding::initiative(effort.number.clone())
+        } else {
+            Binding::effort(effort.number.clone())
+        }
+        .into(),
+        effort: if initiative {
+            Field::Missing
+        } else {
+            effort.number.clone().into()
+        },
         file: effort.file.clone().into(),
         repo: repo.clone().into(),
         cwd: comparable(cwd).into(),
@@ -401,11 +474,15 @@ pub fn switch_on(
         ..Default::default()
     };
     if let Some(previous) = same {
+        if previous.binding.as_ref().is_some() {
+            state.binding = previous.binding.clone();
+        }
         if !previous.mark.is_missing() {
             state.mark = previous.mark.clone();
         }
         state.acknowledged = previous.acknowledged.clone();
         state.last_save_ms = previous.last_save_ms.clone();
+        state.saves = previous.saves.clone();
         state.worker = previous.worker.clone();
     }
     fn meaning(table: &[(&str, &'static str)], value: &str) -> &'static str {
@@ -436,6 +513,27 @@ pub fn switch_on(
         proof = proof_steps(&token, shells),
         issue = issue_line(&effort.issues),
     );
+    let head = if initiative {
+        let file = crate::effort::EffortFile::parse(
+            &std::fs::read_to_string(notes.join(&effort.file)).map_err(|e| e.to_string())?,
+        )?;
+        format!(
+            "Astrolabe is on in this session for initiative {slug}, \"{title}\" ({provider} session {session}, repo {repo}).\n\nPage: {path}\nStatus: {status}\nWaits for: {wait}\nSettings set by the owner: involvement: {inv}: {inv_m}. Authority: {auth}: {auth_m}. Notes save and sync independently of project authority. A narrower current instruction wins.\n\n{GUARD_SCOPE}\n\n{proof}Report the initiative and what the status says. Until it says proven, claim no protection.\n\nSave this initiative with `astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"]` with a body:\n  astrolabe effort save --status active <<'ASTROLABE'\n  <where the initiative stands>\n\n  <choices and reasons>\n\n  <next and unchecked>\n  ASTROLABE\nDecisions are appended and dated. A journal line replaces today's line for this initiative. Done requires an acceptance statement in the body and every member done or abandoned. Use --reason with abandoned. Pieces, ticks, plans and initiative membership are unavailable on an initiative. Detach with `astrolabe activate --off`; the machine guard stays.\n\n{freshness}",
+            slug = effort.number,
+            title = effort.title,
+            path = effort.file,
+            status = file.prop("status").unwrap_or("ready"),
+            wait = file.prop("waits_for").unwrap_or("none"),
+            inv = effort.involvement,
+            inv_m = meaning(&INVOLVEMENT, &effort.involvement),
+            auth = effort.authority,
+            auth_m = meaning(&AUTHORITY, &effort.authority),
+            proof = proof_steps(&token, shells),
+            freshness = freshness(&notes, &effort, cwd),
+        )
+    } else {
+        head
+    };
     // A worker stays a worker through resume and reload, and is told so each time.
     let mut head = head;
     if state.worker.is_true() {
@@ -691,4 +789,16 @@ pub(super) fn blocked(effort: &str, why: &str) -> String {
     format!(
         "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the effort's current context. Repair it, then run `astrolabe activate --effort {effort}`; or drop the effort with `astrolabe activate --off` (the guard keeps running)."
     )
+}
+
+/// Keep repair instructions tied to the kind of page that failed to reload.
+pub(super) fn blocked_state(state: &SessionState, why: &str) -> String {
+    let key = state.bound_key().unwrap_or_default();
+    let text = blocked(key, why);
+    if state.initiative_key().is_some() {
+        text.replace(&format!("effort {key}"), &format!("initiative {key}"))
+            .replace(&format!("--effort {key}"), &format!("--initiative {key}"))
+    } else {
+        text
+    }
 }

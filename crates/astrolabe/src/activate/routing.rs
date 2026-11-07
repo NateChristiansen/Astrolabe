@@ -1,5 +1,7 @@
 //! Provider hook inputs, command dispatch and activation transitions.
-use super::context::{Activation, WORKER_RULE, blocked, fresh, refused, switch_on};
+use super::context::{
+    Activation, WORKER_RULE, blocked_state, fresh, refused, switch_initiative, switch_on,
+};
 use super::proof::{session_shells, status};
 use super::tickets::{leave, leave_with, print_command, reissue, ticket_text, write_json};
 use super::{EFFORT_VAR, machine_on, now_ms, random_hex, read_state, state_dir, state_path};
@@ -55,12 +57,25 @@ pub(super) fn act(
         ["--off"] => match previous {
             Ok(None) => ("This session has no effort set.".to_owned(), true, Change::Keep, String::new()),
             _ => (
-                "This session has no effort now. The guard stays while Astrolabe is on for this machine.".to_owned(),
+                "This session has no effort or initiative now. The guard stays while Astrolabe is on for this machine.".to_owned(),
                 true,
                 Change::Remove,
                 "Astrolabe could NOT drop this session's effort, so it stays as it was".to_owned(),
             ),
         },
+        ["--initiative", name] => {
+            let previous = previous.ok().flatten();
+            let refreshed = crate::record::refresh_notes();
+            match switch_initiative(name, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
+                Ok(activation) => {
+                    let mut text = activation.text();
+                    if let Some(note) = refreshed { text = after_first_paragraph(&text, &note); }
+                    (text, true, Change::Write(Box::new(activation.state)), "Initiative binding could not be saved".into())
+                }
+                Err(why) => (format!("Initiative NOT loaded: {why}. The previous binding is unchanged."), false, Change::Keep, String::new()),
+            }
+        }
+        ["--initiative", _, "--worker"] => ("A worker cannot bind to an initiative.".into(), false, Change::Keep, String::new()),
         ["--effort", effort] | ["--effort", effort, "--worker"] => {
             let worker = args.len() == 3;
             let previous = previous.ok().flatten();
@@ -82,7 +97,7 @@ pub(super) fn act(
                 Err(why) => (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
             }
         }
-        _ => ("Usage: astrolabe activate <--effort <n> [--worker]|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
+        _ => ("Usage: astrolabe activate <--effort <n> [--worker]|--initiative <slug or title>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
     }
 }
 
@@ -203,10 +218,7 @@ pub fn gate(event: &str) {
             match read_state(dir, session) {
                 Ok(None) => guard(),
                 Ok(Some(state)) => match block_reason(dir, &state, session) {
-                    Some(why) => hook::say(&hook::deny(&blocked(
-                        state.effort.as_deref().unwrap_or_default(),
-                        &why,
-                    ))),
+                    Some(why) => hook::say(&hook::deny(&blocked_state(&state, &why))),
                     None => {
                         if !child {
                             let _ =
@@ -467,9 +479,16 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
     if words.get(..2) != Some(&["astrolabe", "activate"]) {
         return None;
     }
-    if !(command.chars()).all(|c| c.is_ascii_alphanumeric() || " -_.".contains(c)) {
-        return None;
+    let mut parser = crate::effort::command::Words::new(command);
+    let mut owned = Vec::new();
+    loop {
+        match parser.next_word() {
+            Ok(Some(word)) => owned.push(word),
+            Ok(None) => break,
+            Err(_) => return None,
+        }
     }
+    let words: Vec<&str> = owned.iter().map(String::as_str).collect();
     if words.contains(&"--show") {
         return Some(hook::deny(
             "Astrolabe's tickets come only from its hook, so a typed one is refused. Run the command without --show.",
@@ -564,7 +583,7 @@ pub(crate) fn block_reason(dir: &Path, state: &SessionState, session: &str) -> O
     }
     let bytes = std::fs::read(fallback_block(dir, session)).ok()?;
     let body: Value = serde_json::from_slice(&bytes).ok()?;
-    (body["effort"].as_str() == state.effort.as_deref())
+    (body["effort"].as_str() == state.bound_key())
         .then(|| body["why"].as_str().unwrap_or("unknown").to_owned())
 }
 
@@ -592,20 +611,24 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
     };
     match state {
         Ok(Some(state)) => {
-            let effort = state.effort.as_deref().unwrap_or_default().to_owned();
+            let effort = state.bound_key().unwrap_or_default().to_owned();
             let provider = state.provider.as_deref().unwrap_or("claude").to_owned();
             // No tool at session start: the provider's usual shell.
             let shells = session_shells(&provider);
             Some(
-                match switch_on(
-                    &dir,
-                    &effort,
-                    session,
-                    &provider,
-                    &cwd,
-                    Some(&state),
-                    &shells,
-                ) {
+                match if state.initiative_key().is_some() {
+                    switch_initiative(&effort, session, &provider, &cwd, Some(&state), &shells)
+                } else {
+                    switch_on(
+                        &dir,
+                        &effort,
+                        session,
+                        &provider,
+                        &cwd,
+                        Some(&state),
+                        &shells,
+                    )
+                } {
                     Ok(activation) => {
                         match commit(
                             &dir,
@@ -631,7 +654,7 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                             write_json(&fallback_block(&dir, session), &body)
                                 .map_err(|f| format!("{e}; {f}"))
                         }) {
-                            Ok(()) => blocked(&effort, &why),
+                            Ok(()) => blocked_state(&state, &why),
                             Err(e) => format!(
                                 "Astrolabe stays on for effort {effort} in this session, guard included, but its context couldn't be reloaded: {why}. It also couldn't record a block on shell commands ({e}), so only the guard is on and other commands are NOT blocked. Treat this session's effort context as missing: tell the owner, repair it and run `astrolabe activate --effort {effort}`, or drop the effort with `astrolabe activate --off` (the guard keeps running)."
                             ),

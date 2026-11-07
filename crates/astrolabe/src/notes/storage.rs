@@ -330,6 +330,7 @@ impl Notes {
                 };
                 if current["session"] != state["session"]
                     || current["effort"] != state["effort"]
+                    || current["binding"] != state["binding"]
                     || current["delivered"].as_str() != op.base.as_deref()
                     || current["delivered_ms"].as_i64() != Some(after)
                 {

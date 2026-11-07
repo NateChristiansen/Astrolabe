@@ -11,6 +11,7 @@ pub struct InitiativePage {
     pub before: String,
     pub heading: String,
     pub efforts: Vec<(String, String)>,
+    pub joins: Vec<u32>,
     pub after: String,
 }
 
@@ -29,9 +30,18 @@ impl InitiativePage {
                 .flatten()
                 .map(str::trim)
         };
-        let start = (0..lines.len())
+        let Some(start) = (0..lines.len())
             .find(|&i| heading_at(i).is_some_and(|h| h.to_lowercase().starts_with("efforts")))
-            .ok_or("the body needs a `## Efforts` section naming the efforts in order, one paragraph each: the title on its first line, the goal on the lines below it")?;
+        else {
+            let mut before = lines.clone();
+            if before.first().is_some_and(|l| l.starts_with("# ")) {
+                before.remove(0);
+            }
+            return Ok(Self {
+                before: before.join("\n").trim().to_owned(),
+                ..Default::default()
+            });
+        };
         let end = (start + 1..lines.len())
             .find(|&i| heading_at(i).is_some())
             .unwrap_or(lines.len());
@@ -45,6 +55,7 @@ impl InitiativePage {
             before.remove(at);
         }
         let mut efforts = Vec::new();
+        let mut joins = Vec::new();
         // A blank line is one with nothing but whitespace, as Markdown reads it, so a line
         // of spaces between two efforts still separates them (review, 2026-11-07).
         let mut paragraphs: Vec<Vec<&str>> = vec![Vec::new()];
@@ -60,6 +71,17 @@ impl InitiativePage {
             let Some(title) = parts.next().filter(|t| !t.is_empty()) else {
                 continue;
             };
+            if title == "effort" || title.starts_with("effort ") {
+                let mut words = title.split_whitespace();
+                words.next();
+                let number = words.next().and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0)
+                    .ok_or("a join paragraph begins exactly `effort <n>`, with an existing effort number")?;
+                if joins.contains(&number) {
+                    return Err(format!("duplicate effort {number} in join"));
+                }
+                joins.push(number);
+                continue;
+            }
             let title = ["- ", "* "]
                 .iter()
                 .find_map(|m| title.strip_prefix(m))
@@ -80,13 +102,17 @@ impl InitiativePage {
             }
             efforts.push((title, goal));
         }
-        if efforts.is_empty() {
+        if !efforts.is_empty() && !joins.is_empty() {
+            return Err("an Efforts section either creates efforts or joins existing numbers; do not mix them".into());
+        }
+        if efforts.is_empty() && joins.is_empty() {
             return Err("the `## Efforts` section is empty: one paragraph per effort, the title on its first line, the goal below it".to_owned());
         }
         Ok(Self {
             before: before.join("\n").trim().to_owned(),
             heading: heading_at(start).unwrap_or("Efforts").to_owned(),
             efforts,
+            joins,
             after: lines[end..].join("\n").trim().to_owned(),
         })
     }
@@ -100,15 +126,25 @@ impl InitiativePage {
         if !self.before.is_empty() {
             out += &format!("\n{}\n", self.before);
         }
-        out += &format!("\n## {}\n\n", self.heading);
+        if !self.heading.is_empty() {
+            out += &format!("\n## {}\n\n", self.heading);
+        }
         for (i, ((name, goal), (_, rel))) in self.efforts.iter().zip(filed).enumerate() {
             let goal = goal.split_whitespace().collect::<Vec<_>>().join(" ");
-            out += &format!("{}. [{name}](../{rel}). {goal}\n", i + 1);
+            if goal.is_empty() {
+                out += &format!("{}. [{name}](../{rel})\n", i + 1);
+            } else {
+                out += &format!("{}. [{name}](../{rel}). {goal}\n", i + 1);
+            }
         }
         if !self.after.is_empty() {
             out += &format!("\n{}\n", self.after);
         }
-        out
+        let mut file = super::EffortFile::parse(&out).expect("validated initiative body");
+        file.set("involvement", "check in at plan");
+        file.set("authority", "edit");
+        file.set("waits_for", "");
+        file.render_initiative()
     }
 }
 
@@ -144,17 +180,293 @@ mod tests {
             ),
         ];
         let text = page.render("Ink", "demo", "2026-11-07", &filed);
+        assert!(text.contains("## Purpose\n\nSmooth the ink."), "{text}");
+        assert!(text.contains("## Decisions\n"));
+        assert!(text.contains(
+            "1. [Tether cap](../efforts/2026/11-November/0002-tether-cap.md). Cap the tether."
+        ));
         assert_eq!(
-            text,
-            "---\nstatus: ready\nrepo: demo\ncreated: 2026-11-07\n---\n# Ink\n\nSmooth the ink.\n\n```\n## Efforts\nnot this one\n```\n\n## Efforts and order\n\n1. [Tether cap](../efforts/2026/11-November/0002-tether-cap.md). Cap the tether.\n2. [Goo at speed](../efforts/2026/11-November/0003-goo-at-speed.md). Keep goo stable at speed.\n\n## What completion means\n- never splits\n"
+            InitiativePage::parse("Purpose only.").unwrap().before,
+            "Purpose only."
         );
         for (body, why) in [
-            ("Purpose only.", "`## Efforts` section"),
             ("## Efforts\n\n## Done\n", "is empty"),
             ("## Efforts\nTitle only\n", "has no goal"),
         ] {
             let err = InitiativePage::parse(body).unwrap_err();
             assert!(err.contains(why), "{body:?}: {err}");
         }
+    }
+}
+
+/// One page in the shared, unambiguous initiative namespace.
+#[derive(Debug, Clone)]
+pub struct Initiative {
+    pub slug: String,
+    pub path: String,
+    pub file: super::EffortFile,
+    pub text: String,
+}
+
+/// Both titles and slugs accept legacy wikilinks; filenames remain canonical.
+pub fn initiative_name(name: &str) -> String {
+    let name = name.trim();
+    name.strip_prefix("[[")
+        .and_then(|n| n.strip_suffix("]]"))
+        .unwrap_or(name)
+        .trim()
+        .to_lowercase()
+}
+
+pub fn initiative_catalog(root: &std::path::Path) -> Result<Vec<Initiative>, String> {
+    let dir = root.join("initiatives");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    };
+    let mut pages = Vec::new();
+    let mut aliases = std::collections::HashMap::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let slug = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or("initiative filename isn't text")?
+            .to_owned();
+        let rel = format!("initiatives/{}.md", slug);
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+        let file = super::EffortFile::parse(&text).map_err(|e| format!("{rel}: {e}"))?;
+        if file.title.is_empty() {
+            return Err(format!("{rel}: initiative has no title"));
+        }
+        for alias in [initiative_name(&slug), initiative_name(&file.title)] {
+            if let Some(other) = aliases.insert(alias.clone(), rel.clone())
+                && other != rel
+            {
+                return Err(format!("ambiguous initiative {alias:?}: {other} and {rel}"));
+            }
+        }
+        pages.push(Initiative {
+            slug,
+            path: rel,
+            file,
+            text,
+        });
+    }
+    pages.sort_by(|a, b| a.slug.cmp(&b.slug));
+    Ok(pages)
+}
+
+pub fn resolve_initiative<'a>(
+    pages: &'a [Initiative],
+    name: &str,
+) -> Result<&'a Initiative, String> {
+    let name = initiative_name(name);
+    let matches: Vec<_> = pages
+        .iter()
+        .filter(|p| initiative_name(&p.slug) == name || initiative_name(&p.file.title) == name)
+        .collect();
+    match matches.as_slice() {
+        [page] => Ok(page),
+        [] => Err(format!(
+            "no initiative page for {name:?}; file it with `astrolabe initiative new`"
+        )),
+        _ => Err(format!("ambiguous initiative {name:?}")),
+    }
+}
+
+/// Membership comes only from frontmatter, across every repository. Unreadable notes
+/// fail closed so an initiative cannot be accepted with an unexamined member.
+pub fn initiative_members(
+    root: &std::path::Path,
+    page: &Initiative,
+) -> Result<Vec<(String, super::EffortFile)>, String> {
+    fn walk(
+        root: &std::path::Path,
+        rel: &str,
+        depth: u8,
+        files: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let entries = match std::fs::read_dir(root.join(rel)) {
+            Ok(entries) => entries,
+            Err(e) if depth == 0 && e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("{rel}: {e}")),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{rel}: {e}"))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = format!("{rel}/{name}");
+            let kind = entry.file_type().map_err(|e| format!("{path}: {e}"))?;
+            if kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()) {
+                if depth < 4 && !name.starts_with('.') {
+                    walk(root, &path, depth + 1, files)?;
+                }
+            } else if name.ends_with(".md")
+                && name
+                    .split('-')
+                    .next()
+                    .is_some_and(|n| n.parse::<u32>().is_ok())
+            {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut members = Vec::new();
+    let mut paths = Vec::new();
+    walk(root, "efforts", 0, &mut paths)?;
+    paths.sort();
+    for path in paths {
+        let text = std::fs::read_to_string(root.join(&path)).map_err(|e| format!("{path}: {e}"))?;
+        let file = super::EffortFile::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+        if file.prop("initiative").is_some_and(|name| {
+            let name = initiative_name(name);
+            name == initiative_name(&page.slug) || name == initiative_name(&page.file.title)
+        }) {
+            members.push((path, file));
+        }
+    }
+    Ok(members)
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn aliases_resolve_and_collisions_never_guess() {
+        let root = std::env::temp_dir().join(format!(
+            "initiative-catalog-{}",
+            crate::activate::random_hex().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.as_path().join("initiatives")).unwrap();
+        let put = |slug: &str, title: &str| {
+            std::fs::write(
+                root.as_path().join(format!("initiatives/{slug}.md")),
+                format!("# {title}\n"),
+            )
+            .unwrap()
+        };
+        put("smooth-lines", "Smooth ink");
+        let pages = initiative_catalog(root.as_path()).unwrap();
+        for alias in [" SMOOTH-LINES ", "[[Smooth ink]]", "[[ smooth-lines ]]"] {
+            assert_eq!(
+                resolve_initiative(&pages, alias).unwrap().slug,
+                "smooth-lines"
+            );
+        }
+        assert!(resolve_initiative(&pages, "missing").is_err());
+        for title in ["SMOOTH INK", "Smooth-lines"] {
+            put("other", title);
+            assert!(
+                initiative_catalog(root.as_path())
+                    .unwrap_err()
+                    .contains("ambiguous")
+            );
+        }
+        std::fs::remove_file(root.as_path().join("initiatives/other.md")).unwrap();
+        let mut collision = pages[0].clone();
+        collision.slug = "SMOOTH-LINES".into();
+        assert!(resolve_initiative(&[pages[0].clone(), collision], "smooth-lines").is_err());
+    }
+
+    #[test]
+    fn synthetic_legacy_pages_keep_every_unmanaged_byte_on_repeated_saves() {
+        for text in [
+            include_str!("../../tests/fixtures/initiatives/prose.md"),
+            include_str!("../../tests/fixtures/initiatives/status-only.md"),
+        ] {
+            let mut file = super::super::EffortFile::parse(text).unwrap();
+            assert_eq!(file.render(), text);
+            let unmanaged = text.split_once(&format!("# {}\n", file.title)).unwrap().1;
+            for state in ["First checkpoint.", "Second checkpoint."] {
+                file.current = state.into();
+                let rendered = file.render_initiative();
+                assert!(rendered.ends_with(unmanaged), "{rendered:?}");
+                assert!(rendered.contains("## Decisions\n"));
+                file = super::super::EffortFile::parse(&rendered).unwrap();
+                assert!(
+                    file.decisions.is_empty(),
+                    "legacy purpose must not become Decisions: {:?}",
+                    file.decisions
+                );
+            }
+        }
+        assert!(
+            super::super::EffortFile::parse("# Page\n## Current state\na\n## Current state\nb\n")
+                .unwrap_err()
+                .contains("duplicate")
+        );
+    }
+}
+
+/// Joining changes only the membership property, retaining even legacy effort formatting.
+pub fn set_initiative_property(text: &str, slug: &str) -> String {
+    let clean = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let bom = &text[..text.len() - clean.len()];
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    if clean.lines().next() != Some("---") {
+        return format!("{bom}---{eol}initiative: {slug}{eol}---{eol}{clean}");
+    }
+    let mut out = bom.to_owned();
+    let mut inside = true;
+    let mut written = false;
+    for (i, line) in clean.split_inclusive('\n').enumerate() {
+        if i > 0 && inside && line.trim_end() == "---" {
+            if !written {
+                out += &format!("initiative: {slug}{eol}");
+            }
+            inside = false;
+        }
+        if i > 0 && inside && line.starts_with("initiative:") {
+            if !written {
+                out += &format!("initiative: {slug}{eol}");
+                written = true;
+            }
+        } else {
+            out += line;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod preservation_tests {
+    use super::super::EffortFile;
+
+    #[test]
+    fn an_existing_purpose_heading_is_reused_and_decisions_stay_separate() {
+        let text = "---\r\nstatus: ready\r\nrepo: demo\r\n---\r\n# Curves\r\n\r\n## Purpose\r\n\r\nKeep  these bytes.  \r\n\r\n## Order\r\n[a](../a.md)\r\n";
+        let mut file = EffortFile::parse(text).unwrap();
+        assert_eq!(file.render(), text);
+        let purpose = &text[text.find("## Purpose").unwrap()..];
+        for state in ["First.", "Second."] {
+            file.current = state.into();
+            file.add_decision("2026-01-01: curves over corners: smoother.");
+            let out = file.render_initiative();
+            assert!(out.ends_with(purpose));
+            assert_eq!(out.matches("## Purpose").count(), 1);
+            file = EffortFile::parse(&out).unwrap();
+            assert!(!file.decisions.contains("these bytes"));
+        }
+    }
+
+    #[test]
+    fn a_preamble_before_the_title_is_preserved_under_purpose_too() {
+        let text = "```md\n## example\n```\n# Curves\n\nPurpose text.\n\n## Order\nOne.\n";
+        let mut file = EffortFile::parse(text).unwrap();
+        file.current = "Active.".into();
+        let out = file.render_initiative();
+        let back = EffortFile::parse(&out).unwrap();
+        assert!(back.decisions.is_empty());
+        assert!(out.contains("```md\n## example\n```\n"));
+        assert!(out.contains("\nPurpose text.\n"));
+        assert_eq!(out.matches("## Purpose").count(), 1);
     }
 }

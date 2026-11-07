@@ -4,7 +4,7 @@
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
 use crate::effort::{EffortCommand, EffortFile, FORMS, InitiativePage, slug};
 use crate::notes::{self, JournalLine, Notes, Op, Pull, RECENT_MS, RepoFacts};
-use crate::session::{Field, SessionState};
+use crate::session::{Binding, Field, SessionState};
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
@@ -244,6 +244,7 @@ fn new_inner(
     let state = SessionState {
         session: session.to_owned().into(),
         provider: provider.to_owned().into(),
+        binding: Binding::effort(number.to_string()).into(),
         effort: number.to_string().into(),
         file: file_name.clone().into(),
         repo: repo.clone().into(),
@@ -405,6 +406,9 @@ fn initiative_inner(
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .ok_or("--title is needed")?;
+    if title.contains(['\n', '\r']) {
+        return Err("an initiative title must be one line".into());
+    }
     let body = cmd
         .body
         .as_deref()
@@ -415,6 +419,8 @@ fn initiative_inner(
         })?;
     // Refused before the lock, reconcile and pull: a refused body changes nothing.
     let page = InitiativePage::parse(body)?;
+    // Managed-section ambiguity is refused before any recoverable write is planned.
+    EffortFile::parse(body)?;
     let goals: Vec<String> = page
         .efforts
         .iter()
@@ -457,13 +463,33 @@ fn initiative_inner(
             "{page_rel} exists already: an initiative is filed once, and a later effort joins it with --initiative {title:?} on `effort new` or `effort save`"
         ));
     }
+    let pages = crate::effort::initiative_catalog(&notes.root)?;
+    let page_slug = slug(title);
+    for existing in &pages {
+        let aliases = [
+            crate::effort::initiative_name(&existing.slug),
+            crate::effort::initiative_name(&existing.file.title),
+        ];
+        if [
+            crate::effort::initiative_name(title),
+            crate::effort::initiative_name(&page_slug),
+        ]
+        .iter()
+        .any(|a| aliases.contains(a))
+        {
+            return Err(format!(
+                "ambiguous initiative title or slug: {title:?} collides with {}",
+                existing.path
+            ));
+        }
+    }
     let start = notes.next_number();
     let (day, _) = notes::local_day_time();
     let facts = RepoFacts::read(cwd);
     let settings = Settings {
         status: "proposed",
         repo: &repo,
-        initiative: title,
+        initiative: &page_slug,
         priority: "none",
         involvement: &involvement,
         authority: &authority,
@@ -485,7 +511,58 @@ fn initiative_inner(
         lines.push(format!("{number:04} {name}"));
         filed.push((number, rel));
     }
-    files.push((page_rel.clone(), page.render(title, &repo, &day, &filed)));
+    // Validate every join before writing any file, and leave every field except membership alone.
+    for number in &page.joins {
+        let matches: Vec<_> = notes
+            .numbers()
+            .into_iter()
+            .filter(|(n, _)| n == number)
+            .collect();
+        let [(_, rel)] = matches.as_slice() else {
+            return Err(format!("effort {number} is missing or ambiguous"));
+        };
+        let text =
+            std::fs::read_to_string(notes.root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        let file = EffortFile::parse(&text)?;
+        if let Some(member) = file.prop("initiative") {
+            let member = crate::effort::initiative_name(member);
+            if member != crate::effort::initiative_name(title)
+                && member != crate::effort::initiative_name(&page_slug)
+            {
+                return Err(format!(
+                    "effort {number} already belongs to another initiative: {member}"
+                ));
+            }
+        }
+        // A raw property edit keeps the joined effort's Current state, stamps and all prose unchanged.
+        let joined = crate::effort::set_initiative_property(&text, &page_slug);
+        files.push((rel.clone(), joined));
+        lines.push(format!("{number:04} {}", file.name()));
+        filed.push((*number, rel.clone()));
+    }
+    let mut page_text = page.render(title, &repo, &day, &filed);
+    // Joining uses existing effort titles, not the control paragraphs, in the prose list.
+    if !page.joins.is_empty() {
+        let mut page_for_join = page.clone();
+        page_for_join.efforts = files
+            .iter()
+            .map(|(_, text)| {
+                let f = EffortFile::parse(text).expect("join validated");
+                (f.name().to_owned(), String::new())
+            })
+            .collect();
+        page_text = page_for_join.render(title, &repo, &day, &filed);
+    }
+    let mut page_file = EffortFile::parse(&page_text)?;
+    page_file.set("involvement", &involvement);
+    page_file.set("authority", &authority);
+    page_file.set("updated", &notes::local_stamp());
+    page_file.set(
+        "saved_by",
+        &format!("{} · {provider}", notes::machine_name()),
+    );
+    page_file.set("session", session);
+    files.push((page_rel.clone(), page_file.render_initiative()));
     let count = filed.len();
     let op = Op {
         reply_after_ms: None,
@@ -507,19 +584,22 @@ fn initiative_inner(
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
-    notes.spawn_sync();
+    let saved = saved_text(&pulled, notes.spawn_sync());
     let bound = read_state(&notes.state, session)
         .ok()
         .flatten()
-        .and_then(|s| s.effort.as_deref().map(str::to_owned));
+        .map(|s| s.record_label());
+    let action = if page.joins.is_empty() {
+        "created"
+    } else {
+        "joined"
+    };
     let mut text = format!(
-        "Initiative {title:?} filed as {page_rel} with {count} efforts, each proposed under it, committed:\n{}\n{}",
+        "Initiative {title:?} filed as {page_rel} with {count} efforts: {count} {action}; {saved}.\n{}\n{}\nActivate it with `astrolabe activate --initiative {page_slug}`.",
         lines.join("\n"),
         match bound {
-            Some(n) => format!(
-                "This session stays on effort {n}; if that effort planned them, it joins the initiative with `astrolabe effort save --initiative \"{title}\"` and closes as their record."
-            ),
-            None => "This session is bound to no effort.".to_owned(),
+            Some(binding) => format!("This session stays on {binding}; its binding is unchanged."),
+            None => "This session has no binding; it is unchanged.".to_owned(),
         }
     );
     if let Pull::Diverged(why) = &pulled {
@@ -555,7 +635,7 @@ fn save_inner(
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
-    let number = state.effort.as_deref().unwrap_or_default().to_owned();
+    let number = state.bound_key().unwrap_or_default().to_owned();
     let rel = state.file.as_deref().unwrap_or_default().to_owned();
     let status = cmd
         .flag("status")
@@ -584,6 +664,12 @@ fn save_inner(
                 .map_err(|_| format!("--effort takes an effort number, not {n:?}"))
         })
         .transpose()?;
+    let page_binding = state.initiative_key().is_some() && target.is_none();
+    let record = if page_binding {
+        format!("initiative {number}")
+    } else {
+        format!("effort {number}")
+    };
     // Conflicts are checked on the pieces they name, not the words: "Tether" and
     // "Tether cap" are one item.
     if let Some(j) = journal_text {
@@ -594,6 +680,25 @@ fn save_inner(
         return Err("--reason goes with --status abandoned, where it's recorded under Decisions; for any other choice use --decision \"chose X over Y: reason\". Nothing was written".to_owned());
     }
     let (body, body_plan, body_marked) = split_plan(cmd.body.as_deref());
+    if page_binding
+        && (pieces_file.is_some()
+            || !ticks.is_empty()
+            || !unticks.is_empty()
+            || plan_file.is_some()
+            || body_marked
+            || initiative.is_some())
+    {
+        return Err("an initiative has no pieces, ticks, plan replacement or initiative membership; save its Current state, Decisions, status, wait and journal only. Nothing was written".into());
+    }
+    if page_binding
+        && status.as_deref() == Some("done")
+        && body.as_deref().is_none_or(|b| b.trim().is_empty())
+    {
+        return Err(
+            "done needs a nonempty acceptance statement in Current state. Nothing was written"
+                .into(),
+        );
+    }
     if plan_file.is_some() && body_marked {
         return Err(
             "the plan comes one way: --plan-file, or a `## Plan` section in the body, not both"
@@ -632,12 +737,12 @@ fn save_inner(
     }
     if target.is_some() && state.worker.is_true() {
         return Err(format!(
-            "this session is a worker under effort {number}: it saves that effort only; the session that dispatched it marks the others. Nothing was written"
+            "this session is a worker under {record}: it saves that effort only; the session that dispatched it marks the others. Nothing was written"
         ));
     }
     if target.is_some_and(|t| t.to_string() == number) {
         return Err(format!(
-            "effort {number} is this session's own: save it without --effort. Nothing was written"
+            "{record} is this session's own: save it without --effort. Nothing was written"
         ));
     }
     if status.as_deref() == Some("blocked") && waits_for.is_none_or(str::is_empty) {
@@ -695,7 +800,7 @@ fn save_inner(
     }
     if notes.already_applied(key) {
         return Ok(format!(
-            "Already saved: this same tool call was done before (a retry), so nothing new was written to effort {number}."
+            "Already saved: this same tool call was done before (a retry), so nothing new was written to {record}."
         ));
     }
     let pulled = crate::application::pull(&notes);
@@ -728,11 +833,26 @@ fn save_inner(
             .map(|p| format!("\n\nIts Pieces now:\n\n{p}"))
             .unwrap_or_default();
         return Err(format!(
-            "effort {number} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
+            "{record} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
             file.prop("saved_by").unwrap_or("?"),
             file.prop("updated").unwrap_or("?"),
             file.current
         ));
+    }
+    if page_binding && status.as_deref() == Some("done") {
+        let pages = crate::effort::initiative_catalog(&notes.root)?;
+        let page = crate::effort::resolve_initiative(&pages, &number)?;
+        let open: Vec<_> = crate::effort::initiative_members(&notes.root, page)?
+            .into_iter()
+            .filter(|(_, f)| !matches!(f.prop("status"), Some("done" | "abandoned")))
+            .map(|(_, f)| f.title)
+            .collect();
+        if !open.is_empty() {
+            return Err(format!(
+                "initiative cannot be done while members are open: {}. Nothing was written",
+                open.join(", ")
+            ));
+        }
     }
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
@@ -784,7 +904,11 @@ fn save_inner(
     let journal = journal_text
         .map(|j| JournalLine {
             id: line_id(key, 0),
-            effort: format!("{:04}", number.parse::<u32>().unwrap_or(0)),
+            effort: if page_binding {
+                format!("initiative:{number}")
+            } else {
+                format!("{:04}", number.parse::<u32>().unwrap_or(0))
+            },
             text: j.to_owned(),
             machine: notes::machine_name(),
             at_ms: notes::now_ms(),
@@ -793,13 +917,34 @@ fn save_inner(
         })
         .into_iter()
         .collect();
-    stamp(
-        &mut file,
-        session,
-        provider,
-        stamp_facts(cwd, facts.as_ref()),
-    );
-    let text = file.render();
+    let text = if page_binding {
+        for (key, value) in [
+            ("status", "ready"),
+            ("repo", state.repo.as_deref().unwrap_or("")),
+            ("involvement", "check in at plan"),
+            ("authority", "edit"),
+            ("created", day.as_str()),
+        ] {
+            if file.prop(key).is_none() {
+                file.set(key, value);
+            }
+        }
+        file.set("updated", &notes::local_stamp());
+        file.set(
+            "saved_by",
+            &format!("{} · {provider}", notes::machine_name()),
+        );
+        file.set("session", session);
+        file.render_initiative()
+    } else {
+        stamp(
+            &mut file,
+            session,
+            provider,
+            stamp_facts(cwd, facts.as_ref()),
+        );
+        file.render()
+    };
     let now = notes::now_ms();
     let mut next_state = state.clone();
     next_state.saved(
@@ -807,9 +952,16 @@ fn save_inner(
         facts.as_ref().map(|f| f.fingerprint.clone()),
         now,
     );
-    let message = match &status {
-        Some(s) if *s != before => format!("{:04}: {s}", number.parse::<u32>().unwrap_or(0)),
-        _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
+    let message = if page_binding {
+        match &status {
+            Some(s) if *s != before => format!("initiative {number}: {s}"),
+            _ => format!("initiative {number}: checkpoint"),
+        }
+    } else {
+        match &status {
+            Some(s) if *s != before => format!("{:04}: {s}", number.parse::<u32>().unwrap_or(0)),
+            _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
+        }
     };
     let op = Op {
         reply_after_ms: None,
@@ -832,7 +984,7 @@ fn save_inner(
     // window sat unpushed for as long as its session stayed quiet.
     let saved = saved_text(&pulled, notes.spawn_sync());
     let mut head = format!(
-        "Saved effort {number}: status {}{}{}; {saved}.",
+        "Saved {record}: status {}{}{}; {saved}.",
         file.prop("status").unwrap_or("?"),
         if cmd.body.is_some() {
             ", Current state replaced"

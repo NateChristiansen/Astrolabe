@@ -282,6 +282,12 @@ impl Notes {
             if state.file.as_deref() == Some(old_rel.as_str()) {
                 state.file.set(new_rel.clone());
                 state.effort.set(next.to_string());
+                if let crate::session::Field::Known(crate::session::Binding::Effort {
+                    key, ..
+                }) = &mut state.binding
+                {
+                    *key = next.to_string();
+                }
                 op.states.push((path, state.to_value()));
             }
         }

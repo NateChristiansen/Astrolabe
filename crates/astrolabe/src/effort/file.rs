@@ -30,9 +30,14 @@ pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
             value.push_str(&unquote(item));
         } else if let Some((key, value)) = line.split_once(':').filter(|_| !line.starts_with(' ')) {
             let value = value.trim();
-            let value = match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
-                Some(list) => list.split(',').map(unquote).collect::<Vec<_>>().join(", "),
-                None => unquote(value),
+            let value = if value.starts_with("[[") && value.ends_with("]]") {
+                // A legacy wikilink is a name, not a nested YAML list.
+                unquote(value)
+            } else {
+                match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+                    Some(list) => list.split(',').map(unquote).collect::<Vec<_>>().join(", "),
+                    None => unquote(value),
+                }
             };
             props.push((key.trim().to_ascii_lowercase(), value));
         }
@@ -78,6 +83,8 @@ pub(crate) fn fence_mask<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<bool> 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EffortFile {
     pub props: Vec<(String, String)>,
+    /// Original bytes and parsed values, so unmanaged text survives edits.
+    pub original: Option<Box<OriginalFile>>,
     pub title: String,
     pub current: String,
     pub plan: Option<String>,
@@ -85,6 +92,58 @@ pub struct EffortFile {
     pub decisions: String,
     /// Other sections, heading and body, in their order.
     pub other: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalFile {
+    text: String,
+    parsed: EffortFile,
+}
+
+/// Byte spans of the body, respecting fenced headings and retaining line endings.
+fn body_spans(text: &str) -> (usize, Vec<(usize, usize, String)>) {
+    let clean = text.strip_prefix(BOM).unwrap_or(text);
+    let bom = text.len() - clean.len();
+    let mut body = bom;
+    if clean.lines().next() == Some("---") {
+        let mut offset = bom;
+        for (i, line) in clean.split_inclusive('\n').enumerate() {
+            offset += line.len();
+            if i > 0 && line.trim_end() == "---" {
+                body = offset;
+                break;
+            }
+        }
+    }
+    let lines: Vec<_> = text[body..].split_inclusive('\n').collect();
+    let fenced = fence_mask(lines.iter().map(|l| l.trim_end_matches(['\r', '\n'])));
+    let mut starts = Vec::new();
+    let mut offset = body;
+    let mut title = false;
+    for (line, fence) in lines.into_iter().zip(fenced) {
+        if !fence {
+            if let Some(h) = line.strip_prefix("## ") {
+                starts.push((offset, h.trim().to_owned()));
+            } else if !title && starts.is_empty() && line.starts_with("# ") {
+                starts.push((offset, "#".to_owned()));
+                starts.push((offset + line.len(), String::new()));
+                title = true;
+            }
+        }
+        offset += line.len();
+    }
+    let spans = starts
+        .iter()
+        .enumerate()
+        .map(|(i, (start, h))| {
+            (
+                *start,
+                starts.get(i + 1).map_or(text.len(), |s| s.0),
+                h.clone(),
+            )
+        })
+        .collect();
+    (body, spans)
 }
 
 /// The order properties are written in; unknown ones follow, as read.
@@ -109,6 +168,7 @@ pub(super) const PROP_ORDER: [&str; 16] = [
 
 impl EffortFile {
     pub fn parse(text: &str) -> Result<Self, String> {
+        let original_text = text.to_owned();
         let text = text.replace("\r\n", "\n");
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let props = frontmatter(text);
@@ -120,6 +180,7 @@ impl EffortFile {
             props,
             ..Default::default()
         };
+        let mut seen = std::collections::HashSet::new();
         let mut heading: Option<String> = None;
         let mut buf = String::new();
         // A `## ` line inside a code fence (a plan's shell sample, say) is text, not a
@@ -149,14 +210,23 @@ impl EffortFile {
             {
                 file.title = t.trim().to_owned();
             } else if let Some(h) = line.strip_prefix("## ") {
+                let h = h.trim();
+                if matches!(h, "Current state" | "Decisions" | "Plan") && !seen.insert(h.to_owned())
+                {
+                    return Err(format!("duplicate managed section: {h}"));
+                }
                 flush(&heading, &mut buf, &mut file);
-                heading = Some(h.trim().to_owned());
+                heading = Some(h.to_owned());
             } else if heading.is_some() {
                 buf.push_str(line);
                 buf.push('\n');
             }
         }
         flush(&heading, &mut buf, &mut file);
+        file.original = Some(Box::new(OriginalFile {
+            text: original_text,
+            parsed: file.clone(),
+        }));
         Ok(file)
     }
 
@@ -345,6 +415,110 @@ impl EffortFile {
     }
 
     pub fn render(&self) -> String {
+        if let Some(original) = &self.original {
+            let mut plain = self.clone();
+            plain.original = None;
+            if plain == original.parsed {
+                return original.text.clone();
+            }
+            return self.render_preserved(original, false);
+        }
+        self.render_fresh(false)
+    }
+
+    /// Initiative records always carry both managed sections, even before a decision.
+    pub fn render_initiative(&self) -> String {
+        let mut file = self.clone();
+        file.props.sort_by_key(|(k, _)| {
+            [
+                "status",
+                "repo",
+                "involvement",
+                "authority",
+                "waits_for",
+                "created",
+                "updated",
+                "saved_by",
+                "session",
+            ]
+            .iter()
+            .position(|p| p == k)
+            .unwrap_or(9)
+        });
+        if let Some(original) = &file.original {
+            file.render_preserved(original, true)
+        } else {
+            file.render_fresh(true)
+        }
+    }
+
+    fn render_preserved(&self, original: &OriginalFile, initiative: bool) -> String {
+        let mut managed = self.clone();
+        managed.original = None;
+        managed.other.clear();
+        let mut out = managed.render_fresh(initiative);
+        let (body, spans) = body_spans(&original.text);
+        let first = spans.first().map_or(original.text.len(), |s| s.0);
+        let has_purpose = spans.iter().any(|(_, _, h)| h == "Purpose");
+        let mut preamble = original.text[body..first].to_owned();
+        for (start, end, h) in &spans {
+            if h.is_empty() {
+                preamble.push_str(&original.text[*start..*end]);
+            }
+        }
+        if !initiative {
+            let at = out
+                .find("\n## Current state\n")
+                .expect("fresh managed section");
+            out.replace_range(at..at + 1, &preamble);
+            preamble.clear();
+        } else if !has_purpose && !preamble.trim().is_empty() {
+            out.push_str("\n## Purpose\n");
+            out.push_str(&preamble);
+            preamble.clear();
+        }
+        if initiative
+            && !has_purpose
+            && preamble.trim().is_empty()
+            && !out.contains("\n## Purpose\n")
+        {
+            out.push_str("\n## Purpose\n");
+        }
+        let mut written = Vec::new();
+        for (start, end, heading) in spans {
+            if matches!(
+                heading.as_str(),
+                "" | "#" | "Current state" | "Decisions" | "Plan"
+            ) {
+                continue;
+            }
+            if heading == "Purpose" && !preamble.trim().is_empty() {
+                let raw = &original.text[start..end];
+                let at = raw.find('\n').map_or(raw.len(), |n| n + 1);
+                out.push_str(&raw[..at]);
+                out.push_str(&preamble);
+                out.push_str(&raw[at..]);
+                written.push(heading);
+                continue;
+            }
+            let before = original.parsed.other.iter().find(|(h, _)| h == &heading);
+            let after = self.other.iter().find(|(h, _)| h == &heading);
+            if before == after {
+                out.push_str(&original.text[start..end]);
+            } else if let Some((h, b)) = after {
+                out.push_str(&format!("\n## {h}\n{}\n", b.trim()));
+            }
+            written.push(heading);
+        }
+        for (h, b) in &self.other {
+            if !written.contains(h) {
+                out.push_str(&format!("\n## {h}\n{}\n", b.trim()));
+            }
+        }
+        out
+    }
+
+    fn render_fresh(&self, initiative: bool) -> String {
         let mut out = String::from("---\n");
         let quoted = |v: &str| {
             if v.is_empty() {
@@ -357,7 +531,22 @@ impl EffortFile {
             }
         };
         let mut written = Vec::new();
-        for key in PROP_ORDER {
+        let order: &[&str] = if initiative {
+            &[
+                "status",
+                "repo",
+                "involvement",
+                "authority",
+                "waits_for",
+                "created",
+                "updated",
+                "saved_by",
+                "session",
+            ]
+        } else {
+            &PROP_ORDER
+        };
+        for &key in order {
             if let Some((k, v)) = self.props.iter().find(|(k, _)| k == key) {
                 out += &format!("{k}: {}\n", quoted(v));
                 written.push(k.clone());
@@ -374,7 +563,7 @@ impl EffortFile {
             self.title,
             self.current.trim()
         );
-        if !self.decisions.trim().is_empty() {
+        if initiative || !self.decisions.trim().is_empty() {
             out += &format!("\n## Decisions\n{}\n", self.decisions.trim());
         }
         // Below Decisions: the plan is written for agents, the rest for the owner.

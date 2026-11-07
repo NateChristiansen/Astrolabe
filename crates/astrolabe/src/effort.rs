@@ -5,4 +5,7 @@ mod initiative;
 pub use command::{DELIMITER, EffortCommand, FORMS, INITIATIVE_FLAGS, NEW_FLAGS, SAVE_FLAGS};
 pub use file::{EffortFile, slug};
 pub(crate) use file::{fence_mask, frontmatter};
-pub use initiative::InitiativePage;
+pub use initiative::{
+    Initiative, InitiativePage, initiative_catalog, initiative_members, initiative_name,
+    resolve_initiative, set_initiative_property,
+};

@@ -8,6 +8,7 @@ use std::path::Path;
 #[serde(default)]
 pub struct BoardData {
     pub efforts: Vec<EffortRow>,
+    pub initiative_attention: Vec<EffortRow>,
     pub today: String,
     pub journal: String,
     pub journal_lines: Vec<JournalEntry>,
@@ -97,6 +98,37 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             dirty: file.prop("dirty").map(str::to_owned),
         });
     }
+    let mut initiative_attention = Vec::new();
+    if let Ok(pages) = crate::effort::initiative_catalog(&notes.root) {
+        for page in pages {
+            let file = &page.file;
+            if file
+                .prop("waits_for")
+                .is_none_or(|w| !w.starts_with("owner:"))
+            {
+                continue;
+            }
+            if let Some(repo) = repo
+                && !file
+                    .prop("repo")
+                    .is_some_and(|rs| rs.split(',').any(|r| r.trim() == repo))
+            {
+                continue;
+            }
+            initiative_attention.push(EffortRow {
+                title: Some(file.title.clone()),
+                file: Some(page.path),
+                status: file.prop("status").map(str::to_owned),
+                repo: file.prop("repo").map(str::to_owned),
+                waits_for: file.prop("waits_for").map(str::to_owned),
+                needs_owner: true,
+                state: file.first_paragraph().map(str::to_owned),
+                next: file.last_paragraph().map(str::to_owned),
+                updated: file.prop("updated").map(str::to_owned),
+                ..Default::default()
+            });
+        }
+    }
     let (day, _) = notes::local_day_time();
     let mut journal =
         std::fs::read_to_string(notes.root.join(notes::journal_file(&day))).unwrap_or_default();
@@ -113,6 +145,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     }
     BoardData {
         efforts: rows,
+        initiative_attention,
         today: day,
         journal_lines: notes::parse_journal(&journal),
         journal,

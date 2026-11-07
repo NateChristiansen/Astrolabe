@@ -507,7 +507,7 @@ fn only_gated_plugin_hooks_are_available() {
     let help = help
         .replace("notes <init <folder>|", "notes <")
         .replace("initiative new …|", "");
-    for retired in ["init", "doctor", "serve [--db", "where", "mcp"] {
+    for retired in ["|init", "<init", "doctor", "serve [--db", "where", "mcp"] {
         assert!(
             !help.contains(retired),
             "retired command in help: {retired}"

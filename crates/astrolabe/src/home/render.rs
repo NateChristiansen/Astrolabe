@@ -94,6 +94,14 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             updated_ms: row.updated.as_deref().and_then(stamp_ms),
         })
         .collect();
+    let attention_pages: Vec<Card> = rows
+        .initiative_attention
+        .iter()
+        .map(|row| Card {
+            row,
+            updated_ms: row.updated.as_deref().and_then(stamp_ms),
+        })
+        .collect();
     let mut columns: [Vec<&Card>; 6] = Default::default();
     for card in &cards {
         let slot = if card.row.needs_owner {
@@ -117,6 +125,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         };
         columns[slot].push(card);
     }
+    columns[0].extend(attention_pages.iter());
     for column in &mut columns {
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
@@ -229,21 +238,35 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             );
         }
         let effort = line.effort.as_str();
-        let num = match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {
-            // The number says which effort the link opens; the repo says where it landed.
-            Some(row) => {
-                let n = row.number.map(|n| n.to_string()).unwrap_or_default();
-                let label = match row.repo.as_deref().filter(|r| !r.is_empty()) {
-                    Some(repo) => format!("{n} · {}", esc(repo)),
-                    None => format!("Effort {n}"),
-                };
-                format!(
-                    "<span class=\"num\"><a href=\"{}\" title=\"{}\">{label}</a></span>",
-                    esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
-                    esc(row.title.as_deref().unwrap_or("Effort")),
-                )
+        let num = if let Some(slug) = line.initiative_slug() {
+            let rel = format!("initiatives/{slug}.md");
+            let title = std::fs::read_to_string(root.join(&rel))
+                .ok()
+                .and_then(|text| crate::effort::EffortFile::parse(&text).ok())
+                .map(|f| f.title)
+                .unwrap_or_else(|| slug.to_owned());
+            format!(
+                "<span class=\"num\"><a href=\"{}\">{}</a></span>",
+                esc(&links.href(root, &rel)),
+                esc(&title)
+            )
+        } else {
+            match effort.parse::<u64>().ok().and_then(|n| by_number.get(&n)) {
+                // The number says which effort the link opens; the repo says where it landed.
+                Some(row) => {
+                    let n = row.number.map(|n| n.to_string()).unwrap_or_default();
+                    let label = match row.repo.as_deref().filter(|r| !r.is_empty()) {
+                        Some(repo) => format!("{n} · {}", esc(repo)),
+                        None => format!("Effort {n}"),
+                    };
+                    format!(
+                        "<span class=\"num\"><a href=\"{}\" title=\"{}\">{label}</a></span>",
+                        esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
+                        esc(row.title.as_deref().unwrap_or("Effort")),
+                    )
+                }
+                None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
             }
-            None => format!("<span class=\"num repo\">{}</span>", esc(effort)),
         };
         journal += &format!("<li>{num}<span>{}</span></li>\n", esc(line.text.as_str()));
     }
@@ -584,13 +607,28 @@ pub(super) fn card_html(
     } else {
         String::new()
     };
+    let is_initiative = card
+        .row
+        .file
+        .as_deref()
+        .is_some_and(|f| f.starts_with("initiatives/"));
+    let number = if is_initiative {
+        "Initiative".to_owned()
+    } else {
+        card.row.number.unwrap_or(0).to_string()
+    };
+    let key = if is_initiative {
+        card.row.file.clone().unwrap_or_default()
+    } else {
+        number.clone()
+    };
     format!(
         "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span> {}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{context}{next}{pieces}{review}</article>\n",
         esc(state),
         if compact { " compact" } else { "" },
-        card.row.number.unwrap_or(0),
+        esc(&key),
         esc(&href),
-        card.row.number.unwrap_or(0),
+        number,
         esc(card.row.title.as_deref().unwrap_or_default()),
         bits.join(""),
     )

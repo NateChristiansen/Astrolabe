@@ -53,7 +53,7 @@ pub fn tidy_journal(text: &str) -> String {
             continue;
         };
         // An unstamped line (one early build wrote them) counts as older than any stamped.
-        if !entry.is_effort() || entry.legacy {
+        if !(entry.is_effort() || entry.initiative_slug().is_some()) || entry.legacy {
             continue;
         }
         match latest.iter_mut().find(|(tag, _, _)| *tag == entry.effort) {
@@ -98,6 +98,12 @@ pub struct JournalEntry {
 }
 
 impl JournalEntry {
+    /// The distinct namespace keeps page journals separate from repository findings.
+    pub fn initiative_slug(&self) -> Option<&str> {
+        self.effort
+            .strip_prefix("initiative:")
+            .filter(|slug| !slug.is_empty())
+    }
     /// Tagged with an effort number, not a repo.
     pub fn is_effort(&self) -> bool {
         self.effort.len() == 4 && self.effort.chars().all(|c| c.is_ascii_digit())
@@ -159,4 +165,29 @@ pub fn parse_journal(text: &str) -> Vec<JournalEntry> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod initiative_tests {
+    use super::*;
+
+    #[test]
+    fn merged_page_replacements_do_not_replace_a_repository_with_the_same_slug() {
+        let text = "- Old page. <!-- initiative:curves mac 10 e:a -->\n- Repo finding. <!-- curves mac 11 e:b -->\n- New page. <!-- initiative:curves pc 20 e:c -->\n- Older page arriving later. <!-- initiative:curves mac 15 e:d -->\n- Effort change. <!-- 0001 mac 12 e:e -->\n";
+        let tidy = tidy_journal(text);
+        assert!(!tidy.contains("Old page.") && !tidy.contains("Older page"));
+        assert!(
+            tidy.contains("Repo finding.")
+                && tidy.contains("New page.")
+                && tidy.contains("Effort change.")
+        );
+        let entries = parse_journal(&tidy);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e.initiative_slug() == Some("curves"))
+                .count(),
+            1
+        );
+    }
 }

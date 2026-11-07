@@ -123,10 +123,11 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
 | `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and marks the effort done with `effort save --effort <number>`. |
-| `astrolabe activate --status` | Show the loaded effort and this session's guard proof. |
-| `astrolabe activate --off` | Unload the effort; the machine switch and guard stay on. |
+| `astrolabe activate --initiative <slug>` | Bind to an initiative page. A quoted title also resolves; workers and subagents cannot bind. Missing involvement and authority default to `check in at plan` and `edit`. |
+| `astrolabe activate --status` | Show the loaded effort or initiative and this session's guard proof. |
+| `astrolabe activate --off` | Unload the effort or initiative; the machine switch and guard stay on. |
 
-Run each command alone. The notes checkout can load any effort; a project checkout loads efforts for that project. Running the executable outside the hook doesn't load an effort.
+Run each command alone. The notes checkout can load any effort or initiative; a project checkout loads records for that project. Running the executable outside the hook does not bind a record.
 
 ## Allow one approved command
 
@@ -159,7 +160,9 @@ Involvement and authority follow the owner's instructions; see [choosing how the
 
 ## Create an initiative
 
-`astrolabe initiative new` files an initiative page and every effort it names in one commit, so a plan that names ten efforts is one command. The body is the page. Its `## Efforts` section (any heading starting with "Efforts") lists the efforts in order, one paragraph each: the title on the first line, the goal on the lines below. Each becomes a `proposed` effort grouped under the title; the section is rewritten as a numbered list of links to them, and everything else in the body is kept as written.
+`astrolabe initiative new` files a page alone or with its efforts in one commit. Omit `## Efforts` for a page only. An Efforts section (any heading starting with "Efforts") accepts either new efforts, with a title and goal per paragraph, or existing efforts, with each paragraph beginning exactly `effort <number>` and optional explanatory prose. Do not mix the two forms. New efforts start `proposed`; both forms write the canonical page slug as membership. Joins preserve every other part of each effort and allocate no numbers. Duplicate, missing or conflicting members refuse the entire operation.
+
+Pages carry status, repo, involvement, authority, wait and save stamps, followed by Current state, Decisions and Purpose. The first save of a legacy page inserts missing managed sections and puts its unheaded purpose under `## Purpose`, preserving that text, links, fences and other sections. Existing Purpose headings are reused. Titles and slugs resolve ignoring case and surrounding `[[ ]]`; ambiguous titles or slugs are refused.
 
 ```sh
 astrolabe initiative new --title "Saving and progression" <<'ASTROLABE'
@@ -179,16 +182,18 @@ ASTROLABE
 
 | Option | Values and default |
 | --- | --- |
-| `--title "<name>"` | Required. The initiative's name, as the `initiative` property of its efforts, and the page's file name under `initiatives/`. |
+| `--title "<name>"` | Required. The initiative's title; its filename slug under `initiatives/` becomes canonical membership. |
 | `--repo <name>` | As for `effort new`: required from the notes checkout, refused elsewhere. |
-| `--involvement "<value>"` | Applied to every effort filed; default `check in at plan`. |
-| `--authority <value>` | Applied to every effort filed; default `edit`. |
+| `--involvement "<value>"` | Applied to the page and every new effort; default `check in at plan`. |
+| `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
-The session stays bound to its own effort: the spike that planned the initiative joins it with `effort save --initiative "<name>"` and closes as the record. No journal line is written. An initiative is filed once; a page that already exists is refused, and a later effort joins the group with `--initiative` on `effort new` or `effort save`. The page's `status` and the efforts' order are then the owner's to edit; the board groups efforts by the property, not the page.
+The existing session binding stays unchanged. No journal line is written by filing. The reply gives the activation command and actual commit/sync outcome. A planning spike can remain provenance without joining the initiative.
+
+Bind with `astrolabe activate --initiative <slug>` and save with `astrolabe effort save`. That save replaces Current state, appends dated Decisions, and accepts `--status`, `--waits-for`, `--reason` and `--journal`. The page appears in Needs you from an `owner:` wait. Its journal line is keyed by slug in the distinct `initiative:<slug>` namespace and replaces the previous line for the day, including after a merge. Initiative statuses are `proposed`, `ready`, `active`, `blocked`, `done` and `abandoned`. Done needs a nonempty acceptance statement in the body and every member done or abandoned; unreadable member records prevent closure. Pieces, ticks, plan replacement and initiative membership are unavailable on the page itself.
 
 ## Save an effort
 
-`astrolabe effort save` updates the effort bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state. With `--effort <number>` it changes another effort's state instead; see below.
+`astrolabe effort save` updates the effort or initiative bound to this session and commits the notes. It takes a replacement Current state, any options below, or both. Omit the body to keep the existing Current state. With `--effort <number>` it changes another effort's state instead; see below.
 
 Without a notes remote, a successful save reports `saved locally; sync unavailable: no remote configured`. With a remote, `background sync started` means the background process was launched, not that a push finished. A launch failure is reported separately; the local save still succeeds.
 
