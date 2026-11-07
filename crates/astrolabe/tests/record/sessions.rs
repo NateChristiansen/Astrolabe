@@ -549,7 +549,10 @@ fn a_new_effort_asks_a_codex_agent_to_rename_its_thread_once() {
     assert!(text.contains(&wanted), "{text}");
     let (again, ok) = mac.bash_codex("c1", &format!("astrolabe activate --effort {number}"));
     assert!(ok && !again.contains("set_thread_title"), "{again}");
-    // Claude's hook names the session itself, so its agent isn't told to.
+    // A Claude agent is told to use its own app's tool.
     let (text, ok) = mac.bash("s1", NEW);
-    assert!(ok && !text.contains("set_thread_title"), "{text}");
+    assert!(
+        ok && text.contains("set_session_title") && !text.contains("set_thread_title"),
+        "{text}"
+    );
 }

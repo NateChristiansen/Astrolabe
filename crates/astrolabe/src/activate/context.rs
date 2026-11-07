@@ -72,13 +72,24 @@ pub fn session_name(number: &str, title: &str) -> String {
     }
 }
 
-/// Said to a Codex session that picks up an effort: its hooks can't name a thread, but the
-/// Codex app gives its agents a tool that can. A thread started outside the app has no such
-/// tool and isn't listed there, so it skips this.
-fn codex_rename(name: &str) -> String {
-    format!(
-        "Rename this thread to \"{name}\" now with the app's thread-rename tool (`set_thread_title` in the Codex app), so the owner can see which effort it's on. If you have no such tool, skip this and don't mention it."
-    )
+/// Said to a session that picks up an effort mid-session, so its name shows at once. Codex
+/// hooks can't name a thread, but the Codex app gives its agents a tool that can; a thread
+/// started outside the app has no such tool and isn't listed there, so it skips this. A Claude
+/// hook names a session only when a prompt is sent, so the Claude desktop app's own tool names
+/// it sooner, and the hook still names it where there's no such tool.
+fn rename(provider: &str, name: &str) -> Option<String> {
+    let (what, tool, otherwise) = match provider {
+        "codex" => ("thread", "`set_thread_title` in the Codex app", ""),
+        "claude" => (
+            "session",
+            "`set_session_title` in the Claude desktop app",
+            ": the plugin names it at the owner's next message",
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "Rename this {what} to \"{name}\" now with the app's {what}-rename tool ({tool}), so the owner can see which effort it's on. If you have no such tool, skip this and don't mention it{otherwise}."
+    ))
 }
 
 /// Said to a worker on binding: what it may not do, and why.
@@ -247,16 +258,21 @@ impl Activation {
     pub fn mid_session(mut self) -> Self {
         self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
-        // Only here: a resumed thread was named when it picked the effort up, and a launched
-        // worker runs outside the app. Once per name, so picking the same effort up again
-        // doesn't undo the owner's rename. Claude's hook names its session itself (see `naming`).
-        if let (Some("codex"), Some(name)) =
-            (self.state.provider.as_deref(), self.state.name.as_deref())
+        // Only here: a resumed session was named when it picked the effort up, and a launched
+        // worker runs outside the app or is named by Claude's start hook. Once per name, so
+        // picking the same effort up again doesn't undo the owner's rename.
+        let provider = self.state.provider.as_deref().unwrap_or_default();
+        if let Some(name) = self.state.name.as_deref()
             && self.state.named.as_deref() != Some(name)
+            && let Some(line) = rename(provider, name)
         {
-            self.head += &format!("\n\n{}", codex_rename(name));
-            let name = name.to_owned();
-            self.state.named.set(name);
+            self.head += &format!("\n\n{line}");
+            // Claude's hook records the name when it gives it at the next prompt; recorded
+            // here, it would never give it in an app with no rename tool.
+            if provider == "codex" {
+                let name = name.to_owned();
+                self.state.named.set(name);
+            }
         }
         self
     }

@@ -42,7 +42,13 @@ fn a_claude_session_is_named_at_the_next_prompt_once_and_an_owner_rename_stays()
     let f = Fixture::new();
     assert_eq!(prompt(&f, "s1", None), None, "no effort, no name");
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
-    assert!(ok && !text.contains("set_thread_title"), "{text}");
+    // Told to rename itself with the desktop app's tool, so the name shows at once.
+    assert!(
+        ok && text.contains("Rename this session to \"70 Demo\"")
+            && text.contains("set_session_title")
+            && !text.contains("set_thread_title"),
+        "{text}"
+    );
     // The desktop app's own title reads as a custom one: binding an effort wins over it.
     let first = prompt(&f, "s1", Some("Auto title"));
     assert_eq!(title(&first), Some("70 Demo"));
@@ -51,8 +57,10 @@ fn a_claude_session_is_named_at_the_next_prompt_once_and_an_owner_rename_stays()
         "UserPromptSubmit"
     );
     assert_eq!(prompt(&f, "s1", Some("70 Demo")), None, "once");
-    // Renamed by the owner, then picked up again: their name stays.
-    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    // Renamed by the owner, then picked up again: their name stays, and the agent isn't
+    // told to undo it.
+    let (again, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok && !again.contains("set_session_title"), "{again}");
     assert_eq!(prompt(&f, "s1", Some("Mine")), None);
     let resumed =
         json!({"session_id": "s1", "cwd": f.demo, "source": "resume", "session_title": "Mine"});
