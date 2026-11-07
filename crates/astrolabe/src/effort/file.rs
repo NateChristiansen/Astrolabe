@@ -377,6 +377,14 @@ impl EffortFile {
         Some((done, total))
     }
 
+    /// Unchecked checklist lines, recognized exactly as the piece counter recognizes them.
+    pub fn unticked_pieces(&self) -> impl Iterator<Item = &str> {
+        self.pieces()
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| piece_box(line) == Some(false))
+    }
+
     /// When ticking, an exact label wins; otherwise a unique unfinished prefix selects the
     /// item. Unticking keeps its existing unique-prefix match across all pieces.
     pub fn piece_at(&self, label: &str, done: bool) -> Result<usize, String> {

@@ -846,15 +846,7 @@ fn save_inner(
             file.current
         ));
     }
-    if page_binding
-        && status.as_deref() == Some("done")
-        && file.prop("status") != Some("done")
-        && current.as_deref().is_none_or(|b| b.trim().is_empty())
-    {
-        return Err(format!(
-            "done needs a nonempty acceptance statement in Current state. Nothing was written.\n{FORMS}"
-        ));
-    }
+    require_transition_body(&file, status.as_deref(), current.as_deref())?;
     if page_binding && status.as_deref() == Some("done") {
         let pages = crate::effort::initiative_catalog(&notes.root)?;
         let page = crate::effort::resolve_initiative(&pages, &number)?;
@@ -870,7 +862,6 @@ fn save_inner(
             ));
         }
     }
-    require_transition_body(&file, status.as_deref(), current.as_deref())?;
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
@@ -1069,12 +1060,7 @@ fn unfinished_pieces(file: &EffortFile) -> String {
     if file.prop("status") != Some("done") {
         return String::new();
     }
-    let lines: Vec<_> = file
-        .pieces()
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| line.trim_start().starts_with("- [ ] "))
-        .collect();
+    let lines: Vec<_> = file.unticked_pieces().collect();
     if lines.is_empty() {
         String::new()
     } else {
@@ -1162,9 +1148,7 @@ fn read_inner(cmd: &EffortCommand, session: &str, cwd: &Path) -> Result<String, 
     crate::application::pull(&notes);
     let (_, text, file) = target_note(&notes, &state, target, cwd)?;
     let hash = notes::content_hash(&text);
-    let mut reads = state.read_efforts.as_ref().cloned().unwrap_or_default();
-    reads.insert(target.to_string(), hash.clone());
-    state.read_efforts.set(reads);
+    state.deliver_effort(target, hash.clone());
     if state.initiative_key().is_none() && state.bound_key() == Some(target.to_string().as_str()) {
         state.delivered.set(hash);
         state.delivered_ms.set(notes::now_ms());
@@ -1242,9 +1226,7 @@ fn save_target(
     }
     if delivered.is_some_and(|hash| hash != &on_disk_hash) {
         let mut next = state.clone();
-        let mut reads = next.read_efforts.as_ref().cloned().unwrap_or_default();
-        reads.insert(target.to_string(), on_disk_hash.clone());
-        next.read_efforts.set(reads);
+        next.deliver_effort(target, on_disk_hash.clone());
         notes::write_text(&state_path(&notes.state, session), &next.to_string())?;
         return Err(format!(
             "effort {target} changed since it was delivered to this session. Nothing was overwritten. Its note now:\n\n{on_disk}\nSave again from this."
@@ -1269,10 +1251,8 @@ fn save_target(
         _ => format!("{target:04}: checkpoint"),
     };
     let mut next = state.clone();
-    let mut reads = next.read_efforts.as_ref().cloned().unwrap_or_default();
     if delivered.is_some() {
-        reads.insert(target.to_string(), notes::content_hash(&text));
-        next.read_efforts.set(reads);
+        next.deliver_effort(target, notes::content_hash(&text));
     }
     let op = Op {
         reply_after_ms: None,

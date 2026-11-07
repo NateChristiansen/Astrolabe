@@ -958,15 +958,20 @@ fn done_lists_unfinished_pieces_without_refusing() {
     assert!(m.bash("s1", NEW).1);
     write(
         &m.demo.join("pieces.md"),
-        "- [x] Built\n- [ ] Deferred playtest\n- [ ] Dropped variant",
+        "- [x] Built\n  - [ ] Deferred playtest\n\t- [ ] Dropped variant\n- [X] Verified\n- [ ]not a piece\n* [ ] Not counted",
     );
     assert!(
         m.bash("s1", "astrolabe effort save --pieces-file pieces.md")
             .1
     );
+    let file = astrolabe::effort::EffortFile::parse(&m.effort_text(1)).unwrap();
+    assert_eq!(file.pieces_count(), Some((2, 4)));
     let (out, ok) = m.bash("s1", "astrolabe effort save --status done <<'ASTROLABE'\nDone, with playtest deferred and variant dropped.\nASTROLABE");
     assert!(
-        ok && out.contains("Unticked pieces:\n- [ ] Deferred playtest\n- [ ] Dropped variant"),
+        ok && out.contains("Unticked pieces:\n  - [ ] Deferred playtest\n\t- [ ] Dropped variant")
+            && !out.contains("Verified")
+            && !out.contains("not a piece")
+            && !out.contains("Not counted"),
         "{out}"
     );
 }
@@ -1129,4 +1134,48 @@ fn initiative_status_moves_need_text_and_review_is_unavailable() {
     assert!(m.bash("lead", "astrolabe effort save --status done <<'ASTROLABE'\nAccepted, the whole works.\nASTROLABE").1);
     let (out, ok) = m.bash("lead", "astrolabe effort save --status done");
     assert!(ok, "{out}");
+}
+
+#[test]
+fn reactivating_the_same_record_keeps_reads_without_refreshing_other_notes() {
+    for binding in ["--effort 2", "--initiative coordination"] {
+        let world = World::new();
+        let m = world.machine("mac");
+        dispatcher(&m);
+        write(
+            &m.notes.join("initiatives/coordination.md"),
+            "---\nstatus: active\nrepo: demo\n---\n# Coordination\n\n## Current state\nCoordinating the work.\n",
+        );
+        let activate = format!("astrolabe activate {binding}");
+        assert!(m.bash("lead", &activate).1);
+        assert!(m.bash("lead", "astrolabe effort read 1").1);
+        assert!(m.bash("lead", &activate).1);
+        let (out, ok) = m.bash("lead", "astrolabe effort save --effort 1 --tick Build");
+        assert!(ok, "{binding}: {out}");
+        assert!(m.effort_text(1).contains("- [x] Build"));
+
+        assert!(m.bash("other", "astrolabe activate --effort 1").1);
+        assert!(m.bash("other", "astrolabe effort save <<'ASTROLABE'\nNew worker findings after the read.\nASTROLABE").1);
+        let before = m.effort_text(1);
+        assert!(m.bash("lead", &activate).1);
+        let command = "astrolabe effort save --effort 1 --untick Build";
+        let (out, ok) = m.bash("lead", command);
+        assert!(
+            !ok && out.contains("changed since") && out.contains("New worker findings"),
+            "{binding}: {out}"
+        );
+        assert_eq!(m.effort_text(1), before);
+        assert!(m.bash("lead", command).1);
+
+        // A different record starts a new context and needs a fresh explicit read.
+        assert!(
+            m.bash(
+                "lead",
+                "astrolabe effort new --title Other <<'ASTROLABE'\nAnother task.\nASTROLABE"
+            )
+            .1
+        );
+        let (out, ok) = m.bash("lead", "astrolabe effort save --effort 1 --tick Land");
+        assert!(!ok && out.contains("effort read 1"), "{out}");
+    }
 }

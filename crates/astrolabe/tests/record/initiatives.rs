@@ -290,7 +290,7 @@ fn initiative_done_requires_acceptance_and_closed_members_across_repositories() 
             .1
     );
     let (out, ok) = mac.bash("lead", "astrolabe effort save --status done");
-    assert!(!ok && out.contains("acceptance"), "{out}");
+    assert!(!ok && out.contains("needs a Current state body"), "{out}");
     for alias in [
         "smooth-lines",
         "Smooth lines",

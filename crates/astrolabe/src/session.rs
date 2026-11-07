@@ -140,6 +140,13 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    /// Remember the version delivered by an explicit read or a checked write by number.
+    pub fn deliver_effort(&mut self, number: u32, hash: String) {
+        let mut reads = self.read_efforts.as_ref().cloned().unwrap_or_default();
+        reads.insert(number.to_string(), hash);
+        self.read_efforts.set(reads);
+    }
+
     pub fn initiative_key(&self) -> Option<&str> {
         match self.binding.as_ref() {
             Some(Binding::Initiative { key, .. }) => Some(key),

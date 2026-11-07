@@ -483,6 +483,7 @@ fn switch_record(
         state.acknowledged = previous.acknowledged.clone();
         state.last_save_ms = previous.last_save_ms.clone();
         state.saves = previous.saves.clone();
+        state.read_efforts = previous.read_efforts.clone();
         state.worker = previous.worker.clone();
     }
     fn meaning(table: &[(&str, &'static str)], value: &str) -> &'static str {
