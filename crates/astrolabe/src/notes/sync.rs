@@ -288,6 +288,13 @@ impl Notes {
         stale
     }
 
+    /// A status-only reply transition cannot resolve an unseen concurrent save.
+    pub(crate) fn has_stale(&self, rel: &str) -> bool {
+        self.sync_record()["stale"]["files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|file| file.as_str() == Some(rel)))
+    }
+
     pub(super) fn clear_stale(&self, rel: &str) {
         let mut record = self.sync_record();
         let Some(files) = record["stale"]["files"].as_array() else {
@@ -337,6 +344,7 @@ impl Notes {
             hash(&files.iter().map(|(_, t)| t.as_str()).collect::<String>())
         );
         let op = Op {
+            reply_after_ms: None,
             lesson_close: None,
             key: key.clone(),
             files,

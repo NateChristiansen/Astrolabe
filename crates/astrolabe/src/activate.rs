@@ -25,7 +25,7 @@ use repos::notes_checked;
 pub(crate) use repos::{Repos, common_dir, in_notes, note_remotes, notes_and_repos, repo_names};
 pub use repos::{add_repo, add_repo_note, check_repo_name, main_checkout, notes_root};
 pub use routing::gate;
-pub(crate) use routing::provider;
+pub(crate) use routing::{block_reason, provider};
 pub use tickets::command;
 pub(crate) use tickets::shown_for;
 use tickets::write_json;

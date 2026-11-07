@@ -36,6 +36,10 @@ Recording commands also run through the pre-command hook. The hook can write to 
 
 The Stop hook compares the repo's HEAD, diff and untracked contents with the last saved state. Edit and commit events can also mark a session as changed. It nudges once per change and avoids a repeated stop loop. A nudge is a reminder, not a mandatory save gate. Findings left only in chat can go undetected.
 
+The pre-command and Stop hooks silently check for a new human reply when their bound effort has an owner wait. They read at most the last 64 KiB of the provider transcript (plus a bounded 64 KiB session header for Codex), requiring explicit human provenance and the original message time after delivery of the current note version. Claude queued replies use their original timestamp. Background messages, stale replies, other sessions and workers cannot clear the wait. Missing or changed transcript formats leave it unchanged; the next ordinary save remains the fallback. No transcript text enters model context.
+
+The automatic transition clears only `waits_for`, changes active/blocked to active, and updates the note timestamp. It preserves progress text, journal and save-nudge bookkeeping. It uses the existing local write lock and durable intent, checks the delivered note hash, refreshes the board, and syncs in the background. It skips busy locks and pending recovery rather than delaying a tool. Unlike explicit saves it does not fetch before writing; remote conflicts still use the normal sync protections. A reply is activity, not approval.
+
 ## Synchronization and recovery
 
 Notes writes share an advisory lock on each machine. Each complete write is first stored as an intent in the local state folder, then applied so a retry won't commit the same operation twice. Interrupted writes can be finished from those intents. An unreadable intent is preserved and reported by `notes status`; new writes wait until it is repaired or moved aside.
