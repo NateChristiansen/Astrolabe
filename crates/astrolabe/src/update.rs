@@ -1,6 +1,7 @@
 //! `astrolabe update`: the program and each app's plugin, moved together to the newest
 //! release or nightly. It runs the same published installer and app commands a person
 //! would, so it adds no download or install path of its own.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,6 +12,8 @@ const CHANNEL: Option<&str> = option_env!("ASTROLABE_CHANNEL");
 const REPO: &str = "https://github.com/NateChristiansen/Astrolabe";
 const PLUGIN: &str = "astrolabe@astrolabe";
 const MARKETPLACE: &str = "astrolabe";
+/// Where the plugin's files sit in the marketplace's checkout of this repo.
+const PLUGIN_DIR: &str = "plugin/astrolabe";
 
 /// `astrolabe 0.5.0`, and for a nightly build `astrolabe 0.5.0 (nightly 1a2b3c4)`.
 pub fn version_line() -> String {
@@ -86,10 +89,33 @@ impl App {
         }
     }
 
+    /// Pull the newest commit at the ref the marketplace already follows.
+    fn refresh(self) -> Vec<String> {
+        match self {
+            App::Claude => owned(&["plugin", "marketplace", "update", MARKETPLACE]),
+            App::Codex => owned(&["plugin", "marketplace", "upgrade", MARKETPLACE]),
+        }
+    }
+
+    /// Replace the installed copy with the marketplace's. Both apps cache the plugin by
+    /// its version, which stays the same across nightlies, so their own update commands
+    /// call a changed nightly current. The removal may fail when nothing is installed.
+    pub fn reinstall(self) -> Vec<(Vec<String>, bool)> {
+        match self {
+            App::Claude => vec![
+                (owned(&["plugin", "uninstall", PLUGIN]), false),
+                (owned(&["plugin", "install", PLUGIN]), true),
+            ],
+            App::Codex => vec![
+                (owned(&["plugin", "remove", PLUGIN]), false),
+                (owned(&["plugin", "add", PLUGIN]), true),
+            ],
+        }
+    }
+
     /// The commands that swap the registration for one at `git_ref`, as the install
     /// guide gives them. The removals may fail when nothing is registered.
     pub fn steps(self, git_ref: &str) -> Vec<(Vec<String>, bool)> {
-        let owned = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         let url = format!("{REPO}.git");
         match self {
             App::Claude => vec![
@@ -120,6 +146,10 @@ impl App {
     }
 }
 
+fn owned(words: &[&str]) -> Vec<String> {
+    words.iter().map(|w| w.to_string()).collect()
+}
+
 /// Where an app's Astrolabe marketplace points now: None when it has none registered,
 /// Some(None) when it follows the default branch or a folder.
 fn registered(app: App, cli: &Path) -> Option<Option<String>> {
@@ -133,13 +163,82 @@ fn registered(app: App, cli: &Path) -> Option<Option<String>> {
             let entry = list.as_array()?.iter().find(|m| m["name"] == MARKETPLACE)?;
             Some(entry["ref"].as_str().map(str::to_owned))
         }
-        App::Codex => {
-            let home = std::env::var_os("CODEX_HOME")
+        App::Codex => codex_ref(&std::fs::read_to_string(codex_home()?.join("config.toml")).ok()?),
+    }
+}
+
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home().map(|h| h.join(".codex")))
+}
+
+/// The plugin as the app installed it, then the marketplace's copy it should match, read
+/// from the app's own records. None when they don't show both, which counts as stale.
+fn copies(app: App) -> Option<(PathBuf, PathBuf)> {
+    match app {
+        App::Claude => {
+            let plugins = std::env::var_os("CLAUDE_CONFIG_DIR")
                 .map(PathBuf::from)
-                .or_else(|| home().map(|h| h.join(".codex")))?;
-            codex_ref(&std::fs::read_to_string(home.join("config.toml")).ok()?)
+                .or_else(|| home().map(|h| h.join(".claude")))?
+                .join("plugins");
+            let installed = read_json(&plugins.join("installed_plugins.json")).ok()?;
+            let installed = installed["plugins"][PLUGIN]
+                .as_array()?
+                .iter()
+                .find_map(|e| e["installPath"].as_str())?;
+            let known = read_json(&plugins.join("known_marketplaces.json")).ok()?;
+            let clone = known[MARKETPLACE]["installLocation"].as_str()?;
+            Some((PathBuf::from(installed), Path::new(clone).join(PLUGIN_DIR)))
+        }
+        App::Codex => {
+            // Codex keeps no install record: its cache is marketplace/plugin/version, and the
+            // plugin shares the marketplace's name.
+            let home = codex_home()?;
+            let source = home
+                .join(".tmp/marketplaces")
+                .join(MARKETPLACE)
+                .join(PLUGIN_DIR);
+            let manifest = read_json(&source.join(".claude-plugin/plugin.json")).ok()?;
+            let version = manifest["version"].as_str()?;
+            let installed = home
+                .join("plugins/cache")
+                .join(MARKETPLACE)
+                .join(MARKETPLACE)
+                .join(version);
+            Some((installed, source))
         }
     }
+}
+
+/// Whether two copies of the plugin differ in any file, either way. Claude Code's `.in_use`
+/// bookkeeping beside the files doesn't count, and a copy that can't be read differs.
+pub fn differs(installed: &Path, source: &Path) -> bool {
+    match (files(installed), files(source)) {
+        (Some(a), Some(b)) => a != b,
+        _ => true,
+    }
+}
+
+fn files(root: &Path) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            if dir == root && entry.file_name() == ".in_use" {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_type().ok()?.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes = std::fs::read(&path).ok()?;
+                found.insert(path.strip_prefix(root).ok()?.to_path_buf(), bytes);
+            }
+        }
+    }
+    Some(found)
 }
 
 /// The `ref` of `[marketplaces.astrolabe]` in Codex's config, read by line: the table is
@@ -362,13 +461,15 @@ pub fn command(args: &[&str]) -> Result<String, String> {
     }
 
     // Each app is found by its command; one that isn't there is skipped, not an error.
-    let apps: Vec<(App, Option<PathBuf>)> =
-        App::ALL.iter().map(|&a| (a, on_path(a.cli()))).collect();
-    let refs: Vec<(App, Option<Option<String>>)> = apps
+    let seen: Vec<Seen> = App::ALL
         .iter()
-        .map(|(app, cli)| (*app, cli.as_deref().and_then(|c| registered(*app, c))))
+        .map(|&app| {
+            let cli = on_path(app.cli());
+            let follows = cli.as_deref().and_then(|c| registered(app, c));
+            Seen { app, cli, follows }
+        })
         .collect();
-    let channel = chosen.unwrap_or_else(|| match refs.iter().find_map(|(_, r)| r.clone()) {
+    let channel = chosen.unwrap_or_else(|| match seen.iter().find_map(|s| s.follows.clone()) {
         Some(git_ref) => channel_of(git_ref.as_deref()),
         None if built_nightly() => Channel::Nightly,
         None => Channel::Release,
@@ -380,16 +481,55 @@ pub fn command(args: &[&str]) -> Result<String, String> {
     let scratch = std::env::temp_dir().join(format!("astrolabe-update-{id}"));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let result = target(channel, &scratch)
-        .and_then(|target| run(channel, &target, &apps, &refs, &scratch, dry_run, force));
+        .and_then(|target| run(channel, &target, &seen, &copies, &scratch, dry_run, force));
     let _ = std::fs::remove_dir_all(&scratch);
     result
+}
+
+/// One app as this command found it: its command if it's on PATH, and where its
+/// marketplace points (see `registered`).
+struct Seen {
+    app: App,
+    cli: Option<PathBuf>,
+    follows: Option<Option<String>>,
+}
+
+/// What an app's plugin needs.
+enum Plugin {
+    /// Its command isn't on PATH.
+    Missing,
+    /// It follows the target and its installed copy matches the marketplace's.
+    Current,
+    /// It follows the target, but the installed copy is behind the marketplace's.
+    Reinstall,
+    /// It follows another ref, or none: register it again at the target.
+    Reregister,
+    Failed(String),
+}
+
+/// Run each command in turn, stopping at the first required one that fails.
+fn perform(app: App, cli: &Path, steps: &[(Vec<String>, bool)]) -> Result<(), String> {
+    for (words, required) in steps {
+        match Command::new(cli).args(words).output() {
+            Ok(out) if out.status.success() || !required => {}
+            Ok(out) => {
+                return Err(format!(
+                    "`{}` failed: {}",
+                    shown(app.cli(), words),
+                    last_line(&out.stderr)
+                ));
+            }
+            Err(e) => return Err(format!("couldn't run `{}`: {e}", app.cli())),
+        }
+    }
+    Ok(())
 }
 
 fn run(
     channel: Channel,
     target: &Target,
-    apps: &[(App, Option<PathBuf>)],
-    refs: &[(App, Option<Option<String>>)],
+    seen: &[Seen],
+    copies: &dyn Fn(App) -> Option<(PathBuf, PathBuf)>,
     scratch: &Path,
     dry_run: bool,
     force: bool,
@@ -405,18 +545,41 @@ fn run(
         version_line().trim_start_matches("astrolabe "),
         target.label
     )];
-    let plugin_current = |app: App| {
-        refs.iter().any(|(a, r)| {
-            *a == app
-                && r.as_ref()
-                    .is_some_and(|r| r.as_deref() == Some(target.git_ref.as_str()))
-        })
-    };
-    let found: Vec<(App, &PathBuf)> = apps
+
+    // A marketplace that already follows the target is refreshed first, so a nightly
+    // that changed the plugin shows before anything is called up to date. A dry run
+    // compares with the marketplace's copy as it stands.
+    let plans: Vec<(App, Option<&PathBuf>, Plugin)> = seen
         .iter()
-        .filter_map(|(a, c)| c.as_ref().map(|c| (*a, c)))
+        .map(|s| {
+            let Some(cli) = s.cli.as_ref() else {
+                return (s.app, None, Plugin::Missing);
+            };
+            let follows = s
+                .follows
+                .as_ref()
+                .is_some_and(|r| r.as_deref() == Some(target.git_ref.as_str()));
+            let refreshed = || match dry_run {
+                true => Ok(()),
+                false => perform(s.app, cli, &[(s.app.refresh(), true)]),
+            };
+            let plan = if force || !follows {
+                Plugin::Reregister
+            } else if let Err(why) = refreshed() {
+                Plugin::Failed(why)
+            } else if copies(s.app).is_some_and(|(installed, source)| !differs(&installed, &source))
+            {
+                Plugin::Current
+            } else {
+                Plugin::Reinstall
+            };
+            (s.app, Some(cli), plan)
+        })
         .collect();
-    if !force && target.current && found.iter().all(|(a, _)| plugin_current(*a)) {
+    let settled = plans
+        .iter()
+        .all(|(_, _, p)| matches!(p, Plugin::Missing | Plugin::Current));
+    if !force && !dry_run && target.current && settled {
         report.push("Already up to date.".into());
         return Ok(report.join("\n"));
     }
@@ -436,60 +599,51 @@ fn run(
         report.push(format!("Program: installed {}.", target.label));
     }
 
-    for (app, cli) in apps {
-        let Some(cli) = cli else {
-            report.push(format!(
-                "{}: skipped, `{}` isn't on PATH.",
-                app.label(),
-                app.cli()
-            ));
-            continue;
-        };
-        if plugin_current(*app) && !force {
-            report.push(format!(
-                "{}: plugin already follows {}.",
-                app.label(),
-                target.git_ref
-            ));
-            continue;
-        }
-        let steps = app.steps(&target.git_ref);
-        if dry_run {
-            let plan: Vec<String> = steps.iter().map(|(w, _)| shown(app.cli(), w)).collect();
-            report.push(format!("{}: would run {}.", app.label(), plan.join("; ")));
-            continue;
-        }
-        let mut outcome = Ok(());
-        for (words, required) in &steps {
-            match Command::new(cli).args(words).output() {
-                Ok(out) if out.status.success() || !required => {}
-                Ok(out) => {
-                    outcome = Err(format!(
-                        "`{}` failed: {}",
-                        shown(app.cli(), words),
-                        last_line(&out.stderr)
-                    ));
-                    break;
-                }
-                Err(e) => {
-                    outcome = Err(format!("couldn't run `{}`: {e}", app.cli()));
-                    break;
-                }
+    for (app, cli, plan) in &plans {
+        let (label, git_ref) = (app.label(), &target.git_ref);
+        let refresh = shown(app.cli(), &app.refresh());
+        let (steps, done) = match plan {
+            Plugin::Missing => {
+                report.push(format!("{label}: skipped, `{}` isn't on PATH.", app.cli()));
+                continue;
             }
+            Plugin::Failed(why) => {
+                failed = true;
+                report.push(format!("{label}: {why}"));
+                continue;
+            }
+            Plugin::Current if dry_run => {
+                report.push(format!(
+                    "{label}: plugin matches its marketplace's copy; would run {refresh}, and reinstall if that changes it."
+                ));
+                continue;
+            }
+            Plugin::Current => {
+                report.push(format!("{label}: plugin already matches {git_ref}."));
+                continue;
+            }
+            Plugin::Reinstall => (app.reinstall(), "reinstalled from"),
+            Plugin::Reregister => (app.steps(git_ref), "now follows"),
+        };
+        if dry_run {
+            // A real run refreshes the marketplace before this step; a dry run hasn't.
+            let first = matches!(plan, Plugin::Reinstall).then_some(refresh);
+            let commands: Vec<String> = first
+                .into_iter()
+                .chain(steps.iter().map(|(w, _)| shown(app.cli(), w)))
+                .collect();
+            report.push(format!("{label}: would run {}.", commands.join("; ")));
+            continue;
         }
-        match outcome {
-            Ok(()) => report.push(format!(
-                "{}: plugin now follows {}.",
-                app.label(),
-                target.git_ref
-            )),
+        match cli.map_or(Ok(()), |cli| perform(*app, cli, &steps)) {
+            Ok(()) => report.push(format!("{label}: plugin {done} {git_ref}.")),
             Err(why) => {
                 failed = true;
-                report.push(format!("{}: {why}", app.label()));
+                report.push(format!("{label}: {why}"));
             }
         }
     }
-    if found.is_empty() {
+    if plans.iter().all(|(_, _, p)| matches!(p, Plugin::Missing)) {
         report.push("Neither app's command was found, so only the program was updated. Install the plugin as the install guide shows once you have one.".into());
     }
     if !dry_run {
@@ -537,16 +691,112 @@ mod tests {
         }
     }
 
+    /// A fresh folder for one test, removed when it ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir = std::env::temp_dir().join(format!(
+                "astrolabe-update-test-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A copy of the plugin with a manifest and these hooks.
+    fn plugin(at: &Path, hooks: &str) -> PathBuf {
+        std::fs::create_dir_all(at.join(".claude-plugin")).unwrap();
+        std::fs::create_dir_all(at.join("hooks")).unwrap();
+        std::fs::write(
+            at.join(".claude-plugin/plugin.json"),
+            r#"{"name":"astrolabe","version":"0.5.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(at.join("hooks/hooks.json"), hooks).unwrap();
+        at.to_path_buf()
+    }
+
+    const OLD_HOOKS: &str = r#"{"hooks":{"PreToolUse":[]}}"#;
+    const NEW_HOOKS: &str = r#"{"hooks":{"PreToolUse":[],"UserPromptSubmit":[]}}"#;
+
+    /// A stand-in for an app's command that only writes down each call.
+    fn fake_cli(dir: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let cli = dir.join("app.cmd");
+            std::fs::write(&cli, "@echo off\r\necho %*>>\"%~dp0calls.txt\"\r\n").unwrap();
+            cli
+        } else {
+            let cli = dir.join("app");
+            std::fs::write(
+                &cli,
+                "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            cli
+        }
+    }
+
+    fn calls(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("calls.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_owned())
+            .collect()
+    }
+
+    fn following(git_ref: &str, cli: Option<PathBuf>) -> [Seen; 2] {
+        [App::Claude, App::Codex].map(|app| Seen {
+            app,
+            cli: cli.clone(),
+            follows: Some(Some(git_ref.into())),
+        })
+    }
+
+    #[test]
+    fn copies_differ_by_any_file_but_not_by_the_in_use_marks() {
+        let dir = Scratch::new("differs");
+        let source = plugin(&dir.0.join("source"), NEW_HOOKS);
+        let installed = plugin(&dir.0.join("installed"), NEW_HOOKS);
+        std::fs::create_dir_all(installed.join(".in_use")).unwrap();
+        std::fs::write(installed.join(".in_use/1234"), "").unwrap();
+        assert!(!differs(&installed, &source));
+
+        std::fs::write(installed.join("hooks/hooks.json"), OLD_HOOKS).unwrap();
+        assert!(differs(&installed, &source), "changed hooks");
+
+        std::fs::write(installed.join("hooks/hooks.json"), NEW_HOOKS).unwrap();
+        std::fs::write(installed.join("hooks/removed.json"), "{}").unwrap();
+        assert!(differs(&installed, &source), "a file the source dropped");
+
+        assert!(
+            differs(&dir.0.join("missing"), &source),
+            "no installed copy"
+        );
+    }
+
     #[test]
     fn with_no_app_found_only_the_program_moves() {
-        let apps = [(App::Claude, None), (App::Codex, None)];
-        let refs = [(App::Claude, None), (App::Codex, None)];
+        let seen = following("nightly", None);
         let scratch = std::env::temp_dir();
         let report = run(
             Channel::Nightly,
             &nightly(false),
-            &apps,
-            &refs,
+            &seen,
+            &|_| None,
             &scratch,
             true,
             false,
@@ -568,30 +818,32 @@ mod tests {
     }
 
     #[test]
-    fn an_app_already_on_the_target_is_left_alone() {
-        let cli = PathBuf::from("claude");
-        let apps = [
-            (App::Claude, Some(cli.clone())),
-            (App::Codex, Some(PathBuf::from("codex"))),
-        ];
-        let refs = [
-            (App::Claude, Some(Some("nightly".into()))),
-            (App::Codex, Some(Some("main".into()))),
-        ];
-        let scratch = std::env::temp_dir();
+    fn a_dry_run_checks_each_copy_and_reregisters_another_ref() {
+        let dir = Scratch::new("dry-run");
+        let source = plugin(&dir.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&dir.0.join("stale"), OLD_HOOKS);
+        let current = plugin(&dir.0.join("current"), NEW_HOOKS);
+        let mut seen = following("nightly", Some(PathBuf::from("app")));
+        seen[1].follows = Some(Some("main".into()));
+        let copies = |app| {
+            Some((
+                if app == App::Claude { &current } else { &stale }.clone(),
+                source.clone(),
+            ))
+        };
         let report = run(
             Channel::Nightly,
             &nightly(true),
-            &apps,
-            &refs,
-            &scratch,
+            &seen,
+            &copies,
+            &dir.0,
             true,
             false,
         )
         .unwrap();
         assert!(report.contains("Program: already this build."), "{report}");
         assert!(
-            report.contains("Claude Code: plugin already follows nightly."),
+            report.contains("Claude Code: plugin matches its marketplace's copy; would run claude plugin marketplace update astrolabe, and reinstall if that changes it."),
             "{report}"
         );
         assert!(
@@ -599,21 +851,97 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("--ref nightly"), "{report}");
-        let refs = [
-            (App::Claude, Some(Some("nightly".into()))),
-            (App::Codex, Some(Some("nightly".into()))),
-        ];
+
+        // Both on nightly now, and Claude Code's copy is behind the marketplace's.
+        let seen = following("nightly", Some(PathBuf::from("app")));
+        let copies = |app| {
+            Some((
+                if app == App::Claude { &stale } else { &current }.clone(),
+                source.clone(),
+            ))
+        };
         let report = run(
             Channel::Nightly,
             &nightly(true),
-            &apps,
-            &refs,
-            &scratch,
+            &seen,
+            &copies,
+            &dir.0,
             true,
             false,
         )
         .unwrap();
+        assert!(
+            report.contains("Claude Code: would run claude plugin marketplace update astrolabe; claude plugin uninstall astrolabe@astrolabe; claude plugin install astrolabe@astrolabe."),
+            "{report}"
+        );
+        assert!(!report.contains("Already up to date"), "{report}");
+    }
+
+    #[test]
+    fn a_stale_copy_on_the_same_nightly_is_reinstalled() {
+        let dir = Scratch::new("stale");
+        let cli = fake_cli(&dir.0);
+        let source = plugin(&dir.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&dir.0.join("stale"), OLD_HOOKS);
+        let current = plugin(&dir.0.join("current"), NEW_HOOKS);
+        let seen = following("nightly", Some(cli));
+
+        // The program is this nightly and both apps follow it, but Claude Code's cached
+        // copy predates a new hook: the case the version-keyed caches miss.
+        let copies = |app| {
+            Some((
+                if app == App::Claude { &stale } else { &current }.clone(),
+                source.clone(),
+            ))
+        };
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &copies,
+            &dir.0,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            report.contains("Claude Code: plugin reinstalled from nightly."),
+            "{report}"
+        );
+        assert!(
+            report.contains("Codex: plugin already matches nightly."),
+            "{report}"
+        );
+        assert_eq!(
+            calls(&dir.0),
+            [
+                "plugin marketplace update astrolabe",
+                "plugin marketplace upgrade astrolabe",
+                "plugin uninstall astrolabe@astrolabe",
+                "plugin install astrolabe@astrolabe",
+            ]
+        );
+
+        // Once both copies match, only the marketplaces are refreshed.
+        std::fs::remove_file(dir.0.join("calls.txt")).unwrap();
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &|_| Some((current.clone(), source.clone())),
+            &dir.0,
+            false,
+            false,
+        )
+        .unwrap();
         assert!(report.ends_with("Already up to date."), "{report}");
+        assert_eq!(
+            calls(&dir.0),
+            [
+                "plugin marketplace update astrolabe",
+                "plugin marketplace upgrade astrolabe",
+            ]
+        );
     }
 
     #[test]

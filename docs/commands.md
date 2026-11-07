@@ -60,7 +60,11 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 - **release** installs the newest published release and registers the plugin at its tag.
 - **nightly** installs the rolling `nightly` prerelease, which every push to `main` replaces, and registers the plugin at the `nightly` tag, the same commit as the program.
 
-It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program. `--dry-run` prints what it would do and changes nothing. `--force` reinstalls even when everything already matches. Restart your apps afterwards; in Codex, review the changed hooks.
+It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program.
+
+An app whose marketplace already follows the channel's tag keeps its registration. The command refreshes that marketplace, then compares the app's installed copy of the plugin with the marketplace's, file by file. If any file differs, it removes and re-adds the plugin. Both apps keep the installed copy by the plugin's version, and that version stays the same across nightlies, so the apps' own update commands report a changed nightly as current. The command says it's already up to date only when the program is the newest build and every app's copy matches.
+
+`--dry-run` prints what it would do and changes nothing; it compares with each marketplace as it stands, without refreshing it. `--force` reinstalls even when everything already matches. Restart your apps afterwards; in Codex, review the changed hooks.
 
 ## Board and notes
 
