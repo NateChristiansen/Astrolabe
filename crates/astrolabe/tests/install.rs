@@ -243,3 +243,84 @@ fn a_locked_old_copy_leaves_the_install_as_it_was() {
     assert_eq!(fs::read(temp.0.join(name())).unwrap(), old);
     assert!(temp.0.join(trial()).exists());
 }
+
+#[test]
+fn path_diagnostics_name_only_real_final_destination_conflicts() {
+    let temp = TempDir::new();
+    let installed = temp.0.join("installed");
+    let other = temp.0.join("other");
+    fs::create_dir(&other).unwrap();
+    fs::copy(binary(), other.join(name())).unwrap();
+    for (first, warning) in [(&installed, false), (&other, true)] {
+        let path = std::env::join_paths([first, &installed]).unwrap();
+        let out = Command::new(binary())
+            .args(["install", "--dir"])
+            .arg(&installed)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(stdout.contains("PATH finds"), warning, "{stdout}");
+        if warning {
+            assert!(stdout.contains(&other.join(name()).display().to_string()));
+            assert!(stdout.contains(&installed.join(name()).display().to_string()));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn nonexecutable_files_and_links_to_the_install_do_not_warn() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new();
+    let installed = temp.0.join("installed");
+    let earlier = temp.0.join("earlier");
+    fs::create_dir(&earlier).unwrap();
+    fs::write(earlier.join(name()), "not a command").unwrap();
+    fs::set_permissions(earlier.join(name()), fs::Permissions::from_mode(0o644)).unwrap();
+    let path = std::env::join_paths([&earlier, &installed]).unwrap();
+    for link in [false, true] {
+        if link {
+            fs::remove_file(earlier.join(name())).unwrap();
+            std::os::unix::fs::symlink(installed.join(name()), earlier.join(name())).unwrap();
+        }
+        let out = Command::new(binary())
+            .args(["install", "--dir"])
+            .arg(&installed)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("PATH finds"));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn an_earlier_windows_command_shim_is_named() {
+    let temp = TempDir::new();
+    let installed = temp.0.join("installed");
+    let earlier = temp.0.join("earlier");
+    fs::create_dir(&earlier).unwrap();
+    let shim = earlier.join("astrolabe.cmd");
+    fs::write(&shim, "@echo old shim").unwrap();
+    let path = std::env::join_paths([&earlier, &installed]).unwrap();
+    let out = Command::new(binary())
+        .args(["install", "--dir"])
+        .arg(&installed)
+        .env("PATH", path)
+        .env("PATHEXT", ".EXE;.CMD")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("PATH finds") && stdout.contains(&shim.display().to_string()),
+        "{stdout}"
+    );
+}

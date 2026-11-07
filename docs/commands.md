@@ -61,7 +61,7 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 - **release** installs the newest published release and registers the plugin at its tag.
 - **nightly** installs the rolling `nightly` prerelease, which every push to `main` replaces, and registers the plugin at the `nightly` tag, the same commit as the program.
 
-It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program. `--dry-run` prints what it would do and changes nothing. `--force` reinstalls even when everything already matches. Restart your apps afterwards; in Codex, review the changed hooks.
+It verifies the running installation against its receipt before downloading. A repo build hands off to the verified user-local installation; a receipted custom installation updates in place. Missing or damaged installations stop with a repair message. It runs the published installer, which checks the download, keeps a backup and refuses files it didn't write. Then, in each app whose command is on PATH (`claude`, `codex`), it removes and re-adds the plugin and its marketplace. It skips an app it can't find and says so. With neither app found, it updates only the program. `--dry-run` prints what it would do and changes nothing. `--force` reinstalls even when everything already matches. Restart your apps afterwards; in Codex, review the changed hooks.
 
 ## Board and notes
 

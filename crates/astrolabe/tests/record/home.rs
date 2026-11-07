@@ -559,3 +559,56 @@ fn server_failed(child: &mut std::process::Child, why: &str) -> ! {
     }
     panic!("{why}; status {status:?}; stderr: {stderr}");
 }
+
+#[test]
+fn a_preview_serves_beside_the_machine_and_saves_nothing() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::Duration;
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = std::fs::read_to_string(mac.state().join("home.json")).ok();
+    let mut child = Kill(
+        mac.command(&mac.notes, &["home", "--preview", "--theme", "light"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut url = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut url);
+        let _ = tx.send(url);
+    });
+    let url = rx
+        .recv_timeout(Duration::from_secs(20))
+        .unwrap_or_else(|e| server_failed(&mut child.0, &format!("no preview URL: {e}")));
+    let addr = url
+        .trim()
+        .strip_prefix("http://")
+        .and_then(|u| u.strip_suffix('/'))
+        .unwrap_or_else(|| server_failed(&mut child.0, &format!("invalid preview URL: {url:?}")))
+        .to_owned();
+    let mut s = std::net::TcpStream::connect(&addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(format!("GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
+        .unwrap();
+    let mut page = String::new();
+    let _ = s.read_to_string(&mut page);
+    assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
+    // The live notes, in the look it was given.
+    assert!(column(&page, "active").contains("Smooth ink"), "{page}");
+    assert!(page.contains(" data-theme=\"light\">"), "{page}");
+    // The machine's port, look and lock are as they were.
+    assert_eq!(
+        std::fs::read_to_string(mac.state().join("home.json")).ok(),
+        before
+    );
+    assert!(!mac.state().join("home.lock").exists());
+    // With the machine's server, not in place of it.
+    let (out, ok) = mac.run(&mac.notes, &["home", "--preview", "--serve"], "");
+    assert!(!ok && out.contains("leave out --serve"), "{out}");
+}

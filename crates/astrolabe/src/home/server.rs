@@ -2,7 +2,7 @@
 use super::FILE;
 use super::markdown::note_page;
 use super::render::{Links, SERVE_REFRESH_SECS, page};
-use super::settings::{SERVE_PORT, look, port, saved_port, url};
+use super::settings::{Look, SERVE_PORT, look, port, saved_port, url};
 use crate::notes::{self, Notes};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -130,7 +130,6 @@ pub fn listen(port: u16) -> Result<(TcpListener, String), String> {
 /// connection is told to come back.
 pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requested: u16) {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let busy = Arc::new(AtomicUsize::new(0));
     let last = Arc::new(AtomicI64::new(notes::now_ms()));
     let idle = std::env::var(IDLE_SECS_VAR)
         .ok()
@@ -185,6 +184,22 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
             std::process::exit(0);
         }
     });
+    accept(notes, listener, &last, None);
+}
+
+/// A second home beside the machine's, for trying a build: the same notes, read only, on
+/// its own port, with `fixed` as its look. It takes no lock and saves no setting, and it
+/// runs until stopped, so the machine's server and its port are left as they are.
+pub fn preview(notes: &Notes, listener: TcpListener, fixed: Look) {
+    let last = Arc::new(AtomicI64::new(notes::now_ms()));
+    accept(notes, listener, &last, Some(fixed));
+}
+
+/// Answers connections, one thread each, until the listener fails; `fixed` is the look for
+/// every page, or None to read the machine's for each one.
+fn accept(notes: &Notes, listener: TcpListener, last: &Arc<AtomicI64>, fixed: Option<Look>) {
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let busy = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         last.store(notes::now_ms(), Ordering::SeqCst);
@@ -194,10 +209,10 @@ pub fn serve(notes: &Notes, listener: TcpListener, hold: std::fs::File, requeste
         }
         let notes = Notes::new(notes.root.clone(), notes.state.clone());
         let count = Arc::clone(&busy);
-        let seen = Arc::clone(&last);
+        let seen = Arc::clone(last);
         count.fetch_add(1, Ordering::SeqCst);
         let spawned = std::thread::Builder::new().spawn(move || {
-            handle(&notes, stream, port, &seen);
+            handle(&notes, stream, port, &seen, fixed);
             count.fetch_sub(1, Ordering::SeqCst);
         });
         if spawned.is_err() {
@@ -215,7 +230,13 @@ pub(super) const REQUEST_BOUND: usize = 16 * 1024;
 
 pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
-pub(super) fn handle(notes: &Notes, mut stream: TcpStream, port: u16, seen: &AtomicI64) {
+pub(super) fn handle(
+    notes: &Notes,
+    mut stream: TcpStream,
+    port: u16,
+    seen: &AtomicI64,
+    fixed: Option<Look>,
+) {
     let _ = stream.set_read_timeout(Some(REQUEST_DEADLINE));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
     let (status, kind, body, head_only) = match request(&mut stream) {
@@ -225,7 +246,8 @@ pub(super) fn handle(notes: &Notes, mut stream: TcpStream, port: u16, seen: &Ato
         }
         Some(head) => {
             let head_only = head.split_whitespace().next() == Some("HEAD");
-            let (status, kind, body) = answer(notes, &head, port);
+            let drawn = fixed.unwrap_or_else(|| look(notes));
+            let (status, kind, body) = answer(notes, &head, port, drawn);
             (status, kind, body, head_only)
         }
         None => (
@@ -384,7 +406,12 @@ pub(super) fn request(stream: &mut TcpStream) -> Option<String> {
 /// One response: the board at `/`, an effort as a page at its own path, nothing anywhere else.
 /// Only a request addressed to this loopback port is answered, so a page on another origin
 /// that reaches the socket by a rebound name gets nothing.
-pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'static str, String) {
+pub(super) fn answer(
+    notes: &Notes,
+    head: &str,
+    port: u16,
+    drawn: Look,
+) -> (&'static str, &'static str, String) {
     let mut lines = head.lines();
     let mut words = lines.next().unwrap_or_default().split_whitespace();
     let (method, target, version) = (words.next(), words.next(), words.next());
@@ -407,7 +434,7 @@ pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'s
             &rows,
             &notes.root,
             notes::now_ms(),
-            look(notes),
+            drawn,
             SERVE_REFRESH_SECS,
             Links::Served,
         );
@@ -435,7 +462,7 @@ pub(super) fn answer(notes: &Notes, head: &str, port: u16) -> (&'static str, &'s
                 &crate::record::rows_in(notes, None, true),
                 &notes.root,
                 notes::now_ms(),
-                look(notes),
+                drawn,
             ),
         );
     }
