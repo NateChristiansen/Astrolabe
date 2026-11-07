@@ -224,6 +224,8 @@ pub struct Activation {
     pub state: SessionState,
     pub(super) head: String,
     pub(super) parts: Vec<Part>,
+    /// The effort's name, which the session takes only when it takes up the effort's work.
+    pub(super) picked: String,
 }
 
 /// One of the owner's notes, whole. Owner goes to every session at its start; whole voice to one
@@ -251,6 +253,12 @@ impl Activation {
             text += &format!("\n\n--- {}\n\n{}", part.title, part.body);
         }
         text
+    }
+
+    /// Taken up by name, as `activate --effort` does: the session takes the effort's name.
+    pub fn picked_up(mut self) -> Self {
+        self.state.name.set(self.picked.clone());
+        self
     }
 
     /// For an effort loaded or created mid-session: the session already has the owner note and
@@ -340,6 +348,7 @@ pub fn switch_on(
         read("knowledge/machines.md".to_owned())?,
     ];
     let same = previous.filter(|p| p.effort.as_deref() == Some(effort.number.as_str()));
+    let picked = session_name(&effort.number, &effort.title);
     // One probe per session: the guard is the same hook in the same session whichever effort
     // is loaded, so the proof from session start carries into an effort created or picked up
     // later. A new token per effort made the proof stale and asked for a probe named in tool
@@ -375,7 +384,11 @@ pub fn switch_on(
             .map(Field::Known)
             .unwrap_or(Field::Other(Value::Null)),
         mark: false.into(),
-        name: session_name(&effort.number, &effort.title).into(),
+        // Kept through a resume: a session that filed this effort for later keeps its name.
+        name: match same.map(|p| &p.name) {
+            Some(kept) if !kept.is_missing() => kept.clone(),
+            _ => picked.clone().into(),
+        },
         // Whatever effort it was on: the name the session carries is the same one.
         named: previous.map(|p| p.named.clone()).unwrap_or_default(),
         told: previous.map(|p| p.told.clone()).unwrap_or_default(),
@@ -424,7 +437,12 @@ pub fn switch_on(
     if state.worker.is_true() {
         head += &format!("\n\n{WORKER_RULE}");
     }
-    Ok(Activation { state, head, parts })
+    Ok(Activation {
+        state,
+        head,
+        parts,
+        picked,
+    })
 }
 
 /// The effort's GitHub issues, and the keyword that closes each when its commit reaches main.
@@ -575,6 +593,7 @@ pub(super) fn fresh(cwd: &Path) -> String {
         state: SessionState::default(),
         head,
         parts,
+        picked: String::new(),
     }
     .fitted()
 }

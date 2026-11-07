@@ -66,7 +66,7 @@ pub(super) fn act(
             let previous = previous.ok().flatten();
             // The published checkpoint, not a stale local copy: another machine may hold it.
             let refreshed = crate::record::refresh_notes();
-            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::mid_session) {
+            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
                 Ok(mut activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
                     if worker && !activation.state.worker.is_true() {

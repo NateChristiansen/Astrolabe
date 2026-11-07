@@ -258,8 +258,18 @@ fn new_inner(
         last_save_ms: notes::now_ms().into(),
         mark: false.into(),
         saves: 0.into(),
-        // From the heading the note gets, as a later load reads it.
-        name: activate::session_name(&number.to_string(), &format!("{number:04} {title}")).into(),
+        // From the heading the note gets, as a later load reads it. Filed for later, the
+        // effort is bound but its work isn't taken up, so the session keeps the name it had.
+        name: match status == "active" {
+            true => {
+                activate::session_name(&number.to_string(), &format!("{number:04} {title}")).into()
+            }
+            false => previous
+                .as_ref()
+                .map(|p| p.name.clone())
+                .filter(|n| !n.is_missing())
+                .unwrap_or(Field::Other(Value::Null)),
+        },
         named: previous
             .as_ref()
             .map(|p| p.named.clone())

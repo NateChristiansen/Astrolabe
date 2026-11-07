@@ -556,3 +556,44 @@ fn a_new_effort_asks_a_codex_agent_to_rename_its_thread_once() {
         "{text}"
     );
 }
+
+/// Catches: a session renamed for an effort it only filed for later, not one it took up.
+#[test]
+fn filing_an_effort_for_later_keeps_the_session_name_until_it_is_picked_up() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (text, ok) = mac.bash("s1", NEW);
+    assert!(ok && text.contains("set_session_title"), "{text}");
+    let named = |current: &str| {
+        let input =
+            json!({"session_id": "s1", "cwd": mac.demo, "prompt": "hi", "session_title": current});
+        mac.hook_json("prompt", input)
+    };
+    let first = text
+        .strip_prefix("Effort ")
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let mine = format!("{first} Smooth ink");
+    assert_eq!(named(&mine), None, "already called that by its agent");
+    let later = "astrolabe effort new --title \"Later\" --status proposed <<'ASTROLABE'\nfor later\nASTROLABE\n";
+    let (text, ok) = mac.bash("s1", later);
+    assert!(ok && !text.contains("Rename this session"), "{text}");
+    assert_eq!(named(&mine), None, "the name it had stays");
+    let resumed =
+        json!({"session_id": "s1", "cwd": mac.demo, "source": "resume", "session_title": mine});
+    let resumed = mac.hook_json("session-start", resumed).unwrap();
+    assert!(
+        resumed["hookSpecificOutput"].get("sessionTitle").is_none(),
+        "{resumed}"
+    );
+    // Picked up by name: now it takes the effort's name.
+    let number = text
+        .strip_prefix("Effort ")
+        .and_then(|t| t.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    let (text, ok) = mac.bash("s1", &format!("astrolabe activate --effort {number}"));
+    let wanted = format!("Rename this session to \"{number} Later\"");
+    assert!(ok && text.contains(&wanted), "{text}");
+}
