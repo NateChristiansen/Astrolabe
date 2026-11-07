@@ -364,7 +364,7 @@ fn reason(answer: &Value) -> &str {
 #[test]
 fn every_authority_keeps_notes_saving_independent_of_project_pushes() {
     let f = Fixture::new();
-    let rule = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker leaves that saving to its dispatcher.";
+    let rule = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.";
     for authority in ["read", "edit", "push"] {
         write(
             &f.notes().join("efforts/0070-demo.md"),

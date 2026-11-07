@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
+fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_saves_only_its_effort() {
     let world = World::new();
     let mac = world.machine("mac");
     // A question answered now: no effort, one sentence in the day file, tagged with the repo.
@@ -27,25 +27,48 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
     assert!(mac.bash("s2", NEW).1);
     let (out, ok) = mac.bash("s2", "astrolabe journal \"x\"");
     assert!(!ok && out.contains("--journal"), "{out}");
-    // A worker binds to the dispatcher's effort for context and the guard, and writes nothing.
+    // A worker binds to its own effort for context and the guard, saves that effort's
+    // record, and writes nothing else: the dispatcher files, journals and closes.
     let (out, ok) = mac.bash("w1", "astrolabe activate --effort 1 --worker");
-    assert!(ok && out.contains("worker under that effort"), "{out}");
+    assert!(
+        ok && out.contains("worker under that effort") && out.contains("No journal line"),
+        "{out}"
+    );
     for cmd in [
         NEW,
         "astrolabe effort save --journal \"x\"",
+        "astrolabe effort save --effort 2 --status done",
         "astrolabe journal \"x\"",
     ] {
         let (out, ok) = mac.bash("w1", cmd);
-        assert!(!ok && out.contains("worker under effort 1"), "{out}");
+        assert!(
+            !ok && out.contains("worker under effort 1") && out.contains("journal line"),
+            "{cmd}: {out}"
+        );
     }
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe effort save --status active --decision \"ink over paint: cheaper\" <<'ASTROLABE'\nHalf done.\n\nNext: the rest.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Saved effort 1"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("Half done.") && text.contains(": ink over paint: cheaper"),
+        "{text}"
+    );
+    assert_eq!(
+        mac.journal_today().lines().count(),
+        2,
+        "a worker journals nothing"
+    );
     // A patch that quotes one is an edit: Codex's patch tool carries the patch as `command`,
     // and this context line, run by a shell, would be a real command substitution.
     let patch = "*** Begin Patch\n*** Update File: docs/commands.md\n@@\n `astrolabe effort save` updates the bound effort.\n+It says when the notes have no remote.\n*** End Patch\n";
     let input = json!({"session_id": "w1", "cwd": mac.demo, "tool_name": "apply_patch", "tool_use_id": "call-2", "tool_input": {"command": patch}});
     assert_eq!(mac.hook_json("pre-command", input), None);
-    // Through a shell, the same words are still refused.
+    // Through a shell, the same words are still claimed and refused.
     let (out, ok) = mac.bash("w1", &format!("echo {}", patch.lines().nth(3).unwrap()));
-    assert!(!ok && out.contains("worker under effort 1"), "{out}");
+    assert!(!ok && out.contains("refused"), "{out}");
     // Still a worker after a resume and after loading the effort again without the flag.
     assert!(
         mac.session_start("w1", "resume")
@@ -56,10 +79,9 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_writes_nothing() {
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("w1.json")).unwrap()).unwrap();
     assert_eq!(state["worker"], true);
-    // Its edits never nudge.
+    // Its edits nudge a save like any session's, since its effort's record is its own.
     mac.edit("w1", "Edit");
-    assert!(mac.stop("w1", false, false).is_none());
-    assert!(mac.stop("w1", false, true).is_none());
+    assert!(mac.stop("w1", false, false).is_some());
 }
 
 #[test]

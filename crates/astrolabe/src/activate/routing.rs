@@ -325,24 +325,31 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 "A subagent can't create or save an effort: one session writes an effort's record, the one the owner talks to. Report to it instead.",
             ));
         }
-        // A worker was dispatched by another agent under its effort: it writes nothing to
-        // the notes, because last night's thirteen lane records were read by no one and the
-        // dispatcher reports for the lot (owner, 2026-11-04).
-        if let Some(dir) = state_dir()
-            && let Ok(Some(state)) = read_state(&dir, session)
-            && state.worker.is_true()
-        {
-            return Some(hook::deny(&format!(
-                "This session is a worker under effort {}: it creates, saves and journals nothing; the session that dispatched it writes the notes. Report to it instead.",
-                state.effort.as_deref().unwrap_or_default()
-            )));
-        }
+        // A worker was dispatched to its effort by another agent: it saves that effort's own
+        // record, and nothing else, because the dispatcher files the efforts, reviews and
+        // closes them, and writes the one journal line a day for the lot: last night's
+        // thirteen lane lines were read by no one (owner, 2026-11-04 and 2026-11-07).
+        let worker = state_dir()
+            .and_then(|dir| read_state(&dir, session).ok().flatten())
+            .filter(|state| state.worker.is_true())
+            .map(|state| state.effort.as_deref().unwrap_or_default().to_owned());
         let powershell = in_powershell(provider(input), &input["tool_name"]);
         let cwd = input["cwd"]
             .as_str()
             .map(PathBuf::from)
             .unwrap_or_else(|| ".".into());
         let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
+            Ok(parsed)
+                if worker.is_some()
+                    && (parsed.verb != "save"
+                        || parsed.flag("journal").is_some()
+                        || parsed.flag("effort").is_some()) =>
+            {
+                return Some(hook::deny(&format!(
+                    "This session is a worker under effort {}: it saves that effort's state, decisions and pieces, and nothing else; the session that dispatched it files efforts, writes the day's journal line and marks the others. Report to it instead.",
+                    worker.unwrap_or_default()
+                )));
+            }
             Ok(parsed) => {
                 // The same tool call retried gets the same key, so it can't commit twice.
                 let op_key = match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {

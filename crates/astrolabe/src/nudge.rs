@@ -95,7 +95,6 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
         .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
-        Ok(Some(state)) if state.worker.is_true() => return None,
         Ok(Some(mut state)) => {
             let facts = RepoFacts::read(&cwd);
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
