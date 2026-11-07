@@ -115,6 +115,54 @@ fn current_state_and_blocked_status_are_saved() {
 }
 
 #[test]
+fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (_, ok) = mac.bash("s1", NEW);
+    assert!(ok);
+    let body = "<<'ASTROLABE'\nWorking on it.\nASTROLABE\n";
+    // A check-in while active: the owner answers, and the next save carries no status.
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!("astrolabe effort save --waits-for \"owner: look at the plan\" {body}"),
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: look at the plan\"")
+    );
+    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("waits_for: \"\"") && text.contains("status: active"),
+        "{text}"
+    );
+    // Blocked keeps its condition across a progress save.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status blocked --waits-for \"owner: should it be X?\"",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("waits_for: \"owner: should it be X?\"")
+    );
+    // ...and can't be emptied while it stays blocked.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --waits-for \"\"");
+    assert!(!ok && out.contains("blocked effort keeps"), "{out}");
+    // An empty value clears it alongside a status that isn't blocked.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status active --waits-for \"\"",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("waits_for: \"\""));
+}
+
+#[test]
 fn prose_validation_refuses_unsupported_shapes() {
     let world = World::new();
     let mac = world.machine("mac");

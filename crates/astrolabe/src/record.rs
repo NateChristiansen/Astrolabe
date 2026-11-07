@@ -338,10 +338,9 @@ fn save_inner(
         .flag("decision")
         .map(str::trim)
         .filter(|d| !d.is_empty());
-    let waits_for = cmd
-        .flag("waits-for")
-        .map(str::trim)
-        .filter(|w| !w.is_empty());
+    // Given empty, it clears the condition; left out, it's cleared too unless the effort
+    // stays blocked (below).
+    let waits_for = cmd.flag("waits-for").map(str::trim);
     let reason = cmd.flag("reason").map(str::trim).filter(|r| !r.is_empty());
     let plan_file = cmd.flag("plan-file");
     let journal_text = cmd.flag("journal").map(str::trim).filter(|j| !j.is_empty());
@@ -379,7 +378,7 @@ fn save_inner(
             "nothing to save: give a Current state body, or a flag.\n{FORMS}"
         ));
     }
-    if status.as_deref() == Some("blocked") && waits_for.is_none() {
+    if status.as_deref() == Some("blocked") && waits_for.is_none_or(str::is_empty) {
         return Err("blocked needs --waits-for \"<what it waits on>\": the home view shows what could be picked up next by that condition, and v1 had blocked work nobody could tell how to unblock".to_owned());
     }
     if status.as_deref() == Some("abandoned") && reason.is_none() {
@@ -506,15 +505,22 @@ fn save_inner(
         }
     }
     let waits_before = file.prop("waits_for").unwrap_or("").to_owned();
-    if let Some(w) = waits_for {
-        file.set("waits_for", w);
-    }
     let before = file.prop("status").unwrap_or("").to_owned();
     if let Some(s) = &status {
         file.set("status", s);
-        if s != "blocked" && waits_for.is_none() {
-            file.set("waits_for", "");
-        }
+    }
+    // A wait is set by the save made just before waiting, so a later save means the work
+    // moved on: one without --waits-for clears it unless the effort is still blocked.
+    // Before this, only a status change cleared it, and an agent saving progress after the
+    // owner answered left the effort in Needs you.
+    let blocked = file.prop("status") == Some("blocked");
+    if blocked && waits_for == Some("") {
+        return Err("a blocked effort keeps what it waits on: give the new condition, or a status that isn't blocked. Nothing was written".to_owned());
+    }
+    match waits_for {
+        Some(w) => file.set("waits_for", w),
+        None if !blocked => file.set("waits_for", ""),
+        None => {}
     }
     // The journal is the owner's history and only the agent's sentence goes in it; one per
     // effort per day, the later replacing the earlier.
