@@ -529,8 +529,11 @@ fn a_replaced_program_takes_over_on_the_same_port() {
     // An install's swap: the old file renamed aside, the new one renamed into its place.
     let new = bin.join("astrolabe.new");
     copy_program(built, &new);
+    // On Unix the owner may set the time through a read-only handle, so the replacement is
+    // never open for writing here (see `copy_program`); Windows needs write access for it.
     std::fs::File::options()
-        .write(true)
+        .read(cfg!(unix))
+        .write(!cfg!(unix))
         .open(&new)
         .unwrap()
         .set_modified(SystemTime::now() + Duration::from_secs(5))
