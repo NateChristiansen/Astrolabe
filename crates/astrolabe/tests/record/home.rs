@@ -273,6 +273,13 @@ fn the_board_is_served_fresh_on_localhost() {
         !page.contains("http-equiv=\"refresh\"") && squeezed.contains("newEventSource('/events')"),
         "a served page follows the stream instead of reloading: {page}"
     );
+    // A failed refresh is announced in the sidebar's status region, styled as a warning.
+    assert!(
+        page.contains("<span class=\"live\" id=\"live\" role=\"status\" hidden>")
+            && squeezed.contains(".live.stale{")
+            && squeezed.contains("classList.toggle('stale',"),
+        "{page}"
+    );
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card's title leads with its number, shown rather than hidden.
     assert!(

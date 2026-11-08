@@ -171,6 +171,16 @@ h1, h2, h3, p {
   background: var(--warn);
 }
 
+/* A refresh failed while the stream stayed open: the page shows older notes. */
+.live.stale {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.live.stale::before {
+  background: var(--warn);
+}
+
 .app.collapsed {
   grid-template-columns: 64px minmax(0, 1fr);
 }

@@ -355,7 +355,8 @@
   };
   tick();
   setInterval(tick, 60000);
-  // Preserve disclosures, position and keyboard focus when live content changes.
+  // Preserve disclosures, position and keyboard focus when live content changes. A failed
+  // fetch, parse or swap rejects, so the caller can say the page is out of date.
   var refresh = function () {
     return fetch(location.pathname, { cache: 'no-store' }).then(function (r) {
       if (!r.ok) throw new Error('Refresh failed');
@@ -393,20 +394,33 @@
           });
         (replacement || main).focus({ preventScroll: true })
       }
-    }).catch(function () {})
+    })
   };
   if (location.protocol !== 'file:' && window.EventSource) {
     var live = $('#live');
     live.hidden = false;
     live.classList.add('off');
     var es = new EventSource('/events'), opened = false, pending = false, queued = false;
+    // Whether the stream is open, and whether the last refresh failed. Only a successful
+    // refresh clears the warning; the next change or reconnect tries again.
+    var connected = false, stale = false;
+    var showLive = function () {
+      live.classList.toggle('off', !connected);
+      live.classList.toggle('stale', connected && stale);
+      live.textContent = !connected ? 'Reconnecting…' : stale ? 'Couldn’t refresh · showing older content' : 'Live updates';
+    };
     var schedule = function () {
       if (pending) {
         queued = true;
         return
       }
       pending = true;
-      refresh().finally(function () {
+      refresh().then(function () {
+        stale = false
+      }, function () {
+        stale = true
+      }).finally(function () {
+        showLive();
         pending = false;
         if (queued) {
           queued = false;
@@ -415,14 +429,14 @@
       })
     };
     es.onopen = function () {
-      live.classList.remove('off');
-      live.textContent = 'Live updates';
+      connected = true;
+      showLive();
       if (opened) schedule();
       opened = true
     };
     es.onerror = function () {
-      live.classList.add('off');
-      live.textContent = 'Reconnecting…'
+      connected = false;
+      showLive()
     };
     es.addEventListener('changed', schedule);
   }

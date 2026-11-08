@@ -91,7 +91,8 @@ updates and recently closed work expand in place.
 The palette menu beside the light/dark toggle offers Iris, Ember, Slate, Moss and
 Graphite. It also includes **Follow system appearance**. Palette and appearance are
 remembered independently in each browser. Live updates retain the current view,
-reading position and expanded history.
+reading position and expanded history. If an update can't be loaded, the sidebar says
+the page is showing older content until the next change or reconnect loads it.
 
 ```sh
 "$HOME/.local/bin/astrolabe" home --open --theme dark
