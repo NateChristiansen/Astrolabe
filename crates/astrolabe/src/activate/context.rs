@@ -53,18 +53,19 @@ const PIECES: &str = "Pieces come with the approved plan when it has more than o
 /// Filing a plan that names efforts as an initiative.
 const FILING: &str = "A plan that names efforts ends in an initiative: `astrolabe initiative new --title \"<name>\"` with the page in its body files the record. The accepted forms show a page alone, new efforts, or existing ones joined by number. Membership is an effort's `initiative:` naming the page and means it delivers part of the initiative. A planning-only spike closes without --initiative; the page links it as provenance. Progress comes from member statuses, never a checklist of efforts; an initiative has no Pieces.";
 
-/// For an owner's effort: where orchestration starts, which the initiative's own text covers.
-const ORCHESTRATE: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>`; its output says how to dispatch and close. Each worker is its own session, never a subagent.";
-
 const STALE: &str = "A stale save is refused with the current text.";
 
-const STATES_EFFORT: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+/// An owner's effort keeps today's orchestration, states and journal text: the eval found the
+/// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
+const ORCHESTRATE_FULL: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>` and keeps its state, cross-effort decisions, owner questions and the day's one journal line on the page, never in an orchestrate effort. Workers save their own state, decisions and pieces, and journal nothing. The orchestrator reviews and lands, then runs `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A stale save is refused with the current text; a shared initiative reaches across repos. Briefs and reports live in the notes under `.agents/<initiative slug>/` so another session can resume.";
+
+const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+
+const JOURNAL_FULL: &str = "The journal is the owner's history: one line per initiative per day on its page, or per standalone effort on itself; workers write none.";
 
 const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review when built and checked; the dispatcher marks it done.";
 
 const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
-
-const JOURNAL_EFFORT: &str = "The journal is the owner's history: one line a day for the effort you're on, on the effort, including one in an initiative; an orchestrator writes its initiative's line on the page instead.";
 
 const JOURNAL_INITIATIVE: &str = "The journal is the owner's history: one line a day for this initiative, on its page; its workers write none.";
 
@@ -87,9 +88,9 @@ fn rules(role: Role, slug: &str) -> String {
             format!("{LESSON} {DECISIONS} {PLAN}"),
             PIECES.into(),
             FILING.into(),
-            format!("{ORCHESTRATE} {STALE}"),
-            STATES_EFFORT.into(),
-            format!("{JOURNAL_EFFORT} {JOURNAL_FORM}"),
+            ORCHESTRATE_FULL.into(),
+            STATES_FULL.into(),
+            format!("{JOURNAL_FULL} {JOURNAL_FORM}"),
             STOP.into(),
         ],
         Role::Worker => vec![
@@ -731,8 +732,8 @@ fn lead(role: Role, f: &Facts) -> String {
             proof = f.proof,
             issue = f.issues,
             notes_free = match role {
-                Role::Worker => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
-                _ => NOTES_FREE.to_owned(),
+                Role::Initiative => NOTES_FREE.to_owned(),
+                _ => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
             },
             rules = rules(role, f.number),
         ),
@@ -1084,13 +1085,13 @@ mod tests {
     }
 
     #[test]
-    fn an_effort_gets_filing_journal_and_lessons_but_only_a_pointer_to_orchestration() {
+    fn an_effort_keeps_every_rule_but_the_initiatives_own_steps() {
         check(
             Role::Effort,
             &[
                 "for effort 7, \"0007 Sample\" (codex session s-1, repo demo)",
                 "[--journal",
-                "one line a day for the effort you're on",
+                "per standalone effort on itself",
                 "--pieces-file",
                 "--plan-file",
                 "unless it stays blocked or in review",
@@ -1099,16 +1100,15 @@ mod tests {
                 "A planning-only spike closes without --initiative",
                 "Progress comes from member statuses",
                 "astrolabe activate --initiative <slug>",
-                "never a subagent",
+                "`astrolabe effort read <n>`",
+                "`.agents/<initiative slug>/`",
                 "Stop-hook",
                 "PROOF\n\nReport the effort",
                 "FRESH",
             ],
             &[
-                "astrolabe effort read",
-                ".agents/",
                 "This session is a worker",
-                "a worker saves its own",
+                "You're this initiative's orchestrator",
             ],
         );
     }
@@ -1202,6 +1202,6 @@ mod tests {
         let mut f = facts("autonomous", "edit");
         f.issues = "- issue line\n";
         let t = instructions(Role::Effort, &f);
-        assert!(t.contains("need approval.\n- issue line\n- A narrower"));
+        assert!(t.contains("the same way.\n- issue line\n- A narrower"));
     }
 }
