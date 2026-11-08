@@ -215,7 +215,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | Option | Effect |
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `review`, `blocked`, `done` or `abandoned`. Review means built and checked, waiting for review, acceptance or landing. |
-| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. An empty value clears it. |
+| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. Refused on a done or abandoned record, which waits on nothing. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. Repeat the flag for several; each is recorded, in the order given. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
@@ -232,7 +232,7 @@ When `--status done` marks an effort with an issue done, the result says whether
 
 A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Review efforts and unsupported or ambiguous transcripts leave the wait alone.
 
-A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked or in review. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked or in review. A done or abandoned record waits on nothing: a save that would leave one waiting is refused, and the board never shows one in Needs you. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
 
 ```sh
 astrolabe effort save --status blocked --waits-for "owner: try upload retries" <<'ASTROLABE'

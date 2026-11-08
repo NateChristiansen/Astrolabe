@@ -102,6 +102,16 @@ impl InitiativeProgress {
     }
 }
 
+/// Whether a record waits on the owner. A closed one never does: saves refuse a wait on one
+/// now, but a note written before that, or by an older build on another machine, can carry
+/// one, and it put a finished effort in Needs you.
+fn waits_on_owner(file: &EffortFile) -> bool {
+    !matches!(file.prop("status"), Some("done" | "abandoned"))
+        && file
+            .prop("waits_for")
+            .is_some_and(|w| w.starts_with("owner:"))
+}
+
 /// The same rows from a checkout already in hand: what the board is drawn from.
 pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     let mut rows = Vec::new();
@@ -131,9 +141,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             }
         };
         let status = file.prop("status").unwrap_or("");
-        let needs_owner = file
-            .prop("waits_for")
-            .is_some_and(|w| w.starts_with("owner:"));
+        let needs_owner = waits_on_owner(&file);
         let membership = file.prop("initiative").filter(|name| !name.is_empty());
         let page = membership.and_then(|name| crate::effort::resolve_initiative(&pages, name).ok());
         if let Some(page) = page {
@@ -201,9 +209,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         {
             continue;
         }
-        let needs_owner = file
-            .prop("waits_for")
-            .is_some_and(|w| w.starts_with("owner:"));
+        let needs_owner = waits_on_owner(file);
         let mut progress = page_progress.remove(&page.slug).unwrap_or_default();
         progress.need_you += usize::from(needs_owner);
         let row = EffortRow {
@@ -485,6 +491,55 @@ mod initiative_tests {
         );
         assert!(html.contains("Mixed Case <span class=\"pill\">no page</span>"));
         assert!(!html.contains("Closed group") && !html.contains("Discarded experiment"));
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn a_closed_record_never_waits_on_the_owner() {
+        let notes = initiative_fixture();
+        for (n, status) in [(25, "done"), (26, "abandoned")] {
+            std::fs::write(
+                notes.root.join(format!("efforts/{n:04}-closed.md")),
+                format!(
+                    "---\nstatus: {status}\nrepo: demo\nwaits_for: \"owner: stale pick\"\nupdated: 2026-11-05T12:00-07:00\n---\n# {n:04} Closed ask {status}\n\n## Current state\nFinished.\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            notes.root.join("initiatives/closed-ask.md"),
+            "---\nstatus: done\nrepo: demo\nwaits_for: \"owner: stale page pick\"\nupdated: 2026-11-05T12:00-07:00\n---\n# Closed ask page\n\n## Current state\nAccepted.\n",
+        )
+        .unwrap();
+        let board = rows_in(&notes, None, true);
+        for n in [25, 26] {
+            let row = board.efforts.iter().find(|r| r.number == Some(n)).unwrap();
+            assert!(!row.needs_owner, "effort {n}");
+        }
+        let page = board
+            .initiatives
+            .iter()
+            .find(|i| i.page.title.as_deref() == Some("Closed ask page"))
+            .unwrap();
+        assert!(!page.page.needs_owner && page.progress.need_you == 0);
+        assert!(
+            !board
+                .initiative_attention
+                .iter()
+                .any(|r| r.title.as_deref() == Some("Closed ask page"))
+        );
+        let html = crate::home::render(
+            &board,
+            &notes.root,
+            notes::now_ms(),
+            crate::home::Look::default(),
+        );
+        let needs = html
+            .split("col needsyou")
+            .nth(1)
+            .and_then(|rest| rest.split("</section>").next())
+            .unwrap_or_default();
+        assert!(!needs.contains("Closed ask"), "{needs}");
         std::fs::remove_dir_all(notes.root).unwrap();
     }
 

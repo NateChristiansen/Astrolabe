@@ -466,6 +466,47 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_record_takes_no_wait() {
+        let save = |status: &str, req: SaveRequest| {
+            let mut f = file(&[("status", status), ("waits_for", "")]);
+            edit_bound(&mut f, &req, None, "2026-11-08").map(|_| {
+                (
+                    f.prop("status").unwrap_or("").to_owned(),
+                    f.prop("waits_for").unwrap_or("").to_owned(),
+                )
+            })
+        };
+        let wait = |status: Option<&str>| SaveRequest {
+            status: status.map(str::to_owned),
+            waits_for: Some("owner: three picks"),
+            ..Default::default()
+        };
+        // 106's save: already done, a wait added with no --status.
+        let refused = save("done", wait(None)).unwrap_err();
+        assert!(
+            refused.contains("a done record waits on nothing"),
+            "{refused}"
+        );
+        assert!(save("abandoned", wait(None)).is_err());
+        // Closing and waiting in one save.
+        assert!(save("active", wait(Some("done"))).is_err());
+        // Reopening with a wait, or closing without one, goes through.
+        assert_eq!(
+            save("done", wait(Some("blocked"))).unwrap(),
+            ("blocked".to_owned(), "owner: three picks".to_owned())
+        );
+        let closing = SaveRequest {
+            status: Some("done".to_owned()),
+            waits_for: Some(""),
+            ..Default::default()
+        };
+        assert_eq!(
+            save("review", closing).unwrap(),
+            ("done".to_owned(), String::new())
+        );
+    }
+
+    #[test]
     fn a_reply_reports_in_a_fixed_order() {
         let notes = ["The plan's headings were shifted.".to_owned()];
         let diverged = Pull::Diverged("x".to_owned());
