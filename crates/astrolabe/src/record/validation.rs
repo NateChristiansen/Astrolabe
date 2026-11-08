@@ -11,9 +11,7 @@ pub(super) const STATUSES: [&str; 7] = [
     "abandoned",
 ];
 
-pub(super) const INVOLVEMENTS: [&str; 3] = ["autonomous", "check in at plan", "each step"];
-
-pub(super) const AUTHORITIES: [&str; 3] = ["read", "edit", "push"];
+pub(super) use crate::effort::{AUTHORITIES, INVOLVEMENTS};
 
 /// Current state is three short paragraphs the owner reads; past this it's a report.
 pub(super) const CURRENT_WORDS: usize = 150;

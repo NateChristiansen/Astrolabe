@@ -133,13 +133,7 @@ pub(super) fn saved_port(notes: &Notes) -> Option<u16> {
 
 /// The port this machine serves on, beside the look; `SERVE_PORT` when unset.
 pub fn port(notes: &Notes) -> u16 {
-    std::fs::read_to_string(notes.state.join(LOOK_FILE))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["port"].as_u64())
-        .and_then(|p| u16::try_from(p).ok())
-        .filter(|p| *p != 0)
-        .unwrap_or(SERVE_PORT)
+    saved_port(notes).filter(|p| *p != 0).unwrap_or(SERVE_PORT)
 }
 
 pub fn set_port(notes: &Notes, port: u16) -> Result<(), String> {

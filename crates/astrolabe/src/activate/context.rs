@@ -6,6 +6,7 @@ use super::repos::{
 };
 use super::{now_ms, state_dir};
 use crate::effort::frontmatter;
+use crate::effort::{AUTHORITIES, INVOLVEMENTS};
 use crate::hook::comparable;
 use crate::registry::AGENT;
 use crate::session::{Binding, Field, SessionState};
@@ -15,34 +16,18 @@ use std::path::Path;
 /// A hook's text is cut near 10,000 characters on both clients (see `voice`).
 pub(super) const HOOK_LIMIT: usize = 9800;
 
-pub(super) const INVOLVEMENT: [(&str, &str); 3] = [
-    (
-        "autonomous",
-        "run to the end within authority, then report, because the owner chose to stay out of the loop for this effort",
-    ),
-    (
-        "check in at plan",
-        "show the plan and wait for the owner's go before changing files, because a plan is cheap to redirect and changed files aren't",
-    ),
-    (
-        "each step",
-        "report after each step and wait before the next, because the owner wants to steer each one",
-    ),
+/// What each of `INVOLVEMENTS` asks of an agent, in that list's order.
+const INVOLVEMENT_MEANINGS: [&str; 3] = [
+    "run to the end within authority, then report, because the owner chose to stay out of the loop for this effort",
+    "show the plan and wait for the owner's go before changing files, because a plan is cheap to redirect and changed files aren't",
+    "report after each step and wait before the next, because the owner wants to steer each one",
 ];
 
-pub(super) const AUTHORITY: [(&str, &str); 3] = [
-    (
-        "read",
-        "read and report; change no project files, because the owner hasn't handed this effort's changes to an agent",
-    ),
-    (
-        "edit",
-        "change files and commit locally on a branch, but don't push, because sharing the work is the owner's call here",
-    ),
-    (
-        "push",
-        "change, commit and push the effort's branch where the repo's own rules allow, because the owner allowed sharing for this effort",
-    ),
+/// What each of `AUTHORITIES` lets an agent do, in that list's order.
+const AUTHORITY_MEANINGS: [&str; 3] = [
+    "read and report; change no project files, because the owner hasn't handed this effort's changes to an agent",
+    "change files and commit locally on a branch, but don't push, because sharing the work is the owner's call here",
+    "change, commit and push the effort's branch where the repo's own rules allow, because the owner allowed sharing for this effort",
 ];
 
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
@@ -162,13 +147,17 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             format!("{file} has no `{key}` property; the owner sets it in the note's properties at the top, as in `repo: <name>`, `involvement: check in at plan`, `authority: edit`")
         })
     };
-    let one_of = |key: &str, allowed: &[(&str, &str)]| {
+    let one_of = |key: &str, allowed: &[&str]| {
         let value = get(key)?;
-        let known = allowed.iter().any(|(name, _)| *name == value);
-        let names: Vec<&str> = allowed.iter().map(|(name, _)| *name).collect();
-        known
+        allowed
+            .contains(&value)
             .then(|| value.to_owned())
-            .ok_or_else(|| format!("{file}: {key} {value:?} isn't one of {}", names.join(", ")))
+            .ok_or_else(|| {
+                format!(
+                    "{file}: {key} {value:?} isn't one of {}",
+                    allowed.join(", ")
+                )
+            })
     };
     let repos: Vec<String> = get("repo")?
         .split(',')
@@ -194,8 +183,8 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             .trim()
             .to_owned(),
         repos,
-        involvement: one_of("involvement", &INVOLVEMENT)?,
-        authority: one_of("authority", &AUTHORITY)?,
+        involvement: one_of("involvement", &INVOLVEMENTS)?,
+        authority: one_of("authority", &AUTHORITIES)?,
         issues: (props.iter())
             .find(|(k, _)| k == "issue")
             .map(|(_, v)| {
@@ -343,9 +332,9 @@ pub fn switch_initiative(
     let (_, notes) = notes_and_repos()?;
     let pages = crate::effort::initiative_catalog(&notes)?;
     let page = crate::effort::resolve_initiative(&pages, name)?;
-    let setting = |key: &str, default: &str, allowed: &[(&str, &str)]| -> Result<String, String> {
+    let setting = |key: &str, default: &str, allowed: &[&str]| -> Result<String, String> {
         let value = page.file.prop(key).unwrap_or(default);
-        if !allowed.iter().any(|(name, _)| *name == value) {
+        if !allowed.contains(&value) {
             return Err(format!("{}: unknown {key} {value:?}", page.path));
         }
         Ok(value.to_owned())
@@ -361,8 +350,8 @@ pub fn switch_initiative(
             .split(',')
             .map(|r| r.trim().to_owned())
             .collect(),
-        involvement: setting("involvement", "check in at plan", &INVOLVEMENT)?,
-        authority: setting("authority", "edit", &AUTHORITY)?,
+        involvement: setting("involvement", "check in at plan", &INVOLVEMENTS)?,
+        authority: setting("authority", "edit", &AUTHORITIES)?,
         issues: Vec::new(),
         current: page.file.current.clone(),
         hash: crate::notes::content_hash(&page.text),
@@ -515,10 +504,11 @@ fn switch_record(
         state.read_efforts = previous.read_efforts.clone();
         state.worker = previous.worker.clone();
     }
-    fn meaning(table: &[(&str, &'static str)], value: &str) -> &'static str {
-        table
+    fn meaning(names: &[&str; 3], meanings: &[&'static str; 3], value: &str) -> &'static str {
+        names
             .iter()
-            .find(|(name, _)| *name == value)
+            .zip(meanings)
+            .find(|(name, _)| **name == value)
             .map_or("", |(_, m)| *m)
     }
     let head = format!(
@@ -537,9 +527,9 @@ fn switch_record(
         title = effort.title,
         file = effort.file,
         inv = effort.involvement,
-        inv_m = meaning(&INVOLVEMENT, &effort.involvement),
+        inv_m = meaning(&INVOLVEMENTS, &INVOLVEMENT_MEANINGS, &effort.involvement),
         auth = effort.authority,
-        auth_m = meaning(&AUTHORITY, &effort.authority),
+        auth_m = meaning(&AUTHORITIES, &AUTHORITY_MEANINGS, &effort.authority),
         proof = proof_steps(&token, shells),
         issue = issue_line(&effort.issues),
     );
@@ -555,9 +545,9 @@ fn switch_record(
             status = file.prop("status").unwrap_or("ready"),
             wait = file.prop("waits_for").unwrap_or("none"),
             inv = effort.involvement,
-            inv_m = meaning(&INVOLVEMENT, &effort.involvement),
+            inv_m = meaning(&INVOLVEMENTS, &INVOLVEMENT_MEANINGS, &effort.involvement),
             auth = effort.authority,
-            auth_m = meaning(&AUTHORITY, &effort.authority),
+            auth_m = meaning(&AUTHORITIES, &AUTHORITY_MEANINGS, &effort.authority),
             proof = proof_steps(&token, shells),
             freshness = freshness(&notes, &effort, cwd),
         )

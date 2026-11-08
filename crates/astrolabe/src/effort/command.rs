@@ -53,22 +53,12 @@ impl EffortCommand {
     /// names the command passes through.
     pub fn is_effort_command(command: &str) -> bool {
         simple_commands(command).iter().any(|words| {
-            // Assignments and the words that only introduce a command come before the program.
-            const LEAD: [&str; 10] = [
-                "!", "{", "if", "elif", "then", "while", "until", "do", "else", "time",
-            ];
-            let mut words = words
-                .iter()
-                .skip_while(|w| LEAD.contains(&w.as_str()) || is_assignment(w));
-            let program = words.next().map(String::as_str).unwrap_or_default();
-            let named = program == "astrolabe"
-                || program.ends_with("/astrolabe")
-                || program.ends_with("\\astrolabe");
-            named
-                && matches!(
-                    words.next().map(String::as_str),
+            astrolabe_args(words).is_some_and(|args| {
+                matches!(
+                    args.first().map(String::as_str),
                     Some("effort" | "journal" | "initiative")
                 )
+            })
         })
     }
 
@@ -244,6 +234,21 @@ An initiative page alone, or with efforts filed as proposed in one step, the bod
 Omit the Efforts section for a page only; to join existing efforts, use one paragraph beginning `effort <n>` per member, without mixing new titles. Bind with `astrolabe activate --initiative <slug>` (a quoted title also works); `effort save` then writes the initiative. Save the bound initiative:\n  astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"] <<'ASTROLABE'\n  <the same three paragraphs>\n  ASTROLABE\nInitiatives have no review status; done needs an acceptance statement and no open members. Pieces, ticks, plans and membership are unavailable there. Status changes to active, review, blocked, done or abandoned require a Current state body, including by number.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
 Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. --decision, --tick and --untick repeat: each one given is recorded, in order. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
+
+/// The words after `astrolabe` (bare or a path) when it's the program a simple command runs,
+/// past assignments and the words that only introduce a command; `None` when another
+/// program runs. Each caller then reads its own grammar from what follows.
+pub(crate) fn astrolabe_args(words: &[String]) -> Option<&[String]> {
+    const LEAD: [&str; 10] = [
+        "!", "{", "if", "elif", "then", "while", "until", "do", "else", "time",
+    ];
+    let at = words
+        .iter()
+        .position(|w| !LEAD.contains(&w.as_str()) && !is_assignment(w))?;
+    let program = words[at].as_str();
+    (program == "astrolabe" || program.ends_with("/astrolabe") || program.ends_with("\\astrolabe"))
+        .then(|| &words[at + 1..])
+}
 
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
 pub(crate) fn is_assignment(word: &str) -> bool {

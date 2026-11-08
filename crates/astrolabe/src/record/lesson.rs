@@ -1,5 +1,5 @@
 //! Closing a lesson is a hook-owned write, with two commits in one recoverable intent.
-use crate::effort::command::{Words, is_assignment, simple_commands};
+use crate::effort::command::{Words, astrolabe_args, simple_commands};
 use crate::notes::{LessonClose, Notes, Op, Pull};
 use std::path::{Component, Path};
 
@@ -7,20 +7,11 @@ pub const FORM: &str = "astrolabe lesson close lessons/<name>.md --as \"<disposi
 
 pub(crate) fn claims(command: &str) -> bool {
     simple_commands(command).iter().any(|words| {
-        let mut words = words.iter().skip_while(|w| {
-            [
-                "!", "{", "if", "elif", "then", "while", "until", "do", "else", "time",
-            ]
-            .contains(&w.as_str())
-                || is_assignment(w)
-        });
-        let program = words.next().map(String::as_str).unwrap_or_default();
-        (is_program(program) || program.ends_with("\\astrolabe"))
-            && match words.next().map(String::as_str) {
-                Some("lesson") => true,
-                Some("notes") => words.next().is_some_and(|w| w == "sync"),
-                _ => false,
-            }
+        astrolabe_args(words).is_some_and(|args| match args {
+            [verb, ..] if verb == "lesson" => true,
+            [verb, sub, ..] => verb == "notes" && sub == "sync",
+            _ => false,
+        })
     })
 }
 

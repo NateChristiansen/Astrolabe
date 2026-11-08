@@ -5,7 +5,7 @@ pub use crate::session::read_state;
 pub(crate) use crate::session::state_path;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 pub(crate) mod allow;
 mod context;
 mod housekeeping;
@@ -111,10 +111,7 @@ pub fn hook_id() -> String {
 }
 
 fn now_ms() -> i64 {
-    let since = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    since.as_millis() as i64
+    crate::notes::now_ms()
 }
 
 pub(crate) fn random_hex() -> Result<String, String> {

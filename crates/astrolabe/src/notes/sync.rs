@@ -214,9 +214,6 @@ impl Notes {
                 self.record_pushed();
                 self.changed();
                 let mut text = "pushed".to_owned();
-                if !leftovers.is_empty() {
-                    text += &format!("; leftover intents failed: {}", leftovers.join("; "));
-                }
                 if !stale.is_empty() {
                     text += &format!("; stale saves: {}", stale.join("; "));
                 }
