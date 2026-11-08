@@ -599,7 +599,6 @@ impl EffortFile {
     }
 }
 
-/// A file name's slug from a title: lowercase words joined by dashes, at most six.
 /// Whether a line is a checklist item, and whether it's ticked.
 pub(super) fn piece_box(line: &str) -> Option<bool> {
     let rest = line.trim_start().strip_prefix("- ")?;
@@ -620,6 +619,7 @@ pub(super) fn piece_text(line: &str) -> &str {
         .trim()
 }
 
+/// A file name's slug from a title: lowercase words joined by dashes, at most six.
 pub fn slug(title: &str) -> String {
     let words: Vec<String> = title
         .split(|c: char| !c.is_alphanumeric())

@@ -83,7 +83,7 @@ The page receives change notifications and refreshes the board, tree or open not
 
 Each update also writes `home.html` at the notes root, excluded from Git through that checkout's local exclude file. This standalone page reloads once a minute when used without the server.
 
-Appearance settings are saved per machine; a browser's own choice takes precedence there. Iris is the default palette, with Ember and Slate also available. The page and browser icon share the [project artwork](../assets/branding/README.md).
+Appearance settings are saved per machine; a browser's own choice takes precedence there. Iris is the default palette, with Ember, Slate, Moss and Graphite also available; see the [command reference](commands.md) for setting one. The page and browser icon share the [project artwork](../assets/branding/README.md).
 
 ## The shell guard
 

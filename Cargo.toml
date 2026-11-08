@@ -21,7 +21,8 @@ install-updater = false
 checksum = "sha256"
 unix-archive = ".tar.gz"
 windows-archive = ".zip"
-# Publication is a separate, reviewed step; the workflow only uploads CI artifacts.
+# The build jobs only upload CI artifacts; publish-nightly replaces the nightly prerelease on
+# pushes to main, and versioned releases are published by hand (docs/releases.md).
 ci = []
 hosting = ["github"]
 

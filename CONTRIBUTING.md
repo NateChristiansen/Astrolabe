@@ -30,4 +30,4 @@ When changing behavior, update the guide where a reader uses it. Keep setup step
 
 ## Releases
 
-See [Preparing a release](docs/releases.md) for artifact generation, migration tests, and the review required before publication. The release workflow uploads CI artifacts; it does not publish them.
+See [Preparing a release](docs/releases.md) for artifact generation, migration tests, and the review required before publication. The release workflow's build jobs only upload CI artifacts. Its `publish-nightly` job replaces the rolling [nightly prerelease](docs/releases.md#nightly) on each push to `main`; versioned releases are still published by hand after review.
