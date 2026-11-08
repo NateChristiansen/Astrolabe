@@ -224,6 +224,50 @@ fn prose_validation_refuses_unsupported_shapes() {
     }
 }
 
+/// A refused journal line or Current state leaves everything as it was: the note, the owner's
+/// staging, the history, pending operations and the session's state.
+#[test]
+fn a_refused_journal_or_current_state_writes_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(&mac.notes.join("drafts/post.md"), "half a post");
+    git(&mac.notes, &["add", "drafts/post.md"]);
+    let session = mac.state().join("s1.json");
+    let snapshot = || {
+        (
+            mac.effort_text(1),
+            git(&mac.notes, &["diff", "--cached", "--name-only"]),
+            git(&mac.notes, &["rev-list", "--count", "HEAD"]),
+            std::fs::read_dir(mac.state().join("ops"))
+                .map(|d| d.count())
+                .unwrap_or(0),
+            std::fs::read(&session).unwrap(),
+        )
+    };
+    let before = snapshot();
+    assert_eq!(before.3, 0, "no pending operations to start with");
+    let long = (0..151).map(|_| "word").collect::<Vec<_>>().join(" ");
+    for (command, why) in [
+        (
+            "astrolabe effort save --journal \"Landed the ink smoothing helper. Merged.\""
+                .to_owned(),
+            "where the work stands",
+        ),
+        (
+            format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"),
+            "151 words",
+        ),
+    ] {
+        let (out, ok) = mac.bash("s1", &command);
+        assert!(
+            !ok && out.contains(why) && out.contains("Nothing was written"),
+            "{out}"
+        );
+        assert!(snapshot() == before, "{command} changed something");
+    }
+}
+
 #[test]
 fn journal_replacement_keeps_one_line_per_day() {
     let world = World::new();

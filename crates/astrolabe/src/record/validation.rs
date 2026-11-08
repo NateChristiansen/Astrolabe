@@ -310,6 +310,108 @@ pub(crate) fn closes(message: &str, n: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn words(n: usize) -> String {
+        vec!["word"; n].join(" ")
+    }
+
+    fn refusal(result: Result<impl std::fmt::Debug, String>) -> String {
+        result.expect_err("refused")
+    }
+
+    #[test]
+    fn current_state_is_short_plain_paragraphs() {
+        let why = refusal(as_current(&words(151)));
+        assert!(
+            why.contains("151 words") && why.contains("under 150"),
+            "{why}"
+        );
+        assert!(why.contains("Nothing was written"), "{why}");
+        assert_eq!(as_current(&words(150)).unwrap(), words(150));
+        assert_eq!(
+            as_current("  where it stands\n\n").unwrap(),
+            "where it stands"
+        );
+        let why = refusal(as_current("**Status:** active"));
+        assert!(why.contains("no **Label:** lines"), "{why}");
+        assert!(why.contains("Nothing was written"), "{why}");
+    }
+
+    #[test]
+    fn journal_lines_refuse_the_shapes_sessions_wrote() {
+        let why = refusal(check_journal(&words(41)));
+        assert!(
+            why.contains("41 words") && why.contains("aim for 25"),
+            "{why}"
+        );
+        assert!(check_journal(&words(40)).is_ok());
+        assert!(refusal(check_journal("two\nlines")).contains("one line"));
+        for (line, why) in [
+            (
+                "Landed the ink smoothing helper. Merged.",
+                "where the work stands",
+            ),
+            (
+                "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
+                "3 sentences",
+            ),
+            (
+                "Chat replies drift without voice.md at start.",
+                "names a file (voice.md)",
+            ),
+            (
+                "Replies lose the owner's voice without the voice note.",
+                "the owner",
+            ),
+            (
+                "Moved the hook script out of src/hooks/old and it fires again.",
+                "names a file",
+            ),
+        ] {
+            let out = refusal(check_journal(line));
+            assert!(
+                out.contains(why) && out.contains("Nothing was written"),
+                "{line}: {out}"
+            );
+        }
+        // A name after a full stop, a decimal, a slash between words and a status word inside
+        // a sentence are not those shapes.
+        for line in [
+            "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
+            "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
+            "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
+        ] {
+            assert_eq!(check_journal(line), Ok(()), "{line}");
+        }
+    }
+
+    #[test]
+    fn sentences_end_before_a_capital_and_files_need_a_path_or_extension() {
+        assert_eq!(
+            journal_sentences("Cut it to 1.5 s. Then more! Why? done"),
+            vec!["Cut it to 1.5 s.", "Then more!", "Why? done"]
+        );
+        assert_eq!(
+            journal_sentences("Astra. viral-studio stays"),
+            vec!["Astra. viral-studio stays"]
+        );
+        assert_eq!(journal_sentences("Ends. "), vec!["Ends. "]);
+        assert!(journal_sentences("").is_empty());
+        for word in [
+            "voice.md",
+            "src/hooks/old",
+            "/etc",
+            "~/x",
+            "./run",
+            "a/b.c",
+            "Cargo.lock",
+        ] {
+            assert!(looks_like_a_file(word), "{word}");
+        }
+        for word in ["and/or", "Mac/PC", "1.5", "e.g", "md", ".md", "done."] {
+            assert!(!looks_like_a_file(word), "{word}");
+        }
+    }
+
     #[test]
     fn issue_lists_are_numbers() {
         assert_eq!(issues("5").unwrap(), "5");
