@@ -1198,14 +1198,133 @@ html[data-view=notes] .main {
   margin-bottom: 7px;
 }
 
+.search-box {
+  position: relative;
+}
+
 .search input {
   width: 100%;
   height: 42px;
   border: 1px solid var(--mute);
   border-radius: 9px;
-  padding: 0 12px;
+  padding: 0 44px 0 38px;
   background: var(--card);
   font-size: 14px;
+}
+
+/* The box's own clear button stands in for the browser's, so every browser has one. */
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 17px;
+  height: 17px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--mute);
+  stroke-width: 2;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.search-key {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 20px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--mute);
+  font: 12px/1.4 inherit;
+  text-align: center;
+  pointer-events: none;
+}
+
+.search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--mute);
+}
+
+.search-clear:hover {
+  background: var(--sel);
+  color: var(--ink);
+}
+
+.search-clear svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.search-key[hidden], .search-clear[hidden] {
+  display: none;
+}
+
+.scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.scopes[hidden] {
+  display: none;
+}
+
+.scope {
+  min-height: 28px;
+  padding: 3px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--mute);
+  font-size: 12.5px;
+  text-transform: capitalize;
+}
+
+.scope:hover {
+  background: var(--sel);
+  color: var(--ink);
+}
+
+.scope[aria-pressed=true] {
+  background: var(--sel);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.search-status {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--mute);
+}
+
+.status-more {
+  color: var(--accent);
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.no-notes {
+  color: var(--mute);
 }
 
 /* Folders and notes are rows of one height and text size; the chevron, count and
@@ -1369,8 +1488,30 @@ html[data-view=notes] .main {
   display: block;
 }
 
-.tree.filtering .f.miss {
+.tree.filtering .f.miss, .tree.filtering details.empty, .tree.filtering .hidden-toggle {
   display: none;
+}
+
+/* Where the words were found in a note's text, under its title. */
+.tree .f {
+  flex-wrap: wrap;
+}
+
+.tree .f .snip {
+  flex: 1 0 100%;
+  padding-left: 15px;
+  color: var(--mute);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.tree .f .snip mark {
+  background: var(--sel);
+  color: var(--ink);
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 1px;
 }
 
 .dot.draft {

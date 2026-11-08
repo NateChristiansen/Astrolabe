@@ -468,7 +468,8 @@ pub(super) fn request(stream: &mut TcpStream) -> Option<String> {
     }
 }
 
-/// One response: the board at `/`, an effort as a page at its own path, nothing anywhere else.
+/// One response: the board at `/`, a search of the notes' text at `/search?q=…`, an effort as
+/// a page at its own path, nothing anywhere else.
 /// Only a request addressed to this loopback port is answered, so a page on another origin
 /// that reaches the socket by a rebound name gets nothing.
 pub(super) fn answer(
@@ -505,6 +506,13 @@ pub(super) fn answer(
         );
         return ("200 OK", "text/html", page);
     }
+    if path == "/search" {
+        return (
+            "200 OK",
+            "application/json",
+            super::search::answer(&notes.root, &query_param(target, "q").unwrap_or_default()),
+        );
+    }
     // A note by its path from the checkout root: plain components only, nothing a join could
     // carry elsewhere (a dot-dot, a drive letter's colon, a backslash), and `.md` at the end.
     if let Some(rel) = path.strip_prefix('/')
@@ -532,6 +540,17 @@ pub(super) fn answer(
         );
     }
     ("404 Not Found", "text/plain", "nothing here\n".to_owned())
+}
+
+/// The value of `name` in the target's query string, with `+` read as a space; None when it
+/// isn't there or doesn't decode.
+pub(super) fn query_param(target: &str, name: &str) -> Option<String> {
+    let (_, query) = target.split_once('?')?;
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('=').or(Some((pair, ""))))
+        .find(|(k, _)| *k == name)
+        .and_then(|(_, v)| decode(&v.replace('+', " ")))
 }
 
 /// Percent-decoding of a path segment, the inverse of `percent`; None for a malformed escape

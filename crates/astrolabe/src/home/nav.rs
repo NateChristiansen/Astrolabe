@@ -124,7 +124,7 @@ pub(super) fn tree_html(
         let html = dir_html(&node, 0, None, &by_file, root, links, current);
         if *is_hidden {
             hidden += &html;
-            hidden_names.push(name.clone());
+            hidden_names.push(label_of(name).to_owned());
             hidden_count += node.count();
         } else {
             shown += &html;
@@ -153,8 +153,13 @@ pub(super) fn is_year(name: &str) -> bool {
     name.len() == 4 && name.chars().all(|c| c.is_ascii_digit())
 }
 
-/// `11-November` reads as `November`; a filed note's own number stays on its row.
+/// `11-November` reads as `November`, and `.agents` as `agents`: the dot that hides a folder
+/// on disk stays there. A filed note's own number stays on its row.
 pub(super) fn label_of(name: &str) -> &str {
+    let name = name
+        .strip_prefix('.')
+        .filter(|n| !n.is_empty())
+        .unwrap_or(name);
     name.split_once('-')
         .filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
         .map_or(name, |(_, rest)| rest)

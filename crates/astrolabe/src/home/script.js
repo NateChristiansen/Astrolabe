@@ -245,43 +245,206 @@
   });
   markSection();
   var open = read('astrolabe-tree'), sections = read('astrolabe-sections');
-  $('#q').value = sessionRead('astrolabe-note-query') || '';
-  var filter = function () {
-    var q = $('#q').value.trim().toLowerCase(), count = 0;
-    tree.classList.toggle('filtering', !!q);
-    tree.querySelectorAll('.f').forEach(function (a) {
-      var miss = !!q && ![a.textContent, a.title || '', a.dataset.rel || ''].some(function (t) {
-        return t.toLowerCase().includes(q)
+  var q = $('#q'), scopes = $('#scopes'), status = $('#search-status');
+  q.value = sessionRead('astrolabe-note-query') || '';
+  // The search: every word must be in a note's number, title or path, or, from the server,
+  // in its text. `hits` is the server's answer for `hitsFor`; `scope` a top folder, or all.
+  var scope = sessionRead('astrolabe-note-scope') || '', hidOn = false;
+  var hits = {}, hitsFor = null, searching = false, textSearch = location.protocol !== 'file:';
+  var words = function () {
+    return q.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  };
+  var plural = function (n, one) {
+    return n + ' ' + one + (n === 1 ? '' : 's')
+  };
+  // The snippet as text, each searched word marked.
+  var snippet = function (text, ws) {
+    var el = document.createElement('span'), lower = text.toLowerCase(), i = 0;
+    el.className = 'snip';
+    while (i < text.length) {
+      var at = -1, len = 0;
+      ws.forEach(function (w) {
+        var j = lower.indexOf(w, i);
+        if (j >= 0 && (at < 0 || j < at || (j === at && w.length > len))) {
+          at = j;
+          len = w.length
+        }
       });
-      a.classList.toggle('miss', miss);
-      if (!miss && !a.closest('[hidden]')) count++
+      if (at < 0) break;
+      el.appendChild(document.createTextNode(text.slice(i, at)));
+      var m = document.createElement('mark');
+      m.textContent = text.slice(at, at + len);
+      el.appendChild(m);
+      i = at + len
+    }
+    el.appendChild(document.createTextNode(text.slice(i)));
+    return el
+  };
+  var filter = function () {
+    var ws = words(), on = ws.length > 0, query = ws.join(' '), count = 0, tucked = 0;
+    // A hidden folder's chip shows only while its notes do, and a search kept in one that
+    // was since hidden goes back to all.
+    var hid = $('#hid'), showHid = hidOn;
+    if (hid) hid.hidden = !showHid;
+    scopes.querySelectorAll('button[data-tucked]').forEach(function (b) {
+      b.hidden = !showHid;
+      if (!showHid && b.dataset.scope === scope) scope = ''
     });
-    tree.querySelectorAll('details').forEach(function (d) {
-      d.open = q ? true : (d.dataset.key in open ? !!open[d.dataset.key] : d.defaultOpen)
+    tree.classList.toggle('filtering', on);
+    var fresh = hitsFor === query;
+    tree.querySelectorAll('.f').forEach(function (a) {
+      var old = a.querySelector('.snip');
+      if (old) old.remove();
+      if (!on) {
+        a.classList.remove('miss');
+        return
+      }
+      var rel = a.dataset.rel || '', hay = [a.textContent, a.title, rel].join(' ').toLowerCase();
+      var inScope = !scope || rel === scope || rel.startsWith(scope + '/');
+      var local = ws.every(function (w) { return hay.includes(w) });
+      var text = fresh && Object.hasOwn(hits, rel);
+      var match = inScope && (local || text);
+      a.classList.toggle('miss', !match);
+      if (match && text && !local && hits[rel]) a.appendChild(snippet(hits[rel], ws));
+      if (!match) return;
+      if (hid && hid.contains(a) && !showHid) tucked++;
+      else count++
     });
-    $('#no-notes').hidden = !q || count > 0;
+    // A folder's number is what it holds in this search, and a folder holding none goes.
+    tree.querySelectorAll('details[data-key]').forEach(function (d) {
+      var n = d.querySelector(':scope>summary .n');
+      if (n && n.dataset.total === undefined) n.dataset.total = n.textContent;
+      var shown = on ? d.querySelectorAll('.f:not(.miss)').length : 0;
+      if (n) n.textContent = on ? shown : n.dataset.total;
+      d.classList.toggle('empty', on && shown === 0);
+      d.open = on ? true : (d.dataset.key in open ? !!open[d.dataset.key] : d.defaultOpen)
+    });
+    $('#q-clear').hidden = !q.value;
+    $('#q-key').hidden = !!q.value;
+    scopes.hidden = !on;
+    scopes.querySelectorAll('button').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.scope === scope))
+    });
+    status.hidden = !on;
+    status.textContent = '';
+    if (on) {
+      var line = plural(count, 'note') + ' match';
+      if (count === 1) line = '1 note matches';
+      if (searching) line += ' · searching note text…';
+      else if (!textSearch) line += ' · titles only in this copy';
+      else if (!fresh) line += ' · couldn’t search note text';
+      else if (more) line += ' · stopped at ' + Object.keys(hits).length + ' text matches, add a word to narrow it';
+      status.appendChild(document.createTextNode(line));
+      if (tucked) {
+        // Showing them takes the link away and brings their chip and rows.
+        var link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'status-more';
+        link.textContent = tucked + ' more in ' + ($('#hidtoggle')?.dataset.names || 'hidden folders');
+        link.addEventListener('click', function () { $('#hidtoggle').click() });
+        status.appendChild(document.createTextNode(' · '));
+        status.appendChild(link)
+      }
+    }
+    $('#no-notes').hidden = !on || count > 0 || tucked > 0 || searching;
+  };
+  // Asks the server for notes whose text holds the words, a moment after typing stops; an
+  // answer to a query since changed is dropped. `again` asks once more for the same words
+  // after a live refresh, keeping what's shown until the answer comes.
+  var seq = 0, timer = null, more = false;
+  var lookup = function (again) {
+    clearTimeout(timer);
+    var query = words().join(' ');
+    if (!query || !textSearch) {
+      seq++;
+      searching = false;
+      filter();
+      return
+    }
+    var quiet = again && hitsFor === query;
+    if (hitsFor === query && !searching && !again) {
+      filter();
+      return
+    }
+    if (!quiet) searching = true;
+    filter();
+    var mine = ++seq;
+    timer = setTimeout(function () {
+      fetch('/search?q=' + encodeURIComponent(query), { cache: 'no-store' }).then(function (r) {
+        if (!r.ok) throw new Error('Search failed');
+        return r.json()
+      }).then(function (d) {
+        if (mine !== seq) return;
+        hits = d && d.hits && typeof d.hits === 'object' ? d.hits : {};
+        more = !!(d && d.more);
+        hitsFor = query
+      }, function () {
+        // A failed second ask keeps the first answer.
+        if (mine !== seq || quiet) return;
+        hits = {};
+        hitsFor = null
+      }).finally(function () {
+        if (mine !== seq) return;
+        searching = false;
+        filter()
+      })
+    }, 150)
+  };
+  var setQuery = function (value) {
+    q.value = value;
+    sessionSave('astrolabe-note-query', value);
+    lookup()
+  };
+  // A chip for each top folder, so a search can stay in one; a hidden folder's is marked
+  // `tucked` and shows only while that folder does.
+  var bindScopes = function () {
+    var keys = Array.from(tree.querySelectorAll(':scope>details[data-key],:scope>.hid>details[data-key]'));
+    if (scope && !keys.some(function (d) { return d.dataset.key === scope })) scope = '';
+    scopes.textContent = '';
+    [{ key: '', label: 'All' }].concat(keys.map(function (d) {
+      return { key: d.dataset.key, label: d.querySelector(':scope>summary .t').textContent, tucked: !!d.closest('#hid') }
+    })).forEach(function (s) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'scope';
+      b.dataset.scope = s.key;
+      if (s.tucked) b.dataset.tucked = '';
+      b.textContent = s.label;
+      b.addEventListener('click', function () {
+        scope = s.key;
+        sessionSave('astrolabe-note-scope', scope);
+        filter()
+      });
+      scopes.appendChild(b)
+    })
   };
   var bindTree = function () {
     tree.querySelectorAll('details[data-key]').forEach(function (d) {
       if (d.defaultOpen === undefined) d.defaultOpen = d.open;
       if (d.dataset.key in open) d.open = !!open[d.dataset.key]
     });
-    var hid = $('#hid'), ht = $('#hidtoggle');
+    var ht = $('#hidtoggle');
     if (ht) {
       var show = function (on) {
-        hid.hidden = !on;
+        hidOn = on;
         ht.textContent = (on ? 'Hide ' : 'Show ') + ht.dataset.names + ' · ' + ht.dataset.n
           + ' note' + (ht.dataset.n === '1' ? '' : 's') + ' agents wrote for each other'
       };
       show(!!read('astrolabe-hidden').on);
-      ht.addEventListener('click', function () {
-        var on = hid.hidden;
-        save('astrolabe-hidden', { on: on });
-        show(on);
-        filter()
-      })
+      // A refresh that left the tree as it was keeps the same button: bind it once.
+      if (!ht.bound) {
+        ht.bound = true;
+        ht.addEventListener('click', function () {
+          var on = !hidOn;
+          save('astrolabe-hidden', { on: on });
+          show(on);
+          filter()
+        })
+      }
     }
-    filter();
+    bindScopes();
+    // Fresh rows may hold fresh text, so a live refresh asks again.
+    lookup(true);
     jumpList();
   };
   // The rail beside the tree jumps to each top-level folder.
@@ -326,9 +489,37 @@
   bindTree();
   restoreSections();
   revealFolder();
-  $('#q').addEventListener('input', function () {
-    sessionSave('astrolabe-note-query', $('#q').value);
-    filter()
+  q.addEventListener('input', function () {
+    setQuery(q.value)
+  });
+  $('#q-clear').addEventListener('click', function () {
+    setQuery('');
+    q.focus()
+  });
+  // Esc clears, then leaves; Enter opens the first match.
+  q.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (q.value) setQuery('');
+      else q.blur()
+    } else if (e.key === 'Enter' && words().length) {
+      var first = Array.from(tree.querySelectorAll('.f:not(.miss)')).find(function (a) {
+        return !a.closest('[hidden]')
+      });
+      if (first) {
+        e.preventDefault();
+        first.click()
+      }
+    }
+  });
+  // `/` anywhere on the notes view goes to the search.
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || $('#notes-browser').hidden) return;
+    var t = e.target;
+    if (t.closest && t.closest('input,textarea,select,[contenteditable]')) return;
+    e.preventDefault();
+    q.focus();
+    q.select()
   });
   var paletteNames = { iris: 'Iris', ember: 'Ember', slate: 'Slate', moss: 'Moss', graphite: 'Graphite' };
   var look = read('astrolabe-look');

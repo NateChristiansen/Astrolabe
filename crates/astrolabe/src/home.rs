@@ -8,6 +8,7 @@ use std::path::PathBuf;
 mod markdown;
 mod nav;
 mod render;
+mod search;
 mod server;
 mod settings;
 
@@ -876,7 +877,11 @@ mod tests {
             "a year is a shelf of months, not a level: {tree}"
         );
         assert!(tree.contains(">November 2026</span>"), "{tree}");
-        assert!(tree.contains("Show .agents · 1 note agents wrote for each other"));
+        assert!(tree.contains("Show agents · 1 note agents wrote for each other"));
+        assert!(
+            tree.contains("data-key=\".agents\"><summary style=\"--d:0\"><span class=\"chev\">›</span><span class=\"t\">agents</span>"),
+            "the dot stays on disk, not on the page: {tree}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -957,6 +962,18 @@ mod tests {
         assert_eq!(decode("a%2"), None);
         assert_eq!(decode("%ff"), None);
         assert_eq!(decode("%+A"), None);
+    }
+
+    #[test]
+    fn a_search_reads_its_words_from_the_query_string() {
+        assert_eq!(
+            query_param("/search?q=plain+words%2B%C3%A9", "q").as_deref(),
+            Some("plain words+\u{e9}")
+        );
+        assert_eq!(query_param("/search?x=1&q=a", "q").as_deref(), Some("a"));
+        assert_eq!(query_param("/search?q", "q").as_deref(), Some(""));
+        assert_eq!(query_param("/search", "q"), None);
+        assert_eq!(query_param("/search?q=%zz", "q"), None);
     }
 
     #[test]
