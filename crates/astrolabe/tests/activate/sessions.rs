@@ -21,6 +21,17 @@ fn off_for_the_machine_nothing_runs_and_on_needs_no_step() {
         "{text}"
     );
     assert!(!text.contains("VOICE-SAMPLE"), "{text}");
+    // Its repo's page too, since how work lands there doesn't wait for an effort; no other's.
+    assert!(
+        text.contains("--- knowledge/repos/other.md\n\nREPO-OTHER-TEXT")
+            && !text.contains("REPO-DEMO-TEXT"),
+        "{text}"
+    );
+    assert!(
+        text.find("OWNER-TEXT") < text.find("VOICE-RULE")
+            && text.find("VOICE-RULE") < text.find("REPO-OTHER-TEXT"),
+        "owner, voice's rules, then the repo's page, so a long page can't push voice out: {text}"
+    );
     assert!(
         text.contains("No active effort names this repo (other)") && !text.contains("EFFORT-72"),
         "{text}"
@@ -59,6 +70,45 @@ fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
 }
 
 #[test]
+fn voices_rules_reach_a_session_from_a_checkout_with_windows_line_endings() {
+    let f = Fixture::new();
+    write(
+        &f.dir.0.join("notes/knowledge/voice.md"),
+        "VOICE-TEXT\r\n\r\n## Rules\r\n\r\n- VOICE-RULE\r\n\r\n## Chat\r\n\r\nVOICE-SAMPLE\r\n",
+    );
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("VOICE-RULE") && !text.contains("VOICE-SAMPLE") && !text.contains('\r'),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_repos_page_past_the_cut_goes_as_a_file_to_read_and_a_missing_one_adds_nothing() {
+    let f = Fixture::new();
+    let page = f.dir.0.join("notes/knowledge/repos/demo.md");
+    write(&page, &format!("REPO-DEMO-TEXT {}", "rule ".repeat(2000)));
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(text.len() <= 9800, "{}", text.len());
+    assert!(
+        text.contains("OWNER-TEXT")
+            && text.contains("VOICE-RULE")
+            && !text.contains("REPO-DEMO-TEXT")
+            && text.contains("Read these now")
+            && text.contains("knowledge/repos/demo.md"),
+        "{text}"
+    );
+    std::fs::remove_file(&page).unwrap();
+    let text = f.session_start("s2", &f.demo, &[]).unwrap();
+    assert!(
+        text.contains("OWNER-TEXT")
+            && text.contains("pick up 70")
+            && !text.contains("knowledge/repos/demo.md"),
+        "{text}"
+    );
+}
+
+#[test]
 fn the_notes_checkout_is_the_owners_seat_where_any_effort_loads() {
     let f = Fixture::new();
     let notes = f.dir.0.join("notes");
@@ -72,11 +122,16 @@ fn the_notes_checkout_is_the_owners_seat_where_any_effort_loads() {
             "the plugin runs here too: {text}"
         );
         assert!(text.contains("the owner's seat"), "{text}");
+        assert!(
+            !text.contains("REPO-"),
+            "the seat has no repo of its own: {text}"
+        );
         let input = json!({"session_id": session, "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": "pkill x"}});
         assert!(f.hook(input).is_some(), "and guards here");
-        // Effort 70 is demo's; from the seat it loads all the same.
+        // Effort 70 is demo's; from the seat it loads all the same, with demo's page, which
+        // the seat's start didn't give.
         let (text, ok) = f.bash(&session, cwd, "astrolabe activate --effort 70");
-        assert!(ok, "{text}");
+        assert!(ok && text.contains("REPO-DEMO-TEXT"), "{text}");
     }
     // A product repo is still matched to the effort's repo.
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
@@ -106,12 +161,11 @@ fn switching_on_binds_the_hooks_session_and_only_that_one() {
         "NEXT-70",
         "VOICE-TEXT",
         "VOICE-SAMPLE",
-        "REPO-DEMO-TEXT",
         "MACHINE-TEXT",
     ] {
         assert!(text.contains(wanted), "missing {wanted}: {text}");
     }
-    for given in ["OWNER-TEXT", "doesn't see file edits"] {
+    for given in ["OWNER-TEXT", "REPO-DEMO-TEXT", "doesn't see file edits"] {
         assert!(
             !text.contains(given),
             "session start gave {given} already: {text}"
@@ -152,6 +206,10 @@ fn resume_reloads_fresh_context_and_a_failed_reload_keeps_the_guard_and_blocks()
     std::fs::write(&effort, EFFORT.replace("EFFORT-70", "EFFORT-70-NEWER")).unwrap();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(text.contains("EFFORT-70-NEWER"), "{text}");
+    assert!(
+        text.contains("REPO-DEMO-TEXT"),
+        "a resumed session starts over, so it gets the repo's page again: {text}"
+    );
     let machines = f.dir.0.join("notes/knowledge/machines.md");
     std::fs::remove_file(&machines).unwrap();
     let input = json!({"session_id": "s1", "cwd": f.demo, "source": "compact"});
@@ -197,7 +255,9 @@ fn a_launch_switches_on_by_env_bound_to_its_own_session() {
         .session_start("w1", &f.demo, &[(EFFORT_VAR, "70")])
         .unwrap();
     assert!(
-        text.contains("effort 70") && text.contains("OWNER-TEXT"),
+        text.contains("effort 70")
+            && text.contains("OWNER-TEXT")
+            && text.contains("REPO-DEMO-TEXT"),
         "{text}"
     );
     assert!(f.denies("w1", "pkill x"));

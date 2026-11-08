@@ -14,7 +14,7 @@ Ask an agent to work on something. Astrolabe gives that work a note called an **
 
 Later, ask an agent to “pick up 12,” using that effort's number. It gets the saved state and the context for that repo and machine. You can continue in a fresh session without reconstructing the last conversation.
 
-- **Your preferences travel with the work.** Agents receive your working preferences and writing voice, with repo and machine notes when you load an effort.
+- **Your preferences travel with the work.** Agents receive your working preferences, writing voice and the current repo's notes, with machine notes when you load an effort.
 - **You choose when to check in.** Each effort tells agents whether to work autonomously, check the plan with you, or pause at each step.
 - **You can see where things stand.** A local board shows active work, what needs you, and a short journal of what changed. You can browse the notes alongside it.
 

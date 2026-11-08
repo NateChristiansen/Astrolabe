@@ -215,14 +215,20 @@ pub struct Activation {
     pub(super) parts: Vec<Part>,
     /// The effort's name, which the session takes only when it takes up the effort's work.
     pub(super) picked: String,
+    /// The repo's page when a session in that repo got it at its start, so a mid-session load
+    /// doesn't send it again. None in the notes checkout, whose start text names no repo.
+    pub(super) repo_page: Option<String>,
 }
 
 /// One of the owner's notes, whole. Owner goes to every session at its start; whole voice to one
 /// that loads or creates an effort, since saves and journal lines are written in it.
 pub(super) fn owner_note(notes: &Path, name: &str) -> Result<Part, String> {
     let file = format!("knowledge/{name}.md");
+    // A checkout with Windows line endings would otherwise hide voice's `## Rules` heading
+    // from the split below, and every session on that machine would go without them.
     let body = std::fs::read_to_string(notes.join(&file))
-        .map_err(|e| format!("{file} in {}: {e}", notes.display()))?;
+        .map_err(|e| format!("{file} in {}: {e}", notes.display()))?
+        .replace("\r\n", "\n");
     let lead = match name {
         "voice" => "Samples in it teach style only and are never a source of facts.\n\n",
         _ => "",
@@ -251,10 +257,12 @@ impl Activation {
         self
     }
 
-    /// For an effort loaded or created mid-session: the session already has the owner note and
-    /// the guard's scope from its start, so they aren't sent again.
+    /// For an effort loaded or created mid-session: the session already has the owner note, its
+    /// repo's page and the guard's scope from its start, so they aren't sent again.
     pub fn mid_session(mut self) -> Self {
-        self.parts.retain(|p| p.title != "knowledge/owner.md");
+        let repo_page = self.repo_page.take();
+        self.parts
+            .retain(|p| p.title != "knowledge/owner.md" && Some(&p.title) != repo_page.as_ref());
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
         // Only here: a resumed session was named when it picked the effort up, and a launched
         // worker runs outside the app or is named by Claude's start hook. Once per name, so
@@ -373,7 +381,7 @@ fn switch_record(
     let read = |file: String| {
         let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"));
         Ok::<_, String>(Part {
-            body: text?.trim().to_owned(),
+            body: text?.replace("\r\n", "\n").trim().to_owned(),
             files: vec![notes.join(&file).display().to_string()],
             title: file,
         })
@@ -559,11 +567,15 @@ fn switch_record(
     if state.worker.is_true() {
         head += &format!("\n\n{WORKER_RULE}");
     }
+    // Outside the notes checkout the effort's repo is this folder's, so the session's start
+    // text already carried its page (see `fresh`).
+    let repo_page = (!in_notes(cwd)).then(|| format!("knowledge/repos/{repo}.md"));
     Ok(Activation {
         state,
         head,
         parts,
         picked,
+        repo_page,
     })
 }
 
@@ -661,6 +673,17 @@ pub(super) fn fresh(cwd: &Path) -> String {
     // Never loaded on its own: the owner may be here for something else (owner, 2026-11-03).
     let say = |n: &str| format!("say \"pick up {n}\" to load it");
     let seat = in_notes(cwd);
+    // The repo's own page holds how work lands there, so every session in the repo needs it,
+    // not only one that loads an effort. Matched apart from the efforts, so an unreadable
+    // effort can't cost the session its repo's rules. The notes checkout has no repo of its own.
+    let here: Vec<String> = match common_dir(cwd) {
+        Some(dir) if !seat => repo_names(&notes, &registry, cwd, &dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| name != AGENT)
+            .collect(),
+        _ => Vec::new(),
+    };
     let offer = match active_efforts(&notes, &registry, cwd) {
         Ok((repos, _)) if repos.is_empty() => no_note(cwd),
         Ok((_, efforts)) if seat && efforts.is_empty() => no_note(cwd),
@@ -716,11 +739,24 @@ pub(super) fn fresh(cwd: &Path) -> String {
             });
         }
     }
+    // Last, so a page too long for the cut goes as a file to read without taking voice's
+    // short rules with it. A repo with no page adds nothing: its rules live in the repo.
+    for name in &here {
+        let file = format!("knowledge/repos/{name}.md");
+        if let Ok(text) = std::fs::read_to_string(notes.join(&file)) {
+            parts.push(Part {
+                body: text.replace("\r\n", "\n").trim().to_owned(),
+                files: vec![notes.join(&file).display().to_string()],
+                title: file,
+            });
+        }
+    }
     Activation {
         state: SessionState::default(),
         head,
         parts,
         picked: String::new(),
+        repo_page: None,
     }
     .fitted()
 }
