@@ -206,7 +206,7 @@ cargo build --release --locked -p astrolabe
 
 On Windows, the last command is `& .\target\release\astrolabe.exe install`.
 
-Register `./plugin` instead of the hosted URL in step 2. Keep this checkout because your local marketplace refers to it. For later source updates, rebuild and run `install` again, then refresh the app's local plugin. Don't use a published plugin with an unrelated development build.
+Register `./plugin` instead of the hosted URL in step 2. Keep this checkout because your local marketplace refers to it. For later source updates, rebuild and run `install` again, then refresh the app's local plugin. If a published release or nightly is installed, `install` refuses a local build, since a stale `target` folder would quietly put an older program in its place; rebuild first, then pass `--force`. Don't use a published plugin with an unrelated development build.
 
 ## Turn off or remove Astrolabe
 

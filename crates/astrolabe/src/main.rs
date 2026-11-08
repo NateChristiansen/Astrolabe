@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--initiative <slug or title>|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save|read> …|initiative new …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]|--preview [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
+const USAGE: &str = "Usage: astrolabe <--version|install [--dir <folder>] [--force]|update [--channel release|nightly] [--dry-run] [--force]|repo add <name> [<checkout>]|hook <event> --if-active|on|off|status|activate <--effort <n> [--worker]|--initiative <slug or title>|--status|--off>|allow --once \"<exact command>\" --said \"<the owner's words>\"|effort <new|save|read> …|initiative new …|journal \"<sentence>\"|lesson close lessons/<name>.md --as \"<disposition>\"|efforts [--repo <name>] [--all]|home [--open] [--serve [--port <n>]|--preview [--port <n>]] [--theme auto|light|dark] [--palette iris|ember|slate|moss|graphite]|notes <init <folder>|sync|status>>";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

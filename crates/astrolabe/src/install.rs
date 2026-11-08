@@ -8,12 +8,17 @@ use std::path::{Path, PathBuf};
 const RECEIPT: &str = ".astrolabe-install.json";
 const PENDING: &str = ".astrolabe-install-pending";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Set by CI for every published build; a local `cargo build` has none.
+const COMMIT: Option<&str> = option_env!("ASTROLABE_COMMIT");
 
 #[derive(Deserialize, Serialize)]
 struct Receipt {
     format: u8,
     version: String,
     sha256: String,
+    /// The commit a published build came from. Receipts before this field have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
 }
 
 /// The installed program and its receipt.
@@ -54,22 +59,52 @@ fn regular(path: &Path) -> Result<bool, String> {
 
 pub fn command(args: &[&str]) -> Result<String, String> {
     let mut directory = None;
+    let mut force = false;
     let mut words = args.iter();
     while let Some(word) = words.next() {
         match *word {
             "--dir" => directory = Some(PathBuf::from(words.next().ok_or("--dir needs a folder")?)),
-            _ => return Err("usage: astrolabe install [--dir <folder>]".into()),
+            "--force" => force = true,
+            _ => return Err("usage: astrolabe install [--dir <folder>] [--force]".into()),
         }
     }
     let directory = match directory {
         Some(path) => path,
         None => default_directory()?,
     };
-    let result = install(
-        &std::env::current_exe().map_err(|e| e.to_string())?,
-        &directory,
-    )?;
+    let source = std::env::current_exe().map_err(|e| e.to_string())?;
+    if COMMIT.is_none()
+        && !force
+        && let Some(published) = published_install(&directory)
+    {
+        return Err(format!(
+            "{} holds {published}, and {} is a local build, which may be older. Run `astrolabe update` for the newest published build, or rebuild and pass --force to install this one.",
+            directory.join(names()[0]).display(),
+            source.display()
+        ));
+    }
+    let result = install(&source, &directory)?;
     Ok(format!("{result}{}", path_warning(&directory)))
+}
+
+/// How the installed program reads when CI built it: its receipt's commit, or for a
+/// receipt from before that field, a nightly's own version line. None for a local build,
+/// a release receipted before the field, or no installation.
+fn published_install(directory: &Path) -> Option<String> {
+    let receipt = read_receipt(directory).ok()??;
+    if let Some(commit) = receipt.commit {
+        return Some(format!(
+            "the published build {}",
+            &commit[..commit.len().min(7)]
+        ));
+    }
+    let out = std::process::Command::new(directory.join(names()[0]))
+        .arg("--version")
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    line.contains("(nightly ")
+        .then(|| line.trim_start_matches("astrolabe ").to_owned())
 }
 
 pub(crate) fn default_directory() -> Result<PathBuf, String> {
@@ -257,6 +292,7 @@ pub fn install(source: &Path, directory: &Path) -> Result<String, String> {
         format: 1,
         version: VERSION.into(),
         sha256: checksum,
+        commit: COMMIT.map(str::to_owned),
     };
     fs::write(
         stage.join(RECEIPT),
