@@ -3,15 +3,33 @@
 /// What some Windows editors put before a file's text.
 pub(super) const BOM: char = '\u{feff}';
 
-/// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
-/// `[a, b]` or `- a` lines, joined with commas. Nested YAML isn't read.
-pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
+/// A note's header and body. The header is the lines between a first `---` line and the next
+/// one, trailing whitespace and a carriage return allowed on either; a byte-order mark before
+/// it isn't part of it. A note with no opening line is all body, and one whose header never
+/// closes is all header, the way saves have always read it.
+pub(crate) fn split_frontmatter(text: &str) -> (&str, &str) {
     // A byte-order mark, as some Windows editors save, isn't part of the first line.
     let text = text.strip_prefix(BOM).unwrap_or(text);
-    let mut lines = text.lines();
-    if lines.next().map(str::trim_end) != Some("---") {
-        return Vec::new();
+    let mut lines = text.split_inclusive('\n');
+    let Some(first) = lines.next().filter(|l| l.trim_end() == "---") else {
+        return ("", text);
+    };
+    let start = first.len();
+    let mut end = start;
+    for line in lines {
+        if line.trim_end() == "---" {
+            return (&text[start..end], &text[end + line.len()..]);
+        }
+        end += line.len();
     }
+    (&text[start..], "")
+}
+
+/// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
+/// `[a, b]` or `- a` lines, joined with commas. Keys are read in lowercase. Nested YAML isn't
+/// read. The board and each note's page both read properties here, so they never disagree.
+pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
+    let (header, _) = split_frontmatter(text);
     let unquote = |v: &str| {
         v.trim()
             .trim_matches('"')
@@ -20,7 +38,7 @@ pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
             .to_owned()
     };
     let mut props: Vec<(String, String)> = Vec::new();
-    for line in lines.take_while(|line| line.trim_end() != "---") {
+    for line in header.lines() {
         if let (Some(item), Some((_, value))) =
             (line.trim_start().strip_prefix("- "), props.last_mut())
         {
@@ -619,6 +637,67 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn frontmatter_reads_quotes_lists_casing_and_byte_order_marks() {
+        let one = |text: &str, key: &str| {
+            frontmatter(text)
+                .into_iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v)
+        };
+        for (text, key, value) in [
+            ("---\nstatus: 'active'\n---\n", "status", "active"),
+            ("---\nstatus: \"active\"\n---\n", "status", "active"),
+            ("---\nnote: \"a: b\"\n---\n", "note", "a: b"),
+            ("---\nrepo: [demo, 'other']\n---\n", "repo", "demo, other"),
+            (
+                "---\nrepo:\n  - demo\n  - \"other\"\n---\n",
+                "repo",
+                "demo, other",
+            ),
+            ("---\nStatus: active\n---\n", "status", "active"),
+            ("\u{feff}---\nstatus: active\n---\n", "status", "active"),
+            ("---\r\nstatus: active\r\n---\r\n", "status", "active"),
+            ("--- \nstatus: active\n---  \n", "status", "active"),
+            (
+                "---\ninitiative: \"[[shared-work]]\"\n---\n",
+                "initiative",
+                "[[shared-work]]",
+            ),
+            (
+                "---\ninitiative: [[shared-work]]\n---\n",
+                "initiative",
+                "[[shared-work]]",
+            ),
+        ] {
+            assert_eq!(one(text, key).as_deref(), Some(value), "{text:?}");
+        }
+        // No header, or one that only appears later, is no properties.
+        assert!(frontmatter("# Title\nstatus: active\n").is_empty());
+        assert!(frontmatter("\n---\nstatus: active\n---\n").is_empty());
+        // An unterminated header reads to the end, as saves always have.
+        assert_eq!(
+            one("---\nstatus: active\n# Title\n", "status").as_deref(),
+            Some("active")
+        );
+    }
+
+    #[test]
+    fn split_frontmatter_separates_header_and_body() {
+        for (text, header, body) in [
+            ("---\na: 1\n---\n# T\n", "a: 1\n", "# T\n"),
+            ("\u{feff}---\na: 1\n---\n# T\n", "a: 1\n", "# T\n"),
+            ("---\r\na: 1\r\n---\r\n# T\r\n", "a: 1\r\n", "# T\r\n"),
+            ("---\n---\n# T\n", "", "# T\n"),
+            ("---\na: 1\n---", "a: 1\n", ""),
+            ("# T\n---\na: 1\n---\n", "", "# T\n---\na: 1\n---\n"),
+            ("\u{feff}# T\n", "", "# T\n"),
+            ("---\na: 1\n# T\n", "a: 1\n# T\n", ""),
+        ] {
+            assert_eq!(split_frontmatter(text), (header, body), "{text:?}");
+        }
+    }
 
     #[test]
     fn purpose_uses_fence_aware_sections_and_preambles() {

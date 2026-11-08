@@ -19,25 +19,18 @@ pub(super) fn note_page(
 ) -> String {
     use pulldown_cmark::{Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd, html};
     let text = text.replace("\r\n", "\n");
-    let (front, body) = match text.strip_prefix("---\n").and_then(|rest| {
-        rest.find("\n---\n")
-            .map(|end| (&rest[..end], &rest[end + 5..]))
-    }) {
-        Some((front, body)) => (front, body),
-        None => ("", text.as_str()),
-    };
+    // The board reads the same properties through the same reader, so the page and the
+    // board's row show one value.
+    let props = crate::effort::frontmatter(&text);
+    let (_, body) = crate::effort::split_frontmatter(&text);
     let body = strip_comments(body);
     let prop = |key: &str| -> Option<String> {
-        let value = front
-            .lines()
-            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
-            .trim()
-            .trim_matches('"');
+        let value = props.iter().find(|(k, _)| k == key)?.1.as_str();
         (!value.is_empty() && value != "none").then(|| value.to_owned())
     };
     // An effort that's part of an initiative links to its page on a line of its own,
     // which stands in for the initiative's pill. The page is found the way the board
-    // finds it, by slug or title, so the two never disagree.
+    // finds it, by slug or title.
     let part_of = prop("initiative").and_then(|name| {
         let pages = crate::effort::initiative_catalog(root).ok()?;
         let page = crate::effort::resolve_initiative(&pages, &name).ok()?;

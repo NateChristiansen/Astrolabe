@@ -122,15 +122,20 @@ mod tests {
     fn an_effort_page_links_to_its_initiative_under_the_title() {
         let notes = crate::board::initiative_fixture();
         let rows = crate::board::rows_in(&notes, None, true);
-        let page = |initiative: &str| {
+        let note = |text: &str| {
             super::markdown::note_page(
-                &format!("---\nstatus: active\ninitiative: {initiative}\n---\n# 0042 Member\n"),
+                text,
                 "efforts/0042-member.md",
                 &rows,
                 &notes.root,
                 NOW,
                 Look::default(),
             )
+        };
+        let page = |initiative: &str| {
+            note(&format!(
+                "---\nstatus: active\ninitiative: {initiative}\n---\n# 0042 Member\n"
+            ))
         };
         let linked = page("shared-work");
         assert!(
@@ -148,10 +153,70 @@ mod tests {
             page("Shared work").contains("<a href=\"/initiatives/shared-work.md\">"),
             "so does its title"
         );
+        // Single quotes, a byte-order mark and a capitalised key read as the board reads them.
+        for text in [
+            "---\nstatus: active\ninitiative: 'shared-work'\n---\n# 0042 Member\n".to_owned(),
+            "\u{feff}---\nstatus: active\ninitiative: shared-work\n---\n# 0042 Member\n".to_owned(),
+            "---\nStatus: active\nInitiative: shared-work\n---\n# 0042 Member\n".to_owned(),
+        ] {
+            let linked = note(&text);
+            assert!(
+                linked.contains("<a href=\"/initiatives/shared-work.md\">Shared work →</a>"),
+                "{text:?}: {linked}"
+            );
+            assert!(
+                linked.contains("<span class=\"pill status-active\"><i>status</i>active</span>"),
+                "{text:?}: {linked}"
+            );
+            assert!(
+                !linked.contains("---"),
+                "the header isn't body text: {linked}"
+            );
+        }
+        // A list of repos is one pill, without brackets or quotes.
+        let listed = note("---\nrepo: [demo, 'other']\n---\n# 0042 Member\n");
+        assert!(listed.contains("<i>repo</i>demo, other</span>"), "{listed}");
         // A legacy tag with no page keeps its pill and gets no link.
         let legacy = page("loose-tools");
         assert!(!legacy.contains("class=\"part-of\""), "{legacy}");
         assert!(legacy.contains("<i>initiative</i>loose-tools"), "{legacy}");
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn the_board_and_a_note_page_read_the_same_properties() {
+        let notes = crate::board::initiative_fixture();
+        let rel = "efforts/0099-quoted.md";
+        let text = "---\nstatus: 'active'\nrepo: [demo, other]\ninitiative: 'shared-work'\n---\n# 0099 Quoted properties\n\n## Current state\nWorking.\n";
+        std::fs::write(notes.root.join(rel), text).unwrap();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let row = rows.efforts.iter().find(|r| r.number == Some(99)).unwrap();
+        assert_eq!(row.status.as_deref(), Some("active"));
+        assert_eq!(row.repo.as_deref(), Some("demo, other"));
+        assert_eq!(row.initiative_title.as_deref(), Some("Shared work"));
+        let page = super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
+        assert!(
+            page.contains(&format!(
+                "<p class=\"part-of\">Part of <a href=\"/initiatives/shared-work.md\">{} →</a></p>",
+                row.initiative_title.as_deref().unwrap()
+            )),
+            "{page}"
+        );
+        for (key, value) in [
+            ("status", row.status.as_deref().unwrap()),
+            ("repo", row.repo.as_deref().unwrap()),
+        ] {
+            assert!(
+                page.contains(&format!("<i>{key}</i>{value}</span>")),
+                "{key}: {page}"
+            );
+        }
+        let props = &page[page.find("<div class=\"props\">").unwrap()..];
+        let props = &props[..props.find("</div>").unwrap()];
+        // Values are escaped, so a quote left in one would show as an entity.
+        for raw in ["&#39;", "&quot;", "[", "]"] {
+            assert!(!props.contains(raw), "{raw}: {props}");
+        }
         std::fs::remove_dir_all(notes.root).unwrap();
     }
 
