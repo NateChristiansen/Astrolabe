@@ -6,9 +6,11 @@ This guide explains how the plugin, notes and local board work together. For nor
 
 The installed program's `on` and `off` commands control one machine switch. When off, plugin hooks do nothing. When on, new sessions receive the owner note, the Rules section of the voice note, recording instructions, a suggestion of the current repo's active efforts, and that repo's note, which holds how work lands there. A repo note too long for the hook's cut goes as a file for the agent to read first. Shell commands are guarded even before an effort is loaded.
 
-Loading an effort adds its settings, current state, Pieces and linked initiative title when present, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
+Loading an effort adds its settings, current state, Pieces and linked initiative title when present, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch binds a new session to that effort the same way, with no worker restrictions.
 
-Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
+The rules delivered with a binding depend on its role. An owner's effort gets saving, Current state, decisions, plans and Pieces, states, the journal, lessons, initiative filing and a pointer to orchestration. A worker gets the same saving rules without the journal, lessons, filing or orchestration, then its restrictions last. An initiative binding gets saving, decisions, states without review, the initiative's journal line, lessons and the orchestrator's steps.
+
+Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically, and can't bind to an effort. So each worker is a separate session, whose first command is `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 
 Effort involvement and authority are context supplied to agents. They aren't enforced permissions.
 

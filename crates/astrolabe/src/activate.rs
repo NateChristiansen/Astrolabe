@@ -15,8 +15,7 @@ mod routing;
 mod tickets;
 
 pub use context::{
-    Activation, Effort, GUARD_SCOPE, RECORD_RULE, SAVE_RULE, WORKER_RULE, read_effort,
-    session_name, switch_on,
+    Activation, Effort, GUARD_SCOPE, RECORD_RULE, WORKER_RULE, read_effort, session_name, switch_on,
 };
 pub(crate) use context::{STILL_ON, no_note};
 pub(crate) use proof::session_token;
@@ -33,7 +32,8 @@ use tickets::write_json;
 /// Where activation state lives. Unset, `~/.local/state/astrolabe-layer`.
 pub const STATE_VAR: &str = "ASTROLABE_LAYER_STATE";
 
-/// Set at launch by a manager for a worker: switches on at session start.
+/// Set at launch to an effort's number: binds the session to it at session start, as an
+/// ordinary binding without a worker's restrictions.
 pub const EFFORT_VAR: &str = "ASTROLABE_EFFORT";
 
 /// The machine switch's file in the state folder. Present means on.

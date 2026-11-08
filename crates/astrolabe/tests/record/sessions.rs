@@ -31,7 +31,10 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_saves_only_its_effo
     // record, and writes nothing else: the dispatcher files, journals and closes.
     let (out, ok) = mac.bash("w1", "astrolabe activate --effort 1 --worker");
     assert!(
-        ok && out.contains("worker under that effort") && out.contains("No journal line"),
+        ok && out.contains("worker under that effort")
+            && out.contains("No journal line")
+            && !out.contains("--journal")
+            && !out.contains("initiative new"),
         "{out}"
     );
     for cmd in [

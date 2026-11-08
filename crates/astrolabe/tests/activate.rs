@@ -363,46 +363,28 @@ fn reason(answer: &Value) -> &str {
 
 #[test]
 fn every_authority_keeps_notes_saving_independent_of_project_pushes() {
+    // The matrix of roles and authorities is in the unit tests; this is the real load and resume.
     let f = Fixture::new();
-    let rule = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.";
-    for authority in ["read", "edit", "push"] {
-        write(
-            &f.notes().join("efforts/0070-demo.md"),
-            &EFFORT.replace("authority: edit", &format!("authority: {authority}")),
-        );
-        let (loaded, ok) = f.bash(authority, &f.demo, "astrolabe activate --effort 70");
-        assert!(ok, "{loaded}");
-        let resumed = f.session_start(authority, &f.demo, &[]).unwrap();
-        for text in [loaded, resumed] {
-            assert!(text.contains(rule), "{authority}: {text}");
-            assert!(text.contains(&format!("authority: {authority}:")), "{text}");
-            if authority == "edit" {
-                assert!(text.contains("but don't push"), "{text}");
-            }
-        }
-    }
-}
-
-#[test]
-fn the_session_text_offers_initiatives_and_the_orchestrator_pattern() {
-    let f = Fixture::new();
-    write(&f.notes().join("efforts/0070-demo.md"), EFFORT);
+    write(
+        &f.notes().join("efforts/0070-demo.md"),
+        &EFFORT.replace("authority: edit", "authority: read"),
+    );
     let (loaded, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok, "{loaded}");
+    let resumed = f.session_start("s1", &f.demo, &[]).unwrap();
+    for text in [&loaded, &resumed] {
+        assert!(
+            text.contains("never ask for approval to save notes"),
+            "{text}"
+        );
+        assert!(text.contains("authority: read:"), "{text}");
+    }
     for text in [
-        "Pieces come with the approved plan",
-        "A plan that names efforts ends in an initiative",
-        "`astrolabe initiative new --title \"<name>\"`",
+        "`astrolabe initiative new",
         "`astrolabe activate --initiative <slug>`",
-        "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
-        "A planning-only spike closes without --initiative",
-        "Progress comes from member statuses, never a checklist of efforts",
-        "unless it stays blocked or in review",
-        "`.agents/<initiative slug>/`",
     ] {
         assert!(loaded.contains(text), "{text}\n{loaded}");
     }
-    assert!(!loaded.contains("not as efforts of their own"), "{loaded}");
 }
 
 #[test]

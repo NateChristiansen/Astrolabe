@@ -33,11 +33,84 @@ const AUTHORITY_MEANINGS: [&str; 3] = [
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
 /// What every session needs: when work gets an effort, and how to start one.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. From the notes checkout, the owner's seat, `effort new` and `astrolabe journal` need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. From the notes checkout, the owner's seat, `effort new` and `astrolabe journal` need --repo <name>, the repo the work is for, as its note in knowledge/repos names it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, in a session of your own, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes. An orchestrator binds with `astrolabe activate --initiative <slug>` and starts each worker as its own session, never a subagent, because a subagent can't bind.";
 
-/// What a session with an effort needs: how to save, journal and record decisions. Printed by
-/// `effort new` and `activate`, so a session that never records doesn't carry it.
-pub const SAVE_RULE: &str = "Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] [--journal \"…\"] <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the body as a here-string, @' … '@, last or piped in.) Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path for something the owner must open. The first sentence says the state; the second paragraph gives choices and reasons; the last says what's next and unchecked. Numbers are results (\"200 ms instead of 310\"), never evidence trails (p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.\nUse `astrolabe lesson close` for a lesson's disposition. A choice leaving Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Other shapes are refused with accepted forms. Plan mode doesn't block these commands, which write only notes. Save the approved plan with --plan-file <path>, or where the app keeps no plan file, in the body after `## Plan`.\nPieces come with the approved plan when it has more than one landable step: a `## Pieces` checklist, one independently checkable outcome per line. A one-step fix or spike needs none. --pieces-file <path> sets the list; --tick \"<piece>\" marks its outcome met, which can be on a branch; --untick reverses it. If landing is a deliverable, make it a piece. At done, leave unticked lines with a dated explanation of where deferred or why dropped.\nA plan that names efforts ends in an initiative: `astrolabe initiative new --title \"<name>\"` with the page in its body files the record. The accepted forms show a page alone, new efforts, or existing ones joined by number. Membership is an effort's `initiative:` naming the page and means it delivers part of the initiative. A planning-only spike closes without --initiative; the page links it as provenance. Progress comes from member statuses, never a checklist of efforts; an initiative has no Pieces.\nWhen the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>` and keeps its state, cross-effort decisions, owner questions and the day's one journal line on the page, never in an orchestrate effort. Workers save their own state, decisions and pieces, and journal nothing. The orchestrator reviews and lands, then runs `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A stale save is refused with the current text; a shared initiative reaches across repos. Briefs and reports live in the notes under `.agents/<initiative slug>/` so another session can resume.\nStates: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.\nThe journal is the owner's history: one line per initiative per day on its page, or per standalone effort on itself; workers write none. Write past tense, plain words, about 25 words, at most two sentences: what changed and why, nothing the note doesn't say. Never status (\"Merged.\"), leftovers or next steps. Name things, never files, ids or other efforts; use the project's terms and \"my\", never \"the owner's\". Pass --journal when finishing something worth telling or before stopping unfinished (\"Started …\"); a later line that day replaces the earlier. Journal decisions only for directions worth remembering.\nA Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
+/// How and when to save, for every effort binding; `{journal}` holds the journal flag where
+/// the role may write one.
+const SAVE_FORM: &str = "Save before waiting on the owner, before a long run, and when a piece is done, because a closed window fires no hook: replace Current state with\n  astrolabe effort save [--status <state>] [--decision \"…\"] [--waits-for \"…\"] {journal}<<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n(PowerShell: the body as a here-string, @' … '@, last or piped in.)";
+
+/// What Current state looks like, with an example in that shape.
+const SHAPE: &str = "Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path for something the owner must open. The first sentence says the state; the second paragraph gives choices and reasons; the last says what's next and unchecked. Numbers are results (\"200 ms instead of 310\"), never evidence trails (p50s, run counts or commit lists). Like this, at done:\n  Done and merged. A Deck guest now sees each drawn piece about 200 ms late instead of 310, because merging no longer reads meshes back from the GPU.\n\n  I dropped the stand-in: it buys about a frame. Parallel shells on the guest made pieces later. Sending shells ahead would save under 11 ms.\n\n  Not playtested; it rides along in the next one. The last 200 ms is on the todo. One Deck run each way so far.";
+
+const LESSON: &str = "Use `astrolabe lesson close` for a lesson's disposition.";
+
+const DECISIONS: &str = "A choice leaving Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Other shapes are refused with accepted forms. Plan mode doesn't block these commands, which write only notes.";
+
+const PLAN: &str = "Save the approved plan with --plan-file <path>, or where the app keeps no plan file, in the body after `## Plan`.";
+
+const PIECES: &str = "Pieces come with the approved plan when it has more than one landable step: a `## Pieces` checklist, one independently checkable outcome per line. A one-step fix or spike needs none. --pieces-file <path> sets the list; --tick \"<piece>\" marks its outcome met, which can be on a branch; --untick reverses it. If landing is a deliverable, make it a piece. At done, leave unticked lines with a dated explanation of where deferred or why dropped.";
+
+/// Filing a plan that names efforts as an initiative.
+const FILING: &str = "A plan that names efforts ends in an initiative: `astrolabe initiative new --title \"<name>\"` with the page in its body files the record. The accepted forms show a page alone, new efforts, or existing ones joined by number. Membership is an effort's `initiative:` naming the page and means it delivers part of the initiative. A planning-only spike closes without --initiative; the page links it as provenance. Progress comes from member statuses, never a checklist of efforts; an initiative has no Pieces.";
+
+/// For an owner's effort: where orchestration starts, which the initiative's own text covers.
+const ORCHESTRATE: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>`; its output says how to dispatch and close. Each worker is its own session, never a subagent.";
+
+const STALE: &str = "A stale save is refused with the current text.";
+
+const STATES_EFFORT: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+
+const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review when built and checked; the dispatcher marks it done.";
+
+const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+
+const JOURNAL_EFFORT: &str = "The journal is the owner's history: one line a day for the effort you're on, on the effort, including one in an initiative; an orchestrator writes its initiative's line on the page instead.";
+
+const JOURNAL_INITIATIVE: &str = "The journal is the owner's history: one line a day for this initiative, on its page; its workers write none.";
+
+const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at most two sentences: what changed and why, nothing the note doesn't say. Never status (\"Merged.\"), leftovers or next steps. Name things, never files, ids or other efforts; use the project's terms and \"my\", never \"the owner's\". Pass --journal when finishing something worth telling or before stopping unfinished (\"Started …\"); a later line that day replaces the earlier. Journal decisions only for directions worth remembering.";
+
+const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
+
+/// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
+const ORCHESTRATION: &str = "You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Start each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief. Briefs and reports live in the notes under `.agents/{slug}/` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. You review and land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+
+/// Authority never gates notes, for every role's settings.
+const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
+
+/// A role's rules, in the order a session reads them.
+fn rules(role: Role, slug: &str) -> String {
+    let form = |journal: &str| SAVE_FORM.replace("{journal}", journal);
+    let parts: Vec<String> = match role {
+        Role::Effort => vec![
+            format!("{} {SHAPE}", form("[--journal \"…\"] ")),
+            format!("{LESSON} {DECISIONS} {PLAN}"),
+            PIECES.into(),
+            FILING.into(),
+            format!("{ORCHESTRATE} {STALE}"),
+            STATES_EFFORT.into(),
+            format!("{JOURNAL_EFFORT} {JOURNAL_FORM}"),
+            STOP.into(),
+        ],
+        Role::Worker => vec![
+            format!("{} {SHAPE}", form("")),
+            format!("{DECISIONS} {PLAN}"),
+            PIECES.into(),
+            STALE.into(),
+            STATES_WORKER.into(),
+            STOP.into(),
+        ],
+        Role::Initiative => vec![
+            SHAPE.into(),
+            format!("{DECISIONS} {STALE}"),
+            STATES_INITIATIVE.into(),
+            format!("{JOURNAL_INITIATIVE} {JOURNAL_FORM}"),
+            LESSON.into(),
+            ORCHESTRATION.replace("{slug}", slug),
+        ],
+    };
+    parts.join("\n")
+}
 
 /// What the app should call a session on an effort: its number without the zeros, then its
 /// title without the number the note's heading leads with, so the owner sees who's on what.
@@ -272,7 +345,7 @@ impl Activation {
         self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
         // Only here: a resumed session was named when it picked the effort up, and a launched
-        // worker runs outside the app or is named by Claude's start hook. Once per name, so
+        // session runs outside the app or is named by Claude's start hook. Once per name, so
         // picking the same effort up again doesn't undo the owner's rename.
         let provider = self.state.provider.as_deref().unwrap_or_default();
         if let Some(name) = self.state.name.as_deref()
@@ -637,13 +710,13 @@ fn lead(role: Role, f: &Facts) -> String {
             "Astrolabe is on in this session for effort {n}, \"{title}\" ({provider} session {session}, repo {repo}). The plugin's hook bound it to the session id the app gave; other sessions are unaffected.\n\n\
         Settings from {file}, set by the owner. Agents never raise them, because they're the owner's call:\n\
         - involvement: {inv}: {inv_m}.\n\
-        - authority: {auth}: {auth_m}. It's a ceiling inside {repo} and this effort's scope, and never covers posting or destructive actions, because those reach other people or can't be undone. Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.\n\
+        - authority: {auth}: {auth_m}. It's a ceiling inside {repo} and this effort's scope, and never covers posting or destructive actions, because those reach other people or can't be undone. {notes_free}.\n\
         {issue}\
         - A narrower current instruction from the owner wins, because it's the newest word.\n\
         - In this build these settings are context, not enforced, apart from the guard. Switching on wrote only Astrolabe's own state file; that isn't leave to edit project files.\n\n\
         {GUARD_SCOPE}\n\n\
         {proof}\n\
-        Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.\n\n{freshness}\n\n{SAVE_RULE}",
+        Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.\n\n{freshness}\n\n{rules}",
             n = f.number,
             freshness = f.freshness,
             title = f.title,
@@ -657,9 +730,14 @@ fn lead(role: Role, f: &Facts) -> String {
             auth_m = auth_m,
             proof = f.proof,
             issue = f.issues,
+            notes_free = match role {
+                Role::Worker => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
+                _ => NOTES_FREE.to_owned(),
+            },
+            rules = rules(role, f.number),
         ),
         Role::Initiative => format!(
-            "Astrolabe is on in this session for initiative {slug}, \"{title}\" ({provider} session {session}, repo {repo}).\n\nPage: {path}\nStatus: {status}\nWaits for: {wait}\nSettings set by the owner: involvement: {inv}: {inv_m}. Authority: {auth}: {auth_m}. Notes save and sync independently of project authority. A narrower current instruction wins.\n\n{GUARD_SCOPE}\n\n{proof}Report the initiative and what the status says. Until it says proven, claim no protection.\n\nSave this initiative with `astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"]` with a body:\n  astrolabe effort save --status active <<'ASTROLABE'\n  <where the initiative stands>\n\n  <choices and reasons>\n\n  <next and unchecked>\n  ASTROLABE\nDecisions are appended and dated. A journal line replaces today's line for this initiative. Done requires an acceptance statement in the body and every member done or abandoned. Use --reason with abandoned. Pieces, ticks, plans and initiative membership are unavailable on an initiative. Detach with `astrolabe activate --off`; the machine guard stays.\n\n{freshness}",
+            "Astrolabe is on in this session for initiative {slug}, \"{title}\" ({provider} session {session}, repo {repo}).\n\nPage: {path}\nStatus: {status}\nWaits for: {wait}\nSettings set by the owner: involvement: {inv}: {inv_m}. Authority: {auth}: {auth_m}. {NOTES_FREE}. A narrower current instruction wins.\n\n{GUARD_SCOPE}\n\n{proof}Report the initiative and what the status says. Until it says proven, claim no protection.\n\nSave this initiative with `astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"]` with a body:\n  astrolabe effort save --status active <<'ASTROLABE'\n  <where the initiative stands>\n\n  <choices and reasons>\n\n  <next and unchecked>\n  ASTROLABE\nDecisions are appended and dated. A journal line replaces today's line for this initiative. Done requires an acceptance statement in the body and every member done or abandoned. Use --reason with abandoned. Pieces, ticks, plans and initiative membership are unavailable on an initiative. Detach with `astrolabe activate --off`; the machine guard stays.\n\n{freshness}\n\n{rules}",
             slug = f.number,
             title = f.title,
             provider = f.provider,
@@ -674,6 +752,7 @@ fn lead(role: Role, f: &Facts) -> String {
             auth_m = auth_m,
             proof = f.proof,
             freshness = f.freshness,
+            rules = rules(role, f.number),
         ),
     }
 }
@@ -984,70 +1063,108 @@ mod tests {
     }
 
     /// Short anchors, never the production constants, so a reworded rule shows up here.
-    const SAVING: [&str; 4] = [
+    const EVERY: [&str; 6] = [
         "astrolabe effort save",
         "<<'ASTROLABE'",
         "--decision",
         "--waits-for",
+        "never ask for approval to save notes",
+        "A stale save is refused",
     ];
 
-    #[test]
-    fn an_effort_gets_every_rule_including_journal_filing_and_orchestration() {
-        let t = text(Role::Effort);
-        for anchor in SAVING.iter().chain(&[
-            "for effort 7, \"0007 Sample\" (codex session s-1, repo demo)",
-            "--journal",
-            "--pieces-file",
-            "astrolabe lesson close",
-            "astrolabe initiative new",
-            "astrolabe activate --initiative <slug>",
-            "astrolabe effort read <n>",
-            ".agents/<initiative slug>/",
-            "never ask for approval to save notes",
-            "PROOF\n\nReport the effort",
-            "FRESH",
-        ]) {
-            assert!(t.contains(anchor), "effort text lacks {anchor:?}");
+    fn check(role: Role, has: &[&str], lacks: &[&str]) -> String {
+        let t = text(role);
+        for anchor in EVERY.iter().chain(has) {
+            assert!(t.contains(anchor), "{role:?} lacks {anchor:?}");
         }
-        assert!(!t.contains("This session is a worker"));
-        assert!(!t.contains("for initiative"));
+        for anchor in lacks {
+            assert!(!t.contains(anchor), "{role:?} has {anchor:?}");
+        }
+        t
     }
 
     #[test]
-    fn a_worker_gets_the_effort_text_then_its_restrictions_last() {
-        let (effort, worker) = (text(Role::Effort), text(Role::Worker));
-        let rest = worker
-            .strip_prefix(&effort)
-            .expect("worker text starts with the effort's");
-        assert!(rest.starts_with("\n\nThis session is a worker under that effort"));
-        assert!(rest.contains("No journal line, no new effort"));
-        assert!(rest.ends_with("The guard and the effort's settings apply as above."));
-        assert_eq!(closing(Role::Worker), rest.trim_start());
+    fn an_effort_gets_filing_journal_and_lessons_but_only_a_pointer_to_orchestration() {
+        check(
+            Role::Effort,
+            &[
+                "for effort 7, \"0007 Sample\" (codex session s-1, repo demo)",
+                "[--journal",
+                "one line a day for the effort you're on",
+                "--pieces-file",
+                "--plan-file",
+                "unless it stays blocked or in review",
+                "astrolabe lesson close",
+                "astrolabe initiative new",
+                "A planning-only spike closes without --initiative",
+                "Progress comes from member statuses",
+                "astrolabe activate --initiative <slug>",
+                "never a subagent",
+                "Stop-hook",
+                "PROOF\n\nReport the effort",
+                "FRESH",
+            ],
+            &[
+                "astrolabe effort read",
+                ".agents/",
+                "This session is a worker",
+                "a worker saves its own",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_worker_gets_its_own_saving_and_closes_on_its_restrictions() {
+        let t = check(
+            Role::Worker,
+            &[
+                "--pieces-file",
+                "--plan-file",
+                "the dispatcher marks it done",
+                "Stop-hook",
+                "a worker saves its own effort the same way",
+                "No journal line, no new effort",
+            ],
+            &[
+                "--journal",
+                "astrolabe initiative new",
+                "astrolabe lesson close",
+                "astrolabe activate --initiative",
+                "astrolabe effort read",
+                "Under autonomous, mark done",
+            ],
+        );
+        assert!(t.ends_with(closing(Role::Worker)));
+        assert!(closing(Role::Worker).starts_with("This session is a worker under that effort"));
         assert_eq!(closing(Role::Effort), "");
+        assert_eq!(closing(Role::Initiative), "");
     }
 
     #[test]
-    fn an_initiative_gets_its_own_head_and_none_of_the_effort_rules() {
-        let t = text(Role::Initiative);
-        for anchor in SAVING.iter().chain(&[
-            "for initiative 7, \"0007 Sample\" (codex session s-1, repo demo)",
-            "Page: efforts/2026/11-November/0007-sample.md\nStatus: active\nWaits for: none",
-            "Notes save and sync independently of project authority",
-            "Done requires an acceptance statement",
-            "Pieces, ticks, plans and initiative membership are unavailable",
-            "PROOF\nReport the initiative",
-        ]) {
-            assert!(t.contains(anchor), "initiative text lacks {anchor:?}");
-        }
-        assert!(t.ends_with("FRESH"));
-        for absent in [
-            "--pieces-file",
-            "astrolabe lesson close",
-            "This session is a worker",
-        ] {
-            assert!(!t.contains(absent), "initiative text has {absent:?}");
-        }
-        assert_eq!(closing(Role::Initiative), "");
+    fn an_initiative_gets_orchestration_and_its_journal_but_no_pieces_or_plans() {
+        check(
+            Role::Initiative,
+            &[
+                "for initiative 7, \"0007 Sample\" (codex session s-1, repo demo)",
+                "Page: efforts/2026/11-November/0007-sample.md\nStatus: active\nWaits for: none",
+                "an initiative has no review",
+                "one line a day for this initiative, on its page",
+                "astrolabe lesson close",
+                "own separate session, never a subagent",
+                "`astrolabe activate --effort <n> --worker` alone first",
+                "`.agents/7/`",
+                "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
+                "Done requires an acceptance statement",
+                "PROOF\nReport the initiative",
+                "FRESH",
+            ],
+            &[
+                "--pieces-file",
+                "--plan-file",
+                "astrolabe initiative new",
+                "This session is a worker",
+            ],
+        );
     }
 
     #[test]
@@ -1070,13 +1187,21 @@ mod tests {
     }
 
     #[test]
+    fn an_initiative_head_fits_a_hook_with_long_settings_and_proof() {
+        // `fitted` never cuts the head, so the initiative's must fit on its own.
+        let (title, proof, fresh) = ("T".repeat(200), "P".repeat(1500), "F".repeat(600));
+        let mut f = facts("check in at each step", "push");
+        (f.title, f.proof, f.freshness, f.number) =
+            (&title, &proof, &fresh, "a-long-initiative-slug");
+        let t = instructions(Role::Initiative, &f);
+        assert!(t.len() < HOOK_LIMIT, "{} characters", t.len());
+    }
+
+    #[test]
     fn an_issue_line_sits_with_the_effort_settings() {
         let mut f = facts("autonomous", "edit");
-        let line = "- issue line\n";
-        f.issues = line;
+        f.issues = "- issue line\n";
         let t = instructions(Role::Effort, &f);
-        assert!(t.contains(
-            "approval; a worker saves its own effort the same way.\n- issue line\n- A narrower"
-        ));
+        assert!(t.contains("need approval.\n- issue line\n- A narrower"));
     }
 }

@@ -160,7 +160,9 @@ fn an_initiative_binding_saves_resumes_reports_and_detaches() {
     assert!(
         ok && out.contains("initiative smooth-lines")
             && out.contains("Pieces")
-            && out.contains("Status: active"),
+            && out.contains("Status: active")
+            && out.contains("`astrolabe effort read <n>`")
+            && out.contains("`.agents/smooth-lines/`"),
         "{out}"
     );
     let state_path = mac.state().join("lead.json");
