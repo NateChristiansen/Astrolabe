@@ -4,9 +4,9 @@
 use super::validation::{
     STATUSES, as_current, check_journal, one_of, shift_plan_headings, split_plan,
 };
-use super::{Change, apply_ticks, line_id};
+use super::{Change, apply_ticks, line_id, saved_text};
 use crate::effort::{EffortCommand, EffortFile, FORMS};
-use crate::notes::JournalLine;
+use crate::notes::{JournalLine, Pull};
 use crate::session::SessionState;
 use std::path::{Path, PathBuf};
 
@@ -333,6 +333,57 @@ pub(super) fn commit_message(
     }
 }
 
+/// What a save's reply reports, gathered by the coordinator once the write is done.
+pub(super) struct Reply<'a> {
+    /// "effort N" or "initiative N".
+    pub record: &'a str,
+    pub status: &'a str,
+    pub body_replaced: bool,
+    pub journal_written: bool,
+    pub pulled: &'a Pull,
+    pub sync_started: bool,
+    /// For a save by number, the session's own record, which it left alone.
+    pub unchanged: Option<&'a str>,
+    pub notes_lines: &'a [String],
+    pub issue: Option<&'a str>,
+    pub unfinished: &'a str,
+}
+
+/// The reply: status and what was written, the pull and sync, divergence, plan notes, the
+/// issue, then unfinished pieces.
+pub(super) fn saved_reply(r: &Reply) -> String {
+    let saved = saved_text(r.pulled, r.sync_started);
+    let mut head = format!(
+        "Saved {}: status {}{}{}; {saved}.",
+        r.record,
+        r.status,
+        if r.body_replaced {
+            ", Current state replaced"
+        } else {
+            ""
+        },
+        if r.journal_written {
+            ", journal line written"
+        } else {
+            ""
+        }
+    );
+    if let Some(label) = r.unchanged {
+        head += &format!(" This session's {label} is unchanged.");
+    }
+    if matches!(r.pulled, Pull::Diverged(_)) {
+        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
+    }
+    for l in r.notes_lines {
+        head += &format!(" {l}");
+    }
+    if let Some(issue) = r.issue {
+        head += &format!(" {issue}");
+    }
+    head += r.unfinished;
+    head
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +465,52 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(save("active", new_wait), "CI");
+    }
+
+    #[test]
+    fn a_reply_reports_in_a_fixed_order() {
+        let notes = ["The plan's headings were shifted.".to_owned()];
+        let diverged = Pull::Diverged("x".to_owned());
+        let reply = Reply {
+            record: "effort 3",
+            status: "done",
+            body_replaced: true,
+            journal_written: true,
+            pulled: &diverged,
+            sync_started: true,
+            unchanged: None,
+            notes_lines: &notes,
+            issue: Some("This effort answers issue #5."),
+            unfinished: "\nUnticked pieces:\n- [ ] a",
+        };
+        assert_eq!(
+            saved_reply(&reply),
+            "Saved effort 3: status done, Current state replaced, journal line written; committed, background sync started. Notes diverged from origin; resolve in the notes checkout when you can. The plan's headings were shifted. This effort answers issue #5.\nUnticked pieces:\n- [ ] a"
+        );
+        let offline = Pull::Offline("no remote".to_owned());
+        let by_number = Reply {
+            record: "effort 4",
+            status: "active",
+            body_replaced: false,
+            journal_written: false,
+            pulled: &offline,
+            sync_started: false,
+            unchanged: Some("effort 3"),
+            notes_lines: &[],
+            issue: None,
+            unfinished: "",
+        };
+        assert_eq!(
+            saved_reply(&by_number),
+            "Saved effort 4: status active; saved locally; sync unavailable: no remote configured. This session's effort 3 is unchanged."
+        );
+        let quiet = Reply {
+            pulled: &Pull::Pulled,
+            ..by_number
+        };
+        assert_eq!(
+            saved_reply(&quiet),
+            "Saved effort 4: status active; committed; background sync could not start. This session's effort 3 is unchanged."
+        );
     }
 }

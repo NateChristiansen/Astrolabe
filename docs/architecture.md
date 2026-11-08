@@ -108,7 +108,7 @@ The crate stays small enough to build as one package. Modules separate responsib
 ### Where changes belong
 
 - `effort/command.rs` parses shell commands and bodies. `effort/file.rs` interprets note properties, sections and checklists. Neither starts processes or writes files.
-- `record.rs` coordinates new efforts, saves and journal entries. `record/validation.rs` checks prose, settings and plan sections before a write is attempted.
+- `record.rs` coordinates new efforts, saves and journal entries: the lock, recovery, pull, stale checks and the write stay there, in order. `record/save.rs` holds a save's checked request, its pure record edits, stamps and commit subject, and its reply; it reads no notes and writes no session state. `record/validation.rs` checks prose, settings and plan sections before a write is attempted.
 - `notes/storage.rs` owns recoverable operations and commit scope. `notes/sync.rs` owns network Git calls, backoff, merge recovery and synchronization warnings. `notes/journal.rs` owns journal formats; `notes/facts.rs` observes a product checkout; `notes/process.rs` owns detached children and platform handle behavior. `notes.rs` holds the checkout, lock, numbering and shared filesystem primitives.
 - `session.rs` owns session records and the save and acknowledgement transitions. `nudge.rs` decides when work needs a save reminder.
 - `activate/repos.rs` matches checkouts to repository notes. `activate/context.rs` loads effort context. `activate/proof.rs` evaluates guard evidence. `activate/tickets.rs` persists hook replies. `activate/routing.rs` handles provider inputs and applies activation transitions. `activate.rs` exposes the facade and machine switch.
@@ -119,10 +119,11 @@ The crate stays small enough to build as one package. Modules separate responsib
 ### Trace a save
 
 1. The provider hook reaches `activate::gate`; command recognition and parsing use `EffortCommand`.
-2. `record::save` reads the typed session record, validates the request, takes the notes lock and reconciles pending operations.
-3. It checks the delivered note hash and plans an `Op` containing the complete files, journal lines and session state to write.
-4. `Notes::apply` persists the intent, writes files, commits only the intended note paths, records that the commit completed, then writes the session state. A retry finishes remaining steps without overwriting a newer committed note.
-5. `application::finish` records the reply and refreshes the board after the operation. Storage reports changes; orchestration consumes them while holding the notes lock. Several recovered operations can share one refresh. A board failure is reported separately from a successful notes save.
+2. `record::save` reads the typed session record and checks the request with `SaveRequest::parse`, which refuses anything that needs no note before any lock or write.
+3. It takes the notes lock, reconciles pending operations, answers a retry of the same tool call, then pulls and resolves initiative membership. A save by number goes to `save_target` from here.
+4. It checks the delivered note hash, then the status transition and an initiative's open members, and edits the record with the pure helpers in `record/save.rs`. It plans an `Op` containing the complete files, journal lines and session state to write.
+5. `Notes::apply` persists the intent, writes files, commits only the intended note paths, records that the commit completed, then writes the session state. A retry finishes remaining steps without overwriting a newer committed note.
+6. It starts the background sync, builds the reply with `saved_reply`, and `application::finish` records the reply and refreshes the board after the operation. Storage reports changes; orchestration consumes them while holding the notes lock. Several recovered operations can share one refresh. A board failure is reported separately from a successful notes save.
 
 The existing deliberate aggregation of hand edits inside effort and journal paths remains. Unrelated staged files stay out of automatic note commits.
 

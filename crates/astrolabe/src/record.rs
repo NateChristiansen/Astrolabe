@@ -11,7 +11,10 @@ use std::path::PathBuf;
 pub mod lesson;
 mod save;
 mod validation;
-use save::{SaveRequest, Saver, commit_message, edit_bound, stamp_initiative, stamp_saver};
+use save::{
+    Reply, SaveRequest, Saver, commit_message, edit_bound, saved_reply, stamp_initiative,
+    stamp_saver,
+};
 use validation::{
     AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, closes, issues, one_of,
 };
@@ -773,28 +776,8 @@ fn save_inner(
     notes.apply(&op)?;
     // Every save, so the other machine's board follows it: a checkpoint held for a batching
     // window sat unpushed for as long as its session stayed quiet.
-    let saved = saved_text(&pulled, notes.spawn_sync());
-    let mut head = format!(
-        "Saved {record}: status {}{}{}; {saved}.",
-        file.prop("status").unwrap_or("?"),
-        if cmd.body.is_some() {
-            ", Current state replaced"
-        } else {
-            ""
-        },
-        if req.journal_text.is_some() {
-            ", journal line written"
-        } else {
-            ""
-        }
-    );
-    if matches!(pulled, Pull::Diverged(_)) {
-        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
-    }
-    for l in notes_lines {
-        head += &format!(" {l}");
-    }
-    if status == Some("done")
+    let sync_started = notes.spawn_sync();
+    let issue = if status == Some("done")
         && before != "done"
         && let Some(issue) = file.prop("issue").filter(|i| !i.is_empty())
     {
@@ -811,9 +794,22 @@ fn save_inner(
                 .filter(|r| repos.contains(&r.as_str()))
                 .map(|_| cwd.to_path_buf())
         };
-        head += &format!(" {}", issue_report(checkout.as_deref(), issue));
-    }
-    head += &unfinished_pieces(&file);
+        Some(issue_report(checkout.as_deref(), issue))
+    } else {
+        None
+    };
+    let head = saved_reply(&Reply {
+        record,
+        status: file.prop("status").unwrap_or("?"),
+        body_replaced: cmd.body.is_some(),
+        journal_written: req.journal_text.is_some(),
+        pulled: &pulled,
+        sync_started,
+        unchanged: None,
+        notes_lines: &notes_lines,
+        issue: issue.as_deref(),
+        unfinished: &unfinished_pieces(&file),
+    });
     crate::application::finish(&notes, key, &head);
     Ok(head)
 }
@@ -1073,16 +1069,19 @@ fn save_target(
         rebaseline: None,
     };
     notes.apply(&op)?;
-    let saved = saved_text(pulled, notes.spawn_sync());
-    let mut head = format!(
-        "Saved effort {target}: status {}; {saved}. This session's {} is unchanged.",
-        file.prop("status").unwrap_or("?"),
-        state.record_label()
-    );
-    if matches!(pulled, Pull::Diverged(_)) {
-        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
-    }
-    head += &unfinished_pieces(&file);
+    let sync_started = notes.spawn_sync();
+    let head = saved_reply(&Reply {
+        record: &format!("effort {target}"),
+        status: file.prop("status").unwrap_or("?"),
+        body_replaced: false,
+        journal_written: false,
+        pulled,
+        sync_started,
+        unchanged: Some(&state.record_label()),
+        notes_lines: &[],
+        issue: None,
+        unfinished: &unfinished_pieces(&file),
+    });
     crate::application::finish(notes, key, &head);
     Ok(head)
 }
