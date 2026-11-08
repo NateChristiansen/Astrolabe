@@ -324,3 +324,56 @@ fn an_earlier_windows_command_shim_is_named() {
         "{stdout}"
     );
 }
+
+#[test]
+fn a_local_build_does_not_replace_a_published_one_unless_forced() {
+    // A build CI stamped is a published one, which the guard lets through.
+    if option_env!("ASTROLABE_COMMIT").is_some() {
+        return;
+    }
+    use sha2::{Digest, Sha256};
+    let temp = TempDir::new();
+    let dir = temp.0.join("bin");
+    assert!(run(&dir, &[]).status.success());
+    let program = fs::read(dir.join(name())).unwrap();
+    let published = serde_json::json!({
+        "format": 1, "version": "0.5.0",
+        "sha256": format!("{:x}", Sha256::digest(&program)), "commit": "1a2b3c4d5e6f"
+    });
+    fs::write(dir.join(".astrolabe-install.json"), published.to_string()).unwrap();
+
+    let refused = run(&dir, &[]);
+    assert!(!refused.status.success());
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("the published build 1a2b3c4"), "{why}");
+    assert!(why.contains("astrolabe update"), "{why}");
+    assert_eq!(fs::read(dir.join(name())).unwrap(), program);
+
+    assert!(run(&dir, &["--force"]).status.success());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_nightly_from_before_receipts_held_the_commit_is_still_recognised() {
+    // A build CI stamped is a published one, which the guard lets through.
+    if option_env!("ASTROLABE_COMMIT").is_some() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new();
+    let dir = temp.0.join("bin");
+    fs::create_dir_all(&dir).unwrap();
+    let nightly = b"#!/bin/sh\necho 'astrolabe 0.5.0 (nightly c3621c1)'\n";
+    fs::write(dir.join(name()), nightly).unwrap();
+    fs::set_permissions(dir.join(name()), fs::Permissions::from_mode(0o755)).unwrap();
+    receipt(&dir, nightly);
+
+    let refused = run(&dir, &[]);
+    assert!(!refused.status.success());
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("0.5.0 (nightly c3621c1)"), "{why}");
+    assert_eq!(fs::read(dir.join(name())).unwrap(), nightly);
+
+    assert!(run(&dir, &["--force"]).status.success());
+    assert_ne!(fs::read(dir.join(name())).unwrap(), nightly);
+}
