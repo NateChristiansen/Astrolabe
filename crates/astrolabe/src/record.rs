@@ -1050,6 +1050,15 @@ impl Change<'_> {
         if blocked && self.waits_for == Some("") {
             return Err("a blocked effort keeps what it waits on: give the new condition, or a status that isn't blocked. Nothing was written".to_owned());
         }
+        // A closed record waits on nothing. Read from the file, not the flag: a wait added to
+        // an effort already done, with no --status, put a finished effort in Needs you.
+        if let Some(closed @ ("done" | "abandoned")) = file.prop("status")
+            && self.waits_for.is_some_and(|w| !w.is_empty())
+        {
+            return Err(format!(
+                "a {closed} record waits on nothing: while something still waits, keep it open (active, review or blocked) with --status; otherwise save without --waits-for. Nothing was written"
+            ));
+        }
         match self.waits_for {
             Some(w) => file.set("waits_for", w),
             None if !matches!(file.prop("status"), Some("blocked" | "review")) => {
