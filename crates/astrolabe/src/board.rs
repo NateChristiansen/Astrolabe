@@ -17,7 +17,7 @@ pub struct BoardData {
     pub journal_lines: Vec<JournalEntry>,
     pub notes: Vec<String>,
     pub lessons: Vec<Lesson>,
-    pub drafts: usize,
+    pub drafts: Vec<Lesson>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -262,7 +262,19 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
 /// the folder holds only what waits. A lesson's title is its first heading, else its file name.
 /// Lessons reach the board and nothing else: never a session.
 pub fn lessons_in(root: &Path) -> Vec<Lesson> {
-    let dir = root.join("lessons");
+    pages_in(root, "lessons")
+}
+
+/// The open drafts: every `drafts/*.md`, since a posted or decided draft is deleted and the
+/// folder holds only what waits on the owner. The board lists them and nothing else:
+/// never a session, and the program never removes one.
+pub fn drafts_in(root: &Path) -> Vec<Lesson> {
+    pages_in(root, "drafts")
+}
+
+/// Every `<folder>/*.md`, by name, titled by its first heading, else its file name.
+fn pages_in(root: &Path, folder: &str) -> Vec<Lesson> {
+    let dir = root.join(folder);
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -282,23 +294,11 @@ pub fn lessons_in(root: &Path) -> Vec<Lesson> {
                 .filter(|t| !t.is_empty())
                 .map_or_else(|| name.trim_end_matches(".md").to_owned(), str::to_owned);
             Lesson {
-                file: format!("lessons/{name}"),
+                file: format!("{folder}/{name}"),
                 title,
             }
         })
         .collect()
-}
-
-/// The open drafts: every `drafts/*.md`, since a posted or decided draft is deleted and the
-/// folder holds only what waits on the owner. The board counts them and nothing else:
-/// never a session, and the program never removes one.
-pub fn drafts_in(root: &Path) -> usize {
-    std::fs::read_dir(root.join("drafts"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".md"))
-        .count()
 }
 
 #[cfg(test)]
@@ -328,18 +328,22 @@ mod lessons_tests {
     }
 
     #[test]
-    fn drafts_are_counted_without_the_gitkeep() {
+    fn drafts_are_listed_without_the_gitkeep() {
         let root = std::env::temp_dir().join(format!("astrolabe-drafts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(drafts_in(&root), 0, "no folder is no drafts");
+        assert!(drafts_in(&root).is_empty(), "no folder is no drafts");
         let dir = root.join("drafts");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".gitkeep"), "").unwrap();
-        assert_eq!(drafts_in(&root), 0, "an empty folder is no drafts");
+        assert!(drafts_in(&root).is_empty(), "an empty folder is no drafts");
         std::fs::write(dir.join("2026-11-06-release-note.md"), "# Release note\n").unwrap();
         std::fs::write(dir.join("2026-11-06-reply.md"), "no heading\n").unwrap();
         std::fs::write(dir.join("notes.txt"), "not a draft\n").unwrap();
-        assert_eq!(drafts_in(&root), 2);
+        let rows = drafts_in(&root);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].file, "drafts/2026-11-06-release-note.md");
+        assert_eq!(rows[0].title, "Release note");
+        assert_eq!(rows[1].title, "2026-11-06-reply");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

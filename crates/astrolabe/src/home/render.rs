@@ -1,7 +1,7 @@
 //! Board and page markup from a typed snapshot; no Git operations.
 use super::nav::tree_html;
 use super::settings::{Look, Palette, Theme};
-use crate::board::{BoardData, EffortRow};
+use crate::board::{BoardData, EffortRow, Lesson};
 use chrono::{DateTime, FixedOffset};
 use std::path::Path;
 
@@ -271,27 +271,34 @@ fn work_sections(columns: &Columns, at: At) -> (String, String) {
     (attention, work)
 }
 
-/// The notes' inbox: lessons waiting for triage. Only a non-empty one is shown, since
-/// the count is the backlog and zero is nothing to say.
+/// The notes' inboxes: lessons waiting for triage and drafts waiting on the owner. Each has
+/// its own page; the overview shows lessons only when some wait, since zero is nothing to
+/// say, and shows drafts only as a count.
 fn lessons_section(rows: &BoardData, at: At) -> String {
-    let lessons = &rows.lessons;
-    let mut lesson_lines = String::new();
-    for lesson in lessons {
-        let file = lesson.file.as_str();
-        lesson_lines += &format!(
-            "<li><a href=\"{}\">{}</a></li>\n",
-            esc(&at.links.href(at.root, file)),
-            esc(lesson.title.as_str())
+    inbox_section(at, "lessons", "Lessons to triage", &rows.lessons, "nothing to triage")
+        + &inbox_section(at, "drafts", "Open drafts", &rows.drafts, "nothing waiting on you")
+}
+
+fn inbox_section(at: At, class: &str, title: &str, pages: &[Lesson], empty: &str) -> String {
+    let mut lines = String::new();
+    for page in pages {
+        lines += &format!(
+            "<li><a href=\"{}\">{}</a></li>
+",
+            esc(&at.links.href(at.root, page.file.as_str())),
+            esc(page.title.as_str())
         );
     }
-    if lesson_lines.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<section class=\"col lessons\">{}<ul>\n{lesson_lines}</ul></section>",
-            heading("Lessons to triage", lessons.len())
-        )
+    if lines.is_empty() {
+        lines = format!("<li class=\"empty\">{empty}</li>
+");
     }
+    format!(
+        "<section class=\"col {class}{}\">{}<ul>
+{lines}</ul></section>",
+        if pages.is_empty() { " none" } else { "" },
+        heading(title, pages.len())
+    )
 }
 
 /// Recent journal lines, newest first, each linked to its effort or initiative; past the
@@ -475,11 +482,11 @@ fn chips(rows: &BoardData, columns: &Columns) -> String {
         );
     }
     // Open drafts wait on the owner the way lessons do, and leave the folder the same way.
-    if rows.drafts > 0 {
+    if !rows.drafts.is_empty() {
         chips += &chip(
             "draft",
-            rows.drafts,
-            if rows.drafts == 1 {
+            rows.drafts.len(),
+            if rows.drafts.len() == 1 {
                 "open draft"
             } else {
                 "open drafts"
@@ -597,7 +604,9 @@ pub(super) fn shell(
     let navigation = [("overview", "Overview", "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"),
         ("efforts", "Efforts", "m3 7 9-4 9 4-9 4z M3 12l9 4 9-4 M3 17l9 4 9-4"),
         ("initiatives", "Initiatives", "M5 21V3 M5 4h12l-2.5 4.5L17 13H5"),
+        ("drafts", "Drafts", "M4 20h4L19 9l-4-4L4 16z M13 7l4 4"),
         ("journal", "Journal", "M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5"),
+        ("lessons", "Lessons", "M9 18h6 M10 21h4 M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"),
         ("notes", "Notes", "M3 7V4h6l3 3h9v13H3z")]
         .iter().map(|(view, label, path)| format!(r#"<a class="nav-link" data-view="{view}" href="{home}#{view}" aria-label="{label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg><span>{label}</span></a>"#)).collect::<String>();
     let back = if crumb == "<b>Board</b>" {

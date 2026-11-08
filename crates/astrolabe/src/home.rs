@@ -294,7 +294,10 @@ mod tests {
             "journal_lines": [{"effort": "0001", "text": "Finished <it>."}],
             "notes": [],
             "lessons": [{"file": "lessons/2026-11-01-gates.md", "title": "Gates <did> not stop"}],
-            "drafts": 2,
+            "drafts": [
+                {"file": "drafts/2026-11-06-release-note.md", "title": "Release <note>"},
+                {"file": "drafts/2026-11-06-reply.md", "title": "Reply"},
+            ],
         });
         let page = render(
             &serde_json::from_value(rows.clone()).unwrap(),
@@ -347,6 +350,26 @@ mod tests {
             page.contains("<h2><span>Lessons to triage</span> <span class=\"n\">1</span></h2>")
         );
         assert!(page.contains("<b>2</b> open drafts</span>"), "{page}");
+        assert!(page.contains("<section class=\"col lessons\">"), "{page}");
+        assert!(
+            page.contains("<section class=\"col drafts\"><h2><span>Open drafts</span> <span class=\"n\">2</span></h2>")
+                && page.contains("href=\"file:///n/drafts/2026-11-06-release-note.md\">Release &lt;note&gt;</a>"),
+            "{page}"
+        );
+        for view in ["drafts", "lessons"] {
+            assert!(
+                page.contains(&format!("data-view=\"{view}\" href=\"home.html#{view}\"")),
+                "the sidebar links the {view} page: {page}"
+            );
+        }
+        let nav = |view: &str| page.find(&format!("data-view=\"{view}\"")).unwrap();
+        assert!(
+            nav("initiatives") < nav("drafts")
+                && nav("drafts") < nav("journal")
+                && nav("journal") < nav("lessons")
+                && nav("lessons") < nav("notes"),
+            "drafts sit above journal, lessons between journal and notes"
+        );
         assert!(page.contains(
             "href=\"file:///n/lessons/2026-11-01-gates.md\">Gates &lt;did&gt; not stop</a>"
         ));
@@ -393,10 +416,13 @@ mod tests {
         assert!(!page.contains("<b>0</b>"), "a zero is no chip: {page}");
         assert!(page.contains("nothing closed lately"));
         assert!(
-            !page.contains("to triage"),
-            "no lessons, no section and no count"
+            !page.contains("lessons to triage")
+                && page.contains("<section class=\"col lessons none\">")
+                && page.contains("nothing to triage"),
+            "no lessons: no count, and the section only shows on its own page: {page}"
         );
         assert!(!page.contains("open draft"), "no drafts, no count");
+        assert!(page.contains("<section class=\"col drafts none\">") && page.contains("nothing waiting on you"));
     }
 
     #[test]

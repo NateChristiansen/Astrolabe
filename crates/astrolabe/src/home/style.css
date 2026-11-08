@@ -1037,7 +1037,7 @@ h1, h2, h3, p {
   grid-column: 1/-1;
 }
 
-.lessons li {
+.lessons li, .drafts li {
   padding: 8px 0;
   font-size: 14.5px;
   overflow-wrap: anywhere;
@@ -1660,6 +1660,22 @@ html[data-view=initiatives] .board>:not(.below), html[data-view=initiatives] .be
 }
 
 html[data-view=initiatives] .below {
+  display: block;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  max-width: 850px;
+}
+
+html:not([data-view=lessons]) .lessons.none, html:not([data-view=drafts]) .drafts {
+  display: none;
+}
+
+html[data-view=lessons] .board>:not(.below), html[data-view=lessons] .below>:not(.lessons), html[data-view=drafts] .board>:not(.below), html[data-view=drafts] .below>:not(.drafts) {
+  display: none;
+}
+
+html:is([data-view=lessons], [data-view=drafts]) .below {
   display: block;
   border: 0;
   margin: 0;

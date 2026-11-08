@@ -30,7 +30,7 @@
   };
   var root = document.documentElement, app = $('.app'), main = $('#main'), tree = $('#tree');
   var board = !!$('#board'), initialCrumb = $('#crumb').innerHTML;
-  var views = ['overview', 'efforts', 'initiatives', 'journal', 'notes'];
+  var views = ['overview', 'efforts', 'initiatives', 'drafts', 'journal', 'lessons', 'notes'];
   var currentView = board ? 'overview' : 'note';
   var positions = {}, initialized = false;
   var scrollKey = function (view) {
@@ -83,7 +83,7 @@
     });
     $('#crumb').innerHTML = view === 'note'
       ? initialCrumb
-      : '<b>' + ({ overview: 'Overview', efforts: 'Efforts', initiatives: 'Initiatives', journal: 'Journal', notes: 'Notes' }[view]) + '</b>';
+      : '<b>' + ({ overview: 'Overview', efforts: 'Efforts', initiatives: 'Initiatives', drafts: 'Drafts', journal: 'Journal', lessons: 'Lessons', notes: 'Notes' }[view]) + '</b>';
     main.scrollTop = reset ? 0 : (positions[view] ?? Number(sessionRead(scrollKey(view)) || 0));
     if (reset) {
       positions[view] = 0;
@@ -196,7 +196,9 @@
             overview: 'overview',
             efforts: 'efforts',
             initiatives: 'initiatives',
+            drafts: 'drafts',
             journal: 'journal',
+            lessons: 'lessons',
             notes: 'notes',
             note: 'previous note'
           }[previous.label] || 'overview');
