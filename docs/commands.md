@@ -83,15 +83,17 @@ Write the standalone `home.html`, ensure the local board server is running, and 
 
 Options combine. A browser's saved appearance choice takes precedence in that browser.
 
-The home dashboard puts work needing attention and active efforts first. The sidebar
-opens the overview, efforts, journal and searchable notes. Click the Astrolabe mark to
-return home; a note's back link returns to the view that opened it. Earlier journal
-updates and recently closed work expand in place.
+The home dashboard puts work needing attention and active efforts first, each section
+a grid of cards that fits the window. Every section folds at its heading, and the
+browser remembers the folds. The sidebar opens the overview, efforts, initiatives,
+drafts, journal, lessons and searchable notes. Click the Astrolabe mark to return home;
+a note's back link returns to the view that opened it. Earlier journal updates and
+recently closed work expand in place.
 
 The palette menu beside the light/dark toggle offers Iris, Ember, Slate, Moss and
 Graphite. It also includes **Follow system appearance**. Palette and appearance are
 remembered independently in each browser. Live updates retain the current view,
-reading position and expanded history. If an update can't be loaded, the sidebar says
+reading position and folds. If an update can't be loaded, the sidebar says
 the page is showing older content until the next change or reconnect loads it.
 
 ```sh

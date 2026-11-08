@@ -30,6 +30,20 @@
   };
   var root = document.documentElement, app = $('.app'), main = $('#main'), tree = $('#tree');
   var board = !!$('#board'), initialCrumb = $('#crumb').innerHTML;
+  // The board's folds, remembered per browser. A list view shows its one section open
+  // whatever the viewer folded on the overview; the overview's folds come back on return.
+  var sections = read('astrolabe-sections');
+  var listViews = { journal: 'today', initiatives: 'initiatives', lessons: 'lessons', drafts: 'drafts' };
+  var restoreSections = function () {
+    document.querySelectorAll('details[data-persist]').forEach(function (d) {
+      if (d.dataset.persist in sections) d.open = !!sections[d.dataset.persist]
+    })
+  };
+  var foldForView = function (view) {
+    var shown = listViews[view] && document.querySelector('details[data-persist="' + listViews[view] + '"]');
+    if (shown) shown.open = true;
+    else restoreSections()
+  };
   var views = ['overview', 'efforts', 'initiatives', 'drafts', 'journal', 'lessons', 'notes'];
   var currentView = board ? 'overview' : 'note';
   var positions = {}, initialized = false;
@@ -75,6 +89,7 @@
     if (initialized) rememberScroll();
     currentView = view;
     root.dataset.view = view;
+    foldForView(view);
     $('#content').hidden = view === 'notes';
     $('#notes-browser').hidden = view !== 'notes';
     document.querySelectorAll('.nav-link').forEach(function (a) {
@@ -244,7 +259,7 @@
     })
   });
   markSection();
-  var open = read('astrolabe-tree'), sections = read('astrolabe-sections');
+  var open = read('astrolabe-tree');
   var q = $('#q'), scopes = $('#scopes'), status = $('#search-status');
   q.value = sessionRead('astrolabe-note-query') || '';
   // The search: every word must be in a note's number, title or path, or, from the server,
@@ -469,11 +484,6 @@
     tree.querySelectorAll('details[data-key]').forEach(function (d) { d.open = false });
     main.scrollTo({ top: 0 })
   });
-  var restoreSections = function () {
-    document.querySelectorAll('details[data-persist]').forEach(function (d) {
-      if (d.dataset.persist in sections) d.open = !!sections[d.dataset.persist]
-    })
-  };
   document.addEventListener('toggle', function (e) {
     var d = e.target;
     if (!d.matches('details')) return;
@@ -481,13 +491,13 @@
       open[d.dataset.key] = d.open;
       save('astrolabe-tree', open)
     }
-    if (d.dataset.persist) {
+    // A list view opens its section itself; only the viewer's own folds are kept.
+    if (d.dataset.persist && !listViews[currentView]) {
       sections[d.dataset.persist] = d.open;
       save('astrolabe-sections', sections)
     }
   }, true);
   bindTree();
-  restoreSections();
   revealFolder();
   q.addEventListener('input', function () {
     setQuery(q.value)
@@ -626,7 +636,7 @@
         if (a && b && a.innerHTML !== b.innerHTML) a.innerHTML = b.innerHTML
       });
       bindTree();
-      restoreSections();
+      foldForView(currentView);
       pointBack();
       markSection();
       tick();

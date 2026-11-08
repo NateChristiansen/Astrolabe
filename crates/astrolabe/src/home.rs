@@ -355,7 +355,7 @@ mod tests {
         assert!(ideas.contains("Effort 5") && ideas.contains("Effort 6"));
         assert!(ideas.contains("no status"));
         assert!(
-            ideas.contains("class=\"card s-x&quot; onmouseover=&quot;alert(1) compact\"")
+            ideas.contains("class=\"card s-x&quot; onmouseover=&quot;alert(1) small\"")
                 && !page.contains("onmouseover=\""),
             "a status stays inside its class: {ideas}"
         );
@@ -380,7 +380,7 @@ mod tests {
         assert!(page.contains("<b>2</b> open drafts</span>"), "{page}");
         assert!(page.contains("<section class=\"col lessons\">"), "{page}");
         assert!(
-            page.contains("<section class=\"col drafts\"><h2><span>Open drafts</span> <span class=\"n\">2</span></h2>")
+            page.contains("<section class=\"col drafts\"><details class=\"fold\" data-persist=\"drafts\" open><summary><h2><span>Open drafts</span> <span class=\"n\">2</span></h2></summary>")
                 && page.contains("href=\"file:///n/drafts/2026-11-06-release-note.md\">Release &lt;note&gt;</a>"),
             "{page}"
         );
@@ -414,9 +414,38 @@ mod tests {
         assert!(page.contains("title=\"A &lt;b&gt;&amp;&lt;/b&gt; &quot;q&quot;\">1 · demo</a></span><span>Finished &lt;it&gt;.</span></li>"));
 
         assert!(
-            page.contains("<details data-persist=\"closed-work\">"),
-            "closed work remains available behind a disclosure"
+            done.contains("<details class=\"fold\" data-persist=\"done\"><summary>"),
+            "closed work stays folded until the viewer opens it: {done}"
         );
+        // Every section folds at its heading and the browser remembers it by name.
+        for key in [
+            "needsyou",
+            "active",
+            "blocked",
+            "ready",
+            "ideas",
+            "today",
+            "initiatives",
+            "lessons",
+            "drafts",
+        ] {
+            assert!(
+                page.contains(&format!(
+                    "<section class=\"col {key}\"><details class=\"fold\" data-persist=\"{key}\" open><summary><h2>"
+                )),
+                "{key} folds and starts open: {page}"
+            );
+        }
+        // What needs you comes first, then what moves, waits, is ready and is parked.
+        let at = |key: &str| page.find(&format!("class=\"col {key}\"")).unwrap();
+        assert!(
+            at("needsyou") < at("active")
+                && at("active") < at("blocked")
+                && at("blocked") < at("ready")
+                && at("ready") < at("ideas")
+                && at("ideas") < at("today")
+        );
+        assert!(!page.contains("class=\"stack\"") && !page.contains("quiet-hero"));
     }
 
     #[test]
@@ -438,8 +467,12 @@ mod tests {
             "{page}"
         );
         assert!(
-            page.contains("class=\"quiet\">Nothing ready, nothing blocked, nothing in review, no ideas parked.<"),
+            page.contains("class=\"quiet\">Nothing in review, nothing blocked, nothing ready, no ideas parked.<"),
             "{page}"
+        );
+        assert!(
+            page.contains("<section class=\"col needsyou\" hidden></section>"),
+            "the hero already says nothing needs you: {page}"
         );
         assert!(!page.contains("<b>0</b>"), "a zero is no chip: {page}");
         assert!(page.contains("nothing closed lately"));
@@ -491,8 +524,17 @@ mod tests {
                 Links::Served,
             );
             let idea_section = section(&page, "ideas");
-            assert!(idea_section.contains("class=\"cards ideas-grid\""));
+            assert!(idea_section.contains("<div class=\"cards\">"));
             assert_eq!(idea_section.matches("class=\"card ").count(), 15);
+            assert_eq!(
+                idea_section.matches(" small\"").count(),
+                15,
+                "{idea_section}"
+            );
+            assert!(
+                !idea_section.contains("class=\"next\"") && !idea_section.contains("pieces"),
+                "a small card is a title, its meta and context: {idea_section}"
+            );
             let mut previous = 0;
             for n in std::iter::once(1).chain((2..=15).rev()) {
                 let position = idea_section
@@ -507,16 +549,52 @@ mod tests {
             if busy {
                 assert!(section(&page, "active").contains("Effort 20"));
                 assert!(section(&page, "needsyou").contains("Effort 23"));
-                // Ideas follows the closed status row, rather than occupying one lane.
-                assert!(page.contains("</section>\n</div><section class=\"col ideas\">"));
-                assert!(page.find("class=\"col ready\"") < page.find("class=\"col blocked\""));
-                assert!(page.find("class=\"col blocked\"") < page.find("class=\"col ideas\""));
+                // Each status is its own full-width grid: waiting, then ready, then ideas.
+                assert!(page.find("class=\"col blocked\"") < page.find("class=\"col ready\""));
+                assert!(page.find("class=\"col ready\"") < page.find("class=\"col ideas\""));
             } else {
                 assert!(page.contains("<section class=\"col active\" hidden></section>"));
                 assert!(!page.contains("<span>In motion</span>"));
-                assert!(!page.contains("class=\"stack\""));
             }
         }
+    }
+
+    /// A busy repo's attention is one grid of full cards, not a column beside the headline.
+    #[test]
+    fn needs_you_is_one_grid_of_full_cards() {
+        let efforts: Vec<_> = (1..=15)
+            .map(|n| {
+                row(
+                    n,
+                    "active",
+                    json!({
+                        "needs_owner": true,
+                        "waits_for": format!("owner: look at {n}"),
+                        "pieces": {"done": 1, "total": 2},
+                    }),
+                )
+            })
+            .collect();
+        let page = board_html(
+            &serde_json::from_value(json!({"efforts": efforts})).unwrap(),
+            Path::new("/n"),
+            NOW,
+            Links::Served,
+        );
+        let needs = section(&page, "needsyou");
+        assert_eq!(needs.matches("<div class=\"cards\">").count(), 1);
+        assert_eq!(
+            needs.matches("class=\"card s-needs\"").count(),
+            15,
+            "full cards, none small: {needs}"
+        );
+        assert_eq!(needs.matches("class=\"review-link\"").count(), 15);
+        assert!(needs.contains(">1 of 2 pieces<") && needs.contains("class=\"next\">Next thing.<"));
+        assert!(page.contains("15 things need you."));
+        assert!(
+            page.contains("<div class=\"hero\"><p class=\"eyebrow\">"),
+            "the headline stands alone above the work: {page}"
+        );
     }
 
     #[test]

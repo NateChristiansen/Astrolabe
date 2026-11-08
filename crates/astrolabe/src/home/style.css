@@ -501,7 +501,7 @@ h1, h2, h3, p {
 /* Board: date, chips, columns and cards. */
 .board {
   padding: var(--page-top) var(--page-pad) 48px;
-  max-width: 1440px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 
@@ -510,19 +510,8 @@ h1, h2, h3, p {
 }
 
 .hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 30px;
-  margin-bottom: 34px;
-  align-items: start;
-}
-
-.hero.quiet-hero {
-  grid-template-columns: 1fr;
-}
-
-.bhead {
   padding: 6px 0;
+  margin-bottom: 36px;
 }
 
 .eyebrow {
@@ -532,7 +521,7 @@ h1, h2, h3, p {
   color: var(--mute);
 }
 
-.bhead h1 {
+.hero h1 {
   font-size: clamp(32px, 3.4vw, 48px);
   line-height: 1.07;
   font-weight: 550;
@@ -541,7 +530,7 @@ h1, h2, h3, p {
   text-wrap: balance;
 }
 
-.bhead em {
+.hero em {
   font-style: normal;
   color: var(--accent);
 }
@@ -611,7 +600,7 @@ h1, h2, h3, p {
   font-size: 19px;
   line-height: 1.4;
   font-weight: 500;
-  margin: 0 0 18px;
+  min-width: 0;
 }
 
 .col h2>span:first-child {
@@ -625,22 +614,54 @@ h1, h2, h3, p {
   font-weight: 400;
 }
 
-.cards {
-  display: grid;
-  gap: 14px;
+/* Every section folds at its heading; the chevron says which way it stands. */
+.fold>summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
   min-width: 0;
 }
 
-.cards.grid, .cards.ideas-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.fold>summary::-webkit-details-marker {
+  display: none;
 }
 
-.cards.ideas-grid {
-  column-gap: 26px;
+.fold>summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 6px 0 3px;
+  border-right: 1.8px solid var(--mute);
+  border-bottom: 1.8px solid var(--mute);
+  transform: rotate(-45deg);
+  transition: transform .15s;
 }
 
-.cards.wide {
-  grid-template-columns: 1fr;
+.fold[open]>summary::before {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.fold:not([open])>summary {
+  margin-bottom: 0;
+}
+
+.fold>summary:hover::before {
+  border-color: var(--ink);
+}
+
+.fold>summary:hover .n {
+  color: var(--ink);
+}
+
+/* Cards fill the room they have: as many columns as fit, one on a phone. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 14px;
+  min-width: 0;
 }
 
 .card {
@@ -682,10 +703,6 @@ h1, h2, h3, p {
 .card a:not(h3 a) {
   position: relative;
   z-index: 1;
-}
-
-.compact h3 a::after {
-  inset: -1px 0;
 }
 
 .card h3 a:hover {
@@ -795,22 +812,14 @@ h1, h2, h3, p {
   background: var(--good);
 }
 
-.needsyou>h2 {
-  font-size: 11px;
-  color: var(--mute);
-  text-transform: uppercase;
-  letter-spacing: .1em;
-}
-
 .card.s-needs {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
-  padding: 25px;
 }
 
 .s-needs h3 {
-  font-size: 25px;
+  font-size: 21px;
 }
 
 .card.s-needs h3 .num {
@@ -860,33 +869,30 @@ h1, h2, h3, p {
 
 .work {
   display: grid;
-  gap: 32px;
+  gap: 28px;
 }
 
-.stack {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 26px;
+/* Review, waiting, ready and ideas: the same card, smaller, two lines of context. */
+.small {
+  padding: 16px 18px;
+  gap: 8px;
+  border-radius: 12px;
 }
 
-.compact {
-  padding: 16px 0;
-  border: 0;
-  border-top: 1px solid var(--line);
-  border-radius: 0;
-  background: none;
-}
-
-.compact h3 {
+.small h3 {
   font-size: 17px;
 }
 
-.compact .meta {
+.small .meta {
   margin: 0;
 }
 
-.compact .bar {
-  display: none;
+.small .context {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13.5px;
 }
 
 .empty, .quiet {
@@ -946,7 +952,7 @@ h1, h2, h3, p {
   min-width: 0;
 }
 
-.history summary, .done summary {
+.history summary {
   color: var(--mute);
   font-size: 14.5px;
   padding: 12px 0;
@@ -956,20 +962,20 @@ h1, h2, h3, p {
   gap: 8px;
 }
 
-.history summary::before, .done summary::before {
+.history summary::before {
   content: "+";
   color: var(--accent);
 }
 
-.history[open]>summary::before, .done details[open]>summary::before {
+.history[open]>summary::before {
   content: "−";
 }
 
-.history summary::-webkit-details-marker, .done summary::-webkit-details-marker {
+.history summary::-webkit-details-marker {
   display: none;
 }
 
-.history summary:hover, .done summary:hover {
+.history summary:hover {
   color: var(--ink);
 }
 
@@ -1116,6 +1122,7 @@ h1, h2, h3, p {
 
 .col.done {
   margin-top: 28px;
+  padding-top: 20px;
   border-top: 1px solid var(--line);
 }
 
@@ -1843,16 +1850,8 @@ html[data-view=notes] .main {
 }
 
 /* View switches: the board shows one section per view. */
-html[data-view=efforts] .bhead, html[data-view=efforts] .below, html[data-view=efforts] .quiet {
+html[data-view=efforts] .hero, html[data-view=efforts] .below, html[data-view=efforts] .quiet {
   display: none;
-}
-
-html[data-view=efforts] .hero {
-  display: block;
-}
-
-html[data-view=efforts] .cards.wide {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 html:not([data-view=lessons]) .lessons.none, html:not([data-view=drafts]) .drafts {
@@ -1878,7 +1877,7 @@ html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data
   padding: 0;
 }
 
-html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below>.col>h2 {
+html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below>.col>.fold>summary {
   display: none;
 }
 
@@ -1945,21 +1944,6 @@ html[data-view=drafts] .view-head[data-for=drafts] {
 }
 
 /* Responsive and accessibility adjustments, in cascade order. */
-@media (min-width: 721px) and (max-width: 1100px) {
-  .cards.grid, .cards.ideas-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .cards.grid>.card:last-child:nth-child(odd) {
-    grid-column: 1/-1;
-  }
-  .hero {
-    grid-template-columns: 1fr;
-  }
-  .stack {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 900px) {
   .below {
     grid-template-columns: 1fr;
@@ -2011,17 +1995,7 @@ html[data-view=drafts] .view-head[data-for=drafts] {
     z-index: 25;
     background: #0006;
   }
-  .hero {
-    grid-template-columns: 1fr;
-    gap: 26px;
-  }
-  .cards.grid, .cards.ideas-grid, html[data-view=efforts] .cards.wide {
-    grid-template-columns: 1fr;
-  }
-  .stack {
-    grid-template-columns: 1fr;
-  }
-  .bhead h1 {
+  .hero h1 {
     font-size: 36px;
   }
   .card {
@@ -2067,7 +2041,7 @@ html[data-view=drafts] .view-head[data-for=drafts] {
   .crumb {
     display: none;
   }
-  .bhead h1 {
+  .hero h1 {
     font-size: 32px;
   }
   .col h2 {
@@ -2075,9 +2049,6 @@ html[data-view=drafts] .view-head[data-for=drafts] {
   }
   .card.s-needs {
     padding: 20px;
-  }
-  .s-needs h3 {
-    font-size: 21px;
   }
   .today li {
     gap: 10px;
@@ -2136,7 +2107,7 @@ html[data-view=drafts] .view-head[data-for=drafts] {
   .context, .next, .waits, .ask, .today li, .lessons li, .empty, .quiet {
     font-size: 15.5px;
   }
-  .card h3 {
+  .card:not(.small) h3 {
     font-size: 21px;
   }
   .meta, .pill, .bar {
