@@ -31,7 +31,8 @@
   var root = document.documentElement, app = $('.app'), main = $('#main'), tree = $('#tree');
   var board = !!$('#board'), initialCrumb = $('#crumb').innerHTML;
   // The board's folds, remembered per browser. A list view shows its one section open
-  // whatever the viewer folded on the overview; the overview's folds come back on return.
+  // whatever the viewer folded on the overview, and every other fold, such as the
+  // journal's earlier updates inside it, as the viewer left it.
   var sections = read('astrolabe-sections');
   var listViews = { journal: 'today', initiatives: 'initiatives', lessons: 'lessons', drafts: 'drafts' };
   var restoreSections = function () {
@@ -40,9 +41,9 @@
     })
   };
   var foldForView = function (view) {
+    restoreSections();
     var shown = listViews[view] && document.querySelector('details[data-persist="' + listViews[view] + '"]');
-    if (shown) shown.open = true;
-    else restoreSections()
+    if (shown) shown.open = true
   };
   var views = ['overview', 'efforts', 'initiatives', 'drafts', 'journal', 'lessons', 'notes'];
   var currentView = board ? 'overview' : 'note';
@@ -491,8 +492,8 @@
       open[d.dataset.key] = d.open;
       save('astrolabe-tree', open)
     }
-    // A list view opens its section itself; only the viewer's own folds are kept.
-    if (d.dataset.persist && !listViews[currentView]) {
+    // A list view opens its own section itself; that one fold isn't the viewer's choice.
+    if (d.dataset.persist && d.dataset.persist !== listViews[currentView]) {
       sections[d.dataset.persist] = d.open;
       save('astrolabe-sections', sections)
     }
