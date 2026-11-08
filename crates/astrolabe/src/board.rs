@@ -76,6 +76,7 @@ pub struct InitiativeProgress {
     pub total: usize,
     pub done: usize,
     pub review: usize,
+    pub active: usize,
     pub blocked: usize,
     pub to_start: usize,
     pub abandoned: usize,
@@ -92,6 +93,7 @@ impl InitiativeProgress {
         match status {
             "done" => self.done += 1,
             "review" => self.review += 1,
+            "active" => self.active += 1,
             "blocked" => self.blocked += 1,
             "proposed" | "ready" => self.to_start += 1,
             _ => {}
@@ -534,12 +536,13 @@ mod initiative_tests {
                 p.done,
                 p.total,
                 p.review,
+                p.active,
                 p.blocked,
                 p.to_start,
                 p.abandoned,
                 p.need_you
             ),
-            (1, 5, 1, 1, 1, 1, 3)
+            (1, 5, 1, 1, 1, 1, 1, 3)
         );
         assert_eq!(board.initiatives.len(), 7);
         assert_eq!(board.legacy_initiatives["unfiled work"].progress.done, 1);

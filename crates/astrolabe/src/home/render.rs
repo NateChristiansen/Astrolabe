@@ -661,25 +661,50 @@ pub(super) fn card_html(
     )
 }
 
-/// Counts are independent; attention overlaps the status counts.
+/// Status counts add up to the total and colour the bar's segments; what waits on the
+/// owner overlaps them (and can include the page itself), so it's a badge of its own.
 fn initiative_html(
     title: &str,
     state: Option<&str>,
     p: &crate::board::InitiativeProgress,
     has_page: bool,
 ) -> String {
-    let mut counts = format!("{} of {} done", p.done, p.total);
-    for (count, label) in [
-        (p.review, "in review"),
-        (p.blocked, "blocked"),
-        (p.to_start, "to start"),
-        (p.abandoned, "abandoned"),
-        (p.need_you, "need you"),
+    let mut counts = format!(
+        "<span class=\"k-done\">{} of {} done</span>",
+        p.done, p.total
+    );
+    let mut bar = String::new();
+    let segment = |count: usize| 100.0 * count as f64 / p.total.max(1) as f64;
+    if p.done > 0 {
+        bar += &format!(
+            "<i class=\"k-done\" style=\"width:{:.2}%\"></i>",
+            segment(p.done)
+        );
+    }
+    for (count, key, label) in [
+        (p.review, "review", "in review"),
+        (p.active, "active", "active"),
+        (p.blocked, "blocked", "blocked"),
+        (p.to_start, "start", "to start"),
+        (p.abandoned, "abandoned", "abandoned"),
     ] {
-        if count > 0 {
-            counts += &format!(" · {count} {label}");
+        if count == 0 {
+            continue;
+        }
+        counts += &format!(" · <span class=\"k-{key}\">{count} {label}</span>");
+        // Abandoned members sit outside the total, and to start is the empty track.
+        if !matches!(key, "abandoned" | "start") {
+            bar += &format!(
+                "<i class=\"k-{key}\" style=\"width:{:.2}%\"></i>",
+                segment(count)
+            );
         }
     }
+    let need = if p.need_you > 0 {
+        format!("<span class=\"need\">{} waiting on you</span>", p.need_you)
+    } else {
+        String::new()
+    };
     let edge = if p.total == 0 && p.abandoned == 0 {
         "no members yet"
     } else if p.total == 0 {
@@ -697,9 +722,8 @@ fn initiative_html(
     } else {
         format!("<p>{edge}</p>")
     };
-    let percent = (100 * p.done).checked_div(p.total).unwrap_or(0);
     format!(
-        "<li class=\"ini{}\"><span>{title}</span><span class=\"num\">{counts}</span>{state}{edge}<span class=\"track\"><i style=\"width:{percent}%\"></i></span></li>\n",
+        "<li class=\"ini{}\"><span>{title}</span>{need}<span class=\"num\">{counts}</span>{state}{edge}<span class=\"track\" aria-hidden=\"true\">{bar}</span></li>\n",
         // A page's whole card opens it; a group without one has nowhere to go.
         if has_page { " linked" } else { "" }
     )

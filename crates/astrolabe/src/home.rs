@@ -76,7 +76,9 @@ mod tests {
                 "initiatives/shared-work.md",
                 ">Shared work</a>",
                 "Building together.",
-                "1 of 5 done · 1 in review · 1 blocked · 1 to start · 1 abandoned · 3 need you",
+                "<span class=\"k-done\">1 of 5 done</span> · <span class=\"k-review\">1 in review</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span> · <span class=\"k-start\">1 to start</span> · <span class=\"k-abandoned\">1 abandoned</span>",
+                "<span class=\"need\">3 waiting on you</span>",
+                "<i class=\"k-done\" style=\"width:20.00%\"></i><i class=\"k-review\" style=\"width:20.00%\"></i><i class=\"k-active\" style=\"width:20.00%\"></i><i class=\"k-blocked\" style=\"width:20.00%\"></i></span>",
                 "initiatives/finished-members.md",
                 "awaiting acceptance",
                 "Accept the combined result.",
@@ -85,9 +87,10 @@ mod tests {
                 "no members yet",
                 "all members abandoned",
                 "Unfiled work <span class=\"pill\">no page</span>",
-                "1 of 3 done · 1 blocked · 1 need you",
+                "<span class=\"k-done\">1 of 3 done</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span>",
+                "<span class=\"need\">1 waiting on you</span>",
                 "loose-tools <span class=\"pill\">no page</span>",
-                "0 of 1 done · 1 to start",
+                "<span class=\"k-done\">0 of 1 done</span> · <span class=\"k-start\">1 to start</span>",
             ] {
                 assert!(column.contains(expected), "{expected}: {column}");
             }
