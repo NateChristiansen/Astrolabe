@@ -274,8 +274,8 @@ fn a_repo_note_matches_its_repo_by_remote_in_ssh_or_https_form_and_in_worktrees(
     );
     let (text, ok) = f.bash("s2", &tree, "astrolabe activate --effort 80");
     assert!(
-        ok && text.contains("repo game") && !text.contains("REPO-GAME-TEXT"),
-        "and isn't sent twice: {text}"
+        ok && text.contains("repo game") && text.contains("REPO-GAME-TEXT"),
+        "and again with the effort: {text}"
     );
     // Path case is kept: another owner's repo of the same name is another repo.
     let upper = f.remote_repo("upper", "git@example.com:Team/game.git");

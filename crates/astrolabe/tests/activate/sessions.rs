@@ -161,11 +161,14 @@ fn switching_on_binds_the_hooks_session_and_only_that_one() {
         "NEXT-70",
         "VOICE-TEXT",
         "VOICE-SAMPLE",
+        // Again, though a start in demo sent it: nothing records what a start sent, and a
+        // session may have started elsewhere, so a repeat is safer than a gap.
+        "REPO-DEMO-TEXT",
         "MACHINE-TEXT",
     ] {
         assert!(text.contains(wanted), "missing {wanted}: {text}");
     }
-    for given in ["OWNER-TEXT", "REPO-DEMO-TEXT", "doesn't see file edits"] {
+    for given in ["OWNER-TEXT", "doesn't see file edits"] {
         assert!(
             !text.contains(given),
             "session start gave {given} already: {text}"

@@ -6,7 +6,7 @@ This guide explains how the plugin, notes and local board work together. For nor
 
 The installed program's `on` and `off` commands control one machine switch. When off, plugin hooks do nothing. When on, new sessions receive the owner note, the Rules section of the voice note, recording instructions, a suggestion of the current repo's active efforts, and that repo's note, which holds how work lands there. A repo note too long for the hook's cut goes as a file for the agent to read first. Shell commands are guarded even before an effort is loaded.
 
-Loading an effort adds its settings, current state, Pieces and linked initiative title when present, the whole voice note, the repo note and machine notes. A session that started in the effort's repo already has that repo's note, so loading an effort there doesn't send it again. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
+Loading an effort adds its settings, current state, Pieces and linked initiative title when present, the whole voice note, the repo note and machine notes. The agent loads it only when the owner asks to start, resume or switch to that effort. `ASTROLABE_EFFORT=<number>` at launch can select it for a worker.
 
 Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically. A dispatched worker runs `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 

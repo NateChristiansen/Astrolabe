@@ -215,9 +215,6 @@ pub struct Activation {
     pub(super) parts: Vec<Part>,
     /// The effort's name, which the session takes only when it takes up the effort's work.
     pub(super) picked: String,
-    /// The repo's page when a session in that repo got it at its start, so a mid-session load
-    /// doesn't send it again. None in the notes checkout, whose start text names no repo.
-    pub(super) repo_page: Option<String>,
 }
 
 /// One of the owner's notes, whole. Owner goes to every session at its start; whole voice to one
@@ -257,12 +254,12 @@ impl Activation {
         self
     }
 
-    /// For an effort loaded or created mid-session: the session already has the owner note, its
-    /// repo's page and the guard's scope from its start, so they aren't sent again.
+    /// For an effort loaded or created mid-session: the session already has the owner note and
+    /// the guard's scope from its start, so they aren't sent again. The repo's page is sent
+    /// again: nothing records which pages a start sent, and the session may have started in the
+    /// notes checkout or another repo, so a repeat is the safe side of not knowing.
     pub fn mid_session(mut self) -> Self {
-        let repo_page = self.repo_page.take();
-        self.parts
-            .retain(|p| p.title != "knowledge/owner.md" && Some(&p.title) != repo_page.as_ref());
+        self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
         // Only here: a resumed session was named when it picked the effort up, and a launched
         // worker runs outside the app or is named by Claude's start hook. Once per name, so
@@ -567,15 +564,11 @@ fn switch_record(
     if state.worker.is_true() {
         head += &format!("\n\n{WORKER_RULE}");
     }
-    // Outside the notes checkout the effort's repo is this folder's, so the session's start
-    // text already carried its page (see `fresh`).
-    let repo_page = (!in_notes(cwd)).then(|| format!("knowledge/repos/{repo}.md"));
     Ok(Activation {
         state,
         head,
         parts,
         picked,
-        repo_page,
     })
 }
 
@@ -756,7 +749,6 @@ pub(super) fn fresh(cwd: &Path) -> String {
         head,
         parts,
         picked: String::new(),
-        repo_page: None,
     }
     .fitted()
 }
