@@ -489,14 +489,16 @@ fn a_replaced_program_takes_over_on_the_same_port() {
     let bin = mac.dir.0.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let exe = bin.join(built.file_name().unwrap());
-    std::fs::copy(built, &exe).unwrap();
-    let mut child = Kill(spawn_fresh_copy(
+    copy_program(built, &exe);
+    let mut child = Kill(
         mac.command_from(&exe, &mac.notes, &["home", "--serve", "--port", "0"])
             .env("ASTROLABE_HOME_IDLE_SECS", "8")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    ));
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let stdout = child.0.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -526,9 +528,12 @@ fn a_replaced_program_takes_over_on_the_same_port() {
     assert!(serving(), "the first server answers");
     // An install's swap: the old file renamed aside, the new one renamed into its place.
     let new = bin.join("astrolabe.new");
-    std::fs::copy(built, &new).unwrap();
+    copy_program(built, &new);
+    // On Unix the owner may set the time through a read-only handle, so the replacement is
+    // never open for writing here (see `copy_program`); Windows needs write access for it.
     std::fs::File::options()
-        .write(true)
+        .read(cfg!(unix))
+        .write(!cfg!(unix))
         .open(&new)
         .unwrap()
         .set_modified(SystemTime::now() + Duration::from_secs(5))
@@ -745,21 +750,16 @@ fn a_preview_serves_beside_the_machine_and_saves_nothing() {
     assert!(!ok && out.contains("leave out --serve"), "{out}");
 }
 
-/// Spawns a program this process just wrote. While `fs::copy` holds the new file open for
-/// writing, another test thread can fork; its child keeps that handle until it execs, and
-/// Linux refuses to run a file open for writing ("text file busy"). The handle is gone once
-/// that child execs, so trying again is enough (rust-lang/rust#114554).
-fn spawn_fresh_copy(command: &mut Command) -> std::process::Child {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match command.spawn() {
-            Err(e)
-                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            spawned => return spawned.unwrap(),
-        }
+/// Copies a program the test will run. If this process wrote the copy itself, another test
+/// thread could fork while the file was open for writing, and its child would keep that
+/// handle until it execs; Linux refuses to run a file open for writing ("text file busy",
+/// rust-lang/rust#114554). `cp` writes it in a process of its own that has exited before the
+/// run, so no child of this one can hold it. Windows has no such refusal.
+fn copy_program(from: &Path, to: &Path) {
+    if cfg!(unix) {
+        let copied = Command::new("cp").arg(from).arg(to).status().unwrap();
+        assert!(copied.success(), "cp {from:?} {to:?}: {copied}");
+    } else {
+        std::fs::copy(from, to).unwrap();
     }
 }
