@@ -266,15 +266,18 @@ fn the_board_is_served_fresh_on_localhost() {
     let page = get("/", &addr);
     assert!(page.starts_with("HTTP/1.1 200 OK\r\n"), "{page}");
     assert!(page.contains("Cache-Control: no-store"));
+    // The style sheet and script are matched without whitespace, so formatting them can't
+    // make these checks pass or fail.
+    let squeezed: String = page.split_whitespace().collect();
     assert!(
-        !page.contains("http-equiv=\"refresh\"") && page.contains("new EventSource('/events')"),
+        !page.contains("http-equiv=\"refresh\"") && squeezed.contains("newEventSource('/events')"),
         "a served page follows the stream instead of reloading: {page}"
     );
     assert!(column(&page, "active").contains("Smooth ink"));
     // The card's title leads with its number, shown rather than hidden.
     assert!(
         page.contains("<span class=\"num\">1</span> Smooth ink")
-            && !page.contains(".card h3 .num{display:none}"),
+            && !squeezed.contains(".cardh3.num{display:none"),
         "{page}"
     );
     // The card links through the server, since a browser refuses file links from a page.

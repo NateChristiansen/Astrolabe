@@ -490,7 +490,10 @@ mod tests {
         assert!(
             auto.contains("<html lang=\"en\" data-palette=\"iris\"><head>")
                 && auto.contains("content=\"light dark\"")
-                && auto.contains("prefers-color-scheme:dark"),
+                && auto
+                    .split_whitespace()
+                    .collect::<String>()
+                    .contains("prefers-color-scheme:dark"),
             "{auto}"
         );
         let dark = render(
