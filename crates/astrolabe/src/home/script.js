@@ -105,6 +105,9 @@
     } catch (e) {
       return
     }
+    openFolder(path)
+  };
+  var openFolder = function (path) {
     var all = Array.from(tree.querySelectorAll('details[data-key]')), target = null;
     all.forEach(function (d) {
       var k = d.dataset.key;
@@ -184,7 +187,9 @@
       sessionSave('astrolabe-return:' + destination.pathname, JSON.stringify({ href: location.pathname + location.hash, label: currentView }));
     }
   });
-  if (!board) {
+  // The way back is part of the note, so a live refresh brings a fresh one to point again.
+  var pointBack = function () {
+    if (board) return;
     try {
       var previous = JSON.parse(sessionRead('astrolabe-return:' + location.pathname) || 'null');
       var referrer = document.referrer ? new URL(document.referrer) : null;
@@ -211,7 +216,34 @@
         }
       }
     } catch (e) {}
-  }
+  };
+  pointBack();
+  // The outline marks the section being read: the last heading above the top of the page.
+  var markSection = function () {
+    var links = Array.from(document.querySelectorAll('.note .outline a'));
+    if (!links.length) return;
+    var top = main.getBoundingClientRect().top + $('.topbar').offsetHeight + 40, current = links[0];
+    links.forEach(function (a) {
+      var h = document.getElementById(decodeURIComponent(a.hash.slice(1)));
+      if (h && h.getBoundingClientRect().top <= top) current = a
+    });
+    // At the end of the page the last section is the one being read.
+    if (main.scrollTop + main.clientHeight >= main.scrollHeight - 2) current = links[links.length - 1];
+    links.forEach(function (a) {
+      if (a === current) a.setAttribute('aria-current', 'true');
+      else a.removeAttribute('aria-current')
+    });
+  };
+  var marking = false;
+  main.addEventListener('scroll', function () {
+    if (marking) return;
+    marking = true;
+    requestAnimationFrame(function () {
+      marking = false;
+      markSection()
+    })
+  });
+  markSection();
   var open = read('astrolabe-tree'), sections = read('astrolabe-sections');
   $('#q').value = sessionRead('astrolabe-note-query') || '';
   var filter = function () {
@@ -250,7 +282,30 @@
       })
     }
     filter();
+    jumpList();
   };
+  // The rail beside the tree jumps to each top-level folder.
+  var jumpList = function () {
+    var jump = $('#jump');
+    if (!jump) return;
+    jump.querySelectorAll('a').forEach(function (a) { a.remove() });
+    tree.querySelectorAll(':scope>details[data-key]').forEach(function (d) {
+      var a = document.createElement('a');
+      a.href = '#notes/' + encodeURIComponent(d.dataset.key);
+      a.className = 'l2';
+      a.textContent = d.querySelector('summary .t').textContent;
+      a.addEventListener('click', function (e) {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        openFolder(d.dataset.key)
+      });
+      jump.appendChild(a)
+    });
+  };
+  $('#collapse-all').addEventListener('click', function () {
+    tree.querySelectorAll('details[data-key]').forEach(function (d) { d.open = false });
+    main.scrollTo({ top: 0 })
+  });
   var restoreSections = function () {
     document.querySelectorAll('details[data-persist]').forEach(function (d) {
       if (d.dataset.persist in sections) d.open = !!sections[d.dataset.persist]
@@ -381,6 +436,8 @@
       });
       bindTree();
       restoreSections();
+      pointBack();
+      markSection();
       tick();
       tree.scrollTop = treeY;
       main.scrollTop = y;
