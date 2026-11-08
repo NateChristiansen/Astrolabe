@@ -476,15 +476,13 @@ fn a_replaced_program_takes_over_on_the_same_port() {
     std::fs::create_dir_all(&bin).unwrap();
     let exe = bin.join(built.file_name().unwrap());
     std::fs::copy(built, &exe).unwrap();
-    let mut child = Kill(
+    let mut child = Kill(spawn_fresh_copy(
         mac.command_from(&exe, &mac.notes, &["home", "--serve", "--port", "0"])
             .env("ASTROLABE_HOME_IDLE_SECS", "8")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
+            .stderr(Stdio::piped()),
+    ));
     let stdout = child.0.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -731,4 +729,23 @@ fn a_preview_serves_beside_the_machine_and_saves_nothing() {
     // With the machine's server, not in place of it.
     let (out, ok) = mac.run(&mac.notes, &["home", "--preview", "--serve"], "");
     assert!(!ok && out.contains("leave out --serve"), "{out}");
+}
+
+/// Spawns a program this process just wrote. While `fs::copy` holds the new file open for
+/// writing, another test thread can fork; its child keeps that handle until it execs, and
+/// Linux refuses to run a file open for writing ("text file busy"). The handle is gone once
+/// that child execs, so trying again is enough (rust-lang/rust#114554).
+fn spawn_fresh_copy(command: &mut Command) -> std::process::Child {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match command.spawn() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            spawned => return spawned.unwrap(),
+        }
+    }
 }
