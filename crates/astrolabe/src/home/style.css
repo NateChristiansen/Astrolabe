@@ -1,3 +1,15 @@
+/* Layout: the numbers every page lines up on. */
+:root {
+  --topbar: 66px;
+  --page-top: 32px;
+  --page-pad: 30px;
+  --read: 730px;
+  --rail: 220px;
+  --gutter: 40px;
+  --row: 38px;
+  --title: 32px;
+}
+
 /* Base. */
 * {
   box-sizing: border-box;
@@ -214,14 +226,18 @@ h1, h2, h3, p {
   background: var(--bg);
   overscroll-behavior-y: contain;
   overflow-anchor: none;
-  scroll-padding-top: 90px;
+  scroll-padding-top: calc(var(--topbar) + 24px);
+  /* A page that scrolls and one that doesn't keep the same width. */
+  scrollbar-gutter: stable;
+  /* Pages lay out by the room the pane has, which the sidebar changes. */
+  container: main / inline-size;
 }
 
 .topbar {
   position: sticky;
   top: 0;
   z-index: 15;
-  min-height: 66px;
+  min-height: var(--topbar);
   display: flex;
   align-items: center;
   gap: 14px;
@@ -431,11 +447,66 @@ h1, h2, h3, p {
   accent-color: var(--accent);
 }
 
+/* The reading frame: a centered column, a gutter on the left for the way back and a
+   rail on the right for the outline, facts and folders. The rail keeps its width when
+   room runs short, so the column gives way to the left before it narrows. */
+.frame {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--read)) minmax(var(--rail), 1fr);
+  column-gap: var(--gutter);
+  align-items: start;
+  padding: var(--page-top) var(--page-pad) 60px;
+}
+
+.rail {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  width: var(--rail);
+  position: sticky;
+  top: calc(var(--topbar) + var(--page-top));
+  max-height: calc(100dvh - var(--topbar) - 2 * var(--page-top));
+  overflow: auto;
+  font-size: 13.5px;
+  color: var(--mute);
+}
+
+.rail-btn {
+  margin-top: 14px;
+  padding: 4px 0;
+  color: var(--mute);
+  font-size: 13px;
+}
+
+.rail-btn:hover {
+  color: var(--ink);
+}
+
+/* Every page's title: the notes view, a note and each list view. */
+.page-head {
+  margin-bottom: 24px;
+}
+
+.page-head h1, .note-head h1 {
+  font: 600 var(--title)/1.2 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  letter-spacing: -.03em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.page-head p {
+  margin: 8px 0 0;
+  color: var(--mute);
+}
+
 /* Board: date, chips, columns and cards. */
 .board {
-  padding: 32px 30px 48px;
+  padding: var(--page-top) var(--page-pad) 48px;
   max-width: 1440px;
   margin: 0 auto;
+}
+
+.view-head {
+  display: none;
 }
 
 .hero {
@@ -1100,25 +1171,24 @@ h1, h2, h3, p {
 }
 
 /* Notes browser and tree. */
-.notes-browser {
-  padding: 32px 30px;
-  max-width: 1000px;
-  margin: auto;
+.notes-main {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
 }
 
-.notes-browser h1 {
-  font-size: 32px;
-  letter-spacing: -.04em;
-  font-weight: 550;
-}
-
-.notes-browser>p {
-  margin: 8px 0 28px;
-  color: var(--mute);
-}
-
+/* The search stays in reach while the tree scrolls under it. */
 .search {
-  margin: 24px 0 20px;
+  position: sticky;
+  top: var(--topbar);
+  z-index: 5;
+  margin: 0 0 8px;
+  padding: 12px 0;
+  background: var(--bg);
+}
+
+html[data-view=notes] .main {
+  scroll-padding-top: calc(var(--topbar) + 110px);
 }
 
 .search label {
@@ -1138,10 +1208,10 @@ h1, h2, h3, p {
   font-size: 14px;
 }
 
+/* Folders and notes are rows of one height and text size; the chevron, count and
+   status dot tell them apart. A row's text starts one step in from its folder's. */
 .tree {
-  overflow: auto;
-  flex: 1;
-  padding: 4px 10px 16px;
+  padding: 4px 0 16px;
   font-size: 14.5px;
 }
 
@@ -1154,21 +1224,16 @@ h1, h2, h3, p {
   margin: 0;
 }
 
-.tree>details {
-  margin-top: 14px;
-}
-
 .tree summary {
   list-style: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
-  padding: 0 10px 0 calc(10px + var(--d,0) * 14px);
+  min-height: var(--row);
+  padding: 8px 10px 8px calc(10px + var(--d,0) * 16px);
   border-radius: 7px;
-  color: var(--mute);
-  font-size: 13.5px;
+  color: var(--ink);
   font-weight: 500;
   min-width: 0;
 }
@@ -1190,7 +1255,6 @@ h1, h2, h3, p {
 }
 
 .tree summary .t {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1198,39 +1262,30 @@ h1, h2, h3, p {
 }
 
 .tree summary .n {
+  color: var(--mute);
   font-weight: 400;
+  font-size: 12.5px;
 }
 
-.tree>details>summary {
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 600;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  height: 24px;
-  margin-bottom: 2px;
-}
-
-.tree>details>summary .chev {
-  display: none;
-}
-
-.tree>details>summary .n {
-  letter-spacing: 0;
-  font-weight: 500;
+.tree>details>summary, .tree>.hid>details>summary {
+  text-transform: capitalize;
 }
 
 .tree .f {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: auto;
-  padding: 8px 10px 8px calc(10px + var(--d,1) * 14px);
+  padding: 8px 10px 8px calc(10px + var(--d,1) * 16px);
   border-radius: 7px;
   color: var(--ink);
   text-decoration: none;
   min-width: 0;
-  min-height: 38px;
+  min-height: var(--row);
+}
+
+/* A note at the top of the checkout lines up with the folder names below it. */
+.tree>.f {
+  padding-left: 26px;
 }
 
 .tree .f:hover, .tree summary:hover {
@@ -1296,11 +1351,12 @@ h1, h2, h3, p {
 .tree .hidden-toggle {
   display: block;
   width: 100%;
+  min-height: var(--row);
   text-align: left;
-  margin: 14px 0 0;
-  padding: 6px 10px;
+  margin: 10px 0 0;
+  padding: 8px 10px 8px 26px;
   color: var(--mute);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
   border-radius: 7px;
 }
@@ -1322,11 +1378,22 @@ h1, h2, h3, p {
 }
 
 /* A note page: its header, facts and prose. */
+/* The way back sits in the left gutter level with the title, so it takes no height. */
+.note-back {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  padding-top: 9px;
+  position: sticky;
+  top: calc(var(--topbar) + var(--page-top));
+}
+
 .back-link {
   display: inline-flex;
-  margin: 26px 30px 0;
   color: var(--mute);
   font-size: 13.5px;
+  line-height: 1.5;
+  text-align: right;
   text-decoration: none;
 }
 
@@ -1334,17 +1401,20 @@ h1, h2, h3, p {
   color: var(--accent);
 }
 
-.note {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
-  gap: 36px;
-  padding: 26px 32px 60px;
-  max-width: 1200px;
-  margin: auto;
+.note-head {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.note.wide {
-  grid-template-columns: minmax(0, 1fr);
+.note-head h1 {
+  margin-bottom: 16px;
+}
+
+.note>.prose {
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .props {
@@ -1432,13 +1502,14 @@ h1, h2, h3, p {
   font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.prose .facts {
-  max-width: 40ch;
+.rail>.facts:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .prose {
   font: 17px/1.65 Charter, "Iowan Old Style", "Source Serif 4", Georgia, serif;
-  max-width: 70ch;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -1476,7 +1547,7 @@ h1, h2, h3, p {
 }
 
 .prose :is(h1, h2, h3, h4) {
-  scroll-margin-top: 86px;
+  scroll-margin-top: calc(var(--topbar) + 20px);
 }
 
 .prose p {
@@ -1591,16 +1662,6 @@ h1, h2, h3, p {
   border-radius: 8px;
 }
 
-.outline {
-  position: sticky;
-  top: 60px;
-  align-self: start;
-  font-size: 13.5px;
-  color: var(--mute);
-  max-height: calc(100vh - 84px);
-  overflow: auto;
-}
-
 .outline h4 {
   margin: 0 0 8px;
   font-size: 11px;
@@ -1612,20 +1673,30 @@ h1, h2, h3, p {
 
 .outline a {
   display: block;
-  padding: 3px 0 3px 10px;
+  padding: 4px 0 4px 10px;
   border-left: 2px solid var(--line);
   text-decoration: none;
   color: var(--mute);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .outline a.l3 {
-  padding-left: 20px;
+  padding-left: 22px;
+  font-size: 13px;
 }
 
 .outline a:hover {
+  color: var(--ink);
+  border-left-color: var(--mute);
+}
+
+.jump a {
+  text-transform: capitalize;
+}
+
+/* The section being read. */
+.outline a[aria-current] {
   color: var(--ink);
   border-left-color: var(--accent);
 }
@@ -1643,44 +1714,93 @@ html[data-view=efforts] .cards.wide {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-html[data-view=journal] .board>:not(.below), html[data-view=journal] .below>:not(.today) {
-  display: none;
-}
-
-html[data-view=journal] .below {
-  display: block;
-  border: 0;
-  margin: 0;
-  padding: 0;
-  max-width: 850px;
-}
-
-html[data-view=initiatives] .board>:not(.below), html[data-view=initiatives] .below>:not(.initiatives) {
-  display: none;
-}
-
-html[data-view=initiatives] .below {
-  display: block;
-  border: 0;
-  margin: 0;
-  padding: 0;
-  max-width: 850px;
-}
-
 html:not([data-view=lessons]) .lessons.none, html:not([data-view=drafts]) .drafts {
   display: none;
 }
 
-html[data-view=lessons] .board>:not(.below), html[data-view=lessons] .below>:not(.lessons), html[data-view=drafts] .board>:not(.below), html[data-view=drafts] .below>:not(.drafts) {
+/* A list view shows one section in the reading column, under its own title. */
+html[data-view=journal] .board>:not(.below, .view-head), html[data-view=journal] .below>:not(.today),
+html[data-view=initiatives] .board>:not(.below, .view-head), html[data-view=initiatives] .below>:not(.initiatives),
+html[data-view=lessons] .board>:not(.below, .view-head), html[data-view=lessons] .below>:not(.lessons),
+html[data-view=drafts] .board>:not(.below, .view-head), html[data-view=drafts] .below>:not(.drafts) {
   display: none;
 }
 
-html:is([data-view=lessons], [data-view=drafts]) .below {
+html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .board {
+  max-width: calc(var(--read) + 2 * var(--page-pad));
+}
+
+html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below {
   display: block;
   border: 0;
   margin: 0;
   padding: 0;
-  max-width: 850px;
+}
+
+html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below>.col>h2 {
+  display: none;
+}
+
+html[data-view=journal] .view-head[data-for=journal],
+html[data-view=initiatives] .view-head[data-for=initiatives],
+html[data-view=lessons] .view-head[data-for=lessons],
+html[data-view=drafts] .view-head[data-for=drafts] {
+  display: block;
+}
+
+/* Less room: the way back moves above the title, then the rail folds into the column:
+   the outline under the title, the facts at the end. */
+@container main (max-width: 1200px) {
+  .note-back {
+    grid-column: 2;
+    justify-self: start;
+    position: static;
+    padding: 0 0 14px;
+  }
+  .note>.note-head {
+    grid-row: 2;
+  }
+  .note>.prose {
+    grid-row: 3;
+  }
+  .note>.rail {
+    grid-row: 1 / span 3;
+  }
+}
+
+@container main (max-width: 1100px) {
+  .frame {
+    grid-template-columns: minmax(0, var(--read));
+    justify-content: center;
+  }
+  .frame>* {
+    grid-column: 1;
+  }
+  .note-back {
+    grid-column: 1;
+  }
+  .note>.rail {
+    display: contents;
+  }
+  .note>.prose, .note .outline {
+    grid-column: 1;
+  }
+  .note .outline {
+    grid-row: 3;
+    margin: 0 0 24px;
+    font-size: 13.5px;
+    color: var(--mute);
+  }
+  .note>.prose {
+    grid-row: 4;
+  }
+  .note .facts {
+    grid-row: 5;
+    grid-column: 1;
+  }
+  .notes-browser>.rail {
+    display: none;
+  }
 }
 
 /* Responsive and accessibility adjustments, in cascade order. */
@@ -1706,17 +1826,6 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
   .lessons {
     grid-column: auto;
   }
-  .note {
-    grid-template-columns: 1fr;
-  }
-  .outline {
-    position: static;
-    max-height: none;
-    grid-row: 1;
-  }
-  .outline .facts {
-    display: none;
-  }
   .closed {
     columns: 1;
   }
@@ -1727,6 +1836,12 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
 }
 
 @media (max-width: 720px) {
+  :root {
+    --topbar: 62px;
+    --page-top: 26px;
+    --page-pad: 20px;
+    --title: 28px;
+  }
   .app, .app.collapsed {
     grid-template-columns: 60px minmax(0, 1fr);
   }
@@ -1765,9 +1880,6 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
   .stack {
     grid-template-columns: 1fr;
   }
-  .board, .notes-browser {
-    padding: 26px 20px;
-  }
   .bhead h1 {
     font-size: 36px;
   }
@@ -1775,7 +1887,6 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
     padding: 20px;
   }
   .topbar {
-    min-height: 62px;
     padding: 10px 12px;
     gap: 7px;
   }
@@ -1799,12 +1910,6 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
   .palette-picker>summary {
     padding: 8px 10px;
   }
-  .note {
-    padding: 22px 20px 50px;
-  }
-  .back-link {
-    margin-left: 20px;
-  }
   .prose h1 {
     font-size: 28px;
   }
@@ -1814,11 +1919,12 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
 }
 
 @media (max-width: 420px) {
+  :root {
+    --page-top: 24px;
+    --page-pad: 16px;
+  }
   .crumb {
     display: none;
-  }
-  .board, .notes-browser {
-    padding: 24px 16px;
   }
   .bhead h1 {
     font-size: 32px;
@@ -1834,9 +1940,6 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
   }
   .today li {
     gap: 10px;
-  }
-  .note {
-    padding: 22px 16px;
   }
   .props {
     gap: 8px;
@@ -1861,12 +1964,8 @@ html:is([data-view=lessons], [data-view=drafts]) .below {
   .palette-picker>summary {
     min-height: 44px;
   }
-  .tree summary {
-    min-height: 36px;
-    height: auto;
-  }
-  .tree .f {
-    min-height: 44px;
+  :root {
+    --row: 44px;
   }
 }
 

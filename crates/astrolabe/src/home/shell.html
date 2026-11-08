@@ -18,8 +18,8 @@
         <button class="btn appearance-toggle" id="appearance-toggle" type="button" aria-label="Switch appearance"><span id="appearance-icon" aria-hidden="true">☼</span><span class="appearance-label">Light</span></button>
       </div>
     </header>
-    <div id="content">{back}{body}</div>
-    <section class="notes-browser" id="notes-browser" hidden><h1>Your notes</h1><p>The context behind the work.</p><div class="search"><label for="q">Find a note</label><input id="q" type="search" placeholder="Search notes and efforts…"></div><nav class="tree" id="tree" aria-label="Notes">{tree}</nav><p id="no-notes" hidden>No matching notes. Try a shorter phrase.</p></section>
+    <div id="content">{body}</div>
+    <section class="notes-browser frame" id="notes-browser" hidden><div class="notes-main"><header class="page-head"><h1>Your notes</h1><p>The context behind the work.</p></header><div class="search"><label for="q">Find a note</label><input id="q" type="search" placeholder="Search notes and efforts…"></div><nav class="tree" id="tree" aria-label="Notes">{tree}</nav><p id="no-notes" hidden>No matching notes. Try a shorter phrase.</p></div><aside class="rail"><nav class="outline jump" id="jump" aria-label="Folders"><h4>Folders</h4></nav><button class="rail-btn" id="collapse-all" type="button">Collapse all folders</button></aside></section>
   </main>
 </div>
 <script>{script}</script>

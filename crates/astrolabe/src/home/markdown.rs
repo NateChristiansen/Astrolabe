@@ -1,6 +1,6 @@
 //! Safe Markdown rendering and links to notes.
-use super::nav::tree_html;
-use super::render::{Links, esc, percent, shell, stamp_ms, tag};
+use super::nav::{label_of, tree_html};
+use super::render::{Links, back_link, esc, percent, shell, stamp_ms, tag};
 use super::settings::Look;
 use crate::board::BoardData;
 use std::path::Path;
@@ -181,7 +181,9 @@ pub(super) fn note_page(
     });
     let mut rendered = String::new();
     html::push_html(&mut rendered, events);
-    let aside = if outline.len() > 1 {
+    // The rail beside the text holds the outline, when there are sections to jump
+    // between, and always the facts, so every note keeps them in the same place.
+    let outline = if outline.len() > 1 {
         let items: String = outline
             .iter()
             .map(|(level, text, id)| {
@@ -192,7 +194,9 @@ pub(super) fn note_page(
                 )
             })
             .collect();
-        format!("<aside class=\"outline\"><h4>On this page</h4>{items}{facts}</aside>")
+        format!(
+            "<nav class=\"outline\" aria-label=\"On this page\"><h4>On this page</h4>{items}</nav>"
+        )
     } else {
         String::new()
     };
@@ -202,30 +206,35 @@ pub(super) fn note_page(
         format!("<div class=\"props\">{}</div>", pills.join(""))
     };
     let props = format!("{}{props}", part_of.unwrap_or_default());
-    // The properties follow the title; a note without one starts with them.
-    let rendered = match rendered.find("</h1>") {
-        Some(i) => format!("{}{props}{}", &rendered[..i + 5], &rendered[i + 5..]),
-        None => format!("{props}{rendered}"),
+    // The title and its properties head the page; a note that doesn't open on a title
+    // starts with the properties.
+    let (head, rendered) = match rendered.find("</h1>") {
+        Some(i) if rendered.trim_start().starts_with("<h1") => (
+            format!("{}{props}", &rendered[..i + 5]),
+            rendered[i + 5..].to_owned(),
+        ),
+        _ => (props, rendered),
     };
-    let rendered = if aside.is_empty() {
-        format!("{rendered}{facts}")
-    } else {
-        rendered
-    };
-    // There are no folder pages: each folder opens the notes view at that folder.
+    // There are no folder pages: each folder opens the notes view at that folder. The
+    // crumb names folders and the note the way the tree does.
     let mut crumb = String::from("<a href=\"/#notes\">Notes</a>");
     let parts: Vec<&str> = rel.split('/').collect();
     for (i, part) in parts[..parts.len() - 1].iter().enumerate() {
         crumb += &format!(
             "<span>›</span><a href=\"/#notes/{}\">{}</a>",
             esc(&parts[..=i].join("/")),
-            esc(part)
+            esc(label_of(part))
         );
     }
-    crumb += &format!("<span>›</span><b>{}</b>", esc(name));
+    let label = if effort {
+        title.clone()
+    } else {
+        name.trim_end_matches(".md").to_owned()
+    };
+    crumb += &format!("<span>›</span><b>{}</b>", esc(&label));
     let page = format!(
-        "<div class=\"note{}\"><div class=\"prose\">{rendered}</div>{aside}</div>\n",
-        if aside.is_empty() { " wide" } else { "" }
+        "<article class=\"note frame\"><div class=\"note-back\">{}</div><header class=\"note-head\">{head}</header><div class=\"prose\">{rendered}</div><aside class=\"rail\">{outline}{facts}</aside></article>\n",
+        back_link(Links::Served)
     );
     shell(
         look,

@@ -105,7 +105,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         initiatives_section(rows, at),
         lessons_section(rows, at)
     );
-    let board = work + &below + &done_section(&columns[DONE], at);
+    let board = view_heads() + &work + &below + &done_section(&columns[DONE], at);
     hero(
         rows,
         &columns,
@@ -187,6 +187,22 @@ fn columns<'c, 'r>(
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
     columns
+}
+
+/// The titles of the views that show one list, headed the way the notes view is. Each
+/// shows only in its own view.
+fn view_heads() -> String {
+    [
+        ("initiatives", "Initiatives", "Plans that span efforts."),
+        ("drafts", "Drafts", "Text waiting for you to post or decide on."),
+        ("journal", "Journal", "What changed, day by day."),
+        ("lessons", "Lessons", "Friction waiting for triage."),
+    ]
+    .iter()
+    .map(|(view, title, line)| {
+        format!("<header class=\"page-head view-head\" data-for=\"{view}\"><h1>{title}</h1><p>{line}</p></header>\n")
+    })
+    .collect()
 }
 
 fn heading(title: &str, n: usize) -> String {
@@ -558,6 +574,17 @@ pub(super) fn today_of(rows: &BoardData) -> String {
     rows.today.clone()
 }
 
+/// A note's way back to the board. The script points it at the view that opened the
+/// note when there was one.
+pub(super) fn back_link(links: Links) -> String {
+    let home = if links == Links::Served {
+        "/"
+    } else {
+        "home.html"
+    };
+    format!(r#"<a class="back-link" href="{home}">← Back to overview</a>"#)
+}
+
 /// The shared Studio shell: vertical navigation, sticky controls, the searchable notes
 /// view and the small script that preserves navigation and appearance choices.
 pub(super) fn shell(
@@ -621,11 +648,6 @@ pub(super) fn shell(
         ("lessons", "Lessons", "M9 18h6 M10 21h4 M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"),
         ("notes", "Notes", "M3 7V4h6l3 3h9v13H3z")]
         .iter().map(|(view, label, path)| format!(r#"<a class="nav-link" data-view="{view}" href="{home}#{view}" aria-label="{label}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="{path}"/></svg><span>{label}</span></a>"#)).collect::<String>();
-    let back = if crumb == "<b>Board</b>" {
-        String::new()
-    } else {
-        format!(r#"<a class="back-link" href="{home}">← Back to overview</a>"#)
-    };
     format!(
         include_str!("shell.html"),
         palette = look.palette.name(),
@@ -642,7 +664,6 @@ pub(super) fn shell(
         home = home,
         crumb = crumb,
         swatches = swatches,
-        back = back,
         body = body,
         tree = tree,
         script = SCRIPT

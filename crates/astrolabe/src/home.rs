@@ -622,6 +622,18 @@ mod tests {
         assert!(page[earlier..].contains("Update 1 &lt;safe&gt;"));
         assert!(page.contains("class=\"brand\" href=\"home.html#overview\" data-home"));
         assert!(page.contains("id=\"system-appearance\""));
+        for view in ["initiatives", "drafts", "journal", "lessons"] {
+            assert!(
+                page.contains(&format!(
+                    "class=\"page-head view-head\" data-for=\"{view}\"><h1>"
+                )),
+                "each list view has its own title: {view}"
+            );
+        }
+        assert!(
+            !page.contains("class=\"back-link\""),
+            "the board has no way back to itself"
+        );
     }
 
     #[test]
@@ -716,14 +728,28 @@ mod tests {
             "a comment is not shown: {page}"
         );
         assert!(
-            page.contains("<b>0001-a.md</b>"),
-            "the crumb ends in the file: {page}"
+            page.contains("<b>0001-a</b>"),
+            "the crumb ends in the note's name as the tree shows it: {page}"
         );
         assert!(
             page.contains(
                 "<a href=\"/#notes\">Notes</a><span>›</span><a href=\"/#notes/efforts\">efforts</a>"
             ),
             "each crumb folder opens the notes view there: {page}"
+        );
+        assert!(
+            page.contains("<a href=\"/#notes/efforts/2026/11-November\">November</a>"),
+            "a month folder reads as its name, as in the tree: {page}"
+        );
+        // The rail holds the outline above the facts; the title heads the column.
+        let rail = &page[page.find("<aside class=\"rail\">").unwrap()..];
+        assert!(
+            rail.find("class=\"outline\"").unwrap() < rail.find("class=\"facts\"").unwrap(),
+            "{page}"
+        );
+        assert!(
+            page.contains("<header class=\"note-head\"><h1 id=\"0001-a\">"),
+            "{page}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -884,7 +910,16 @@ mod tests {
             "a note doesn't reload under the reader"
         );
         // No frontmatter: the whole text is the body.
-        assert!(note_page_at("# Bare\n\ntext\n").contains("<h1 id=\"bare\">Bare</h1>"));
+        let bare = note_page_at("# Bare\n\ntext\n");
+        assert!(bare.contains("<h1 id=\"bare\">Bare</h1>"));
+        assert!(
+            bare.contains("<aside class=\"rail\"><div class=\"facts\">"),
+            "a note without sections keeps its facts in the rail: {bare}"
+        );
+        assert!(
+            bare.contains("<div class=\"note-back\"><a class=\"back-link\" href=\"/\">"),
+            "{bare}"
+        );
         // Links keep to pages and mail; a script or file link loses its destination.
         let links = note_page_at(
             "[a](javascript:alert(1)) [b](JAVASCRIPT:x) [c](&#106;avascript:y) [d](vbscript:z) [e](file:///etc/passwd) [f](data:text/html,x) ![g](javascript:w) [h](https://example.com/x?y#z) [i](mailto:o@example.com) [j](/efforts/0002-x.md) [k](other.md) [l](a/b:c)\n",

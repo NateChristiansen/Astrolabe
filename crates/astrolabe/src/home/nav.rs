@@ -130,11 +130,13 @@ pub(super) fn tree_html(
             shown += &html;
         }
     }
-    // The sidebar leads home, so the tree starts with the notes themselves.
-    let mut out = shown;
+    // The sidebar leads home, so the tree starts with the notes themselves: the few at
+    // the top of the checkout, then the folders.
+    let mut out = String::new();
     for name in &files {
         out += &file_row(name, 0, &by_file, root, links, current);
     }
+    out += &shown;
     if !hidden.is_empty() {
         out += &format!(
             "<div class=\"hid\" id=\"hid\" hidden>{hidden}</div><button class=\"hidden-toggle\" id=\"hidtoggle\" data-names=\"{}\" data-n=\"{hidden_count}\">Show {} · {hidden_count} note{} agents wrote for each other</button>\n",
