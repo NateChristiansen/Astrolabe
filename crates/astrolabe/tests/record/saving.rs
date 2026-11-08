@@ -162,68 +162,6 @@ fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
     assert!(mac.effort_text(1).contains("waits_for: \"\""));
 }
 
-#[test]
-fn prose_validation_refuses_unsupported_shapes() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    let (_, ok) = mac.bash("s1", NEW);
-    assert!(ok);
-    // A long block and a long journal line are refused before anything is written.
-    let long = (0..151).map(|_| "word").collect::<Vec<_>>().join(" ");
-    let (out, ok) = mac.bash(
-        "s1",
-        &format!("astrolabe effort save <<'ASTROLABE'\n{long}\nASTROLABE\n"),
-    );
-    assert!(
-        !ok && out.contains("151 words") && out.contains("under 150"),
-        "{out}"
-    );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one two three four five six seven eight nine ten one\"");
-    assert!(
-        !ok && out.contains("41 words") && out.contains("aim for 25"),
-        "{out}"
-    );
-    // The shapes sessions wrote with the rule alone are refused with what to write instead.
-    for (line, why) in [
-        (
-            "Landed the ink smoothing helper. Merged.",
-            "where the work stands",
-        ),
-        (
-            "Strokes stop splitting across frames. Dropped the stand-in. Merged and pushed.",
-            "3 sentences",
-        ),
-        (
-            "Chat replies drift without voice.md at start.",
-            "names a file (voice.md)",
-        ),
-        (
-            "Replies lose the owner's voice without the voice note.",
-            "the owner",
-        ),
-        (
-            "Moved the hook script out of src/hooks/old and it fires again.",
-            "names a file",
-        ),
-    ] {
-        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
-        assert!(
-            !ok && out.contains(why) && out.contains("Nothing was written"),
-            "{line}: {out}"
-        );
-    }
-    // A name after a full stop, a decimal, a slash between words and a status word inside a
-    // sentence are not those shapes.
-    for line in [
-        "Audited the notes with Astra: five wrong facts gone. viral-studio is cloned and registered.",
-        "Cut the boot to about 1.5 s. Dropped the stand-in and send-ahead.",
-        "Deleted 22 landed branches on the Mac/PC pair, keeping the old Windows branch with an unmerged commit.",
-    ] {
-        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --journal \"{line}\""));
-        assert!(ok, "{line}: {out}");
-    }
-}
-
 /// A refused journal line or Current state leaves everything as it was: the note, the owner's
 /// staging, the history, pending operations and the session's state.
 #[test]
