@@ -1,3 +1,4 @@
+/* Base. */
 * {
   box-sizing: border-box;
 }
@@ -57,6 +58,7 @@ h1, h2, h3, p {
   outline-offset: 3px;
 }
 
+/* Shell and sidebar. */
 .app {
   height: 100%;
   height: 100dvh;
@@ -169,6 +171,32 @@ h1, h2, h3, p {
   background: var(--warn);
 }
 
+.app.collapsed {
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.app.collapsed .brand>span, .app.collapsed .nav-link>span, .app.collapsed .side-foot {
+  display: none;
+}
+
+.app.collapsed .side {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.app.collapsed .brand {
+  padding: 0 7px;
+}
+
+.app.collapsed .nav-link {
+  padding: 12px;
+}
+
+.scrim {
+  display: none;
+}
+
+/* Main pane and top bar. */
 .main {
   min-width: 0;
   min-height: 0;
@@ -393,27 +421,7 @@ h1, h2, h3, p {
   accent-color: var(--accent);
 }
 
-.app.collapsed {
-  grid-template-columns: 64px minmax(0, 1fr);
-}
-
-.app.collapsed .brand>span, .app.collapsed .nav-link>span, .app.collapsed .side-foot {
-  display: none;
-}
-
-.app.collapsed .side {
-  padding-left: 10px;
-  padding-right: 10px;
-}
-
-.app.collapsed .brand {
-  padding: 0 7px;
-}
-
-.app.collapsed .nav-link {
-  padding: 12px;
-}
-
+/* Board: date, chips, columns and cards. */
 .board {
   padding: 32px 30px 48px;
   max-width: 1440px;
@@ -809,6 +817,7 @@ h1, h2, h3, p {
   margin-top: 20px;
 }
 
+/* Below the work: journal, initiatives, lessons and done. */
 .below {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
@@ -839,10 +848,12 @@ h1, h2, h3, p {
 }
 
 .today li .num {
-  flex: none;
+  flex: 0 0 120px;
   min-width: 32px;
   color: var(--mute);
   font-size: 12.5px;
+  max-width: 140px;
+  overflow-wrap: anywhere;
 }
 
 .today li .num a {
@@ -975,6 +986,43 @@ h1, h2, h3, p {
   white-space: nowrap;
 }
 
+.below li.linked {
+  position: relative;
+  padding-left: 12px;
+  padding-right: 12px;
+  margin: 0 -12px;
+  transition: background .12s;
+}
+
+.below li.linked:hover, .below li.linked:has(a:focus-visible) {
+  background: var(--sel);
+  border-radius: 10px;
+}
+
+.below li.linked a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.below li.linked a:focus-visible {
+  outline: none;
+}
+
+.below li.linked:has(a:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.initiatives li.linked a {
+  text-decoration: none;
+}
+
+.initiatives li.linked:hover a {
+  text-decoration: underline;
+}
+
 .lessons {
   grid-column: 1/-1;
 }
@@ -1041,6 +1089,7 @@ h1, h2, h3, p {
   display: none;
 }
 
+/* Notes browser and tree. */
 .notes-browser {
   padding: 32px 30px;
   max-width: 1000px;
@@ -1095,23 +1144,21 @@ h1, h2, h3, p {
   border-radius: 7px;
   font-weight: 500;
   text-decoration: none;
+  margin-bottom: 10px;
 }
 
 .tree .top svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
   color: var(--mute);
 }
 
-.tree .top.on, .tree .f.on {
-  background: var(--sel);
-}
-
 .tree .f.on {
   font-weight: 500;
+  background: var(--sel);
 }
 
 .tree details {
@@ -1163,7 +1210,6 @@ h1, h2, h3, p {
 
 .tree summary .n {
   font-weight: 400;
-  opacity: .8;
 }
 
 .tree>details>summary {
@@ -1189,12 +1235,13 @@ h1, h2, h3, p {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
-  padding: 0 10px 0 calc(10px + var(--d,1) * 14px);
+  height: auto;
+  padding: 8px 10px 8px calc(10px + var(--d,1) * 14px);
   border-radius: 7px;
   color: var(--ink);
   text-decoration: none;
   min-width: 0;
+  min-height: 38px;
 }
 
 .tree .f:hover, .tree summary:hover {
@@ -1253,11 +1300,8 @@ h1, h2, h3, p {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tree .hid summary {
-  opacity: .7;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .tree .hidden-toggle {
@@ -1288,12 +1332,26 @@ h1, h2, h3, p {
   background: var(--warn);
 }
 
+/* A note page: its header, facts and prose. */
+.back-link {
+  display: inline-flex;
+  margin: 26px 30px 0;
+  color: var(--mute);
+  font-size: 13.5px;
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: var(--accent);
+}
+
 .note {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
   gap: 36px;
   padding: 26px 32px 60px;
-  max-width: 1120px;
+  max-width: 1200px;
+  margin: auto;
 }
 
 .note.wide {
@@ -1320,33 +1378,40 @@ h1, h2, h3, p {
 }
 
 .props .pill.status-active {
-  background: color-mix(in srgb,var(--accent) 16%,var(--card));
+  background: var(--needs);
   color: var(--accent);
 }
 
-.props .pill.status-active i {
-  color: inherit;
-  opacity: .75;
-}
-
 .props .pill.status-done {
-  background: color-mix(in srgb,var(--good) 16%,var(--card));
+  background: var(--card);
   color: var(--good);
 }
 
-.props .pill.status-done i {
-  color: inherit;
-  opacity: .75;
-}
-
 .props .pill.status-blocked {
-  background: color-mix(in srgb,var(--bad) 16%,var(--card));
+  background: var(--card);
   color: var(--bad);
 }
 
-.props .pill.status-blocked i {
+.props .pill:is(.status-active, .status-done, .status-blocked) i {
   color: inherit;
-  opacity: .75;
+}
+
+.part-of {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -8px 0 18px;
+  font: 13.5px/1.5 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  color: var(--mute);
+}
+
+.part-of a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.part-of a:hover {
+  text-decoration: underline;
 }
 
 .facts {
@@ -1386,10 +1451,11 @@ h1, h2, h3, p {
   font: 17px/1.65 Charter, "Iowan Old Style", "Source Serif 4", Georgia, serif;
   max-width: 70ch;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .prose h1 {
-  font: 600 28px/1.2 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  font: 600 34px/1.2 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
   letter-spacing: -.015em;
   margin: 0 0 16px;
   text-wrap: balance;
@@ -1418,6 +1484,10 @@ h1, h2, h3, p {
 .prose h5, .prose h6 {
   font: 600 14px/1.4 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
   margin: 14px 0 4px;
+}
+
+.prose :is(h1, h2, h3, h4) {
+  scroll-margin-top: 86px;
 }
 
 .prose p {
@@ -1571,89 +1641,11 @@ h1, h2, h3, p {
   border-left-color: var(--accent);
 }
 
-/* Shared reading surface and responsive Studio navigation. */
-.back-link {
-  display: inline-flex;
-  margin: 26px 30px 0;
-  color: var(--mute);
-  font-size: 13.5px;
-  text-decoration: none;
-}
-
-.back-link:hover {
-  color: var(--accent);
-}
-
-.note {
-  margin: auto;
-  max-width: 1200px;
-}
-
-.prose {
-  overflow-wrap: anywhere;
-}
-
-.prose h1 {
-  font-size: 34px;
-}
-
-.prose :is(h1, h2, h3, h4) {
-  scroll-margin-top: 86px;
-}
-
-.props .pill:is(.status-active, .status-done, .status-blocked) i {
-  opacity: 1;
-}
-
-.props .pill.status-active {
-  background: var(--needs);
-}
-
-.props .pill.status-done, .props .pill.status-blocked {
-  background: var(--card);
-}
-
-.tree .top svg {
-  width: 16px;
-  height: 16px;
-}
-
-.tree .f {
-  min-height: 38px;
-  height: auto;
-  padding-top: 8px;
-  padding-bottom: 8px;
-}
-
-.tree .f .t {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.tree .hid summary, .tree summary .n {
-  opacity: 1;
-}
-
-.tree .top {
-  margin-bottom: 10px;
-}
-
-.tree .top.on {
-  background: none;
-}
-
-.tree .top:focus-visible {
-  outline: 3px solid var(--accent);
-}
-
-.scrim {
-  display: none;
-}
-
 .card.flash {
   border-color: var(--accent);
 }
 
+/* View switches: the board shows one section per view. */
 html[data-view=efforts] .bhead, html[data-view=efforts] .below, html[data-view=efforts] .quiet {
   display: none;
 }
@@ -1690,6 +1682,7 @@ html[data-view=initiatives] .below {
   max-width: 850px;
 }
 
+/* Responsive and accessibility adjustments, in cascade order. */
 @media (min-width: 721px) and (max-width: 1100px) {
   .cards.grid, .cards.ideas-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1884,12 +1877,6 @@ html[data-view=initiatives] .below {
   }
 }
 
-.today li .num {
-  flex: 0 0 120px;
-  max-width: 140px;
-  overflow-wrap: anywhere;
-}
-
 @media (max-width: 720px) {
   .today li {
     display: block;
@@ -1920,59 +1907,4 @@ html[data-view=initiatives] .below {
   .prose {
     font-size: 18px;
   }
-}
-
-.below li.linked {
-  position: relative;
-  padding-left: 12px;
-  padding-right: 12px;
-  margin: 0 -12px;
-  transition: background .12s;
-}
-
-.below li.linked:hover, .below li.linked:has(a:focus-visible) {
-  background: var(--sel);
-  border-radius: 10px;
-}
-
-.below li.linked a::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-}
-
-.below li.linked a:focus-visible {
-  outline: none;
-}
-
-.below li.linked:has(a:focus-visible) {
-  outline: 3px solid var(--accent);
-  outline-offset: -3px;
-}
-
-.initiatives li.linked a {
-  text-decoration: none;
-}
-
-.initiatives li.linked:hover a {
-  text-decoration: underline;
-}
-
-.part-of {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: -8px 0 18px;
-  font: 13.5px/1.5 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
-  color: var(--mute);
-}
-
-.part-of a {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.part-of a:hover {
-  text-decoration: underline;
 }
