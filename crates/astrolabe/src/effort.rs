@@ -2,6 +2,7 @@
 pub(crate) mod command;
 mod file;
 mod initiative;
+pub mod roster;
 pub use command::{DELIMITER, EffortCommand, FORMS, INITIATIVE_FLAGS, NEW_FLAGS, SAVE_FLAGS};
 pub use file::{EffortFile, slug};
 pub(crate) use file::{fence_mask, frontmatter, split_frontmatter};

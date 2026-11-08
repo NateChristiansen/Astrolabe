@@ -57,6 +57,33 @@ mod tests {
     }
 
     #[test]
+    fn an_active_initiative_with_nothing_in_flight_says_its_members_may_be_behind() {
+        let progress = |active, review, blocked| crate::board::InitiativeProgress {
+            total: 3,
+            done: 1,
+            to_start: 2 - active - review - blocked,
+            active,
+            review,
+            blocked,
+            ..Default::default()
+        };
+        let flag = "nothing in flight: members' notes may be behind the work";
+        assert!(initiative_html("Deck", None, &progress(0, 0, 0), Some("active")).contains(flag));
+        for (p, status) in [
+            (progress(1, 0, 0), Some("active")),
+            (progress(0, 1, 0), Some("active")),
+            (progress(0, 0, 1), Some("active")),
+            (progress(0, 0, 0), Some("ready")),
+            (progress(0, 0, 0), None),
+        ] {
+            assert!(
+                !initiative_html("Deck", None, &p, status).contains(flag),
+                "{p:?} {status:?}"
+            );
+        }
+    }
+
+    #[test]
     fn initiatives_show_pages_derived_progress_and_legacy_groups() {
         let notes = crate::board::initiative_fixture();
         let rows = crate::board::rows_in(&notes, None, true);

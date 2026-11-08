@@ -415,8 +415,12 @@ fn initiatives_section(rows: &BoardData, at: At) -> String {
                 .href(at.root, row.file.as_deref().unwrap_or_default())),
             esc(row.title.as_deref().unwrap_or_default())
         );
-        initiative_lines +=
-            &initiative_html(&title, row.state.as_deref(), &initiative.progress, true);
+        initiative_lines += &initiative_html(
+            &title,
+            row.state.as_deref(),
+            &initiative.progress,
+            Some(row.status.as_deref().unwrap_or("ready")),
+        );
     }
     for group in rows.legacy_initiatives.values() {
         initiative_lines += &initiative_html(
@@ -426,7 +430,7 @@ fn initiatives_section(rows: &BoardData, at: At) -> String {
             ),
             None,
             &group.progress,
-            false,
+            None,
         );
     }
     if initiative_lines.is_empty() {
@@ -791,12 +795,13 @@ pub(super) fn card_html(
 
 /// Status counts add up to the total and colour the bar's segments; what waits on the
 /// owner overlaps them (and can include the page itself), so it's a badge of its own.
-fn initiative_html(
+pub(super) fn initiative_html(
     title: &str,
     state: Option<&str>,
     p: &crate::board::InitiativeProgress,
-    has_page: bool,
+    page_status: Option<&str>,
 ) -> String {
+    let has_page = page_status.is_some();
     let mut counts = format!(
         "<span class=\"k-done\">{} of {} done</span>",
         p.done, p.total
@@ -839,6 +844,10 @@ fn initiative_html(
         "all members abandoned"
     } else if has_page && p.done == p.total {
         "awaiting acceptance"
+    } else if page_status == Some("active") && p.active + p.review + p.blocked == 0 {
+        // Counted from member notes, so a page saved about work its members never heard of
+        // reads as nothing started (Deck frame time, 2026-11-08).
+        "nothing in flight: members' notes may be behind the work"
     } else {
         ""
     };
