@@ -4,11 +4,14 @@
 use super::validation::{
     STATUSES, as_current, check_journal, one_of, shift_plan_headings, split_plan,
 };
-use crate::effort::{EffortCommand, FORMS};
+use super::{Change, apply_ticks, line_id};
+use crate::effort::{EffortCommand, EffortFile, FORMS};
+use crate::notes::JournalLine;
 use crate::session::SessionState;
 use std::path::{Path, PathBuf};
 
 /// What one `effort save` asks for, refused already if it breaks a rule that needs no note.
+#[derive(Default)]
 pub(super) struct SaveRequest<'a> {
     /// The bound record's number and its file, from the session state.
     pub number: String,
@@ -214,5 +217,202 @@ impl<'a> SaveRequest<'a> {
             pieces,
             current,
         })
+    }
+}
+
+impl SaveRequest<'_> {
+    /// The state change it makes beside the text, with membership as resolved after the pull.
+    pub(super) fn change<'b>(&'b self, initiative: Option<&'b str>) -> Change<'b> {
+        Change {
+            status: self.status.as_deref(),
+            waits_for: self.waits_for,
+            reason: self.reason,
+            decisions: &self.decisions,
+            initiative,
+        }
+    }
+
+    /// The journal line it writes, if any: only the agent's sentence goes in the owner's
+    /// history, one per effort per day, the later replacing the earlier.
+    pub(super) fn journal_line(
+        &self,
+        key: &str,
+        machine: &str,
+        at_ms: i64,
+        day: &str,
+    ) -> Option<JournalLine> {
+        self.journal_text.map(|j| JournalLine {
+            id: line_id(key, 0),
+            effort: if self.page_binding {
+                format!("initiative:{}", self.number)
+            } else {
+                format!("{:04}", self.number.parse::<u32>().unwrap_or(0))
+            },
+            text: j.to_owned(),
+            machine: machine.to_owned(),
+            at_ms,
+            day: day.to_owned(),
+            replace: true,
+        })
+    }
+}
+
+/// Who saved and when, as a save stamps it.
+pub(super) struct Saver<'a> {
+    pub now: &'a str,
+    pub machine: &'a str,
+    pub provider: &'a str,
+    pub session: &'a str,
+}
+
+/// The record's text and state edited as the request asks: Current state, plan, pieces,
+/// ticks, then the change. `current` is passed apart because a save by number reads it from
+/// the raw body. Gives the status from before.
+pub(super) fn edit_bound(
+    file: &mut EffortFile,
+    req: &SaveRequest,
+    current: Option<&str>,
+    initiative: Option<&str>,
+    day: &str,
+) -> Result<String, String> {
+    if let Some(current) = current {
+        file.current = current.to_owned();
+    }
+    if let Some(plan) = &req.plan {
+        file.plan = Some(plan.trim().to_owned());
+    }
+    if let Some(p) = &req.pieces {
+        file.set_pieces(p);
+    }
+    apply_ticks(file, &req.ticks, &req.unticks)?;
+    req.change(initiative).apply(file, day)
+}
+
+/// Who saved it and when.
+pub(super) fn stamp_saver(file: &mut EffortFile, saver: &Saver) {
+    file.set("updated", saver.now);
+    file.set(
+        "saved_by",
+        &format!("{} · {}", saver.machine, saver.provider),
+    );
+    file.set("session", saver.session);
+}
+
+/// An initiative page's stamp: the properties a page needs, filled only where missing, then
+/// who saved it.
+pub(super) fn stamp_initiative(file: &mut EffortFile, repo: &str, day: &str, saver: &Saver) {
+    for (key, value) in [
+        ("status", "ready"),
+        ("repo", repo),
+        ("involvement", "check in at plan"),
+        ("authority", "edit"),
+        ("created", day),
+    ] {
+        if file.prop(key).is_none() {
+            file.set(key, value);
+        }
+    }
+    stamp_saver(file, saver);
+}
+
+/// The save's commit subject: the new status when it changed, else a checkpoint.
+pub(super) fn commit_message(
+    page: bool,
+    number: &str,
+    status: Option<&str>,
+    before: &str,
+) -> String {
+    let name = if page {
+        format!("initiative {number}")
+    } else {
+        format!("{:04}", number.parse::<u32>().unwrap_or(0))
+    };
+    match status {
+        Some(s) if s != before => format!("{name}: {s}"),
+        _ => format!("{name}: checkpoint"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(props: &[(&str, &str)]) -> EffortFile {
+        let mut f = EffortFile::default();
+        for (k, v) in props {
+            f.set(k, v);
+        }
+        f
+    }
+
+    #[test]
+    fn a_commit_names_a_status_change_or_a_checkpoint() {
+        assert_eq!(
+            commit_message(false, "7", Some("done"), "active"),
+            "0007: done"
+        );
+        assert_eq!(
+            commit_message(false, "7", Some("active"), "active"),
+            "0007: checkpoint"
+        );
+        assert_eq!(
+            commit_message(false, "128", None, "active"),
+            "0128: checkpoint"
+        );
+        assert_eq!(
+            commit_message(true, "simplify", Some("done"), "active"),
+            "initiative simplify: done"
+        );
+        assert_eq!(
+            commit_message(true, "simplify", None, ""),
+            "initiative simplify: checkpoint"
+        );
+    }
+
+    #[test]
+    fn initiative_defaults_fill_only_missing_properties() {
+        let saver = Saver {
+            now: "2026-11-08T10:00-07:00",
+            machine: "mac",
+            provider: "agent",
+            session: "s1",
+        };
+        let mut page = file(&[("status", "active"), ("authority", "push")]);
+        stamp_initiative(&mut page, "demo", "2026-11-08", &saver);
+        for (key, value) in [
+            ("status", "active"),
+            ("authority", "push"),
+            ("repo", "demo"),
+            ("involvement", "check in at plan"),
+            ("created", "2026-11-08"),
+            ("updated", "2026-11-08T10:00-07:00"),
+            ("saved_by", "mac · agent"),
+            ("session", "s1"),
+        ] {
+            assert_eq!(page.prop(key), Some(value), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_save_clears_the_wait_unless_it_stays_blocked_or_in_review() {
+        let save = |status: &str, req: SaveRequest| {
+            let mut f = file(&[("status", status), ("waits_for", "owner: look")]);
+            let before = edit_bound(&mut f, &req, None, None, "2026-11-08").unwrap();
+            assert_eq!(before, status);
+            f.prop("waits_for").unwrap_or("").to_owned()
+        };
+        assert_eq!(save("blocked", SaveRequest::default()), "owner: look");
+        assert_eq!(save("review", SaveRequest::default()), "owner: look");
+        assert_eq!(save("active", SaveRequest::default()), "");
+        let moving_on = SaveRequest {
+            status: Some("active".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(save("blocked", moving_on), "");
+        let new_wait = SaveRequest {
+            waits_for: Some("CI"),
+            ..Default::default()
+        };
+        assert_eq!(save("active", new_wait), "CI");
     }
 }

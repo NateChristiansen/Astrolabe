@@ -11,7 +11,7 @@ use std::path::PathBuf;
 pub mod lesson;
 mod save;
 mod validation;
-use save::SaveRequest;
+use save::{SaveRequest, Saver, commit_message, edit_bound, stamp_initiative, stamp_saver};
 use validation::{
     AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, closes, issues, one_of,
 };
@@ -645,25 +645,8 @@ fn save_inner(
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
-    let SaveRequest {
-        number,
-        rel,
-        record,
-        page_binding,
-        target,
-        status,
-        decisions,
-        waits_for,
-        reason,
-        journal_text,
-        ticks,
-        unticks,
-        initiative,
-        plan,
-        plan_shifted,
-        pieces,
-        current,
-    } = SaveRequest::parse(cmd, &state, cwd)?;
+    let req = SaveRequest::parse(cmd, &state, cwd)?;
+    let record = &req.record;
     let _held = notes.lock()?;
     let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
@@ -678,23 +661,18 @@ fn save_inner(
         ));
     }
     let pulled = crate::application::pull(&notes);
-    let initiative = initiative
+    let initiative = req
+        .initiative
         .map(|name| canonical_membership(&notes.root, name))
         .transpose()?;
     let initiative = initiative.as_deref();
-    if let Some(target) = target {
-        let change = Change {
-            status: status.as_deref(),
-            waits_for,
-            reason,
-            decisions: &decisions,
-            initiative,
-        };
+    if let Some(target) = req.target {
         return save_target(
-            &notes, cmd, key, session, provider, cwd, &state, target, &change, &pulled,
+            &notes, cmd, &req, key, session, provider, cwd, &state, target, initiative, &pulled,
         );
     }
-    let path = notes.root.join(&rel);
+    let rel = &req.rel;
+    let path = notes.root.join(rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
     let on_disk_hash = notes::content_hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
@@ -717,10 +695,11 @@ fn save_inner(
             file.current
         ));
     }
-    require_transition_body(&file, status.as_deref(), current.as_deref())?;
-    if page_binding && status.as_deref() == Some("done") {
+    let status = req.status.as_deref();
+    require_transition_body(&file, status, req.current.as_deref())?;
+    if req.page_binding && status == Some("done") {
         let pages = crate::effort::initiative_catalog(&notes.root)?;
-        let page = crate::effort::resolve_initiative(&pages, &number)?;
+        let page = crate::effort::resolve_initiative(&pages, &req.number)?;
         let open: Vec<_> = crate::effort::initiative_members(&notes.root, page)?
             .into_iter()
             .filter(|(_, f)| !matches!(f.prop("status"), Some("done" | "abandoned")))
@@ -736,66 +715,27 @@ fn save_inner(
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
-    if plan_shifted {
+    if req.plan_shifted {
         notes_lines.push(
             "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."
                 .to_owned(),
         );
     }
-    if let Some(current) = current {
-        file.current = current;
-    }
-    if let Some(plan) = plan {
-        file.plan = Some(plan.trim().to_owned());
-    }
-    if let Some(p) = &pieces {
-        file.set_pieces(p);
-    }
-    apply_ticks(&mut file, &ticks, &unticks)?;
-    let before = Change {
-        status: status.as_deref(),
-        waits_for,
-        reason,
-        decisions: &decisions,
-        initiative,
-    }
-    .apply(&mut file, &day)?;
-    // The journal is the owner's history and only the agent's sentence goes in it; one per
-    // effort per day, the later replacing the earlier.
-    let journal = journal_text
-        .map(|j| JournalLine {
-            id: line_id(key, 0),
-            effort: if page_binding {
-                format!("initiative:{number}")
-            } else {
-                format!("{:04}", number.parse::<u32>().unwrap_or(0))
-            },
-            text: j.to_owned(),
-            machine: notes::machine_name(),
-            at_ms: notes::now_ms(),
-            day: day.clone(),
-            replace: true,
-        })
+    let before = edit_bound(&mut file, &req, req.current.as_deref(), initiative, &day)?;
+    let machine = notes::machine_name();
+    let journal = req
+        .journal_line(key, &machine, notes::now_ms(), &day)
         .into_iter()
         .collect();
-    let text = if page_binding {
-        for (key, value) in [
-            ("status", "ready"),
-            ("repo", state.repo.as_deref().unwrap_or("")),
-            ("involvement", "check in at plan"),
-            ("authority", "edit"),
-            ("created", day.as_str()),
-        ] {
-            if file.prop(key).is_none() {
-                file.set(key, value);
-            }
-        }
-        file.set("updated", &notes::local_stamp());
-        file.set(
-            "saved_by",
-            &format!("{} · {provider}", notes::machine_name()),
-        );
-        file.set("session", session);
+    let now = notes::local_stamp();
+    let saver = Saver {
+        now: &now,
+        machine: &machine,
+        provider,
+        session,
+    };
+    let text = if req.page_binding {
+        stamp_initiative(&mut file, state.repo.as_deref().unwrap_or(""), &day, &saver);
         file.render_initiative()
     } else {
         stamp(
@@ -813,17 +753,7 @@ fn save_inner(
         facts.as_ref().map(|f| f.fingerprint.clone()),
         now,
     );
-    let message = if page_binding {
-        match &status {
-            Some(s) if *s != before => format!("initiative {number}: {s}"),
-            _ => format!("initiative {number}: checkpoint"),
-        }
-    } else {
-        match &status {
-            Some(s) if *s != before => format!("{:04}: {s}", number.parse::<u32>().unwrap_or(0)),
-            _ => format!("{:04}: checkpoint", number.parse::<u32>().unwrap_or(0)),
-        }
-    };
+    let message = commit_message(req.page_binding, &req.number, status, &before);
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
@@ -852,7 +782,7 @@ fn save_inner(
         } else {
             ""
         },
-        if journal_text.is_some() {
+        if req.journal_text.is_some() {
             ", journal line written"
         } else {
             ""
@@ -864,7 +794,7 @@ fn save_inner(
     for l in notes_lines {
         head += &format!(" {l}");
     }
-    if status.as_deref() == Some("done")
+    if status == Some("done")
         && before != "done"
         && let Some(issue) = file.prop("issue").filter(|i| !i.is_empty())
     {
@@ -1072,25 +1002,26 @@ fn target_note(
 fn save_target(
     notes: &Notes,
     cmd: &EffortCommand,
+    req: &SaveRequest,
     key: &str,
     session: &str,
     provider: &str,
     cwd: &Path,
     state: &SessionState,
     target: u32,
-    change: &Change<'_>,
+    initiative: Option<&str>,
     pulled: &Pull,
 ) -> Result<String, String> {
     let (rel, on_disk, mut file) = target_note(notes, state, target, cwd)?;
     let on_disk_hash = notes::content_hash(&on_disk);
     let current = cmd.body.as_deref().map(as_current).transpose()?;
-    let ticks = cmd.flags_all("tick");
-    let unticks = cmd.flags_all("untick");
     let delivered = state
         .read_efforts
         .as_ref()
         .and_then(|reads| reads.get(&target.to_string()));
-    if (current.is_some() || !ticks.is_empty() || !unticks.is_empty()) && delivered.is_none() {
+    if (current.is_some() || !req.ticks.is_empty() || !req.unticks.is_empty())
+        && delivered.is_none()
+    {
         return Err(format!(
             "run `astrolabe effort read {target}` first: a body or tick needs the note delivered in this session. Nothing was written.\n{FORMS}"
         ));
@@ -1103,24 +1034,23 @@ fn save_target(
             "effort {target} changed since it was delivered to this session. Nothing was overwritten. Its note now:\n\n{on_disk}\nSave again from this."
         ));
     }
-    require_transition_body(&file, change.status, current.as_deref())?;
-    if let Some(current) = current {
-        file.current = current;
-    }
-    apply_ticks(&mut file, &ticks, &unticks)?;
+    let status = req.status.as_deref();
+    require_transition_body(&file, status, current.as_deref())?;
     let (day, _) = notes::local_day_time();
-    let before = change.apply(&mut file, &day)?;
-    file.set("updated", &notes::local_stamp());
-    file.set(
-        "saved_by",
-        &format!("{} · {provider}", notes::machine_name()),
+    let before = edit_bound(&mut file, req, current.as_deref(), initiative, &day)?;
+    let now = notes::local_stamp();
+    let machine = notes::machine_name();
+    stamp_saver(
+        &mut file,
+        &Saver {
+            now: &now,
+            machine: &machine,
+            provider,
+            session,
+        },
     );
-    file.set("session", session);
     let text = file.render();
-    let message = match change.status {
-        Some(s) if s != before => format!("{target:04}: {s}"),
-        _ => format!("{target:04}: checkpoint"),
-    };
+    let message = commit_message(false, &target.to_string(), status, &before);
     let mut next = state.clone();
     if delivered.is_some() {
         next.deliver_effort(target, notes::content_hash(&text));
