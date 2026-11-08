@@ -724,7 +724,7 @@ fn save_inner(
                 .to_owned(),
         );
     }
-    let before = edit_bound(&mut file, &req, req.current.as_deref(), initiative, &day)?;
+    let before = edit_bound(&mut file, &req, initiative, &day)?;
     let machine = notes::machine_name();
     let journal = req
         .journal_line(key, &machine, notes::now_ms(), &day)
@@ -1010,7 +1010,7 @@ fn save_target(
 ) -> Result<String, String> {
     let (rel, on_disk, mut file) = target_note(notes, state, target, cwd)?;
     let on_disk_hash = notes::content_hash(&on_disk);
-    let current = cmd.body.as_deref().map(as_current).transpose()?;
+    let current = req.current.as_deref();
     let delivered = state
         .read_efforts
         .as_ref()
@@ -1031,9 +1031,9 @@ fn save_target(
         ));
     }
     let status = req.status.as_deref();
-    require_transition_body(&file, status, current.as_deref())?;
+    require_transition_body(&file, status, current)?;
     let (day, _) = notes::local_day_time();
-    let before = edit_bound(&mut file, req, current.as_deref(), initiative, &day)?;
+    let before = edit_bound(&mut file, req, initiative, &day)?;
     let now = notes::local_stamp();
     let machine = notes::machine_name();
     stamp_saver(

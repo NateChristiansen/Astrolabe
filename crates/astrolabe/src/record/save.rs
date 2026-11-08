@@ -266,17 +266,15 @@ pub(super) struct Saver<'a> {
 }
 
 /// The record's text and state edited as the request asks: Current state, plan, pieces,
-/// ticks, then the change. `current` is passed apart because a save by number reads it from
-/// the raw body. Gives the status from before.
+/// ticks, then the change. Gives the status from before.
 pub(super) fn edit_bound(
     file: &mut EffortFile,
     req: &SaveRequest,
-    current: Option<&str>,
     initiative: Option<&str>,
     day: &str,
 ) -> Result<String, String> {
-    if let Some(current) = current {
-        file.current = current.to_owned();
+    if let Some(current) = &req.current {
+        file.current = current.clone();
     }
     if let Some(plan) = &req.plan {
         file.plan = Some(plan.trim().to_owned());
@@ -448,7 +446,7 @@ mod tests {
     fn a_save_clears_the_wait_unless_it_stays_blocked_or_in_review() {
         let save = |status: &str, req: SaveRequest| {
             let mut f = file(&[("status", status), ("waits_for", "owner: look")]);
-            let before = edit_bound(&mut f, &req, None, None, "2026-11-08").unwrap();
+            let before = edit_bound(&mut f, &req, None, "2026-11-08").unwrap();
             assert_eq!(before, status);
             f.prop("waits_for").unwrap_or("").to_owned()
         };

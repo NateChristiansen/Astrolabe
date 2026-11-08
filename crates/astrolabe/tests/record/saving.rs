@@ -1015,6 +1015,30 @@ fn read_delivers_another_note_for_text_ticks_and_stale_write_checks() {
     assert!(m.bash("lead", "astrolabe effort save --status active").1);
 }
 
+/// A body ending in an empty `## Plan` line stores only the text above it, by number as when
+/// bound: the line once landed in the other effort's Current state.
+#[test]
+fn a_save_by_number_keeps_an_empty_plan_heading_out_of_current_state() {
+    let world = World::new();
+    let m = world.machine("mac");
+    dispatcher(&m);
+    assert!(m.bash("lead", "astrolabe effort read 1").1);
+    let plan_before = m.effort_text(1).split("## Plan").count();
+    let (out, ok) = m.bash(
+        "lead",
+        "astrolabe effort save --effort 1 <<'ASTROLABE'\nChecked the build.\n\n## Plan\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let text = m.effort_text(1);
+    let current = text
+        .split("## Current state\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap();
+    assert_eq!(current.trim(), "Checked the build.", "{text}");
+    assert_eq!(text.split("## Plan").count(), plan_before, "{text}");
+}
+
 #[test]
 fn cross_repo_access_requires_shared_membership_or_the_notes_seat() {
     let world = World::new();
