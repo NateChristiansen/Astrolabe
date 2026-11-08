@@ -212,6 +212,8 @@ pub(super) struct Part {
 pub struct Activation {
     pub state: SessionState,
     pub(super) head: String,
+    /// The role's closing rule, after the head and any notices added to it.
+    pub(super) closing: &'static str,
     pub(super) parts: Vec<Part>,
     /// The effort's name, which the session takes only when it takes up the effort's work.
     pub(super) picked: String,
@@ -240,11 +242,19 @@ pub(super) fn owner_note(notes: &Path, name: &str) -> Result<Part, String> {
 impl Activation {
     /// Everything, for a command's output.
     pub fn text(&self) -> String {
-        let mut text = self.head.clone();
+        let mut text = self.lead();
         for part in &self.parts {
             text += &format!("\n\n--- {}\n\n{}", part.title, part.body);
         }
         text
+    }
+
+    /// The head and the role's closing rule: everything before the notes.
+    fn lead(&self) -> String {
+        match self.closing {
+            "" => self.head.clone(),
+            rule => format!("{}\n\n{rule}", self.head),
+        }
     }
 
     /// Taken up by name, as `activate --effort` does: the session takes the effort's name.
@@ -284,7 +294,7 @@ impl Activation {
         if text.len() <= HOOK_LIMIT {
             return text;
         }
-        let (mut inline, mut later) = (self.head.clone(), Vec::new());
+        let (mut inline, mut later) = (self.lead(), Vec::new());
         let note = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
         let reserve = note.len()
             + self
@@ -305,7 +315,9 @@ impl Activation {
 }
 
 /// Everything checked, nothing written: the caller commits `state` once what it says is safe.
-/// `previous` keeps a resumed session's switch-on time and probe.
+/// `previous` keeps a resumed session's switch-on time and probe. `worker` binds a dispatched
+/// worker; one already a worker on this effort stays one either way.
+#[allow(clippy::too_many_arguments)]
 pub fn switch_on(
     _dir: &Path,
     effort: &str,
@@ -314,10 +326,13 @@ pub fn switch_on(
     cwd: &Path,
     previous: Option<&SessionState>,
     shells: &[bool],
+    worker: bool,
 ) -> Result<Activation, String> {
     let (_, notes) = notes_and_repos()?;
     let effort = read_effort(&notes, effort)?;
-    switch_record(effort, false, session, provider, cwd, previous, shells)
+    switch_record(
+        effort, false, worker, session, provider, cwd, previous, shells,
+    )
 }
 
 /// Initiative activation shares the same eligibility, delivery and guard lifecycle.
@@ -361,12 +376,16 @@ pub fn switch_initiative(
         current: page.file.current.clone(),
         hash: crate::notes::content_hash(&page.text),
     };
-    switch_record(effort, true, session, provider, cwd, previous, shells)
+    switch_record(
+        effort, true, false, session, provider, cwd, previous, shells,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn switch_record(
     effort: Effort,
     initiative: bool,
+    worker: bool,
     session: &str,
     provider: &str,
     cwd: &Path,
@@ -509,15 +528,113 @@ fn switch_record(
         state.read_efforts = previous.read_efforts.clone();
         state.worker = previous.worker.clone();
     }
-    fn meaning(names: &[&str; 3], meanings: &[&'static str; 3], value: &str) -> &'static str {
-        names
-            .iter()
-            .zip(meanings)
-            .find(|(name, _)| **name == value)
-            .map_or("", |(_, m)| *m)
+    if worker {
+        state.worker.set(true);
     }
-    let head = format!(
-        "Astrolabe is on in this session for effort {n}, \"{title}\" ({provider} session {session}, repo {repo}). The plugin's hook bound it to the session id the app gave; other sessions are unaffected.\n\n\
+    let role = if initiative {
+        Role::Initiative
+    } else if state.worker.is_true() {
+        Role::Worker
+    } else {
+        Role::Effort
+    };
+    let page = match initiative {
+        true => Some(crate::effort::EffortFile::parse(
+            &std::fs::read_to_string(notes.join(&effort.file)).map_err(|e| e.to_string())?,
+        )?),
+        false => None,
+    };
+    let facts = Facts {
+        number: &effort.number,
+        title: &effort.title,
+        file: &effort.file,
+        provider,
+        session,
+        repo: &repo,
+        involvement: &effort.involvement,
+        authority: &effort.authority,
+        issues: &issue_line(&effort.issues),
+        proof: &proof_steps(&token, shells),
+        freshness: &freshness(&notes, &effort, cwd),
+        status: page
+            .as_ref()
+            .and_then(|f| f.prop("status"))
+            .unwrap_or("ready"),
+        waits_for: page
+            .as_ref()
+            .and_then(|f| f.prop("waits_for"))
+            .unwrap_or("none"),
+    };
+    Ok(Activation {
+        head: lead(role, &facts),
+        closing: closing(role),
+        state,
+        parts,
+        picked,
+    })
+}
+
+/// Which instructions a binding gets: an owner's effort, a dispatched worker's, or an
+/// initiative's orchestrator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Role {
+    Effort,
+    Worker,
+    Initiative,
+}
+
+/// What the instructions name, all read before rendering, so rendering itself is pure.
+pub(super) struct Facts<'a> {
+    pub number: &'a str,
+    pub title: &'a str,
+    pub file: &'a str,
+    pub provider: &'a str,
+    pub session: &'a str,
+    pub repo: &'a str,
+    pub involvement: &'a str,
+    pub authority: &'a str,
+    /// The issue line, already formatted, or empty.
+    pub issues: &'a str,
+    pub proof: &'a str,
+    pub freshness: &'a str,
+    /// An initiative page's status and wait.
+    pub status: &'a str,
+    pub waits_for: &'a str,
+}
+
+fn meaning(names: &[&str; 3], meanings: &[&'static str; 3], value: &str) -> &'static str {
+    names
+        .iter()
+        .zip(meanings)
+        .find(|(name, _)| **name == value)
+        .map_or("", |(_, m)| *m)
+}
+
+/// A role's whole instructions, as a binding first delivers them.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn instructions(role: Role, f: &Facts) -> String {
+    match closing(role) {
+        "" => lead(role, f),
+        rule => format!("{}\n\n{rule}", lead(role, f)),
+    }
+}
+
+/// What comes after the role's lead, once any notices from the binding are in: a worker's
+/// restrictions close its text, so they're the last thing it reads.
+fn closing(role: Role) -> &'static str {
+    match role {
+        Role::Worker => WORKER_RULE,
+        Role::Effort | Role::Initiative => "",
+    }
+}
+
+/// The role's settings, guard, proof and rules, ahead of any notices.
+fn lead(role: Role, f: &Facts) -> String {
+    let inv_m = meaning(&INVOLVEMENTS, &INVOLVEMENT_MEANINGS, f.involvement);
+    let auth_m = meaning(&AUTHORITIES, &AUTHORITY_MEANINGS, f.authority);
+    match role {
+        Role::Effort | Role::Worker => format!(
+            "Astrolabe is on in this session for effort {n}, \"{title}\" ({provider} session {session}, repo {repo}). The plugin's hook bound it to the session id the app gave; other sessions are unaffected.\n\n\
         Settings from {file}, set by the owner. Agents never raise them, because they're the owner's call:\n\
         - involvement: {inv}: {inv_m}.\n\
         - authority: {auth}: {auth_m}. It's a ceiling inside {repo} and this effort's scope, and never covers posting or destructive actions, because those reach other people or can't be undone. Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval; a worker saves its own effort the same way.\n\
@@ -527,49 +644,38 @@ fn switch_record(
         {GUARD_SCOPE}\n\n\
         {proof}\n\
         Report the effort and what the status says. Until it says proven, claim no protection, and claim none for commands that ran before switch-on. To drop the effort from this session: `astrolabe activate --off`; the guard stays while Astrolabe is on for the machine.\n\n{freshness}\n\n{SAVE_RULE}",
-        n = effort.number,
-        freshness = freshness(&notes, &effort, cwd),
-        title = effort.title,
-        file = effort.file,
-        inv = effort.involvement,
-        inv_m = meaning(&INVOLVEMENTS, &INVOLVEMENT_MEANINGS, &effort.involvement),
-        auth = effort.authority,
-        auth_m = meaning(&AUTHORITIES, &AUTHORITY_MEANINGS, &effort.authority),
-        proof = proof_steps(&token, shells),
-        issue = issue_line(&effort.issues),
-    );
-    let head = if initiative {
-        let file = crate::effort::EffortFile::parse(
-            &std::fs::read_to_string(notes.join(&effort.file)).map_err(|e| e.to_string())?,
-        )?;
-        format!(
+            n = f.number,
+            freshness = f.freshness,
+            title = f.title,
+            file = f.file,
+            provider = f.provider,
+            session = f.session,
+            repo = f.repo,
+            inv = f.involvement,
+            inv_m = inv_m,
+            auth = f.authority,
+            auth_m = auth_m,
+            proof = f.proof,
+            issue = f.issues,
+        ),
+        Role::Initiative => format!(
             "Astrolabe is on in this session for initiative {slug}, \"{title}\" ({provider} session {session}, repo {repo}).\n\nPage: {path}\nStatus: {status}\nWaits for: {wait}\nSettings set by the owner: involvement: {inv}: {inv_m}. Authority: {auth}: {auth_m}. Notes save and sync independently of project authority. A narrower current instruction wins.\n\n{GUARD_SCOPE}\n\n{proof}Report the initiative and what the status says. Until it says proven, claim no protection.\n\nSave this initiative with `astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"]` with a body:\n  astrolabe effort save --status active <<'ASTROLABE'\n  <where the initiative stands>\n\n  <choices and reasons>\n\n  <next and unchecked>\n  ASTROLABE\nDecisions are appended and dated. A journal line replaces today's line for this initiative. Done requires an acceptance statement in the body and every member done or abandoned. Use --reason with abandoned. Pieces, ticks, plans and initiative membership are unavailable on an initiative. Detach with `astrolabe activate --off`; the machine guard stays.\n\n{freshness}",
-            slug = effort.number,
-            title = effort.title,
-            path = effort.file,
-            status = file.prop("status").unwrap_or("ready"),
-            wait = file.prop("waits_for").unwrap_or("none"),
-            inv = effort.involvement,
-            inv_m = meaning(&INVOLVEMENTS, &INVOLVEMENT_MEANINGS, &effort.involvement),
-            auth = effort.authority,
-            auth_m = meaning(&AUTHORITIES, &AUTHORITY_MEANINGS, &effort.authority),
-            proof = proof_steps(&token, shells),
-            freshness = freshness(&notes, &effort, cwd),
-        )
-    } else {
-        head
-    };
-    // A worker stays a worker through resume and reload, and is told so each time.
-    let mut head = head;
-    if state.worker.is_true() {
-        head += &format!("\n\n{WORKER_RULE}");
+            slug = f.number,
+            title = f.title,
+            provider = f.provider,
+            session = f.session,
+            repo = f.repo,
+            path = f.file,
+            status = f.status,
+            wait = f.waits_for,
+            inv = f.involvement,
+            inv_m = inv_m,
+            auth = f.authority,
+            auth_m = auth_m,
+            proof = f.proof,
+            freshness = f.freshness,
+        ),
     }
-    Ok(Activation {
-        state,
-        head,
-        parts,
-        picked,
-    })
 }
 
 /// The effort's GitHub issues, and the keyword that closes each when its commit reaches main.
@@ -747,6 +853,7 @@ pub(super) fn fresh(cwd: &Path) -> String {
     Activation {
         state: SessionState::default(),
         head,
+        closing: "",
         parts,
         picked: String::new(),
     }
@@ -848,4 +955,128 @@ pub(super) fn blocked(kind: &str, key: &str, why: &str, recording_error: Option<
     format!(
         "Astrolabe stays on for {kind} {key} in this session, guard included, but its context couldn't be reloaded: {why}. Shell commands are blocked until that's repaired, because work here needs the {kind}'s current context. Repair it, then run `astrolabe activate --{kind} {key}`; or drop the {kind} with `astrolabe activate --off` (the guard keeps running)."
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts<'a>(involvement: &'a str, authority: &'a str) -> Facts<'a> {
+        Facts {
+            number: "7",
+            title: "0007 Sample",
+            file: "efforts/2026/11-November/0007-sample.md",
+            provider: "codex",
+            session: "s-1",
+            repo: "demo",
+            involvement,
+            authority,
+            issues: "",
+            proof: "PROOF\n",
+            freshness: "FRESH",
+            status: "active",
+            waits_for: "none",
+        }
+    }
+
+    fn text(role: Role) -> String {
+        instructions(role, &facts("check in at plan", "edit"))
+    }
+
+    /// Short anchors, never the production constants, so a reworded rule shows up here.
+    const SAVING: [&str; 4] = [
+        "astrolabe effort save",
+        "<<'ASTROLABE'",
+        "--decision",
+        "--waits-for",
+    ];
+
+    #[test]
+    fn an_effort_gets_every_rule_including_journal_filing_and_orchestration() {
+        let t = text(Role::Effort);
+        for anchor in SAVING.iter().chain(&[
+            "for effort 7, \"0007 Sample\" (codex session s-1, repo demo)",
+            "--journal",
+            "--pieces-file",
+            "astrolabe lesson close",
+            "astrolabe initiative new",
+            "astrolabe activate --initiative <slug>",
+            "astrolabe effort read <n>",
+            ".agents/<initiative slug>/",
+            "never ask for approval to save notes",
+            "PROOF\n\nReport the effort",
+            "FRESH",
+        ]) {
+            assert!(t.contains(anchor), "effort text lacks {anchor:?}");
+        }
+        assert!(!t.contains("This session is a worker"));
+        assert!(!t.contains("for initiative"));
+    }
+
+    #[test]
+    fn a_worker_gets_the_effort_text_then_its_restrictions_last() {
+        let (effort, worker) = (text(Role::Effort), text(Role::Worker));
+        let rest = worker
+            .strip_prefix(&effort)
+            .expect("worker text starts with the effort's");
+        assert!(rest.starts_with("\n\nThis session is a worker under that effort"));
+        assert!(rest.contains("No journal line, no new effort"));
+        assert!(rest.ends_with("The guard and the effort's settings apply as above."));
+        assert_eq!(closing(Role::Worker), rest.trim_start());
+        assert_eq!(closing(Role::Effort), "");
+    }
+
+    #[test]
+    fn an_initiative_gets_its_own_head_and_none_of_the_effort_rules() {
+        let t = text(Role::Initiative);
+        for anchor in SAVING.iter().chain(&[
+            "for initiative 7, \"0007 Sample\" (codex session s-1, repo demo)",
+            "Page: efforts/2026/11-November/0007-sample.md\nStatus: active\nWaits for: none",
+            "Notes save and sync independently of project authority",
+            "Done requires an acceptance statement",
+            "Pieces, ticks, plans and initiative membership are unavailable",
+            "PROOF\nReport the initiative",
+        ]) {
+            assert!(t.contains(anchor), "initiative text lacks {anchor:?}");
+        }
+        assert!(t.ends_with("FRESH"));
+        for absent in [
+            "--pieces-file",
+            "astrolabe lesson close",
+            "This session is a worker",
+        ] {
+            assert!(!t.contains(absent), "initiative text has {absent:?}");
+        }
+        assert_eq!(closing(Role::Initiative), "");
+    }
+
+    #[test]
+    fn every_role_states_each_setting_with_its_meaning() {
+        for role in [Role::Effort, Role::Worker, Role::Initiative] {
+            for (i, inv) in INVOLVEMENTS.iter().enumerate() {
+                for (j, auth) in AUTHORITIES.iter().enumerate() {
+                    let t = instructions(role, &facts(inv, auth));
+                    assert!(
+                        t.contains(&format!("{inv}: {}", INVOLVEMENT_MEANINGS[i])),
+                        "{role:?} {inv}"
+                    );
+                    assert!(
+                        t.contains(&format!("{auth}: {}", AUTHORITY_MEANINGS[j])),
+                        "{role:?} {auth}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_issue_line_sits_with_the_effort_settings() {
+        let mut f = facts("autonomous", "edit");
+        let line = "- issue line\n";
+        f.issues = line;
+        let t = instructions(Role::Effort, &f);
+        assert!(t.contains(
+            "approval; a worker saves its own effort the same way.\n- issue line\n- A narrower"
+        ));
+    }
 }

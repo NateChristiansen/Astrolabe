@@ -214,7 +214,7 @@ fn new_inner(
             Some(n) => {
                 let n = n.to_string();
                 let previous = read_state(&dir, session).ok().flatten();
-                let activation = activate::switch_on(&dir, &n, session, provider, cwd, previous.as_ref(), shells)?;
+                let activation = activate::switch_on(&dir, &n, session, provider, cwd, previous.as_ref(), shells, false)?;
                 notes::write_text(&state_path(&dir, session), &activation.state.to_string())?;
                 Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written, and this session is bound to it.\n\n{}", activation.text()))
             }
@@ -350,6 +350,7 @@ fn new_inner(
         cwd,
         read_state(&dir, session).ok().flatten().as_ref(),
         shells,
+        false,
     )?
     .mid_session();
     // The agent was just told to rename its session: recorded, so loading this effort again

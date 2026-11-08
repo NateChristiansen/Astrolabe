@@ -1,7 +1,5 @@
 //! Provider hook inputs, command dispatch and activation transitions.
-use super::context::{
-    Activation, WORKER_RULE, blocked, fresh, refused, switch_initiative, switch_on,
-};
+use super::context::{Activation, blocked, fresh, refused, switch_initiative, switch_on};
 use super::proof::{session_shells, status};
 use super::tickets::{leave, leave_with, print_command, reissue, ticket_text, write_json};
 use super::{EFFORT_VAR, machine_on, now_ms, random_hex, read_state, state_dir, state_path};
@@ -88,7 +86,7 @@ pub(super) fn act(
                 });
             // The published checkpoint, not a stale local copy: another machine may hold it.
             let refreshed = crate::record::refresh_notes();
-            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
+            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell], worker).map(Activation::picked_up).map(Activation::mid_session) {
                 Ok(mut activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
                     if worker {
@@ -113,10 +111,6 @@ pub(super) fn act(
                             }
                             Err(why) => return (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
                         }
-                    }
-                    if worker && !activation.state.worker.is_true() {
-                        activation.state.worker.set(true);
-                        activation.head += &format!("\n\n{WORKER_RULE}");
                     }
                     let mut text = activation.text();
                     if let Some(note) = refreshed {
@@ -674,6 +668,7 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                         &cwd,
                         Some(&state),
                         &shells,
+                        false,
                     )
                 } {
                     Ok(activation) => {
@@ -720,7 +715,16 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
             };
             let shells = session_shells(provider(input));
             Some(
-                match switch_on(&dir, &effort, session, provider(input), &cwd, None, &shells) {
+                match switch_on(
+                    &dir,
+                    &effort,
+                    session,
+                    provider(input),
+                    &cwd,
+                    None,
+                    &shells,
+                    false,
+                ) {
                     Ok(activation) => {
                         match write_json(&state_path(&dir, session), &activation.state) {
                             Ok(()) => activation.fitted(),
