@@ -864,6 +864,10 @@ h1, h2, h3, p {
   color: var(--accent);
   font-size: 13.5px;
   text-decoration: none;
+  margin-top: auto;
+}
+
+.bar+.review-link {
   margin-top: 8px;
 }
 
@@ -904,14 +908,21 @@ h1, h2, h3, p {
   margin-top: 20px;
 }
 
-/* Below the work: journal, initiatives, lessons and done. */
+/* Below the work: journal, initiatives, lessons and done, each a panel of rows. */
 .below {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 30px;
+  gap: 20px;
   margin-top: 36px;
   padding-top: 28px;
   border-top: 1px solid var(--line);
+}
+
+.below>.col, .col.done {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px 22px;
 }
 
 .below ul {
@@ -920,18 +931,18 @@ h1, h2, h3, p {
   list-style: none;
 }
 
+.below li:first-child {
+  border-top: 0;
+}
+
 .today li {
   display: flex;
   gap: 16px;
-  padding: 14px 0;
+  padding: 12px 0;
   border-top: 1px solid var(--line);
   font-size: 14.5px;
   line-height: 1.65;
   overflow-wrap: anywhere;
-}
-
-.today li:first-child {
-  border: 0;
 }
 
 .today li .num {
@@ -1115,15 +1126,22 @@ h1, h2, h3, p {
 }
 
 .lessons li, .drafts li {
-  padding: 8px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
   font-size: 14.5px;
   overflow-wrap: anywhere;
 }
 
+.lessons a, .drafts a {
+  text-decoration: none;
+}
+
+.lessons a:hover, .drafts a:hover {
+  text-decoration: underline;
+}
+
 .col.done {
-  margin-top: 28px;
-  padding-top: 20px;
-  border-top: 1px solid var(--line);
+  margin-top: 20px;
 }
 
 .closed {
@@ -1879,6 +1897,13 @@ html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data
 
 html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below>.col>.fold>summary {
   display: none;
+}
+
+html:is([data-view=journal], [data-view=initiatives], [data-view=lessons], [data-view=drafts]) .below>.col {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 
 html[data-view=journal] .view-head[data-for=journal],

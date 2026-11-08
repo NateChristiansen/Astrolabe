@@ -695,9 +695,11 @@ mod tests {
         assert!(!page.contains("0 of 0 pieces"));
         let journal = page.find("id=\"journal\"").unwrap();
         let earlier = page.find("data-persist=\"journal-history\"").unwrap();
+        // The newest five show; the rest wait behind the disclosure.
         assert!(page[journal..earlier].contains("Update 7 &lt;safe&gt;"));
-        assert!(page[journal..earlier].contains("Update 5 &lt;safe&gt;"));
-        assert!(!page[journal..earlier].contains("Update 4"));
+        assert!(page[journal..earlier].contains("Update 3 &lt;safe&gt;"));
+        assert!(!page[journal..earlier].contains("Update 2"));
+        assert!(page[earlier..].contains("Earlier updates <span>2</span>"));
         assert!(page[earlier..].contains("Update 1 &lt;safe&gt;"));
         assert!(page.contains("class=\"brand\" href=\"home.html#overview\" data-home"));
         assert!(page.contains("id=\"system-appearance\""));

@@ -203,6 +203,9 @@ fn heading(title: &str, n: usize) -> String {
     format!("<h2><span>{title}</span> <span class=\"n\">{n}</span></h2>")
 }
 
+/// How many journal lines show before the rest fold away.
+pub(super) const RECENT_JOURNAL: usize = 5;
+
 /// A board section that folds: its heading is the disclosure's summary, and the script
 /// keeps each viewer's choice under the `data-persist` key. `extra` adds to the section's
 /// class; `open` is the state before the viewer has chosen.
@@ -307,7 +310,7 @@ fn inbox_section(at: At, class: &str, title: &str, pages: &[Lesson], empty: &str
 }
 
 /// Recent journal lines, newest first, each linked to its effort or initiative; past the
-/// first three they fold into a disclosure.
+/// first few they fold into a disclosure.
 fn journal_section(rows: &BoardData, cards: &[Card], at: At) -> String {
     let by_number: std::collections::HashMap<u64, &EffortRow> = cards
         .iter()
@@ -315,10 +318,10 @@ fn journal_section(rows: &BoardData, cards: &[Card], at: At) -> String {
         .collect();
     let mut journal = String::new();
     for (index, line) in rows.journal_lines.iter().rev().enumerate() {
-        if index == 3 {
+        if index == RECENT_JOURNAL {
             journal += &format!(
                 "</ul><details class=\"history\" data-persist=\"journal-history\"><summary>Earlier updates <span>{}</span></summary><ul>",
-                rows.journal_lines.len() - 3
+                rows.journal_lines.len() - RECENT_JOURNAL
             );
         }
         let effort = line.effort.as_str();
@@ -368,7 +371,7 @@ fn journal_section(rows: &BoardData, cards: &[Card], at: At) -> String {
     if journal.is_empty() {
         journal = "<li class=\"empty\">nothing yet today</li>\n".to_owned();
     }
-    let journal_end = if rows.journal_lines.len() > 3 {
+    let journal_end = if rows.journal_lines.len() > RECENT_JOURNAL {
         "</ul></details>"
     } else {
         "</ul>"
