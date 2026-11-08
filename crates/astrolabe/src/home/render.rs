@@ -83,65 +83,131 @@ pub(super) fn page(
 /// Studio's attention and active work first, followed by ready, waiting and proposed
 /// work, recent journal entries, initiatives and a disclosure of recently closed work.
 pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Links) -> String {
-    let cards: Vec<Card> = rows
-        .efforts
+    let at = At {
+        root,
+        now_ms,
+        links,
+    };
+    let cards: Vec<Card> = rows.efforts.iter().map(Card::of).collect();
+    let attention_pages: Vec<Card> = rows.initiative_attention.iter().map(Card::of).collect();
+    let closed_pages: Vec<Card> = rows
+        .initiatives
         .iter()
-        .map(|row| Card {
+        .filter(|i| i.page.status.as_deref() == Some("done"))
+        .map(|i| Card::of(&i.page))
+        .filter(|c| at.fresh(c))
+        .collect();
+    let columns = columns(&cards, &attention_pages, &closed_pages, at);
+    let (attention, work) = work_sections(&columns, at);
+    let below = format!(
+        "<div class=\"below\">{}{}{}</div>\n",
+        journal_section(rows, &cards, at),
+        initiatives_section(rows, at),
+        lessons_section(rows, at)
+    );
+    let board = work + &below + &done_section(&columns[DONE], at);
+    hero(
+        rows,
+        &columns,
+        &chips(rows, &columns),
+        &attention,
+        &board,
+        now_ms,
+    )
+}
+
+/// What a board section needs to draw a link or an age.
+#[derive(Clone, Copy)]
+struct At<'a> {
+    root: &'a Path,
+    now_ms: i64,
+    links: Links,
+}
+
+impl At<'_> {
+    /// Closed this fortnight, so still on the board.
+    fn fresh(self, card: &Card) -> bool {
+        card.updated_ms
+            .is_some_and(|t| self.now_ms - t <= DONE_DAYS * 86_400_000)
+    }
+}
+
+impl<'a> Card<'a> {
+    fn of(row: &'a EffortRow) -> Self {
+        Card {
             row,
             updated_ms: row.updated.as_deref().and_then(stamp_ms),
-        })
-        .collect();
-    let attention_pages: Vec<Card> = rows
-        .initiative_attention
-        .iter()
-        .map(|row| Card {
-            row,
-            updated_ms: row.updated.as_deref().and_then(stamp_ms),
-        })
-        .collect();
-    let mut columns: [Vec<&Card>; 7] = Default::default();
-    for card in &cards {
+        }
+    }
+}
+
+// The board's columns, by slot.
+const NEEDS: usize = 0;
+const ACTIVE: usize = 1;
+const READY: usize = 2;
+const BLOCKED: usize = 3;
+const IDEAS: usize = 4;
+const DONE: usize = 5;
+const REVIEW: usize = 6;
+
+type Columns<'c, 'r> = [Vec<&'c Card<'r>>; 7];
+
+/// Each card in its column, highest priority and most recent first. Initiative pages that
+/// wait on the owner join the attention column, and pages closed this fortnight join done.
+fn columns<'c, 'r>(
+    cards: &'c [Card<'r>],
+    attention_pages: &'c [Card<'r>],
+    closed_pages: &'c [Card<'r>],
+    at: At,
+) -> Columns<'c, 'r> {
+    let mut columns: Columns = Default::default();
+    for card in cards {
         let slot = if card.row.needs_owner {
-            0
+            NEEDS
         } else {
             match card.status() {
-                "active" => 1,
-                "ready" => 2,
-                "blocked" => 3,
-                "review" => 6,
+                "active" => ACTIVE,
+                "ready" => READY,
+                "blocked" => BLOCKED,
+                "review" => REVIEW,
                 "done" | "abandoned" => {
-                    let fresh = card
-                        .updated_ms
-                        .is_some_and(|t| now_ms - t <= DONE_DAYS * 86_400_000);
-                    if !fresh {
+                    if !at.fresh(card) {
                         continue;
                     }
-                    5
+                    DONE
                 }
-                _ => 4,
+                _ => IDEAS,
             }
         };
         columns[slot].push(card);
     }
-    columns[0].extend(attention_pages.iter());
+    columns[NEEDS].extend(attention_pages.iter());
+    columns[DONE].extend(closed_pages.iter());
     for column in &mut columns {
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
-    let heading = |title: &str, n: usize| {
-        format!("<h2><span>{title}</span> <span class=\"n\">{n}</span></h2>")
-    };
-    let cards_of = |column: &[&Card], compact: bool| {
-        column
-            .iter()
-            .map(|c| card_html(c, root, now_ms, links, compact))
-            .collect::<String>()
-    };
-    let mut board = String::new();
-    let attention = if !columns[0].is_empty() {
+    columns
+}
+
+fn heading(title: &str, n: usize) -> String {
+    format!("<h2><span>{title}</span> <span class=\"n\">{n}</span></h2>")
+}
+
+fn cards_of(column: &[&Card], compact: bool, at: At) -> String {
+    column
+        .iter()
+        .map(|c| card_html(c, at.root, at.now_ms, at.links, compact))
+        .collect()
+}
+
+/// The attention column for the hero, and the work below it: active cards, then ready,
+/// blocked and review in a row, then ideas, and a line naming what's empty.
+fn work_sections(columns: &Columns, at: At) -> (String, String) {
+    let attention = if !columns[NEEDS].is_empty() {
         format!(
             "<section class=\"col needsyou\">{}<div class=\"cards wide\">{}</div></section>\n",
-            heading("Needs you", columns[0].len()),
-            cards_of(&columns[0], false)
+            heading("Needs you", columns[NEEDS].len()),
+            cards_of(&columns[NEEDS], false, at)
         )
     } else {
         // Kept in the page so a test and the live swap can find the column by name.
@@ -152,9 +218,9 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     let mut stack = String::new();
     let mut quiet = Vec::new();
     for (key, title, slot, none) in [
-        ("ready", "Up next", 2, "nothing ready"),
-        ("blocked", "Waiting", 3, "nothing blocked"),
-        ("review", "In review", 6, "nothing in review"),
+        ("ready", "Up next", READY, "nothing ready"),
+        ("blocked", "Waiting", BLOCKED, "nothing blocked"),
+        ("review", "In review", REVIEW, "nothing in review"),
     ] {
         let column = &columns[slot];
         if column.is_empty() {
@@ -163,31 +229,31 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             stack += &format!(
                 "<section class=\"col {key}\">{}<div class=\"cards\">{}</div></section>\n",
                 heading(title, column.len()),
-                cards_of(column, true)
+                cards_of(column, true, at)
             );
         }
     }
-    let active = if columns[1].is_empty() {
+    let active = if columns[ACTIVE].is_empty() {
         // Keep the section addressable across live updates without repeating the hero.
         "<section class=\"col active\" hidden></section>\n".to_owned()
     } else {
         format!(
             "<section class=\"col active\">{}<div class=\"cards grid\">{}</div></section>\n",
-            heading("In motion", columns[1].len()),
-            cards_of(&columns[1], false)
+            heading("In motion", columns[ACTIVE].len()),
+            cards_of(&columns[ACTIVE], false, at)
         )
     };
-    let ideas = if columns[4].is_empty() {
+    let ideas = if columns[IDEAS].is_empty() {
         quiet.push("no ideas parked");
         String::new()
     } else {
         format!(
             "<section class=\"col ideas\">{}<div class=\"cards ideas-grid\">{}</div></section>\n",
-            heading("Ideas", columns[4].len()),
-            cards_of(&columns[4], true)
+            heading("Ideas", columns[IDEAS].len()),
+            cards_of(&columns[IDEAS], true, at)
         )
     };
-    board += &format!(
+    let mut work = format!(
         "<div class=\"work\">{active}{}{ideas}</div>\n",
         if stack.is_empty() {
             String::new()
@@ -200,30 +266,37 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         if let Some(first) = line.get(..1) {
             line = first.to_uppercase() + &line[1..];
         }
-        board += &format!("<p class=\"quiet\">{line}.</p>\n");
+        work += &format!("<p class=\"quiet\">{line}.</p>\n");
     }
+    (attention, work)
+}
 
-    // The notes' inbox: lessons waiting for triage. Only a non-empty one is shown, since
-    // the count is the backlog and zero is nothing to say.
+/// The notes' inbox: lessons waiting for triage. Only a non-empty one is shown, since
+/// the count is the backlog and zero is nothing to say.
+fn lessons_section(rows: &BoardData, at: At) -> String {
     let lessons = &rows.lessons;
     let mut lesson_lines = String::new();
     for lesson in lessons {
         let file = lesson.file.as_str();
         lesson_lines += &format!(
             "<li><a href=\"{}\">{}</a></li>\n",
-            esc(&links.href(root, file)),
+            esc(&at.links.href(at.root, file)),
             esc(lesson.title.as_str())
         );
     }
-    let lessons_html = if lesson_lines.is_empty() {
+    if lesson_lines.is_empty() {
         String::new()
     } else {
         format!(
             "<section class=\"col lessons\">{}<ul>\n{lesson_lines}</ul></section>",
             heading("Lessons to triage", lessons.len())
         )
-    };
+    }
+}
 
+/// Recent journal lines, newest first, each linked to its effort or initiative; past the
+/// first three they fold into a disclosure.
+fn journal_section(rows: &BoardData, cards: &[Card], at: At) -> String {
     let by_number: std::collections::HashMap<u64, &EffortRow> = cards
         .iter()
         .filter_map(|c| c.row.number.map(|n| (n, c.row)))
@@ -246,7 +319,7 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                 .unwrap_or(slug);
             format!(
                 "<span class=\"num\"><a href=\"{}\">{}</a></span>",
-                esc(&links.href(root, &rel)),
+                esc(&at.links.href(at.root, &rel)),
                 esc(title)
             )
         } else {
@@ -260,7 +333,9 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                     };
                     format!(
                         "<span class=\"num\"><a href=\"{}\" title=\"{}\">{label}</a></span>",
-                        esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
+                        esc(&at
+                            .links
+                            .href(at.root, row.file.as_deref().unwrap_or_default())),
                         esc(row.title.as_deref().unwrap_or("Effort")),
                     )
                 }
@@ -286,7 +361,14 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     } else {
         "</ul>"
     };
+    format!(
+        "<section class=\"col today\">{}<ul id=\"journal\">\n{journal}{journal_end}</section>",
+        heading("Recent changes", rows.journal_lines.len())
+    )
+}
 
+/// Open initiative pages with their progress, then legacy tags that have no page.
+fn initiatives_section(rows: &BoardData, at: At) -> String {
     let mut initiative_lines = String::new();
     let mut open_pages = 0;
     for initiative in &rows.initiatives {
@@ -297,7 +379,9 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         open_pages += 1;
         let title = format!(
             "<a href=\"{}\">{}</a>",
-            esc(&links.href(root, row.file.as_deref().unwrap_or_default())),
+            esc(&at
+                .links
+                .href(at.root, row.file.as_deref().unwrap_or_default())),
             esc(row.title.as_deref().unwrap_or_default())
         );
         initiative_lines +=
@@ -317,29 +401,15 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
     if initiative_lines.is_empty() {
         initiative_lines = "<li class=\"empty\">nothing open</li>\n".to_owned();
     }
-    board += &format!(
-        "<div class=\"below\"><section class=\"col today\">{}<ul id=\"journal\">\n{journal}{journal_end}</section><section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>{lessons_html}</div>\n",
-        heading("Recent changes", rows.journal_lines.len()),
+    format!(
+        "<section class=\"col initiatives\">{}<ul>\n{initiative_lines}</ul></section>",
         heading("Initiatives", open_pages)
-    );
+    )
+}
 
-    let closed_pages: Vec<Card> = rows
-        .initiatives
-        .iter()
-        .filter(|i| i.page.status.as_deref() == Some("done"))
-        .map(|i| Card {
-            row: &i.page,
-            updated_ms: i.page.updated.as_deref().and_then(stamp_ms),
-        })
-        .filter(|c| {
-            c.updated_ms
-                .is_some_and(|t| now_ms - t <= DONE_DAYS * 86_400_000)
-        })
-        .collect();
-    columns[5].extend(closed_pages.iter());
-    columns[5].sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
-    let done = &columns[5];
-    board += &format!(
+/// Work closed this fortnight, behind a disclosure.
+fn done_section(done: &[&Card], at: At) -> String {
+    format!(
         "<section class=\"col done\"><details data-persist=\"closed-work\"><summary>Done this fortnight <span class=\"n\">{}</span></summary>\n{}</details></section>\n",
         done.len(),
         if done.is_empty() {
@@ -348,23 +418,30 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             format!(
                 "<ul class=\"closed\">{}</ul>\n",
                 done.iter()
-                    .map(|c| done_html(c, root, now_ms, links))
+                    .map(|c| done_html(c, at.root, at.now_ms, at.links))
                     .collect::<String>()
             )
         }
-    );
+    )
+}
 
-    // The chips: every count that isn't zero, then the notes' state.
-    let active_n = columns[1].len() + columns[0].iter().filter(|c| c.status() == "active").count();
+/// The chips: every count that isn't zero, then the notes' state.
+fn chips(rows: &BoardData, columns: &Columns) -> String {
+    let lessons = &rows.lessons;
+    let active_n = columns[ACTIVE].len()
+        + columns[NEEDS]
+            .iter()
+            .filter(|c| c.status() == "active")
+            .count();
     let chip = |dot: &str, n: usize, label: &str| {
         format!("<span class=\"chip\"><span class=\"dot {dot}\"></span><b>{n}</b> {label}</span>")
     };
     let mut chips = String::new();
-    if !columns[0].is_empty() {
+    if !columns[NEEDS].is_empty() {
         chips += &chip(
             "needs",
-            columns[0].len(),
-            if columns[0].len() == 1 {
+            columns[NEEDS].len(),
+            if columns[NEEDS].len() == 1 {
                 "needs you"
             } else {
                 "need you"
@@ -375,11 +452,11 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         chips += &chip("active", active_n, "active");
     }
     for (dot, slot, label) in [
-        ("ready", 2, "ready"),
-        ("blocked", 3, "blocked"),
-        ("review", 6, "in review"),
-        ("idea", 4, "ideas"),
-        ("done", 5, "done"),
+        ("ready", READY, "ready"),
+        ("blocked", BLOCKED, "blocked"),
+        ("review", REVIEW, "in review"),
+        ("idea", IDEAS, "ideas"),
+        ("done", DONE, "done"),
     ] {
         if !columns[slot].is_empty() {
             chips += &chip(dot, columns[slot].len(), label);
@@ -417,6 +494,19 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
             esc(&warnings.join("; "))
         )
     };
+    chips
+}
+
+/// The date, how much needs the owner and how much is moving, the chips and the
+/// attention column, above the rest of the board.
+fn hero(
+    rows: &BoardData,
+    columns: &Columns,
+    chips: &str,
+    attention: &str,
+    board: &str,
+    now_ms: i64,
+) -> String {
     let date = chrono::DateTime::from_timestamp_millis(now_ms)
         .map(|t| {
             t.with_timezone(&chrono::Local)
@@ -424,19 +514,19 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
                 .to_string()
         })
         .unwrap_or_else(|| today_of(rows));
-    let attention_title = match columns[0].len() {
+    let attention_title = match columns[NEEDS].len() {
         0 => "Nothing needs you.".to_owned(),
         1 => "One thing needs you.".to_owned(),
         n => format!("{n} things need you."),
     };
-    let motion_title = match columns[1].len() {
+    let motion_title = match columns[ACTIVE].len() {
         0 => "Room for what’s next.".to_owned(),
         1 => "One thing moving.".to_owned(),
         n => format!("{n} things moving."),
     };
     format!(
         "<div class=\"board\" id=\"board\"><div class=\"hero{}\"><div class=\"bhead\"><p class=\"eyebrow\">{}</p><h1>{attention_title}<br><em>{motion_title}</em></h1><div class=\"chips\">{chips}</div></div>{attention}</div>\n{board}</div>\n",
-        if columns[0].is_empty() {
+        if columns[NEEDS].is_empty() {
             " quiet-hero"
         } else {
             ""
