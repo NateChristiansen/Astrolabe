@@ -223,6 +223,31 @@ fn new_inner(
     }
     let pulled = crate::application::pull(&notes);
     let initiative = canonical_membership(&notes.root, cmd.flag("initiative").unwrap_or(""))?;
+    // Work on an initiative's member, filed as a new untagged effort, leaves the member
+    // proposed and the board's count wrong. A title naming the initiative is that, nearly
+    // always; any other new effort beside an open initiative only hears that it's there.
+    let open = match initiative.is_empty() {
+        true => crate::effort::roster::open_in_repo(&notes.root, &repo),
+        false => Vec::new(),
+    };
+    if let Some(named) = open
+        .iter()
+        .find(|o| crate::effort::roster::names(title, &o.page))
+    {
+        return Err(format!(
+            "the title names the initiative \"{}\", so it looks like work on one of its members. Nothing was written. If you were dispatched to a member, bind to it with `astrolabe activate --effort <n> --worker`; if this is a new part of the initiative, add --initiative {}; if it's unrelated, use a title that doesn't name the initiative.\n\n{}",
+            named.page.file.title,
+            named.page.slug,
+            crate::effort::roster::summary(named)
+        ));
+    }
+    let beside: Vec<String> = open
+        .iter()
+        .map(|o| format!(
+            "Initiative \"{}\" is open in {repo}. If this work is one of its members, drop this effort with `astrolabe effort save --status abandoned --reason \"…\"` and bind to the member with `astrolabe activate --effort <n> --worker`.",
+            o.page.file.title
+        ))
+        .collect();
     let number = notes.next_number();
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
@@ -344,9 +369,117 @@ fn new_inner(
             why.lines().next().unwrap_or_default()
         );
     }
+    for line in &beside {
+        head += &format!("\n\n{line}");
+    }
     let text = format!("{head}\n\n{}", activation.text());
     crate::application::finish(&notes, key, &text);
     Ok(text)
+}
+
+/// A worker binding to the effort it was dispatched to. A closed effort is refused, and a
+/// proposed or ready one is marked active, so the board shows the work started whether or
+/// not the worker ever saves. Gives what to tell the worker and the note's new hash when it
+/// changed. Workers once built under planning notes and new untagged efforts while their
+/// members sat proposed (Deck frame time, 2026-11-08).
+/// `delivered` is the note's hash as the binding read it: a note changed since then is
+/// refused, so the worker never saves over text it wasn't shown.
+pub fn take_up(
+    number: &str,
+    delivered: &str,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+) -> Result<(String, Option<String>), String> {
+    let n: u32 =
+        (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
+    let (_, notes) = notes_here()?;
+    let _held = notes.lock()?;
+    let leftovers = crate::application::reconcile(&notes);
+    if !leftovers.is_empty() {
+        return Err(format!(
+            "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
+            leftovers.join("; ")
+        ));
+    }
+    let rel = (notes::effort_files(&notes.root).into_iter())
+        .find(|(m, _)| *m == n)
+        .map(|(_, rel)| rel)
+        .ok_or_else(|| format!("no effort {n}"))?;
+    let on_disk =
+        std::fs::read_to_string(notes.root.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+    if notes::content_hash(&on_disk) != delivered {
+        return Err("its note changed while this binding read it; run the same command again to take up the current text".to_owned());
+    }
+    let mut file = EffortFile::parse(&on_disk)?;
+    let status = file.prop("status").unwrap_or("").to_owned();
+    let repo = (file.prop("repo").unwrap_or("").split(','))
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let open = crate::effort::roster::open_in_repo(&notes.root, &repo);
+    let others = || {
+        open.iter()
+            .map(crate::effort::roster::summary)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+    if matches!(status.as_str(), "done" | "abandoned") {
+        let mut why = format!(
+            "it's {status}, and a worker takes up open work only. If the work goes on, the session that dispatched you reopens it or names the effort that holds the work"
+        );
+        if !open.is_empty() {
+            why += &format!(".\n\n{}", others());
+        }
+        return Err(why);
+    }
+    let mut notice = Vec::new();
+    if file.prop("initiative").is_none_or(str::is_empty) && !open.is_empty() {
+        notice.push(format!(
+            "This effort isn't a member of the initiative open in {repo}. If the work you were dispatched to is one of its members, bind to that member instead with `astrolabe activate --effort <n> --worker`.\n\n{}",
+            others()
+        ));
+    }
+    if !matches!(status.as_str(), "proposed" | "ready") {
+        return Ok((notice.join("\n\n"), None));
+    }
+    file.set("status", "active");
+    let facts = RepoFacts::read(cwd);
+    stamp(
+        &mut file,
+        session,
+        provider,
+        stamp_facts(cwd, facts.as_ref()),
+    );
+    let text = file.render();
+    let hash = notes::content_hash(&text);
+    let op = Op {
+        reply_after_ms: None,
+        lesson_close: None,
+        key: format!("{key}-take-up"),
+        files: vec![(rel.clone(), text)],
+        renames: Vec::new(),
+        journal: Vec::new(),
+        message: format!("{n:04}: active (worker bound)"),
+        base: Some(notes::content_hash(&on_disk)),
+        states: Vec::new(),
+        committed: false,
+        digest: None,
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        rebaseline: None,
+    };
+    notes.apply(&op)?;
+    notice.insert(
+        0,
+        format!("Effort {n} was {status}; binding a worker marked it active, so the board shows the work started. Replace its Current state at your first save."),
+    );
+    let notice = notice.join("\n\n");
+    crate::application::finish(&notes, &op.key, &notice);
+    notes.spawn_sync();
+    Ok((notice, Some(hash)))
 }
 
 /// The properties a new effort note starts with.
@@ -798,7 +931,7 @@ fn save_inner(
     } else {
         None
     };
-    let head = saved_reply(&Reply {
+    let mut head = saved_reply(&Reply {
         record,
         status: file.prop("status").unwrap_or("?"),
         body_replaced: cmd.body.is_some(),
@@ -810,6 +943,22 @@ fn save_inner(
         issue: issue.as_deref(),
         unfinished: &unfinished_pieces(&file),
     });
+    // The page's own save shows every member where it stands: an orchestrator once saved its
+    // page seven times about landed work while every member still read proposed.
+    if req.page_binding
+        && let Ok(pages) = crate::effort::initiative_catalog(&notes.root)
+        && let Ok(page) = crate::effort::resolve_initiative(&pages, &req.number)
+        && let Ok(members) = crate::effort::initiative_members(&notes.root, page)
+    {
+        let open = crate::effort::roster::Open {
+            page: page.clone(),
+            members,
+        };
+        head += &format!(
+            "\n\n{}\nIf one of these moved, save it by number: `astrolabe effort read <n>`, then `astrolabe effort save --effort <n> …`.",
+            crate::effort::roster::summary(&open)
+        );
+    }
     crate::application::finish(&notes, key, &head);
     Ok(head)
 }

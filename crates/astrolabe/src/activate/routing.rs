@@ -45,6 +45,7 @@ pub(super) fn act(
     provider: &str,
     cwd: &Path,
     powershell: bool,
+    key: &str,
 ) -> (String, bool, Change, String) {
     let previous = read_state(dir, session);
     match args {
@@ -77,13 +78,42 @@ pub(super) fn act(
         }
         ["--initiative", _, "--worker"] => ("A worker cannot bind to an initiative.".into(), false, Change::Keep, String::new()),
         ["--effort", effort] | ["--effort", effort, "--worker"] => {
-            let worker = args.len() == 3;
             let previous = previous.ok().flatten();
+            // A worker reloading its effort without the flag is still that effort's worker.
+            let worker = args.len() == 3
+                || previous.as_ref().is_some_and(|p| {
+                    p.worker.is_true()
+                        && p.effort.as_deref().map(str::to_owned)
+                            == effort.trim().parse::<u32>().ok().map(|n| n.to_string())
+                });
             // The published checkpoint, not a stale local copy: another machine may hold it.
             let refreshed = crate::record::refresh_notes();
             match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
                 Ok(mut activation) => {
                     let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
+                    if worker {
+                        // After the binding's own checks: a binding refused for another reason
+                        // marks nothing active.
+                        let delivered = activation.state.delivered.as_deref().unwrap_or_default().to_owned();
+                        match crate::record::take_up(effort, &delivered, key, session, provider, cwd) {
+                            Ok((notice, hash)) => {
+                                if let Some(hash) = hash {
+                                    activation.state.delivered.set(hash);
+                                    // From the notes checkout the take-up's own commit moved
+                                    // what the Stop hook compares, so it's the baseline now.
+                                    if super::in_notes(cwd)
+                                        && let Some(facts) = crate::notes::RepoFacts::read(cwd)
+                                    {
+                                        activation.state.baseline.set(facts.fingerprint);
+                                    }
+                                }
+                                if !notice.is_empty() {
+                                    activation.head += &format!("\n\n{notice}");
+                                }
+                            }
+                            Err(why) => return (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
+                        }
+                    }
                     if worker && !activation.state.worker.is_true() {
                         activation.state.worker.set(true);
                         activation.head += &format!("\n\n{WORKER_RULE}");
@@ -522,6 +552,16 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 provider(input),
                 &cwd,
                 powershell,
+                // The same tool call retried gets the same key; with no id, every call its own.
+                &match input["tool_use_id"].as_str().filter(|id| !id.is_empty()) {
+                    Some(id) => crate::notes::hash(&format!("{session} {id} {command}")),
+                    None => random_hex().unwrap_or_else(|_| {
+                        crate::notes::hash(&format!(
+                            "{session} {command} {}",
+                            crate::notes::now_ms()
+                        ))
+                    }),
+                },
             );
             // The result first: a switch whose result can't be shown isn't made.
             let ticket = leave(&dir, &text, ok)?;

@@ -871,3 +871,118 @@ fn an_unrecordable_reload_block_still_gives_the_initiative_repair_command() {
     );
     assert!(!out.contains("--effort smooth-lines"), "{out}");
 }
+
+#[test]
+fn members_move_with_their_workers_and_drift_is_shown() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", INITIATIVE).1);
+    // The orchestrator's page save shows every member, and that none is in flight.
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort save --status active <<'ASTROLABE'\nTether cap is on main.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    for line in [
+        "Initiative \"Smooth ink\" (smooth-ink, active) members now:",
+        "- to start: 0002 Tether cap; 0003 Goo at speed",
+        "No member is active, in review or blocked",
+        "save it by number",
+    ] {
+        assert!(out.contains(line), "{line}\n{out}");
+    }
+    // A new effort whose title names the initiative is refused, and writes nothing.
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Smooth ink: tether follow-up\" <<'ASTROLABE'\nfollow up the tether\nASTROLABE\n",
+    );
+    assert!(
+        !ok && out.contains("names the initiative \"Smooth ink\"")
+            && out.contains("activate --effort <n> --worker")
+            && out.contains("0002 Tether cap"),
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before);
+    // One that only sits beside it hears it's there; one that joins it hears nothing.
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Unrelated cleanup\" <<'ASTROLABE'\ntidy the repo\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Initiative \"Smooth ink\" is open in demo"),
+        "{out}"
+    );
+    let (out, ok) = mac.bash(
+        "s3",
+        "astrolabe effort new --title \"Smooth ink pressure\" --initiative smooth-ink <<'ASTROLABE'\nink follows pressure\nASTROLABE\n",
+    );
+    assert!(ok && !out.contains("is open in demo"), "{out}");
+    // A worker bound to a proposed member marks it active, and saves from what it was given.
+    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 2 --worker");
+    assert!(
+        ok && out.contains("Effort 2 was proposed; binding a worker marked it active"),
+        "{out}"
+    );
+    assert!(mac.effort_text(2).contains("status: active"));
+    assert_eq!(
+        mac.log().lines().next(),
+        Some("0002: active (worker bound)")
+    );
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe effort save <<'ASTROLABE'\nCapping the tether.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    // Bound again, it changes nothing.
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 2 --worker");
+    assert!(ok && !out.contains("marked it active"), "{out}");
+    assert_eq!(mac.log().lines().count(), before);
+    // A worker bound to an open effort outside the initiative hears where the members are.
+    let (out, ok) = mac.bash("w2", "astrolabe activate --effort 4 --worker");
+    assert!(
+        ok && out.contains("isn't a member of the initiative open in demo")
+            && out.contains("- active: 0002 Tether cap"),
+        "{out}"
+    );
+    // A closed effort takes no worker.
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --status done <<'ASTROLABE'\nDone: the plan is filed.\nASTROLABE\n",
+        )
+        .1
+    );
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("w3", "astrolabe activate --effort 1 --worker");
+    assert!(
+        !ok && out.contains("it's done, and a worker takes up open work only"),
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before);
+    let (out, _) = mac.bash("w3", "astrolabe activate --status");
+    assert!(out.contains("No effort is set"), "{out}");
+    // Once the dispatcher closes it, its own worker can't reload it, flag or not.
+    assert!(mac.bash("lead", "astrolabe effort read 2").1);
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort save --effort 2 --status done <<'ASTROLABE'
+Done: the tether is capped.
+ASTROLABE
+",
+    );
+    assert!(ok, "{out}");
+    for cmd in [
+        "astrolabe activate --effort 2",
+        "astrolabe activate --effort 0002 --worker",
+    ] {
+        let (out, ok) = mac.bash("w1", cmd);
+        assert!(!ok && out.contains("it's done"), "{cmd}: {out}");
+    }
+}
