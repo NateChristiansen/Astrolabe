@@ -422,7 +422,10 @@ mod tests {
             "no lessons: no count, and the section only shows on its own page: {page}"
         );
         assert!(!page.contains("open draft"), "no drafts, no count");
-        assert!(page.contains("<section class=\"col drafts none\">") && page.contains("nothing waiting on you"));
+        assert!(
+            page.contains("<section class=\"col drafts none\">")
+                && page.contains("nothing waiting on you")
+        );
     }
 
     #[test]

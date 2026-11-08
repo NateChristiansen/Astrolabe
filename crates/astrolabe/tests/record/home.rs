@@ -353,7 +353,8 @@ fn the_board_is_served_fresh_on_localhost() {
     assert!(out.starts_with("HTTP/1.1 421"), "{out}");
     // A lesson in the notes' inbox is counted, listed and served as a page.
     assert!(
-        !page.contains("lessons to triage") && page.contains("<section class=\"col lessons none\">"),
+        !page.contains("lessons to triage")
+            && page.contains("<section class=\"col lessons none\">"),
         "{page}"
     );
     std::fs::create_dir_all(mac.notes.join("lessons")).unwrap();

@@ -275,27 +275,35 @@ fn work_sections(columns: &Columns, at: At) -> (String, String) {
 /// its own page; the overview shows lessons only when some wait, since zero is nothing to
 /// say, and shows drafts only as a count.
 fn lessons_section(rows: &BoardData, at: At) -> String {
-    inbox_section(at, "lessons", "Lessons to triage", &rows.lessons, "nothing to triage")
-        + &inbox_section(at, "drafts", "Open drafts", &rows.drafts, "nothing waiting on you")
+    inbox_section(
+        at,
+        "lessons",
+        "Lessons to triage",
+        &rows.lessons,
+        "nothing to triage",
+    ) + &inbox_section(
+        at,
+        "drafts",
+        "Open drafts",
+        &rows.drafts,
+        "nothing waiting on you",
+    )
 }
 
 fn inbox_section(at: At, class: &str, title: &str, pages: &[Lesson], empty: &str) -> String {
     let mut lines = String::new();
     for page in pages {
         lines += &format!(
-            "<li><a href=\"{}\">{}</a></li>
-",
+            "<li><a href=\"{}\">{}</a></li>\n",
             esc(&at.links.href(at.root, page.file.as_str())),
             esc(page.title.as_str())
         );
     }
     if lines.is_empty() {
-        lines = format!("<li class=\"empty\">{empty}</li>
-");
+        lines = format!("<li class=\"empty\">{empty}</li>\n");
     }
     format!(
-        "<section class=\"col {class}{}\">{}<ul>
-{lines}</ul></section>",
+        "<section class=\"col {class}{}\">{}<ul>\n{lines}</ul></section>",
         if pages.is_empty() { " none" } else { "" },
         heading(title, pages.len())
     )
