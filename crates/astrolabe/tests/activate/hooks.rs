@@ -478,7 +478,21 @@ fn input_trickling_past_the_deadline_is_blocked_as_unreadable() {
 
 #[test]
 fn only_gated_plugin_hooks_are_available() {
-    let f = Fixture::new();
+    // Nothing here reads notes or repos: an empty state folder is the whole fixture.
+    let dir = TempDir::new();
+    let state = dir.0.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(args)
+            .current_dir(&dir.0)
+            .env(STATE_VAR, &state)
+            .env("ASTROLABE_NO_DETACHED_SYNC", "1")
+            .env_remove(EFFORT_VAR)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
     for event in [
         "session-start",
         "pre-command",
@@ -486,13 +500,7 @@ fn only_gated_plugin_hooks_are_available() {
         "stop",
         "session-end",
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
-            .args(["hook", event])
-            .current_dir(&f.demo)
-            .env(STATE_VAR, f.state())
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let output = run(&["hook", event]);
         assert_eq!(
             output.status.code(),
             Some(2),
@@ -501,12 +509,13 @@ fn only_gated_plugin_hooks_are_available() {
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("hook <event> --if-active"));
     }
-    let (help, ok) = f.run(&f.demo, &["--help"], "", &[]);
-    assert!(ok);
+    let output = run(&["--help"]);
+    assert!(output.status.success());
     // `notes init` and `initiative new` are new; the retired one was v1's top-level `init`.
-    let help = help
+    let help = String::from_utf8_lossy(&output.stdout)
         .replace("notes <init <folder>|", "notes <")
         .replace("initiative new …|", "");
+    assert!(help.contains("activate <--effort"), "{help}");
     for retired in ["|init", "<init", "doctor", "serve [--db", "where", "mcp"] {
         assert!(
             !help.contains(retired),
