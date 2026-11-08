@@ -9,7 +9,6 @@
   --accent: #70439e;
   --accent-ink: #ffffff;
   --needs: #eae2f3;
-  --pane: #f7f5fa;
   --line-2: #d5cddd;
   --tag: #eae2f3;
   --tag-ink: #2e2638;
@@ -17,7 +16,6 @@
   --good: #405f31;
   --warn: #795016;
   --bad: #963838;
-  --shadow: none;
   color-scheme: light;
 }
 
@@ -33,7 +31,6 @@
     --accent: #c6aff5;
     --accent-ink: #271a39;
     --needs: #30243f;
-    --pane: #17141f;
     --line-2: #40364d;
     --tag: #30243f;
     --tag-ink: #f1edf7;
@@ -41,7 +38,6 @@
     --good: #b7d5a5;
     --warn: #edc899;
     --bad: #f0a6a6;
-    --shadow: none;
     color-scheme: dark;
   }
 }
@@ -57,7 +53,6 @@
   --accent: #c6aff5;
   --accent-ink: #271a39;
   --needs: #30243f;
-  --pane: #17141f;
   --line-2: #40364d;
   --tag: #30243f;
   --tag-ink: #f1edf7;
@@ -65,7 +60,6 @@
   --good: #b7d5a5;
   --warn: #edc899;
   --bad: #f0a6a6;
-  --shadow: none;
   color-scheme: dark;
 }
 
@@ -80,7 +74,6 @@
   --accent: #964b2b;
   --accent-ink: #ffffff;
   --needs: #f3e4d5;
-  --pane: #faf7f2;
   --line-2: #dfd0bf;
   --tag: #f3e4d5;
   --tag-ink: #34281f;
@@ -88,7 +81,6 @@
   --good: #405f31;
   --warn: #795016;
   --bad: #963838;
-  --shadow: none;
   color-scheme: light;
 }
 
@@ -104,7 +96,6 @@
     --accent: #e9b18d;
     --accent-ink: #352217;
     --needs: #392a20;
-    --pane: #1b1715;
     --line-2: #4b3c31;
     --tag: #392a20;
     --tag-ink: #f5ece5;
@@ -112,7 +103,6 @@
     --good: #b7d5a5;
     --warn: #edc899;
     --bad: #f0a6a6;
-    --shadow: none;
     color-scheme: dark;
   }
 }
@@ -128,7 +118,6 @@
   --accent: #e9b18d;
   --accent-ink: #352217;
   --needs: #392a20;
-  --pane: #1b1715;
   --line-2: #4b3c31;
   --tag: #392a20;
   --tag-ink: #f5ece5;
@@ -136,7 +125,6 @@
   --good: #b7d5a5;
   --warn: #edc899;
   --bad: #f0a6a6;
-  --shadow: none;
   color-scheme: dark;
 }
 
@@ -151,7 +139,6 @@
   --accent: #2d618d;
   --accent-ink: #ffffff;
   --needs: #e1edf6;
-  --pane: #f5f8fb;
   --line-2: #cbd8e3;
   --tag: #e1edf6;
   --tag-ink: #243342;
@@ -159,7 +146,6 @@
   --good: #405f31;
   --warn: #795016;
   --bad: #963838;
-  --shadow: none;
   color-scheme: light;
 }
 
@@ -175,7 +161,6 @@
     --accent: #9dc5e7;
     --accent-ink: #192a38;
     --needs: #243344;
-    --pane: #14191e;
     --line-2: #354858;
     --tag: #243344;
     --tag-ink: #edf2f7;
@@ -183,7 +168,6 @@
     --good: #b7d5a5;
     --warn: #edc899;
     --bad: #f0a6a6;
-    --shadow: none;
     color-scheme: dark;
   }
 }
@@ -199,7 +183,6 @@
   --accent: #9dc5e7;
   --accent-ink: #192a38;
   --needs: #243344;
-  --pane: #14191e;
   --line-2: #354858;
   --tag: #243344;
   --tag-ink: #edf2f7;
@@ -207,7 +190,6 @@
   --good: #b7d5a5;
   --warn: #edc899;
   --bad: #f0a6a6;
-  --shadow: none;
   color-scheme: dark;
 }
 
@@ -222,7 +204,6 @@
   --accent: #4c6939;
   --accent-ink: #ffffff;
   --needs: #e5eddc;
-  --pane: #f6f8f2;
   --line-2: #d0dac5;
   --tag: #e5eddc;
   --tag-ink: #2b3527;
@@ -230,7 +211,6 @@
   --good: #405f31;
   --warn: #795016;
   --bad: #963838;
-  --shadow: none;
   color-scheme: light;
 }
 
@@ -246,7 +226,6 @@
     --accent: #b6cda3;
     --accent-ink: #21301d;
     --needs: #2d3928;
-    --pane: #161b17;
     --line-2: #3b4b3b;
     --tag: #2d3928;
     --tag-ink: #edf2e9;
@@ -254,7 +233,6 @@
     --good: #b7d5a5;
     --warn: #edc899;
     --bad: #f0a6a6;
-    --shadow: none;
     color-scheme: dark;
   }
 }
@@ -270,7 +248,6 @@
   --accent: #b6cda3;
   --accent-ink: #21301d;
   --needs: #2d3928;
-  --pane: #161b17;
   --line-2: #3b4b3b;
   --tag: #2d3928;
   --tag-ink: #edf2e9;
@@ -278,7 +255,6 @@
   --good: #b7d5a5;
   --warn: #edc899;
   --bad: #f0a6a6;
-  --shadow: none;
   color-scheme: dark;
 }
 
@@ -293,7 +269,6 @@
   --accent: #50565e;
   --accent-ink: #ffffff;
   --needs: #e7e8e9;
-  --pane: #f7f7f6;
   --line-2: #d5d7d8;
   --tag: #e7e8e9;
   --tag-ink: #292b2e;
@@ -301,7 +276,6 @@
   --good: #405f31;
   --warn: #795016;
   --bad: #963838;
-  --shadow: none;
   color-scheme: light;
 }
 
@@ -317,7 +291,6 @@
     --accent: #d1d2d4;
     --accent-ink: #25272a;
     --needs: #313438;
-    --pane: #18191a;
     --line-2: #42464a;
     --tag: #313438;
     --tag-ink: #f1f1f0;
@@ -325,7 +298,6 @@
     --good: #b7d5a5;
     --warn: #edc899;
     --bad: #f0a6a6;
-    --shadow: none;
     color-scheme: dark;
   }
 }
@@ -341,7 +313,6 @@
   --accent: #d1d2d4;
   --accent-ink: #25272a;
   --needs: #313438;
-  --pane: #18191a;
   --line-2: #42464a;
   --tag: #313438;
   --tag-ink: #f1f1f0;
@@ -349,7 +320,6 @@
   --good: #b7d5a5;
   --warn: #edc899;
   --bad: #f0a6a6;
-  --shadow: none;
   color-scheme: dark;
 }
 

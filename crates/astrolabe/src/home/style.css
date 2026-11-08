@@ -1135,27 +1135,6 @@ h1, h2, h3, p {
   font-size: 14.5px;
 }
 
-.tree .top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 10px;
-  border-radius: 7px;
-  font-weight: 500;
-  text-decoration: none;
-  margin-bottom: 10px;
-}
-
-.tree .top svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  color: var(--mute);
-}
-
 .tree .f.on {
   font-weight: 500;
   background: var(--sel);
@@ -1639,10 +1618,6 @@ h1, h2, h3, p {
 .outline a:hover {
   color: var(--ink);
   border-left-color: var(--accent);
-}
-
-.card.flash {
-  border-color: var(--accent);
 }
 
 /* View switches: the board shows one section per view. */
