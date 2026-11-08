@@ -444,3 +444,23 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod example_tests {
+    use super::*;
+
+    #[test]
+    fn the_session_texts_example_is_a_current_state_the_save_accepts() {
+        let example = crate::activate::SHAPE
+            .split("Like this, at done:\n")
+            .nth(1)
+            .unwrap();
+        let body: Vec<&str> = example
+            .lines()
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect();
+        let body = body.join("\n");
+        assert_eq!(body.split("\n\n").count(), 3, "{body}");
+        as_current(&body).unwrap();
+    }
+}

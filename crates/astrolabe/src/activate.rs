@@ -14,6 +14,8 @@ mod repos;
 mod routing;
 mod tickets;
 
+#[cfg(test)]
+pub(crate) use context::SHAPE;
 pub use context::{
     Activation, Effort, GUARD_SCOPE, RECORD_RULE, WORKER_RULE, read_effort, session_name, switch_on,
 };
