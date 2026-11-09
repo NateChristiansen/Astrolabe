@@ -180,9 +180,12 @@ fn owned(words: &[&str]) -> Vec<String> {
 /// Where an app's Astrolabe marketplace points now: None when it has none registered,
 /// Some(None) when it follows the default branch or a folder. With it, what the
 /// marketplace was added from, when the app's records show it.
-fn registered(app: App, cli: &Path) -> Option<(Option<String>, Option<String>)> {
+type Registration = Option<(Option<String>, Option<String>)>;
+
+/// An app's registration, or why its own record of it can't be read.
+fn registered(app: App, cli: &Path) -> Result<Registration, String> {
     match app {
-        App::Claude => {
+        App::Claude => Ok((|| {
             let out = Command::new(cli)
                 .args(["plugin", "marketplace", "list", "--json"])
                 .output()
@@ -197,12 +200,40 @@ fn registered(app: App, cli: &Path) -> Option<(Option<String>, Option<String>)> 
                 entry["ref"].as_str().map(str::to_owned),
                 source.map(str::to_owned),
             ))
-        }
+        })()),
         App::Codex => {
-            let config = std::fs::read_to_string(codex_home()?.join("config.toml")).ok()?;
-            Some((codex_ref(&config)?, codex_source(&config)))
+            let Some(path) = codex_home().map(|home| home.join("config.toml")) else {
+                return Ok(None);
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(config) => codex_registration(&config, &path),
+                // Codex with no config has nothing registered.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(unread(&path, &e.to_string())),
+            }
         }
     }
+}
+
+/// Codex's registration from its config at `path`, or why that file can't be trusted. A
+/// config that isn't TOML is not an empty one: swapping a registration nobody could
+/// read would remove it with nothing to put back.
+fn codex_registration(config: &str, path: &Path) -> Result<Registration, String> {
+    if let Err(e) = config.parse::<toml_edit::DocumentMut>() {
+        let why = e.to_string();
+        return Err(unread(
+            path,
+            why.lines().next().unwrap_or("it is not valid TOML"),
+        ));
+    }
+    Ok(codex_ref(config).map(|git_ref| (git_ref, codex_source(config))))
+}
+
+fn unread(path: &Path, why: &str) -> String {
+    format!(
+        "{} couldn't be read ({why}), so its plugin wasn't touched. Fix that file, then run `astrolabe update` again.",
+        path.display()
+    )
 }
 
 fn codex_home() -> Option<PathBuf> {
@@ -580,12 +611,18 @@ pub fn command(args: &[&str]) -> Result<String, String> {
         .iter()
         .map(|&app| {
             let cli = on_path(app.cli());
-            let (follows, source) = cli.as_deref().and_then(|c| registered(app, c)).unzip();
+            let (registration, unreadable) = match cli.as_deref().map(|c| registered(app, c)) {
+                Some(Ok(registration)) => (registration, None),
+                Some(Err(why)) => (None, Some(why)),
+                None => (None, None),
+            };
+            let (follows, source) = registration.unzip();
             Seen {
                 app,
                 cli,
                 follows,
                 source: source.flatten(),
+                unreadable,
             }
         })
         .collect();
@@ -618,6 +655,9 @@ struct Seen {
     /// What that marketplace was added from (a URL, `owner/repo` or a folder), when the
     /// app's records show it: what a failed ref change adds back.
     source: Option<String>,
+    /// Why the app's own record of its marketplace couldn't be read, when it couldn't:
+    /// its plugin is left alone, since nothing says what is there to put back.
+    unreadable: Option<String>,
 }
 
 /// An app's commands in order, each with whether it must succeed.
@@ -689,6 +729,9 @@ fn run(
             let Some(cli) = s.cli.as_ref() else {
                 return (s.app, None, Plugin::Missing);
             };
+            if let Some(why) = &s.unreadable {
+                return (s.app, Some(cli), Plugin::Failed(why.clone()));
+            }
             let follows = s
                 .follows
                 .as_ref()
@@ -1095,6 +1138,7 @@ mod tests {
             cli: cli.clone(),
             follows: Some(Some(git_ref.into())),
             source: Some(format!("{REPO}.git")),
+            unreadable: None,
         })
     }
 
@@ -1285,6 +1329,93 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_config_that_cannot_be_read_is_an_error_not_an_empty_registration() {
+        let path = Path::new("/somewhere/.codex/config.toml");
+        let config = "[marketplaces.astrolabe]\nsource = \"https://example.invalid/a.git\"\nref = \"main\"\n";
+        assert_eq!(
+            codex_registration(config, path),
+            Ok(Some((
+                Some("main".into()),
+                Some("https://example.invalid/a.git".into())
+            )))
+        );
+        assert_eq!(codex_registration("[plugins.other]\n", path), Ok(None));
+        let why =
+            codex_registration("[marketplaces.astrolabe\nref = \"main\"\n", path).unwrap_err();
+        assert!(why.contains(&path.display().to_string()), "{why}");
+        assert!(
+            why.contains("couldn't be read") && why.contains("its plugin wasn't touched"),
+            "{why}"
+        );
+        assert!(!why.contains('\n'), "one line: {why}");
+    }
+
+    #[test]
+    fn an_app_whose_registration_cannot_be_read_is_left_alone() {
+        let claude = Scratch::new("unreadable-claude");
+        let codex = Scratch::new("unreadable-codex");
+        let source = plugin(&claude.0.join("source"), NEW_HOOKS);
+        let current = plugin(&claude.0.join("current"), NEW_HOOKS);
+        let why = "/somewhere/config.toml couldn't be read, so its plugin wasn't touched.";
+        let seen = [
+            Seen {
+                app: App::Claude,
+                cli: Some(fake_cli(&claude.0)),
+                follows: Some(Some("nightly".into())),
+                source: Some(format!("{REPO}.git")),
+                unreadable: None,
+            },
+            Seen {
+                app: App::Codex,
+                cli: Some(fake_cli(&codex.0)),
+                follows: None,
+                source: None,
+                unreadable: Some(why.into()),
+            },
+        ];
+        let copies = |_| Some((current.clone(), source.clone()));
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &copies,
+            &|_| Ok(()),
+            &claude.0,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(report.contains(&format!("Codex: {why}")), "{report}");
+        assert_eq!(calls(&codex.0), [""; 0], "no Codex command runs");
+        // The other app is handled as usual.
+        assert_eq!(calls(&claude.0), ["plugin marketplace update astrolabe"]);
+        assert!(
+            report.contains("Claude Code: plugin already matches nightly."),
+            "{report}"
+        );
+
+        // The program still moves: a dry run, since a real one would install it.
+        let report = run(
+            Channel::Nightly,
+            &nightly(false),
+            &seen,
+            &copies,
+            &|_| Ok(()),
+            &claude.0,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            report.contains("Program: would run the 0.5.0 nightly 1a2b3c4 installer"),
+            "{report}"
+        );
+        assert!(report.contains(&format!("Codex: {why}")), "{report}");
+        assert!(!report.contains("Codex: would run"), "{report}");
+        assert_eq!(calls(&codex.0), [""; 0]);
+    }
+
+    #[test]
     fn a_printed_command_quotes_an_argument_the_shell_would_split() {
         let folder = "/Users/me/Plugin Sources/Astrolabe";
         for app in App::ALL {
@@ -1355,6 +1486,7 @@ mod tests {
             cli: Some(cli),
             follows: Some(Some(git_ref.into())),
             source: Some(format!("{REPO}.git")),
+            unreadable: None,
         }]
     }
 
