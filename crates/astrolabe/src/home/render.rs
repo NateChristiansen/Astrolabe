@@ -159,18 +159,9 @@ fn columns<'c, 'r>(
         let slot = if card.row.needs_owner {
             NEEDS
         } else {
-            match card.status() {
-                "active" => ACTIVE,
-                "ready" => READY,
-                "blocked" => BLOCKED,
-                "review" => REVIEW,
-                "done" | "abandoned" => {
-                    if !at.fresh(card) {
-                        continue;
-                    }
-                    DONE
-                }
-                _ => IDEAS,
+            match status_slot(card.status()) {
+                DONE if !at.fresh(card) => continue,
+                slot => slot,
             }
         };
         columns[slot].push(card);
@@ -181,6 +172,29 @@ fn columns<'c, 'r>(
         column.sort_by_key(|c| (c.priority_rank(), -c.updated_ms.unwrap_or(0)));
     }
     columns
+}
+
+/// The column a status files a card in when it doesn't wait on the owner.
+fn status_slot(status: &str) -> usize {
+    match status {
+        "active" => ACTIVE,
+        "ready" => READY,
+        "blocked" => BLOCKED,
+        "review" => REVIEW,
+        "done" | "abandoned" => DONE,
+        _ => IDEAS,
+    }
+}
+
+/// How many cards under Needs you have the status that column `slot` holds. A card
+/// that waits on the owner sits there instead of in its status column, and an
+/// initiative's header still counts it by status, so the board's counts and summary
+/// count it too.
+fn held_for_owner(columns: &Columns, slot: usize) -> usize {
+    columns[NEEDS]
+        .iter()
+        .filter(|c| status_slot(c.status()) == slot)
+        .count()
 }
 
 /// The titles of the views that show one list, headed the way the notes view is. Each
@@ -225,17 +239,32 @@ fn cards_of(column: &[&Card], small: bool, at: At) -> String {
 }
 
 /// The work: what needs the owner, then active cards, review, waiting, ready and ideas,
-/// each a folding grid that fits the window, and a line naming what's empty.
+/// each a folding grid that fits the window, and a line naming what's empty. A status
+/// whose only cards wait on the owner isn't empty: the line says they're under Needs you.
 fn work_sections(columns: &Columns, at: At) -> String {
     let mut sections = String::new();
     let mut quiet = Vec::new();
-    for (key, title, slot, none, small) in [
-        ("needsyou", "Needs you", NEEDS, "", false),
-        ("active", "In motion", ACTIVE, "", false),
-        ("review", "In review", REVIEW, "nothing in review", true),
-        ("blocked", "Waiting", BLOCKED, "nothing blocked", true),
-        ("ready", "Up next", READY, "nothing ready", true),
-        ("ideas", "Ideas", IDEAS, "no ideas parked", true),
+    for (key, title, slot, none, held, small) in [
+        ("needsyou", "Needs you", NEEDS, "", "", false),
+        ("active", "In motion", ACTIVE, "", "", false),
+        (
+            "review",
+            "In review",
+            REVIEW,
+            "nothing in review",
+            "in review",
+            true,
+        ),
+        (
+            "blocked",
+            "Waiting",
+            BLOCKED,
+            "nothing blocked",
+            "blocked",
+            true,
+        ),
+        ("ready", "Up next", READY, "nothing ready", "ready", true),
+        ("ideas", "Ideas", IDEAS, "no ideas parked", "parked", true),
     ] {
         let column = &columns[slot];
         if column.is_empty() {
@@ -244,7 +273,10 @@ fn work_sections(columns: &Columns, at: At) -> String {
                 // the page so a test and the live swap can find the column by name.
                 sections += &format!("<section class=\"col {key}\" hidden></section>\n");
             } else {
-                quiet.push(none);
+                quiet.push(match held_for_owner(columns, slot) {
+                    0 => none.to_owned(),
+                    n => format!("{n} {held} under Needs you"),
+                });
             }
             continue;
         }
@@ -452,11 +484,10 @@ fn done_section(done: &[&Card], at: At) -> String {
 /// The chips: every count that isn't zero, then the notes' state.
 fn chips(rows: &BoardData, columns: &Columns) -> String {
     let lessons = &rows.lessons;
-    let active_n = columns[ACTIVE].len()
-        + columns[NEEDS]
-            .iter()
-            .filter(|c| c.status() == "active")
-            .count();
+    // Counted by status, as an initiative's header counts its members: a card that waits
+    // on the owner is under Needs you and is still active, blocked or in review.
+    let with_held = |slot: usize| columns[slot].len() + held_for_owner(columns, slot);
+    let active_n = with_held(ACTIVE);
     let chip = |dot: &str, n: usize, label: &str| {
         format!("<span class=\"chip\"><span class=\"dot {dot}\"></span><b>{n}</b> {label}</span>")
     };
@@ -480,11 +511,13 @@ fn chips(rows: &BoardData, columns: &Columns) -> String {
         ("blocked", BLOCKED, "blocked"),
         ("review", REVIEW, "in review"),
         ("idea", IDEAS, "ideas"),
-        ("done", DONE, "done"),
     ] {
-        if !columns[slot].is_empty() {
-            chips += &chip(dot, columns[slot].len(), label);
+        if with_held(slot) > 0 {
+            chips += &chip(dot, with_held(slot), label);
         }
+    }
+    if !columns[DONE].is_empty() {
+        chips += &chip("done", columns[DONE].len(), "done");
     }
     let warnings: Vec<&str> = rows.notes.iter().map(String::as_str).collect();
     if !lessons.is_empty() {
@@ -814,10 +847,11 @@ pub(super) fn progress_parts(p: &crate::board::InitiativeProgress) -> ProgressPa
             );
         }
     }
-    let need = if p.need_you > 0 {
-        format!("<span class=\"need\">{} waiting on you</span>", p.need_you)
-    } else {
-        String::new()
+    // The board's own words for the same efforts: its chip reads "1 needs you".
+    let need = match p.need_you {
+        0 => String::new(),
+        1 => "<span class=\"need\">1 needs you</span>".to_owned(),
+        n => format!("<span class=\"need\">{n} need you</span>"),
     };
     ProgressParts { counts, need, bar }
 }

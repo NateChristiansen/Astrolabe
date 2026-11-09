@@ -105,7 +105,7 @@ mod tests {
                 ">Shared work</a>",
                 "Building together.",
                 "<span class=\"k-done\">1 of 5 done</span> · <span class=\"k-review\">1 in review</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span> · <span class=\"k-start\">1 to start</span> · <span class=\"k-abandoned\">1 abandoned</span>",
-                "<span class=\"need\">3 waiting on you</span>",
+                "<span class=\"need\">3 need you</span>",
                 "<i class=\"k-done\" style=\"width:20.00%\"></i><i class=\"k-review\" style=\"width:20.00%\"></i><i class=\"k-active\" style=\"width:20.00%\"></i><i class=\"k-blocked\" style=\"width:20.00%\"></i></span>",
                 "initiatives/finished-members.md",
                 "awaiting acceptance",
@@ -116,7 +116,7 @@ mod tests {
                 "all members abandoned",
                 "Unfiled work <span class=\"pill\">no page</span>",
                 "<span class=\"k-done\">1 of 3 done</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span>",
-                "<span class=\"need\">1 waiting on you</span>",
+                "<span class=\"need\">1 needs you</span>",
                 "loose-tools <span class=\"pill\">no page</span>",
                 "<span class=\"k-done\">0 of 1 done</span> · <span class=\"k-start\">1 to start</span>",
             ] {
@@ -227,7 +227,7 @@ mod tests {
         let counts = "<span class=\"num\"><span class=\"k-done\">1 of 5 done</span> · <span class=\"k-review\">1 in review</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span> · <span class=\"k-start\">1 to start</span> · <span class=\"k-abandoned\">1 abandoned</span></span>";
         assert!(glance.contains(counts), "{glance}");
         assert!(
-            glance.contains("<span class=\"need\">3 waiting on you</span>"),
+            glance.contains("<span class=\"need\">3 need you</span>"),
             "members and the page itself: {glance}"
         );
         assert!(
@@ -291,6 +291,176 @@ mod tests {
         assert!(
             prose.contains("<p>And <a href=\"/efforts/0004-member.md\">Fourth</a><span class=\"stat s-active\">active</span> inline. Done.</p>"),
             "{prose}"
+        );
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    /// The shared-work page of the fixture with `body` as its prose, written to disk the
+    /// way a stored page is, and that page rendered.
+    fn shared_work_page(notes: &Notes, body: &str) -> (String, String) {
+        let rel = "initiatives/shared-work.md";
+        let text = format!(
+            "---\nstatus: active\nrepo: demo\nwaits_for: \nupdated: 2026-11-05T12:00-07:00\n---\n# Shared work\n\n{body}"
+        );
+        std::fs::write(notes.root.join(rel), &text).unwrap();
+        let rows = crate::board::rows_in(notes, None, true);
+        let page = super::markdown::note_page(&text, rel, &rows, &notes.root, NOW, Look::default());
+        let start = page.find("<div class=\"prose\">").unwrap();
+        let prose = page[start..start + page[start..].find("<aside").unwrap()].to_owned();
+        (text, prose)
+    }
+
+    #[test]
+    fn an_initiative_page_lists_every_member_with_its_status() {
+        let notes = crate::board::initiative_fixture();
+        // The prose names four efforts out of number order: two members, an abandoned
+        // member, and one that belongs to another initiative now. Members 5, 6 and 9 joined
+        // through their own front matter and the prose never heard of them.
+        // A fifth is an effort with no status line that was never a member.
+        std::fs::write(
+            notes.root.join("efforts/0030-plain.md"),
+            "---\nrepo: demo\n---\n# 0030 Plain\n\n## Current state\nParked.\n",
+        )
+        .unwrap();
+        let (text, prose) = shared_work_page(
+            &notes,
+            "## Efforts and order\n\n1. [Seventh](../efforts/0007-member.md). Starts it.\n2. [Fourth](../efforts/0004-member.md). Follows.\n3. [Dropped](../efforts/0008-member.md). Was turned down.\n4. [Gone](../efforts/0010-member.md). Moved out.\n5. [Old](../efforts/0030-plain.md). Moved elsewhere.\n\n## What completion means\n\nAll of it works.\n",
+        );
+        // The prose keeps its order and its text.
+        let at = |needle: &str| {
+            prose
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {prose}"))
+        };
+        assert!(
+            at("Seventh</a><span class=\"stat s-ready\">to start</span></span>Starts it.</li>")
+                < at("Fourth</a><span class=\"stat s-active\">active</span></span>Follows.</li>")
+        );
+        // An abandoned member the prose links says so, and so does one that has left.
+        at(
+            "Dropped</a><span class=\"stat s-abandoned\">abandoned</span></span>Was turned down.</li>",
+        );
+        at(
+            "Gone</a><span class=\"stat s-done\">done</span><span class=\"stat left\">not a member</span></span>Moved out.</li>",
+        );
+        // One with no status has no status pill and still says it isn't a member.
+        at(
+            "<span class=\"etitle\"><a href=\"/efforts/0030-plain.md\">Old</a><span class=\"stat left\">not a member</span></span>Moved elsewhere.</li>",
+        );
+        // The members the prose doesn't mention follow its list, in number order, each
+        // with its status, before the next section.
+        let listed = "<p class=\"members-label\">Other members</p>\n<ul class=\"members\">\n\
+            <li><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></li>\n\
+            <li><a href=\"/efforts/0006-member.md\">6 Member</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span></li>\n\
+            <li><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span></li>\n</ul>\n";
+        assert!(at("Moved elsewhere.</li>") < at(listed));
+        assert!(at(listed) < at("What completion means</h2>"));
+        // No member is listed twice, and no other initiative's member is listed at all.
+        for n in [4, 5, 6, 7, 8, 9, 10] {
+            assert_eq!(
+                prose
+                    .matches(&format!("href=\"/efforts/{n:04}-member.md\""))
+                    .count(),
+                1,
+                "{n}: {prose}"
+            );
+        }
+        assert!(!prose.contains("0011-member.md"), "{prose}");
+        // Rendering writes nothing into the stored page.
+        assert_eq!(
+            std::fs::read_to_string(notes.root.join("initiatives/shared-work.md")).unwrap(),
+            text
+        );
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn a_page_whose_prose_names_no_member_lists_them_all_at_its_end() {
+        let notes = crate::board::initiative_fixture();
+        let (_, prose) = shared_work_page(&notes, "## Purpose\n\nWork together.\n");
+        let list = prose
+            .split("Work together.</p>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{prose}"));
+        assert!(
+            list.trim_start()
+                .starts_with("<p class=\"members-label\">Members</p>\n<ul class=\"members\">"),
+            "{prose}"
+        );
+        let order: Vec<usize> = [4, 5, 6, 7, 8, 9]
+            .iter()
+            .map(|n| {
+                list.find(&format!("href=\"/efforts/{n:04}-member.md\""))
+                    .unwrap()
+            })
+            .collect();
+        assert!(order.is_sorted(), "{list}");
+        assert!(
+            list.contains("8 Member</a><span class=\"stat s-abandoned\">abandoned</span></li>"),
+            "{list}"
+        );
+        // A page with no members, and a note that isn't an initiative, get no list; a
+        // link from another note to an effort is never called a non-member.
+        let rows = crate::board::rows_in(&notes, None, true);
+        for (rel, text) in [
+            (
+                "initiatives/empty-work.md",
+                "# Empty work\n\nNothing yet.\n",
+            ),
+            (
+                "efforts/0004-member.md",
+                "# 0004 Member\n\n[Gone](0010-member.md). Elsewhere.\n",
+            ),
+        ] {
+            let page =
+                super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
+            assert!(
+                !page.contains("class=\"members") && !page.contains("not a member"),
+                "{rel}: {page}"
+            );
+        }
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn the_board_and_an_initiative_header_say_owner_blocked_the_same_way() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, false);
+        let board = board_html(&rows, &notes.root, NOW, Links::Served);
+        // Shared work has one member blocked on the owner and one in review on the owner,
+        // and the page itself waits on the owner. The header counts them by status and
+        // again as needing the owner, in the board's own words.
+        let column = section(&board, "initiatives");
+        assert!(
+            column.contains("<span class=\"k-blocked\">1 blocked</span>")
+                && column.contains("<span class=\"need\">3 need you</span>")
+                && column.contains("<span class=\"need\">1 needs you</span>")
+                && !column.contains("waiting on you"),
+            "{column}"
+        );
+        // Their cards sit under Needs you, so the status columns are empty. The summary
+        // says where they went instead of saying there are none, and the chips count them
+        // by status as the header does.
+        let needs = section(&board, "needsyou");
+        assert!(
+            needs.contains("data-n=\"3\"") && needs.contains("data-n=\"5\""),
+            "{needs}"
+        );
+        assert!(
+            board.contains(
+                "class=\"quiet\">1 in review under Needs you, 2 blocked under Needs you, no ideas parked.<"
+            ),
+            "{board}"
+        );
+        assert!(
+            !board.contains("othing blocked") && !board.contains("othing in review"),
+            "{board}"
+        );
+        assert!(
+            board.contains("<b>2</b> blocked</span>")
+                && board.contains("<b>1</b> in review</span>")
+                && board.contains("<b>4</b> need you</span>"),
+            "{board}"
         );
         std::fs::remove_dir_all(notes.root).unwrap();
     }

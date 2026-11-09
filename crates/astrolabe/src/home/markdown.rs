@@ -180,7 +180,8 @@ pub(super) fn note_page(
         }),
         other => other,
     });
-    let events = with_effort_status(events.collect(), rows);
+    let members = initiative_members(rel, rows, root);
+    let events = with_effort_status(events.collect(), rows, members.as_deref());
     let mut rendered = String::new();
     html::push_html(&mut rendered, events.into_iter());
     // The rail beside the text holds the outline, when there are sections to jump
@@ -269,34 +270,84 @@ pub(super) fn note_page(
     )
 }
 
+/// The members of the initiative whose page is at `rel`, in number order, or None for any
+/// other note. Membership is each effort's own `initiative:` line, resolved the way the
+/// board resolves it, so the page lists who the header counts.
+fn initiative_members<'r>(
+    rel: &str,
+    rows: &'r BoardData,
+    root: &Path,
+) -> Option<Vec<&'r crate::board::EffortRow>> {
+    rows.initiatives
+        .iter()
+        .find(|i| i.page.file.as_deref() == Some(rel))?;
+    let pages = crate::effort::initiative_catalog(root).ok()?;
+    let mut members: Vec<_> = rows
+        .efforts
+        .iter()
+        .filter(|e| {
+            e.initiative
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .and_then(|name| crate::effort::resolve_initiative(&pages, name).ok())
+                .is_some_and(|page| page.path == rel)
+        })
+        .collect();
+    members.sort_by_key(|e| e.number);
+    Some(members)
+}
+
 /// A link to an effort note carries the effort's status after it, as the board shows it,
 /// and "needs you" when the effort waits on the owner. A link that opens its paragraph or
 /// list item and is followed by a full stop is the effort's title line, as an
 /// initiative's Efforts list writes them: the pill ends the line and the stop goes, so
 /// the text after it reads as the description below.
+///
+/// On an initiative's page, `members` are its members. A title line there for an effort
+/// that isn't one says so, since the prose is written once and an effort can leave. The
+/// members the prose never links are listed after the section that holds its last member
+/// link, or at the end when it links none: the page shows every member, and the stored
+/// prose keeps its own order and text.
 fn with_effort_status<'a>(
     events: Vec<pulldown_cmark::Event<'a>>,
     rows: &BoardData,
+    members: Option<&[&crate::board::EffortRow]>,
 ) -> Vec<pulldown_cmark::Event<'a>> {
-    use pulldown_cmark::{Event, Tag, TagEnd};
+    use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+    let is_member = |effort: &crate::board::EffortRow| {
+        members.is_none_or(|all| all.iter().any(|m| m.file == effort.file))
+    };
     let mut out = Vec::with_capacity(events.len());
+    let mut linked: Vec<&str> = Vec::new();
+    let mut after_last_member = None;
     let mut i = 0;
     while i < events.len() {
-        let pill = match &events[i] {
-            Event::Start(Tag::Link { dest_url, .. }) => status_pill(dest_url, rows),
+        let effort = match &events[i] {
+            Event::Start(Tag::Link { dest_url, .. }) => linked_effort(dest_url, rows),
             _ => None,
         };
-        let end = pill.as_ref().and_then(|_| {
-            events[i..]
-                .iter()
-                .position(|e| matches!(e, Event::End(TagEnd::Link)))
-                .map(|k| i + k)
-        });
-        let (Some(pill), Some(end)) = (pill, end) else {
+        let pill = effort.and_then(status_pill);
+        // An effort with no status has no pill, and can still be one the list names
+        // that isn't a member.
+        let left = effort.is_some_and(|e| !is_member(e));
+        let end = (pill.is_some() || left)
+            .then(|| {
+                events[i..]
+                    .iter()
+                    .position(|e| matches!(e, Event::End(TagEnd::Link)))
+                    .map(|k| i + k)
+            })
+            .flatten();
+        if let Some(effort) = effort.filter(|e| members.is_some() && is_member(e)) {
+            linked.extend(effort.file.as_deref());
+            after_last_member = Some(out.len());
+        }
+        let Some(end) = end else {
             out.push(events[i].clone());
             i += 1;
             continue;
         };
+        let pill = pill.unwrap_or_default();
         let opens = i == 0
             || matches!(
                 events[i - 1],
@@ -310,29 +361,87 @@ fn with_effort_status<'a>(
             _ => None,
         };
         if let Some(rest) = rest {
+            let left = if left {
+                "<span class=\"stat left\">not a member</span>"
+            } else {
+                ""
+            };
             out.push(Event::Html("<span class=\"etitle\">".into()));
             out.extend(events[i..=end].iter().cloned());
-            out.push(Event::Html(format!("{pill}</span>").into()));
+            out.push(Event::Html(format!("{pill}{left}</span>").into()));
             if !rest.is_empty() {
                 out.push(Event::Text(rest.into()));
             }
             i = end + 2;
         } else {
             out.extend(events[i..=end].iter().cloned());
-            out.push(Event::Html(pill.into()));
+            if !pill.is_empty() {
+                out.push(Event::Html(pill.into()));
+            }
             i = end + 1;
         }
+    }
+    let unlisted: String = members
+        .unwrap_or_default()
+        .iter()
+        .filter(|m| !m.file.as_deref().is_some_and(|f| linked.contains(&f)))
+        .map(|m| {
+            let number = m.number.map(|n| format!("{n} ")).unwrap_or_default();
+            format!(
+                "<li><a href=\"/{}\">{}{}</a>{}</li>\n",
+                esc(&percent(m.file.as_deref().unwrap_or_default())),
+                esc(&number),
+                esc(m.title.as_deref().unwrap_or_default()),
+                status_pill(m).unwrap_or_default()
+            )
+        })
+        .collect();
+    if !unlisted.is_empty() {
+        let label = if linked.is_empty() {
+            "Members"
+        } else {
+            "Other members"
+        };
+        let list = Event::Html(
+            format!(
+                "<p class=\"members-label\">{label}</p>\n<ul class=\"members\">\n{unlisted}</ul>\n"
+            )
+            .into(),
+        );
+        // The end of the section that holds the last member link: the next first or
+        // second level heading after it.
+        let at = after_last_member
+            .and_then(|from| {
+                out[from..]
+                    .iter()
+                    .position(|e| {
+                        matches!(
+                            e,
+                            Event::Start(Tag::Heading {
+                                level: HeadingLevel::H1 | HeadingLevel::H2,
+                                ..
+                            })
+                        )
+                    })
+                    .map(|k| from + k)
+            })
+            .unwrap_or(out.len());
+        out.insert(at, list);
     }
     out
 }
 
-/// The status pill for a link to an effort's page, or None for any other link.
-fn status_pill(dest: &str, rows: &BoardData) -> Option<String> {
+/// The effort a link to an effort's page opens, or None for any other link.
+fn linked_effort<'r>(dest: &str, rows: &'r BoardData) -> Option<&'r crate::board::EffortRow> {
     let path = dest.strip_prefix('/')?.split('#').next()?;
-    let effort = rows
-        .efforts
+    rows.efforts
         .iter()
-        .find(|e| e.file.as_deref().is_some_and(|f| percent(f) == path))?;
+        .find(|e| e.file.as_deref().is_some_and(|f| percent(f) == path))
+}
+
+/// An effort's status as a pill, with "needs you" when it waits on the owner; None for
+/// an effort with no status.
+fn status_pill(effort: &crate::board::EffortRow) -> Option<String> {
     let status = effort.status.as_deref().unwrap_or_default();
     let word = match status {
         "" => return None,
