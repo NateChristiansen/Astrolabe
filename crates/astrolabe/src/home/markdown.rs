@@ -84,7 +84,8 @@ pub(super) fn note_page(
     let facts = format!("<div class=\"facts\"><dl>{}</dl></div>", facts.join(""));
     let name = rel.rsplit('/').next().unwrap_or(rel);
     // An effort's file keeps its padded number ("0043 …"); its page reads "43 …".
-    let effort = rows.efforts.iter().any(|e| e.file.as_deref() == Some(rel));
+    let own = rows.efforts.iter().find(|e| e.file.as_deref() == Some(rel));
+    let effort = own.is_some();
     let raw_title = body
         .lines()
         .find_map(|l| l.strip_prefix("# "))
@@ -179,8 +180,9 @@ pub(super) fn note_page(
         }),
         other => other,
     });
+    let events = with_effort_status(events.collect(), rows);
     let mut rendered = String::new();
-    html::push_html(&mut rendered, events);
+    html::push_html(&mut rendered, events.into_iter());
     // The rail beside the text holds the outline, when there are sections to jump
     // between, and always the facts, so every note keeps them in the same place.
     let outline = if outline.len() > 1 {
@@ -205,7 +207,27 @@ pub(super) fn note_page(
     } else {
         format!("<div class=\"props\">{}</div>", pills.join(""))
     };
-    let props = format!("{}{props}", part_of.unwrap_or_default());
+    // What the record is up to, at a glance, from the rows the board draws: an
+    // initiative's progress over its members, an effort's ticked pieces.
+    let glance = if let Some(progress) = rows
+        .initiatives
+        .iter()
+        .find(|i| i.page.file.as_deref() == Some(rel))
+        .map(|i| &i.progress)
+        .filter(|p| p.total + p.abandoned > 0)
+    {
+        let super::render::ProgressParts { counts, need, bar } =
+            super::render::progress_parts(progress);
+        format!(
+            "<div class=\"glance\"><span class=\"num\">{counts}</span>{need}<span class=\"track\" aria-hidden=\"true\">{bar}</span></div>"
+        )
+    } else {
+        match own.and_then(|e| e.pieces.as_ref()) {
+            Some(p) if p.total > 0 => super::render::pieces_bar(p.done, p.total),
+            _ => String::new(),
+        }
+    };
+    let props = format!("{}{props}{glance}", part_of.unwrap_or_default());
     // The title and its properties head the page; a note that doesn't open on a title
     // starts with the properties.
     let (head, rendered) = match rendered.find("</h1>") {
@@ -245,6 +267,88 @@ pub(super) fn note_page(
         None,
         Links::Served,
     )
+}
+
+/// A link to an effort note carries the effort's status after it, as the board shows it,
+/// and "needs you" when the effort waits on the owner. A link that opens its paragraph or
+/// list item and is followed by a full stop is the effort's title line, as an
+/// initiative's Efforts list writes them: the pill ends the line and the stop goes, so
+/// the text after it reads as the description below.
+fn with_effort_status<'a>(
+    events: Vec<pulldown_cmark::Event<'a>>,
+    rows: &BoardData,
+) -> Vec<pulldown_cmark::Event<'a>> {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len());
+    let mut i = 0;
+    while i < events.len() {
+        let pill = match &events[i] {
+            Event::Start(Tag::Link { dest_url, .. }) => status_pill(dest_url, rows),
+            _ => None,
+        };
+        let end = pill.as_ref().and_then(|_| {
+            events[i..]
+                .iter()
+                .position(|e| matches!(e, Event::End(TagEnd::Link)))
+                .map(|k| i + k)
+        });
+        let (Some(pill), Some(end)) = (pill, end) else {
+            out.push(events[i].clone());
+            i += 1;
+            continue;
+        };
+        let opens = i == 0
+            || matches!(
+                events[i - 1],
+                Event::Start(Tag::Item) | Event::Start(Tag::Paragraph)
+            );
+        let rest = match events.get(end + 1) {
+            Some(Event::Text(t)) if opens => t
+                .strip_prefix('.')
+                .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+                .map(|r| r.trim_start().to_owned()),
+            _ => None,
+        };
+        if let Some(rest) = rest {
+            out.push(Event::Html("<span class=\"etitle\">".into()));
+            out.extend(events[i..=end].iter().cloned());
+            out.push(Event::Html(format!("{pill}</span>").into()));
+            if !rest.is_empty() {
+                out.push(Event::Text(rest.into()));
+            }
+            i = end + 2;
+        } else {
+            out.extend(events[i..=end].iter().cloned());
+            out.push(Event::Html(pill.into()));
+            i = end + 1;
+        }
+    }
+    out
+}
+
+/// The status pill for a link to an effort's page, or None for any other link.
+fn status_pill(dest: &str, rows: &BoardData) -> Option<String> {
+    let path = dest.strip_prefix('/')?.split('#').next()?;
+    let effort = rows
+        .efforts
+        .iter()
+        .find(|e| e.file.as_deref().is_some_and(|f| percent(f) == path))?;
+    let status = effort.status.as_deref().unwrap_or_default();
+    let word = match status {
+        "" => return None,
+        "proposed" | "ready" => "to start",
+        "review" => "in review",
+        s => s,
+    };
+    let mut pill = format!(
+        "<span class=\"stat s-{}\">{}</span>",
+        esc(status),
+        esc(word)
+    );
+    if effort.needs_owner {
+        pill += "<span class=\"stat need\">needs you</span>";
+    }
+    Some(pill)
 }
 
 /// The text with its HTML comments taken out: a journal line's hidden tail is for the

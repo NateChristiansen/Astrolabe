@@ -1030,23 +1030,23 @@ h1, h2, h3, p {
   flex: none;
 }
 
-.initiatives .track .k-review {
+:is(.initiatives, .glance) .track .k-review {
   background: var(--accent);
 }
 
-.initiatives .track .k-active {
+:is(.initiatives, .glance) .track .k-active {
   background: color-mix(in srgb,var(--accent) 45%,var(--line));
 }
 
-.initiatives .track .k-blocked {
+:is(.initiatives, .glance) .track .k-blocked {
   background: var(--bad);
 }
 
-.initiatives .num [class^=k-] {
+:is(.initiatives, .glance) .num [class^=k-] {
   white-space: nowrap;
 }
 
-.initiatives .num :is(.k-done, .k-review, .k-active, .k-blocked, .k-start)::before {
+:is(.initiatives, .glance) .num :is(.k-done, .k-review, .k-active, .k-blocked, .k-start)::before {
   content: "";
   display: inline-block;
   width: 7px;
@@ -1057,23 +1057,23 @@ h1, h2, h3, p {
   background: var(--line-2);
 }
 
-.initiatives .num .k-done::before {
+:is(.initiatives, .glance) .num .k-done::before {
   background: var(--good);
 }
 
-.initiatives .num .k-review::before {
+:is(.initiatives, .glance) .num .k-review::before {
   background: var(--accent);
 }
 
-.initiatives .num .k-active::before {
+:is(.initiatives, .glance) .num .k-active::before {
   background: color-mix(in srgb,var(--accent) 45%,var(--line));
 }
 
-.initiatives .num .k-blocked::before {
+:is(.initiatives, .glance) .num .k-blocked::before {
   background: var(--bad);
 }
 
-.initiatives .need {
+:is(.initiatives, .glance) .need {
   align-self: start;
   padding: 2px 9px;
   border-radius: 12px;
@@ -1637,6 +1637,91 @@ html[data-view=notes] .main {
 
 .part-of a:hover {
   text-decoration: underline;
+}
+
+/* What the record is up to, under its properties: an initiative's progress over its
+   members, or an effort's ticked pieces. The colours are the board's. */
+.note-head .glance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin: -10px 0 24px;
+  font: 13px/1.5 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  color: var(--mute);
+}
+
+.note-head .glance .track {
+  width: 100%;
+  max-width: none;
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.note-head .glance .track i {
+  flex: none;
+}
+
+.note-head .bar {
+  margin: -10px 0 24px;
+  padding-top: 0;
+  font-size: 13px;
+}
+
+.note-head .bar .track {
+  width: 160px;
+}
+
+/* A link to an effort carries its status; on a title line the pill ends the line. */
+.prose .stat {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--mute);
+  font: 12px/1.7 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+
+.prose .stat+.stat {
+  margin-left: 5px;
+}
+
+.prose .stat.s-done {
+  color: var(--good);
+  border-color: color-mix(in srgb,var(--good) 40%,var(--line));
+}
+
+.prose .stat.s-active {
+  background: var(--needs);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+.prose .stat.s-review {
+  color: var(--accent);
+  border-color: color-mix(in srgb,var(--accent) 50%,var(--line));
+}
+
+.prose .stat.s-blocked {
+  color: var(--bad);
+  border-color: color-mix(in srgb,var(--bad) 50%,var(--line));
+}
+
+.prose .stat.need {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+.prose .etitle {
+  display: block;
+  margin-bottom: 3px;
 }
 
 .facts {

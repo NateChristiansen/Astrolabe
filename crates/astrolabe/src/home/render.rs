@@ -688,15 +688,8 @@ pub(super) fn card_html(
     }
     // A small card is a title, its meta and one line of context: the pieces and the next
     // step wait in the note.
-    let pieces = match (
-        card.row.pieces.as_ref().map(|p| p.done),
-        card.row.pieces.as_ref().map(|p| p.total),
-    ) {
-        (Some(done), Some(total)) if total > 0 && !small => format!(
-            "<div class=\"bar\"><span class=\"track\" role=\"progressbar\" aria-label=\"Completed pieces\" aria-valuemin=\"0\" aria-valuemax=\"{total}\" aria-valuenow=\"{}\"><i style=\"width:{}%\"></i></span><span>{done} of {total} pieces</span></div>\n",
-            done.min(total),
-            100_u128 * done.min(total) as u128 / total as u128
-        ),
+    let pieces = match card.row.pieces.as_ref() {
+        Some(p) if p.total > 0 && !small => pieces_bar(p.done, p.total),
         _ => String::new(),
     };
     let waits = card.row.waits_for.as_deref().unwrap_or_default();
@@ -772,15 +765,24 @@ pub(super) fn card_html(
     )
 }
 
-/// Status counts add up to the total and colour the bar's segments; what waits on the
-/// owner overlaps them (and can include the page itself), so it's a badge of its own.
-pub(super) fn initiative_html(
-    title: &str,
-    state: Option<&str>,
-    p: &crate::board::InitiativeProgress,
-    page_status: Option<&str>,
-) -> String {
-    let has_page = page_status.is_some();
+/// "x of y pieces" with its track: on a card, and under an effort's title.
+pub(super) fn pieces_bar(done: usize, total: usize) -> String {
+    format!(
+        "<div class=\"bar\"><span class=\"track\" role=\"progressbar\" aria-label=\"Completed pieces\" aria-valuemin=\"0\" aria-valuemax=\"{total}\" aria-valuenow=\"{}\"><i style=\"width:{}%\"></i></span><span>{done} of {total} pieces</span></div>\n",
+        done.min(total),
+        100_u128 * done.min(total) as u128 / total as u128
+    )
+}
+
+/// The counts, the owner badge and the bar segments of a progress row, drawn the same on
+/// the board and under an initiative's own title.
+pub(super) struct ProgressParts {
+    pub counts: String,
+    pub need: String,
+    pub bar: String,
+}
+
+pub(super) fn progress_parts(p: &crate::board::InitiativeProgress) -> ProgressParts {
     let mut counts = format!(
         "<span class=\"k-done\">{} of {} done</span>",
         p.done, p.total
@@ -817,6 +819,19 @@ pub(super) fn initiative_html(
     } else {
         String::new()
     };
+    ProgressParts { counts, need, bar }
+}
+
+/// Status counts add up to the total and colour the bar's segments; what waits on the
+/// owner overlaps them (and can include the page itself), so it's a badge of its own.
+pub(super) fn initiative_html(
+    title: &str,
+    state: Option<&str>,
+    p: &crate::board::InitiativeProgress,
+    page_status: Option<&str>,
+) -> String {
+    let has_page = page_status.is_some();
+    let ProgressParts { counts, need, bar } = progress_parts(p);
     let edge = if p.total == 0 && p.abandoned == 0 {
         "no members yet"
     } else if p.total == 0 {

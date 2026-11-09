@@ -212,6 +212,120 @@ mod tests {
     }
 
     #[test]
+    fn an_initiative_page_shows_the_boards_progress_under_its_title() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let page = |rel: &str| {
+            let text = std::fs::read_to_string(notes.root.join(rel)).unwrap();
+            super::markdown::note_page(&text, rel, &rows, &notes.root, NOW, Look::default())
+        };
+        let shared = page("initiatives/shared-work.md");
+        let start = shared.find("<header class=\"note-head\">").unwrap();
+        let head = &shared[start..start + shared[start..].find("</header>").unwrap()];
+        let glance = &head[head.find("<div class=\"glance\">").unwrap()..];
+        // The counts, the badge and the bar are the board's own, from one function.
+        let counts = "<span class=\"num\"><span class=\"k-done\">1 of 5 done</span> · <span class=\"k-review\">1 in review</span> · <span class=\"k-active\">1 active</span> · <span class=\"k-blocked\">1 blocked</span> · <span class=\"k-start\">1 to start</span> · <span class=\"k-abandoned\">1 abandoned</span></span>";
+        assert!(glance.contains(counts), "{glance}");
+        assert!(
+            glance.contains("<span class=\"need\">3 waiting on you</span>"),
+            "members and the page itself: {glance}"
+        );
+        assert!(
+            glance.contains("<span class=\"track\" aria-hidden=\"true\"><i class=\"k-done\" style=\"width:20.00%\"></i><i class=\"k-review\" style=\"width:20.00%\"></i>"),
+            "{glance}"
+        );
+        let board = board_html(&rows, &notes.root, NOW, Links::Served);
+        assert!(
+            board.contains(counts),
+            "the board draws the same counts: {board}"
+        );
+        // Each page gets its own members' counts; one with no members has nothing to glance at.
+        let finished = page("initiatives/finished-members.md");
+        assert!(
+            finished.contains("<span class=\"k-done\">1 of 1 done</span>")
+                && !finished.contains("1 of 5 done"),
+            "{finished}"
+        );
+        assert!(!page("initiatives/empty-work.md").contains("class=\"glance\""));
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_an_effort_carries_its_status() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let rel = "initiatives/shared-work.md";
+        let text = "# Shared work\n\n## Efforts\n\n1. [First](../efforts/0004-member.md). Does the first thing.\n2. [Second](../efforts/0005-member.md). Does the second.\n3. See [Sixth](../efforts/0006-member.md) for the review. Then [Seventh](../efforts/0007-member.md).\n4. [Ninth](../efforts/0009-member.md).\n5. [Owner](../knowledge/owner.md). Not an effort.\n\n[Fourth](../efforts/0004-member.md). Opens this paragraph.\n\nAnd [Fourth](../efforts/0004-member.md) inline. Done.\n";
+        std::fs::create_dir_all(notes.root.join("knowledge")).unwrap();
+        std::fs::write(notes.root.join("knowledge/owner.md"), "# Owner\n").unwrap();
+        let page = super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
+        let start = page.find("<div class=\"prose\">").unwrap();
+        let prose = &page[start..start + page[start..].find("<aside").unwrap()];
+        // A link that opens its item and ends in a full stop is a title line: the pill
+        // ends it and the stop goes.
+        assert!(
+            prose.contains("<li><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">First</a><span class=\"stat s-active\">active</span></span>Does the first thing.</li>"),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("Second</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></span>Does the second.</li>"),
+            "{prose}"
+        );
+        // Mid-sentence, the pill is inline and the sentence stays as written.
+        assert!(
+            prose.contains("See <a href=\"/efforts/0006-member.md\">Sixth</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span> for the review. Then <a href=\"/efforts/0007-member.md\">Seventh</a><span class=\"stat s-ready\">to start</span>.</li>"),
+            "{prose}"
+        );
+        // A title with nothing after its stop, and a link to a note that isn't an effort.
+        assert!(
+            prose.contains("Ninth</a><span class=\"stat s-done\">done</span></span></li>"),
+            "{prose}"
+        );
+        assert!(prose.contains("Owner</a>. Not an effort.</li>"), "{prose}");
+        // A paragraph opened by an effort link and a stop is a title line too; the same
+        // link inside a sentence is not.
+        assert!(
+            prose.contains("<p><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">Fourth</a><span class=\"stat s-active\">active</span></span>Opens this paragraph.</p>"),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("<p>And <a href=\"/efforts/0004-member.md\">Fourth</a><span class=\"stat s-active\">active</span> inline. Done.</p>"),
+            "{prose}"
+        );
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn an_effort_page_shows_its_pieces_under_its_title() {
+        let notes = crate::board::initiative_fixture();
+        let rel = "efforts/0020-pieces.md";
+        let text = "---\nstatus: active\nrepo: demo\n---\n# 0020 Pieces\n\n## Current state\nGoing.\n\n## Pieces\n- [x] one\n- [ ] two\n- [ ] three\n";
+        std::fs::write(notes.root.join(rel), text).unwrap();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let page = super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
+        let start = page.find("<header class=\"note-head\">").unwrap();
+        let head = &page[start..start + page[start..].find("</header>").unwrap()];
+        assert!(
+            head.contains("<div class=\"bar\"><span class=\"track\" role=\"progressbar\" aria-label=\"Completed pieces\" aria-valuemin=\"0\" aria-valuemax=\"3\" aria-valuenow=\"1\"><i style=\"width:33%\"></i></span><span>1 of 3 pieces</span></div>"),
+            "{head}"
+        );
+        // An effort without a checklist gets no bar.
+        let plain = "efforts/0004-member.md";
+        let page = super::markdown::note_page(
+            &std::fs::read_to_string(notes.root.join(plain)).unwrap(),
+            plain,
+            &rows,
+            &notes.root,
+            NOW,
+            Look::default(),
+        );
+        let start = page.find("<header class=\"note-head\">").unwrap();
+        let head = &page[start..start + page[start..].find("</header>").unwrap()];
+        assert!(!head.contains("class=\"bar\""), "{head}");
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
     fn the_board_and_a_note_page_read_the_same_properties() {
         let notes = crate::board::initiative_fixture();
         let rel = "efforts/0099-quoted.md";
