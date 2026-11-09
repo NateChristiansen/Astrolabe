@@ -427,7 +427,7 @@ pub fn set_initiative_property(text: &str, slug: &str) -> String {
             }
             inside = false;
         }
-        if i > 0 && inside && line.starts_with("initiative:") {
+        if i > 0 && inside && is_initiative_key(line) {
             if !written {
                 out += &format!("initiative: {slug}{eol}");
                 written = true;
@@ -437,6 +437,82 @@ pub fn set_initiative_property(text: &str, slug: &str) -> String {
         }
     }
     out
+}
+
+/// Whether a header line holds the initiative key as the shared header reader sees it:
+/// any case, spaces around the key, on a line that isn't indented or a list item.
+fn is_initiative_key(line: &str) -> bool {
+    !line.starts_with(' ')
+        && !line.trim_start().starts_with("- ")
+        && line
+            .split_once(':')
+            .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("initiative"))
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::set_initiative_property;
+    use crate::effort::file::frontmatter;
+
+    fn initiative_lines(text: &str) -> usize {
+        frontmatter(text)
+            .iter()
+            .filter(|(k, _)| k == "initiative")
+            .count()
+    }
+
+    #[test]
+    fn any_case_of_the_key_is_replaced_with_one_line() {
+        for key in ["initiative", "Initiative", "INITIATIVE", "Initiative "] {
+            let text =
+                format!("---\nstatus: active\n{key}: old\nrepo: demo\n---\n# 0001 One\n\nBody.\n");
+            let out = set_initiative_property(&text, "new");
+            assert_eq!(
+                out, "---\nstatus: active\ninitiative: new\nrepo: demo\n---\n# 0001 One\n\nBody.\n",
+                "{key:?}"
+            );
+            assert_eq!(initiative_lines(&out), 1, "{out}");
+        }
+    }
+
+    #[test]
+    fn later_duplicates_in_any_case_are_dropped() {
+        let text = "---\nInitiative: a\nstatus: active\ninitiative: b\n---\n# 0001 One\n";
+        assert_eq!(
+            set_initiative_property(text, "new"),
+            "---\ninitiative: new\nstatus: active\n---\n# 0001 One\n"
+        );
+    }
+
+    #[test]
+    fn a_header_without_the_key_gains_one_line_and_keeps_its_bytes() {
+        let text =
+            "\u{feff}---\r\nStatus: active\r\nrepo: demo\r\n---\r\n# 0001 One\r\n\r\nBody.  \r\n";
+        let out = set_initiative_property(text, "new");
+        assert_eq!(
+            out,
+            "\u{feff}---\r\nStatus: active\r\nrepo: demo\r\ninitiative: new\r\n---\r\n# 0001 One\r\n\r\nBody.  \r\n"
+        );
+        assert_eq!(initiative_lines(&out), 1);
+    }
+
+    #[test]
+    fn a_capitalized_key_keeps_crlf_and_the_byte_order_mark() {
+        let text = "\u{feff}---\r\nInitiative: old\r\nstatus: active\r\n---\r\n# 0001 One\r\n";
+        assert_eq!(
+            set_initiative_property(text, "new"),
+            "\u{feff}---\r\ninitiative: new\r\nstatus: active\r\n---\r\n# 0001 One\r\n"
+        );
+    }
+
+    #[test]
+    fn body_lines_that_look_like_the_key_are_left_alone() {
+        let text = "---\nstatus: active\n---\n# 0001 One\n\nInitiative: not a property\n";
+        assert_eq!(
+            set_initiative_property(text, "new"),
+            "---\nstatus: active\ninitiative: new\n---\n# 0001 One\n\nInitiative: not a property\n"
+        );
+    }
 }
 
 #[cfg(test)]
