@@ -321,3 +321,80 @@ fn a_pending_write_that_cant_be_read_is_reported_kept_and_blocks_new_writes() {
     let (out, _) = mac.run(&mac.notes, &["notes", "status"], "");
     assert!(!out.contains("broken"), "{out}");
 }
+
+#[test]
+fn recovery_of_a_write_that_already_committed_keeps_a_newer_edit() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A crash after the commit, before the intent recorded it: the commit carries the key,
+    // the intent still says uncommitted.
+    let rel = shelf("0001-smooth-ink.md");
+    let saved = std::fs::read_to_string(mac.notes.join(&rel))
+        .unwrap()
+        .replace("smooth the ink", "SAVED smooth the ink");
+    std::fs::write(mac.notes.join(&rel), &saved).unwrap();
+    git(&mac.notes, &["add", "-A"]);
+    git(
+        &mac.notes,
+        &["commit", "-q", "-m", "0001: checkpoint\n\nOp-Key: k-landed"],
+    );
+    let intent = json!({
+        "key": "k-landed", "files": [[rel, saved]], "renames": [],
+        "journal": [{"day": "2026-01-01", "id": "j-landed", "effort": "0001", "machine": "mac", "text": "A line that must not appear twice."}],
+        "message": "0001: checkpoint", "base": null,
+        "states": [[mac.state().join("s8.json"), {"session": "s8", "effort": "1", "file": rel}]],
+        "committed": false, "digest": "d", "result": null, "cwd": "x"
+    });
+    write(&mac.state().join("ops/k-landed.json"), &intent.to_string());
+    // The owner edits the note by hand afterwards.
+    let newer = saved.replace("SAVED smooth the ink", "NEWER by hand");
+    std::fs::write(mac.notes.join(&rel), &newer).unwrap();
+    git(&mac.notes, &["add", "-A"]);
+    git(&mac.notes, &["commit", "-q", "-m", "hand edit"]);
+    let before = mac.log().lines().count();
+
+    let (out, ok) = mac.bash(
+        "s3",
+        "astrolabe effort new --title \"Third\" <<'ASTROLABE'\ng3\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+
+    let now = std::fs::read_to_string(mac.notes.join(&rel)).unwrap();
+    assert!(
+        now.contains("NEWER by hand"),
+        "the hand edit survives: {now}"
+    );
+    assert!(!now.contains("SAVED smooth the ink"), "{now}");
+    assert_eq!(
+        mac.log().lines().count(),
+        before + 1,
+        "only the new save commits; the landed write isn't committed again"
+    );
+    assert!(
+        !mac.journal_today().contains("must not appear twice"),
+        "recovery of a landed write skips its journal step"
+    );
+    assert!(
+        mac.state().join("s8.json").exists(),
+        "its session state is still finished"
+    );
+}
+
+#[test]
+fn a_leftover_temp_file_never_enters_a_notes_commit() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A write that died between writing aside and renaming leaves this beside the note.
+    let stray = shelf("0001-smooth-ink.99999.tmp");
+    std::fs::write(mac.notes.join(&stray), "half a note").unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"d\"");
+    assert!(ok, "{out}");
+    let tracked = git(&mac.notes, &["ls-files"]);
+    assert!(!tracked.contains(".tmp"), "{tracked}");
+    assert!(
+        mac.notes.join(&stray).exists(),
+        "left for the owner, not deleted"
+    );
+}
