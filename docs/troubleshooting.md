@@ -46,9 +46,11 @@ Check the property named in the error at the top of the effort note. Its repo mu
 
 An open board pulls other machines' saves about once a minute; a save that still hasn't shown up may not have been pushed from the machine that made it. Ask the agent to check whether your notes have synced, or use the [notes sync commands](commands.md#board-and-notes). If a save reports that the effort changed elsewhere, the agent needs to read the returned state and reconcile its work before saving again.
 
-Lesson closing and notes sync run through the hook and need no extra writable folder.
-Making the notes folder writable doesn't cover Git metadata or local state.
-A GitHub read in a sandboxed session is a per-command approval where the host allows it.
+## A sandboxed session can't write a handoff or commit
+
+Follow the [Codex workspace sandbox setup](codex.md) for the notes write grant, command approvals and dispatcher fallback. Briefs and reports belong under `.handoffs/`; a writable notes checkout doesn't make project Git metadata writable.
+
+Lesson closing and notes sync run through Astrolabe's hook and need no extra writable folder. A GitHub read may separately need host approval.
 
 
 [Installation](install.md) · [Using Astrolabe](usage.md) · [Command reference](commands.md)

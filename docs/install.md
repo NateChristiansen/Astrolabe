@@ -59,6 +59,8 @@ codex plugin add astrolabe@astrolabe
 
 Review and trust Astrolabe's five hooks. In the CLI, open `/hooks`; in the desktop app, use **Review hooks** in the composer or **Settings → Hooks**. Installing the plugin alone does not trust its hooks. See the [Codex hook guide](https://learn.chatgpt.com/docs/hooks#plugin-bundled-hooks).
 
+For sessions that write briefs, reports or project Git, follow the [Codex workspace sandbox setup](codex.md).
+
 Already registered an Astrolabe marketplace from a local folder or older release? Follow [updating](#update-astrolabe) to replace that source first.
 
 ## 3. Set up your notes
