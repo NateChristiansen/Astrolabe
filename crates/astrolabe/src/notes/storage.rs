@@ -4,6 +4,9 @@ use super::{
 };
 use std::path::PathBuf;
 
+/// Leaves out a write that died between being written aside and renamed into place.
+const NOT_TEMP: &str = ":(exclude)*.tmp";
+
 impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
     /// markers too, covering a crash after git commits but before the intent is updated.
@@ -165,6 +168,13 @@ impl Notes {
                 }
                 continue;
             }
+            // A crash after the commit but before the intent recorded it leaves the commit as
+            // the only proof: its key says this write landed, so its files aren't written
+            // again over whatever was saved since.
+            let mut op = op;
+            if !op.committed && op.lesson_close.is_none() && self.already_applied(&op.key) {
+                op.committed = true;
+            }
             match self.apply(&op) {
                 Ok(()) => self.finish(
                     &op.key,
@@ -268,12 +278,13 @@ impl Notes {
         self.ensure_attributes()?;
         // Only what changed: a first effort with no journal line yet has no journal folder,
         // and a path git doesn't know would fail the commit. Hand edits under these paths
-        // ride along on purpose; anything else the owner staged stays staged and out.
+        // ride along on purpose; anything else the owner staged stays staged and out. A
+        // `.tmp` is a write that died before its rename: never part of a commit.
         let mut changed = Vec::new();
         for path in ["efforts", "journal", "initiatives", ".gitattributes"] {
             if self.root.join(path).exists()
                 && !self
-                    .git(&["status", "--porcelain", "--", path])?
+                    .git(&["status", "--porcelain", "--", path, NOT_TEMP])?
                     .trim()
                     .is_empty()
             {
@@ -283,6 +294,7 @@ impl Notes {
         if !changed.is_empty() {
             let mut add = vec!["add", "-A", "--"];
             add.extend(&changed);
+            add.push(NOT_TEMP);
             self.git(&add)?;
             let mut message = format!("{}\n\nOp-Key: {}", op.message, op.key);
             if let Some(base) = &op.base {
