@@ -1724,6 +1724,22 @@ html[data-view=notes] .main {
   margin-bottom: 3px;
 }
 
+/* An effort the page's list names that isn't a member of the initiative. */
+.prose .stat.left {
+  border-style: dashed;
+}
+
+/* The members an initiative's prose doesn't name, listed after its own list. */
+.prose .members-label {
+  margin: 18px 0 4px;
+  color: var(--mute);
+  font: 600 13px/1.7 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+.prose .members {
+  margin-top: 0;
+}
+
 .facts {
   margin: 16px 0 0;
   padding: 12px 0 0;
