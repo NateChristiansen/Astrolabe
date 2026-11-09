@@ -22,6 +22,7 @@ To see a home change without replacing the one you use, run `target/debug/astrol
 - [Architecture](docs/architecture.md): hooks, session context, notes, and the local board.
 - [Command reference](docs/commands.md): terminal and agent-session commands.
 - [Versions and compatibility](docs/versions.md): build pins and required app capabilities.
+- [Host app behavior](docs/hosts.md): what each agent app does at the points the program depends on, with sources.
 - [Icon and colors](assets/branding/README.md): the shared mark and its appearance.
 
 Personal notes and machine bindings stay outside this repository.
