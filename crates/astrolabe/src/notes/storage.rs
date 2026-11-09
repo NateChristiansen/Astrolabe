@@ -7,6 +7,16 @@ use std::path::PathBuf;
 /// Leaves out a write that died between being written aside and renamed into place.
 const NOT_TEMP: &str = ":(exclude)*.tmp";
 
+/// What a notes write commits, whoever changed it.
+const COMMITTED: [&str; 6] = [
+    "efforts",
+    "journal",
+    "initiatives",
+    "lessons",
+    "drafts",
+    ".gitattributes",
+];
+
 impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
     /// markers too, covering a crash after git commits but before the intent is updated.
@@ -279,9 +289,11 @@ impl Notes {
         // Only what changed: a first effort with no journal line yet has no journal folder,
         // and a path git doesn't know would fail the commit. Hand edits under these paths
         // ride along on purpose; anything else the owner staged stays staged and out. A
-        // `.tmp` is a write that died before its rename: never part of a commit.
+        // `.tmp` is a write that died before its rename: never part of a commit. Lessons and
+        // drafts are written as plain files, so riding along is the only way one is ever
+        // committed and reaches another machine.
         let mut changed = Vec::new();
-        for path in ["efforts", "journal", "initiatives", ".gitattributes"] {
+        for path in COMMITTED {
             if self.root.join(path).exists()
                 && !self
                     .git(&["status", "--porcelain", "--", path, NOT_TEMP])?

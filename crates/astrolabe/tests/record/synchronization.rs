@@ -545,3 +545,46 @@ fn a_save_still_succeeds_when_background_sync_cannot_start() {
     assert!(mac.effort_text(1).contains("status: ready"));
     assert!(git(&mac.notes, &["status", "--porcelain"]).is_empty());
 }
+
+/// A page a session wrote as a plain file on the Mac, then any save there and a sync each way.
+fn a_file_written_by_hand_reaches_the_pc(rel: &str) {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.notes.join(rel),
+        "# Written by hand\n\nIt cost a turn.\n",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"kept going\"");
+    assert!(ok, "{out}");
+    // It rides along in the save's own commit, under the save's own subject.
+    let files = git(&mac.notes, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|f| f == rel), "{files}");
+    let subject = git(&mac.notes, &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "0001: checkpoint");
+    assert!(
+        git(&mac.notes, &["status", "--porcelain"])
+            .trim()
+            .is_empty()
+    );
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join(rel)).ok().as_deref(),
+        Some("# Written by hand\n\nIt cost a turn.\n"),
+        "the other machine has it after its own sync"
+    );
+}
+
+#[test]
+fn a_lesson_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() {
+    a_file_written_by_hand_reaches_the_pc("lessons/2026-11-09-friction.md");
+}
+
+#[test]
+fn a_draft_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() {
+    a_file_written_by_hand_reaches_the_pc("drafts/2026-11-09-reply.md");
+}

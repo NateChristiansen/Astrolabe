@@ -268,24 +268,25 @@ fn a_save_commits_only_the_notes_it_wrote_and_leaves_the_owners_staging_alone() 
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
-    // The owner has a draft staged in the notes checkout, unrelated to the save.
-    write(&mac.notes.join("drafts/post.md"), "half a post");
-    git(&mac.notes, &["add", "drafts/post.md"]);
+    // The owner has a knowledge note staged in the notes checkout, unrelated to the save.
+    // (A draft was the example until drafts joined what a save carries along.)
+    write(&mac.notes.join("knowledge/post.md"), "half a post");
+    git(&mac.notes, &["add", "knowledge/post.md"]);
     // And a hand-edited journal line, which saves deliberately carry along.
     let day = astrolabe::notes::journal_file("2026-01-02");
     write(&mac.notes.join(&day), "- by hand\n");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"kept apart\"");
     assert!(ok, "{out}");
     let files = git(&mac.notes, &["show", "--name-only", "--format=", "HEAD"]);
-    assert!(!files.contains("drafts/post.md"), "{files}");
+    assert!(!files.contains("knowledge/post.md"), "{files}");
     assert!(
         files.contains(&day),
         "hand journal edits still ride along: {files}"
     );
     let staged = git(&mac.notes, &["diff", "--cached", "--name-only"]);
-    assert_eq!(staged.trim(), "drafts/post.md", "still staged");
+    assert_eq!(staged.trim(), "knowledge/post.md", "still staged");
     assert_eq!(
-        std::fs::read_to_string(mac.notes.join("drafts/post.md")).unwrap(),
+        std::fs::read_to_string(mac.notes.join("knowledge/post.md")).unwrap(),
         "half a post"
     );
 }

@@ -588,6 +588,32 @@ mod tests {
     }
 
     #[test]
+    fn an_uncommitted_lesson_or_draft_is_marked_and_a_committed_one_is_not() {
+        let rows = json!({
+            "today": "2026-11-05",
+            "lessons": [
+                {"file": "lessons/2026-11-01-gates.md", "title": "Gates"},
+                {"file": "lessons/2026-11-09-new.md", "title": "Just written", "uncommitted": true},
+            ],
+            "drafts": [{"file": "drafts/2026-11-09-reply.md", "title": "Reply", "uncommitted": true}],
+        });
+        let page = render(
+            &serde_json::from_value(rows).unwrap(),
+            Path::new("/n"),
+            NOW,
+            Look::default(),
+        );
+        let mark = " <span class=\"pill uncommitted\" title=\"Only on this machine until the next save here commits it\">not committed</span>";
+        assert!(
+            page.contains(&format!(">Just written</a>{mark}</li>"))
+                && page.contains(&format!(">Reply</a>{mark}</li>")),
+            "{page}"
+        );
+        assert!(page.contains(">Gates</a></li>"), "{page}");
+        assert_eq!(page.matches("not committed</span>").count(), 2);
+    }
+
+    #[test]
     fn cards_land_in_their_columns() {
         let rows = json!({
             "today": "2026-11-05",

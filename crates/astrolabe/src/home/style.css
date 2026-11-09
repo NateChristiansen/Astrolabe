@@ -1140,6 +1140,13 @@ h1, h2, h3, p {
   text-decoration: underline;
 }
 
+/* A lesson or draft git hasn't committed: on this machine only until the next save. */
+.lessons .uncommitted, .drafts .uncommitted {
+  margin-left: 8px;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
 .col.done {
   margin-top: 20px;
 }
