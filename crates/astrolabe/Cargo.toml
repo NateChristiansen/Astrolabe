@@ -15,6 +15,7 @@ getrandom = "=0.4.3"
 fs4 = "0.13"
 chrono = "0.4"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+toml_edit = "0.25"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

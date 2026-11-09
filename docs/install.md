@@ -59,7 +59,7 @@ codex plugin add astrolabe@astrolabe
 
 Review and trust Astrolabe's five hooks. In the CLI, open `/hooks`; in the desktop app, use **Review hooks** in the composer or **Settings → Hooks**. Installing the plugin alone does not trust its hooks. See the [Codex hook guide](https://learn.chatgpt.com/docs/hooks#plugin-bundled-hooks).
 
-For sessions that write briefs, reports or project Git, follow the [Codex workspace sandbox setup](codex.md).
+After registering your notes in step 3, use the optional [Codex permission setup](codex.md#set-up-once) so sessions can write handoffs and request authorized Git operations.
 
 Already registered an Astrolabe marketplace from a local folder or older release? Follow [updating](#update-astrolabe) to replace that source first.
 
@@ -104,6 +104,17 @@ Windows:
 ```
 
 Replace the example folder with yours. `agent` is Astrolabe's reserved name for the notes repo.
+
+### Optional: configure Codex permissions
+
+Preview the notes access and approval settings, then apply them if they match what you want:
+
+```sh
+astrolabe setup codex
+astrolabe setup codex --apply --check
+```
+
+Run the check from a project checkout. Setup is idempotent: rerunning it leaves correct settings untouched, and rerunning after a notes move updates only its own notes grant. It doesn't add trust entries. For automatic approval review, add `--reviewer auto_review` to both commands. Start a fresh session and choose **Custom (config.toml)** in the desktop app. See the [permission setup guide](codex.md#set-up-once) for checks, preserved settings and overrides.
 
 ## 4. Turn it on
 

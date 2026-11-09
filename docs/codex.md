@@ -2,25 +2,46 @@
 
 Astrolabe's effort settings describe what an agent may do. Codex's sandbox separately controls which files a command can write. An effort with edit authority still needs host permission for a local Git commit.
 
-## Start a session
+## Set up once
 
-Create the branch worktree before starting the worker. Start Codex in that worktree and grant the notes checkout as an additional writable directory:
+After registering your notes, preview the host configuration:
 
 ```sh
-codex --sandbox workspace-write --ask-for-approval on-request --cd /path/to/worktree --add-dir /path/to/notes
+astrolabe setup codex
 ```
 
-Replace both paths with your own. The same flags work in PowerShell with Windows paths. Review and trust the installed Astrolabe hooks as described in [installation](install.md#2-install-the-plugin-in-your-agent-app).
+The preview names the config file, notes checkout, approval settings and managed permission profile. It writes nothing. To save it and check the notes grant from a project checkout:
 
-For an unattended CLI session whose eligible approval requests should go through automatic review:
+```sh
+astrolabe setup codex --apply --check
+```
+
+Setup uses the registered notes folder and keeps the workspace sandbox's Git protection. It preserves an existing approval reviewer; otherwise requests go to you. For unattended workers, explicitly choose automatic review:
+
+```sh
+astrolabe setup codex --reviewer auto_review
+astrolabe setup codex --reviewer auto_review --apply --check
+```
+
+Automatic review may deny an action and uses additional model calls. It does not extend an effort's authority.
+
+Rerunning a correct setup leaves the config, ownership record and backups unchanged. If your registered notes move, rerun setup: it replaces only the notes root it previously added. It preserves unrelated settings and comments, backs up a changed existing config, and refuses a managed profile edited outside setup. Supported legacy workspace settings are migrated into the profile, including extra writable roots, network access and temporary-folder exclusions. Other sandbox modes or settings that cannot be safely preserved are reported without replacing the config.
+
+Start a fresh session after applying. In the desktop app select **Custom (config.toml)**. A chat's selected permission mode, project configuration or managed requirements can override the saved defaults. Setup doesn't change a running chat or add project trust entries. Review and trust Astrolabe's installed hooks yourself as described in [installation](install.md#2-install-the-plugin-in-your-agent-app).
+
+`--check` uses the installed CLI's native sandbox to create and remove a handoff probe and confirm that the current project's Git metadata stays protected. Run it from a project checkout; outside one, it reports that Git protection wasn't checked. It tests the generated named profile with managed requirements included, not the desktop app's selected mode or a real approval request. `--config <file>` selects another config destination; it is mainly for isolated tests with a separate Astrolabe state folder.
+
+## Launch and resume
+
+Create a worker's branch worktree before starting it. With setup selected, launch from that worktree as usual. For a one-off CLI launch without persistent setup:
 
 ```sh
 codex exec --approve-for-me --cd /path/to/worktree --add-dir /path/to/notes "<task>"
 ```
 
-`--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`. Run it with closed stdin when dispatching from a shell tool (`< /dev/null` in Bash or zsh). Automatic review may deny an action and uses additional model calls. It does not extend the effort's authority.
+Replace the paths with yours. The same flags work in PowerShell with Windows paths. `--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`. Close stdin when dispatching from a shell tool (`< /dev/null` in Bash or zsh).
 
-When resuming, invoke Codex from the same worktree, with the same notes grant and approval settings. A different working directory can leave the worker's files outside its writable workspace.
+Resume from the same worktree and retain its permission settings. A different working directory can leave the worker's files outside its writable workspace. An explicit `--sandbox` selects the legacy sandbox settings instead of the named profile, so use `--add-dir` as well if overriding it.
 
 ## Briefs, reports and Git
 
@@ -36,4 +57,4 @@ If the handoff folder isn't writable, return the report in chat with its intende
 
 Before dispatching real work, use a disposable repo and notes checkout. Confirm that a session can write a brief and report under `.handoffs`, commit an authorized change through host approval, and integrate a prepared worker branch. Check the files and Git history from outside the session. A run with approvals disabled tests the fallback, not autonomous Git completion.
 
-The unattended workflow was checked with Codex CLI 0.166.0 on macOS. Other hosts may apply additional restrictions. See the official [CLI reference](https://learn.chatgpt.com/docs/cli/reference) and [approvals and security guide](https://learn.chatgpt.com/docs/agent-approvals-security).
+The unattended workflow and setup sandbox check were checked with Codex CLI 0.166.0 on macOS. The desktop mode and Windows runtime have not been exercised. Other hosts may apply additional restrictions. See the official [CLI reference](https://learn.chatgpt.com/docs/cli/reference) and [approvals and security guide](https://learn.chatgpt.com/docs/agent-approvals-security).

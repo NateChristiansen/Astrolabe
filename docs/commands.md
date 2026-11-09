@@ -50,6 +50,14 @@ Project names use ASCII letters, digits, `-`, `_` and `.`, and cannot start with
 
 For a project with a remote, registration writes the remote into `knowledge/repos/<name>.md`, so other machines can recognize the project. That edit is left uncommitted. A project without a remote gets a local binding; it also needs a repo note before an effort can load. See [adding a project](usage.md#add-a-project).
 
+## App permission setup
+
+`setup codex [--apply] [--check] [--reviewer user|auto_review] [--config <file>]` previews host permission settings using the registered notes checkout. `--apply` explicitly saves them; `--check` tests the saved profile in the installed CLI sandbox. The default reviewer is the existing one, or `user` when unset. Nothing launches an agent session or adds project trust.
+
+Repeated application leaves correct configuration, the ownership record and backups untouched. A changed notes registration replaces only a root setup itself added. Unrelated settings and comments stay, and changed existing configs get a backup. Malformed settings, unknown legacy sandbox options, a modified managed profile or a non-workspace sandbox are refused without replacing the config. A failed check after application reports that the setup was saved.
+
+`--config` changes the destination; normal setup honors `CODEX_HOME`, or uses the user's `.codex/config.toml`. Ownership and recovery metadata live in Astrolabe's local state. Use a separate state folder for isolated tests. The command is an optional installation step, never called automatically by an installer or hook. See [the host setup guide](codex.md) for desktop mode selection and check limits.
+
 ## Install the program
 
 `install [--dir <folder>] [--force]` installs the executable you invoked; it does not download a release or install the plugin. Normal installation uses your user-local bin folder, matching the hooks. It replaces only a program its receipt recorded, and moves the `astrolabe-trial` copy that 0.5.0 also installed into the backup folder. A local build won't replace a published release or nightly, since it may be older; `astrolabe update` gets the newest published build, and `--force` installs the local one anyway. `--dir` is for isolated testing and does not change where the hooks look. See [installation](install.md#1-download-and-install-the-program).
