@@ -10,11 +10,18 @@ Checked on 2026-11-09 with Claude Code 2.1.316 and Codex CLI 0.166.0 on macOS. "
 
 Command hooks default to a 600-second timeout. `UserPromptSubmit` defaults to 30 seconds, and `SessionEnd` hooks share 1.5 seconds unless a longer per-hook timeout is set.
 
-**Codex** (docs). Hooks default to 600 seconds; `SessionEnd` and `Interrupt` default to 1 second and allow at most 3. Exit code 2 or a deny decision blocks. The docs do not say whether the tool call proceeds when a local command hook times out or fails. Source: [hooks](https://learn.chatgpt.com/docs/hooks).
+**Codex** (docs and probe). Hooks default to 600 seconds; `SessionEnd` and `Interrupt` default to 1 second and allow at most 3. Exit code 2 or a deny decision blocks. The docs do not say what happens when a local command hook times out or fails. Source: [hooks](https://learn.chatgpt.com/docs/hooks).
 
-Not checked: `onFailure` set from a plugin's `hooks.json` in a live Claude Code session, and any Codex timeout or failure behavior.
+Probed with a trusted `PreToolUse` command hook that had a 10-second timeout, in an unattended `codex exec` run:
 
-So the guard must not rely on either app to block when the hook runs out of time. It has to finish inside its own timeout.
+- a hook that exits 2 at once blocks the command
+- a hook that exits 1 lets the command run
+- a hook that exits 0 after printing invalid JSON lets the command run
+- a hook that sleeps 25 seconds and then exits 2 lets the command run; the run took about 26 seconds, so the command waited for the hook and its late denial was ignored
+
+Not checked: `onFailure` set from a plugin's `hooks.json` in a live Claude Code session, and whether Codex has a setting that makes a failed hook block.
+
+So in both apps a guard hook that runs out of time or fails lets the command through. The guard has to finish inside its own timeout, and nothing else stands behind it.
 
 ## How much hook text reaches the model
 
@@ -28,9 +35,11 @@ The two limits use different units, so one byte budget does not describe both.
 
 Both apps document the command as the string `tool_input.command` and the session's working folder as top-level `cwd` (docs). Neither documents a command given as a list, a `cmd` field, or a working-folder field inside `tool_input`.
 
-Local evidence: of 226 denials in one Mac's guard log, the 214 that record a tool all came from a tool named `Bash` with a readable command. The `cmd`, `exec_command` and `workdir` shapes the tests model were not observed there.
+**Codex** (probe). A captured `PreToolUse` input for a shell command carried `tool_name` "Bash", `tool_input` holding only the string `command`, and top-level `session_id`, `turn_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, `permission_mode` and `tool_use_id`. When the model set the shell tool's own working folder, that folder arrived as the top-level `cwd`; `tool_input` still held only `command`.
 
-Not checked: a captured hook input from a live Codex session, and the PowerShell tool's input on Windows.
+Local evidence: of 226 denials in one Mac's guard log, the 214 that record a tool all came from a tool named `Bash` with a readable command. The `cmd`, `exec_command` and `workdir` shapes the tests model were not observed there or in the probe.
+
+Not checked: the PowerShell tool's input on Windows, and Codex's desktop app.
 
 Codex states that the transcript format is not a stable interface for hooks.
 
@@ -55,11 +64,13 @@ So in both apps a ref change means remove, then add. A same-ref refresh never ne
 
 ## A disposable config folder
 
-**Codex** (probe). `CODEX_HOME` points the CLI at another folder. With only a copy of `auth.json` in it, `codex exec` ran a session and wrote its state there; the real `config.toml` was unchanged, by hash, and gained no entry for the probe folder. Plugin and marketplace commands wrote only to that folder. A `hooks.json` placed there did not run: hooks need trust recorded in that folder's `config.toml`, and an unattended run skips untrusted hooks without saying so. The CLI has a flag that runs hooks without recorded trust for one invocation; it was not used.
+**Codex** (probe). `CODEX_HOME` points the CLI at another folder. With only a copy of `auth.json` in it, `codex exec` ran a session and wrote its state there; the real `config.toml` was unchanged, by hash, and gained no entry for the probe folder. Plugin and marketplace commands wrote only to that folder. A `hooks.json` placed there did not run until it was trusted: an unattended run skips untrusted hooks without saying so. Trusting it once in an interactive session with `/hooks` recorded a hash per hook entry in that folder's `config.toml`, and unattended runs then ran it. The hash covers the entry in `hooks.json`, not the script it names: changing the script kept the trust. The CLI also has a flag that runs hooks without recorded trust for one invocation; it was not used.
+
+The real `config.toml` can change during a run for unrelated reasons, such as the desktop app updating itself, so compare it for entries naming the run's folders, not by whole-file hash.
 
 **Claude Code** (probe and docs). `CLAUDE_CONFIG_DIR` points the CLI at another folder. Plugin and marketplace commands wrote only to that folder, and the real marketplace and plugin files were unchanged, by hash. A fresh folder is not signed in (`claude auth status`), and on macOS the sign-in is not a file that can be copied in. The docs give a folder-trust field in the user config file and say an unattended run never shows the trust dialog; they don't say whether such a run records trust.
 
-Not checked: a signed-in session in a disposable Claude Code folder, and trusted hooks in a disposable Codex folder.
+Not checked: a signed-in session in a disposable Claude Code folder.
 
 ## A bare argument to PowerShell
 
