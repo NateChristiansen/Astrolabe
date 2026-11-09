@@ -18,6 +18,7 @@ dependencies = [
  "chrono",
  "fs4",
  "getrandom",
+ "libc",
  "pulldown-cmark",
  "serde",
  "serde_json",

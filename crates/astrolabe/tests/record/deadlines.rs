@@ -190,6 +190,62 @@ fn a_hanging_git_refuses_a_save_inside_the_budget() {
     assert!(mac.unfinished().iter().all(|op| op["result"].is_string()));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_commit_stopped_at_its_limit_leaves_no_index_lock_and_no_children() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The real git, holding its index lock while a commit hook of the checkout's hangs.
+    let hook = mac.notes.join(".git/hooks/pre-commit");
+    let pid = mac.dir.0.join("hook.pid");
+    write(
+        &hook,
+        &format!("#!/bin/sh\necho $$ > '{}'\nexec sleep 60\n", pid.display()),
+    );
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "6000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(20));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort NOT saved: git commit was stopped after "),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(6), "{took:?}");
+    // Git was asked to stop, so it took its lock files with it; killed outright it leaves
+    // them, and every later save fails until someone removes them by hand.
+    let locks: Vec<_> = std::fs::read_dir(mac.notes.join(".git"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".lock"))
+        .collect();
+    assert!(locks.is_empty(), "{locks:?}");
+    // And what git started went with it, so nothing touches the index after the lock.
+    let pid = std::fs::read_to_string(&pid).unwrap();
+    let alive = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(
+        !alive.success(),
+        "the commit hook's process is still running"
+    );
+    std::fs::remove_file(&hook).unwrap();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
+    assert!(ok, "{out}");
+    let history = git(&mac.notes, &["log", "-p", "--format=%s"]);
+    assert_eq!(
+        history.matches("+- a line for the day").count(),
+        1,
+        "{history}"
+    );
+}
+
 #[test]
 fn a_hook_that_dies_mid_write_leaves_a_write_the_next_hook_finishes() {
     let world = World::new();
