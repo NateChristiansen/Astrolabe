@@ -153,7 +153,7 @@ pub(super) fn is_year(name: &str) -> bool {
     name.len() == 4 && name.chars().all(|c| c.is_ascii_digit())
 }
 
-/// `11-November` reads as `November`, and `.agents` as `agents`: the dot that hides a folder
+/// `11-November` reads as `November`, and `.handoffs` as `handoffs`: the dot that hides a folder
 /// on disk stays there. A filed note's own number stays on its row.
 pub(super) fn label_of(name: &str) -> &str {
     let name = name

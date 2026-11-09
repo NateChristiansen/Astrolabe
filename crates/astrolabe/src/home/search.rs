@@ -258,7 +258,7 @@ mod tests {
         for (p, text) in [
             ("knowledge/owner.md", "# Owner\n\nLikes plain words.\n"),
             ("efforts/2026/11-November/0001-a.md", "# A\n\nNothing.\n"),
-            (".agents/brief.md", "# Brief\n\nPlain words too.\n"),
+            (".handoffs/brief.md", "# Brief\n\nPlain words too.\n"),
             (".git/notes.md", "plain words in git\n"),
             ("README.md", "# Readme\n"),
         ] {
@@ -271,7 +271,7 @@ mod tests {
         let hits = out["hits"].as_object().unwrap();
         let mut names: Vec<&str> = hits.keys().map(String::as_str).collect();
         names.sort();
-        assert_eq!(names, [".agents/brief.md", "knowledge/owner.md"]);
+        assert_eq!(names, [".handoffs/brief.md", "knowledge/owner.md"]);
         assert_eq!(hits["knowledge/owner.md"], "Owner Likes plain words.");
         let none: serde_json::Value = serde_json::from_str(&answer(&dir, "   ")).unwrap();
         assert!(none["hits"].as_object().unwrap().is_empty());

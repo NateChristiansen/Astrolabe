@@ -32,7 +32,7 @@ For a change, plan or investigation that needs a lasting record, the agent runs 
 
 The agent saves a short current state, decisions and an optional plan. Work with several landable steps keeps a Pieces checklist of independently checkable outcomes, written at the start as a best guess and revised as the work goes; a one-step fix or spike needs none. A tick stamps its day, a dropped line stays struck, and a save can't lose a ticked line. It is instructed to save before waiting on the owner, before long runs and when a piece is done. The program adds machine and session facts; the agent writes the meaning. Journal entries are validated before writing: they must be short, describe the change, and omit filenames and closing status-only sentences. See the [journal format](commands.md#journal).
 
-A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page alone, with new proposed efforts, or around existing efforts. Membership is an effort's `initiative` property naming the page; a planning-only spike stays outside and is linked as provenance. Progress is derived from member statuses, never a checklist of efforts. The orchestrator binds with `activate --initiative <slug>` and saves its state, decisions, owner questions and daily journal line on that page. Workers save only their effort and journal nothing; their briefs and reports live under `.agents/<initiative slug>/` in the notes.
+A plan that names several efforts ends in an initiative: `astrolabe initiative new` files the page alone, with new proposed efforts, or around existing efforts. Membership is an effort's `initiative` property naming the page; a planning-only spike stays outside and is linked as provenance. Progress is derived from member statuses, never a checklist of efforts. The orchestrator binds with `activate --initiative <slug>` and saves its state, decisions, owner questions and daily journal line on that page. Workers save only their effort and journal nothing; their briefs and reports live under `.handoffs/<initiative slug>/` in the notes.
 
 Efforts can be proposed, ready, active, review, blocked, done or abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment. Status changes to active, review, blocked, done or abandoned require Current state. After `effort read <number>`, a dispatcher can save that effort's body and ticks by number with stale writes refused, including across repos sharing an initiative. Initiatives have no review status and close explicitly with an acceptance sentence and no open members.
 
@@ -70,7 +70,7 @@ Personal content lives in the notes checkout and is read at runtime:
 - `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it, so unreviewed observations don't become standing instructions. Triaged entries are deleted.
 - `drafts/`: text waiting for the owner to post or decide on. The board counts it; nothing delivers it to a session. Closed drafts are deleted.
 - `initiatives/`: initiative records; the board reads their members from effort frontmatter.
-- `.agents/`: material agents write for each other, hidden behind the board's dot-folder toggle.
+- `.handoffs/`: material agents write for each other, hidden behind the board's dot-folder toggle.
 
 The effort format is fixed by the program; there is no user-editable effort template.
 

@@ -190,7 +190,7 @@ ASTROLABE
 | `--involvement "<value>"` | Applied to the page and every new effort; default `check in at plan`. |
 | `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
-The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.agents/<initiative slug>/` in the notes.
+The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.handoffs/<initiative slug>/` in the notes.
 
 The existing session binding stays unchanged. No journal line is written by filing. The reply gives the activation command and actual commit/sync outcome. A planning-only spike closes without `--initiative`; the page links it as provenance.
 

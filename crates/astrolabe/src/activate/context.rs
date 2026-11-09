@@ -58,7 +58,7 @@ const STALE: &str = "A stale save is refused with the current text.";
 
 /// An owner's effort keeps today's orchestration, states and journal text: the eval found the
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
-const ORCHESTRATE_FULL: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>` and keeps its state, cross-effort decisions, owner questions and the day's one journal line on the page, never in an orchestrate effort. Workers save their own state, decisions and pieces, and journal nothing. The orchestrator reviews and lands, then runs `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A stale save is refused with the current text; a shared initiative reaches across repos. Briefs and reports live in the notes under `.agents/<initiative slug>/` so another session can resume.";
+const ORCHESTRATE_FULL: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>` and keeps its state, cross-effort decisions, owner questions and the day's one journal line on the page, never in an orchestrate effort. Workers save their own state, decisions and pieces, and journal nothing. The orchestrator reviews and lands, then runs `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A stale save is refused with the current text; a shared initiative reaches across repos. Briefs and reports live in the notes under `.handoffs/<initiative slug>/` so another session can resume.";
 
 const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
 
@@ -77,7 +77,7 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Start each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief. Briefs and reports live in the notes under `.agents/{slug}/` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. You review and land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Start each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief. Briefs and reports live in the notes under `.handoffs/{slug}/` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. You review and land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
@@ -1104,7 +1104,7 @@ mod tests {
                 "Progress comes from member statuses",
                 "astrolabe activate --initiative <slug>",
                 "`astrolabe effort read <n>`",
-                "`.agents/<initiative slug>/`",
+                "`.handoffs/<initiative slug>/`",
                 "Stop-hook",
                 "PROOF\n\nReport the effort",
                 "FRESH",
@@ -1155,7 +1155,7 @@ mod tests {
                 "astrolabe lesson close",
                 "own separate session, never a subagent",
                 "`astrolabe activate --effort <n> --worker` alone first",
-                "`.agents/7/`",
+                "`.handoffs/7/`",
                 "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
                 "Done requires an acceptance statement",
                 "PROOF\nReport the initiative",

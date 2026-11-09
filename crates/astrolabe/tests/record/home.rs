@@ -405,7 +405,7 @@ fn the_board_is_served_fresh_on_localhost() {
     // dot folder (the plugin's own state, an app's config) is not.
     assert!(get("/knowledge/owner.md", &addr).starts_with("HTTP/1.1 200"));
     assert!(get("/.git/config", &addr).starts_with("HTTP/1.1 404"));
-    assert!(get("/.agents/x.md", &addr).starts_with("HTTP/1.1 404"));
+    assert!(get("/.handoffs/x.md", &addr).starts_with("HTTP/1.1 404"));
     assert!(
         get("/", "evil.example:80").starts_with("HTTP/1.1 421"),
         "another host gets nothing"

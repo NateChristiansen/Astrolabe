@@ -1016,7 +1016,7 @@ mod tests {
             "journal/2026/11-November/05-Thursday.md",
             "knowledge/owner.md",
             "lessons/2026-11-06-trial-binary-killed.md",
-            ".agents/brief.md",
+            ".handoffs/brief.md",
             "README.md",
         ] {
             let path = dir.join(p);
@@ -1065,15 +1065,15 @@ mod tests {
         assert!(tree.contains("href=\"/README.md\""));
         assert!(!tree.contains(".git/"), "{tree}");
         let hid = &tree[at("id=\"hid\" hidden")..];
-        assert!(hid.contains("href=\"/.agents/brief.md\""), "{tree}");
+        assert!(hid.contains("href=\"/.handoffs/brief.md\""), "{tree}");
         assert!(
             !tree.contains("data-key=\"efforts/2026\""),
             "a year is a shelf of months, not a level: {tree}"
         );
         assert!(tree.contains(">November 2026</span>"), "{tree}");
-        assert!(tree.contains("Show agents · 1 note agents wrote for each other"));
+        assert!(tree.contains("Show handoffs · 1 note agents wrote for each other"));
         assert!(
-            tree.contains("data-key=\".agents\"><summary style=\"--d:0\"><span class=\"chev\">›</span><span class=\"t\">agents</span>"),
+            tree.contains("data-key=\".handoffs\"><summary style=\"--d:0\"><span class=\"chev\">›</span><span class=\"t\">handoffs</span>"),
             "the dot stays on disk, not on the page: {tree}"
         );
         let _ = std::fs::remove_dir_all(&dir);
