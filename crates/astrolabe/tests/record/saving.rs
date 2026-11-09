@@ -1448,3 +1448,79 @@ fn a_save_keeps_the_title_decisions_and_plan_after_a_hand_edited_closing_line() 
     }
     assert_eq!(text.matches("\n---").count(), 1, "one header: {text}");
 }
+
+#[test]
+fn a_note_whose_header_never_closes_is_not_written_over() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    // A hand edit breaks each closing line, so every line below the first reads as header.
+    let broken = |n: u32, name: &str| {
+        let path = mac.notes.join(shelf(name));
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replacen("\n---\n", "\n--- x\n", 1);
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(mac.effort_text(n), text);
+        text
+    };
+    let own = broken(2, "0002-lead.md");
+    let other = broken(1, "0001-smooth-ink.md");
+    let refused = "header never closes";
+    // The session's own effort.
+    for _ in 0..2 {
+        let (out, ok) = mac.bash(
+            "s1",
+            "astrolabe effort save <<'ASTROLABE'\nActive: more done.\nASTROLABE\n",
+        );
+        assert!(
+            !ok && out.contains(refused) && out.contains("Nothing was written"),
+            "{out}"
+        );
+        assert_eq!(mac.effort_text(2), own);
+    }
+    // Another effort by number, with and without a body.
+    let (out, _) = mac.bash("s1", "astrolabe effort read 1");
+    assert!(out.contains("--- x"), "{out}");
+    for cmd in [
+        "astrolabe effort save --effort 1 --status review <<'ASTROLABE'\nBuilt.\nASTROLABE\n",
+        "astrolabe effort save --effort 1 --decision \"ink over paint: cheaper\"",
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(
+            !ok && out.contains(refused) && out.contains("Nothing was written"),
+            "{cmd}: {out}"
+        );
+        assert_eq!(mac.effort_text(1), other);
+    }
+    // A worker can't take up such an effort and mark it active: it has no Current state.
+    let ready = "---\nstatus: ready\nrepo: demo\ninvolvement: check in at plan\nauthority: edit\n# 0009 Member\n\n## Current state\nKeep this.\n";
+    write(&mac.notes.join("efforts/0009-member.md"), ready);
+    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 9 --worker");
+    assert!(
+        !ok && out.contains("no `## Current state` section"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(9), ready);
+    // With its closing line back, the save goes through and keeps the note.
+    std::fs::write(
+        mac.notes.join(shelf("0002-lead.md")),
+        own.replacen("\n--- x\n", "\n---\n", 1),
+    )
+    .unwrap();
+    let save = "astrolabe effort save <<'ASTROLABE'\nActive: more done.\nASTROLABE\n";
+    let (out, ok) = mac.bash("s1", save);
+    assert!(ok, "{out}");
+    let text = mac.effort_text(2);
+    assert!(
+        text.contains("# 0002 Lead\n") && text.contains("Active: more done."),
+        "{text}"
+    );
+}

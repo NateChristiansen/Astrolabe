@@ -378,6 +378,17 @@ fn new_inner(
     Ok(text)
 }
 
+/// Refuses to rewrite a note whose header never closes. Every reader takes such a note as all
+/// header, so it parses with no title or sections, and a write built from that would drop them.
+fn closed_header(record: &str, text: &str) -> Result<(), String> {
+    match crate::effort::header_bounds(text) {
+        Some(at) if !at.closed() => Err(format!(
+            "{record}'s header never closes: its first line is `---` and no later line is, so the whole note reads as properties and a write would drop its title and sections. Nothing was written. Tell the owner the note needs a line of just `---` after its last property"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A worker binding to the effort it was dispatched to. A closed effort is refused, and a
 /// proposed or ready one is marked active, so the board shows the work started whether or
 /// not the worker ever saves. Gives what to tell the worker and the note's new hash when it
@@ -811,6 +822,7 @@ fn save_inner(
     let rel = &req.rel;
     let path = notes.root.join(rel);
     let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+    closed_header(record, &on_disk)?;
     let on_disk_hash = notes::content_hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
     let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
@@ -1173,6 +1185,7 @@ fn save_target(
     pulled: &Pull,
 ) -> Result<String, String> {
     let (rel, on_disk, mut file) = target_note(notes, state, target, cwd)?;
+    closed_header(&format!("effort {target}"), &on_disk)?;
     let on_disk_hash = notes::content_hash(&on_disk);
     let current = req.current.as_deref();
     let delivered = state
