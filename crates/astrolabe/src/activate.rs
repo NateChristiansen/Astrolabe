@@ -28,6 +28,7 @@ pub use repos::{add_repo, add_repo_note, check_repo_name, main_checkout, notes_r
 pub use routing::gate;
 pub(crate) use routing::{block_reason, provider};
 pub use tickets::command;
+pub(crate) use tickets::quoted;
 pub(crate) use tickets::shown_for;
 use tickets::write_json;
 

@@ -279,39 +279,24 @@ fn files(root: &Path) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
     Some(found)
 }
 
-/// The `ref` of `[marketplaces.astrolabe]` in Codex's config, read by line: the table is
-/// flat and written by Codex itself.
+/// The `ref` of `[marketplaces.astrolabe]` in Codex's config: None when the table isn't
+/// there or the file isn't TOML, Some(None) when the table has no ref.
 pub fn codex_ref(config: &str) -> Option<Option<String>> {
-    let mut lines = config.lines().map(str::trim);
-    lines.find(|l| *l == "[marketplaces.astrolabe]")?;
-    for line in lines {
-        if line.starts_with('[') {
-            break;
-        }
-        if let Some(value) = line
-            .strip_prefix("ref")
-            .and_then(|rest| rest.trim_start().strip_prefix('='))
-        {
-            return Some(Some(value.trim().trim_matches('"').to_owned()));
-        }
-    }
-    Some(None)
+    codex_marketplace(config, "ref")
 }
 
-/// The `source` of `[marketplaces.astrolabe]` in Codex's config, read the same way: a
-/// URL or a folder, as `marketplace add` takes it.
+/// The `source` of that table: a URL or a folder, as `marketplace add` takes it.
 fn codex_source(config: &str) -> Option<String> {
-    let mut lines = config.lines().map(str::trim);
-    lines.find(|l| *l == "[marketplaces.astrolabe]")?;
-    let value = lines
-        .take_while(|l| !l.starts_with('['))
-        .find_map(|l| l.strip_prefix("source")?.trim_start().strip_prefix('='))?
-        .trim();
-    match value.strip_prefix('"') {
-        // A basic string escapes its backslashes, as in a Windows folder.
-        Some(rest) => Some(rest.strip_suffix('"')?.replace(r"\\", r"\")),
-        None => Some(value.trim_matches('\'').to_owned()),
-    }
+    codex_marketplace(config, "source")?
+}
+
+/// One string of `[marketplaces.astrolabe]`, read as TOML: a person may have edited the
+/// file, so a comment, a quoted name or either kind of string has to read correctly.
+fn codex_marketplace(config: &str, key: &str) -> Option<Option<String>> {
+    let config = config.parse::<toml_edit::DocumentMut>().ok()?;
+    let table = config.get("marketplaces")?.get(MARKETPLACE)?;
+    table.as_table_like()?;
+    Some(table.get(key).and_then(|v| v.as_str()).map(str::to_owned))
 }
 
 fn home() -> Option<PathBuf> {
@@ -504,7 +489,24 @@ fn reachable(git_ref: &str) -> Result<(), String> {
     }
 }
 
+/// A command as a person would paste it, into PowerShell on Windows and a POSIX shell
+/// elsewhere, as the install guide has them. A word the shell would split or expand,
+/// such as a folder with a space, is quoted; the rest print bare.
 fn shown(cli: &str, words: &[String]) -> String {
+    let powershell = cfg!(windows);
+    let bare = |word: &str| {
+        let plain = |c: char| {
+            c.is_ascii_alphanumeric() || "_@+=:./#-".contains(c) || (powershell && c == '\\')
+        };
+        !word.is_empty() && !word.starts_with(['#', '@']) && word.chars().all(plain)
+    };
+    let words: Vec<String> = words
+        .iter()
+        .map(|word| match bare(word) {
+            true => word.clone(),
+            false => crate::activate::quoted(word, powershell),
+        })
+        .collect();
     format!("{cli} {}", words.join(" "))
 }
 
@@ -812,16 +814,29 @@ fn run(
         failed = true;
         let retry = commands(&steps, false);
         report.push(match plan {
-            Plugin::Reregister(Some((back, old))) => match perform(*app, cli, back) {
-                Ok(()) => format!(
-                    "{label}: {why}. The previous registration was put back, so the plugin is still installed from {old}. To move it to {git_ref} yourself, run {}.",
-                    commands(&steps, true)
-                ),
-                Err(again) => format!(
-                    "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {retry}. For {old}, run {}.",
-                    commands(back, true)
-                ),
-            },
+            Plugin::Reregister(Some((back, old))) => {
+                // The old marketplace first, then its plugin, so a failure shows which
+                // registration the app is left with.
+                let (marketplace, plugin) = back.split_at(back.len() - 1);
+                let registered = perform(*app, cli, marketplace);
+                match registered.clone().and_then(|()| perform(*app, cli, plugin)) {
+                    Ok(()) => format!(
+                        "{label}: {why}. The previous registration was put back, so the plugin is still installed from {old}. To move it to {git_ref} yourself, run {}.",
+                        commands(&steps, true)
+                    ),
+                    // Neither app adds another ref over a registration, so with the old
+                    // marketplace back the way to the target starts with the removals.
+                    Err(again) if registered.is_ok() => format!(
+                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {}. For {old}, run {}.",
+                        commands(&steps, true),
+                        commands(plugin, true)
+                    ),
+                    Err(again) => format!(
+                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {retry}. For {old}, run {}.",
+                        commands(back, false)
+                    ),
+                }
+            }
             Plugin::Reregister(None) => format!(
                 "{label}: {why}. {label} may have no Astrolabe plugin, hooks or guard until this succeeds: run {retry}."
             ),
@@ -888,6 +903,14 @@ mod tests {
             codex_source("[marketplaces.astrolabe]\n[next]\nsource = \"x\"\n"),
             None
         );
+
+        // A config edited by hand: comments after the values, and a quoted table name.
+        let edited = "[marketplaces.\"astrolabe\"]\nsource = 'C:\\repos\\Astrolabe' # local checkout\nref = \"v1\" # pinned\n";
+        assert_eq!(
+            codex_source(edited).as_deref(),
+            Some("C:\\repos\\Astrolabe")
+        );
+        assert_eq!(codex_ref(edited), Some(Some("v1".into())));
     }
 
     #[test]
@@ -1262,6 +1285,42 @@ mod tests {
     }
 
     #[test]
+    fn a_printed_command_quotes_an_argument_the_shell_would_split() {
+        let folder = "/Users/me/Plugin Sources/Astrolabe";
+        for app in App::ALL {
+            assert_eq!(
+                shown(app.cli(), &app.register(folder, None)),
+                format!(
+                    "{} plugin marketplace add '/Users/me/Plugin Sources/Astrolabe'",
+                    app.cli()
+                )
+            );
+        }
+        // The quote inside a quoted word is spelled for the shell the command is pasted into.
+        let quote = if cfg!(windows) { "''" } else { "'\\''" };
+        assert_eq!(
+            shown("codex", &App::Codex.register("/Users/O'Brien/x y", None)),
+            format!("codex plugin marketplace add '/Users/O{quote}Brien/x y'")
+        );
+        // Words that need no quoting print as they always did.
+        assert_eq!(
+            shown("claude", &App::Claude.steps("nightly")[2].0),
+            "claude plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git#nightly"
+        );
+        assert_eq!(
+            shown(
+                "codex",
+                &App::Codex.register("C:\\repos\\Astrolabe", Some("v0.6.0"))
+            ),
+            if cfg!(windows) {
+                "codex plugin marketplace add C:\\repos\\Astrolabe --ref v0.6.0"
+            } else {
+                "codex plugin marketplace add 'C:\\repos\\Astrolabe' --ref v0.6.0"
+            }
+        );
+    }
+
+    #[test]
     fn each_app_reregisters_at_the_target_ref() {
         let claude = App::Claude.steps("nightly");
         assert!(
@@ -1427,13 +1486,29 @@ mod tests {
                     }
                 }
                 if *words == app.install() {
-                    // The same command installs from the old registration, so it fails too.
+                    // The same command installs from the old registration, so it fails too,
+                    // after the old marketplace went back in. Neither app adds another ref
+                    // over a registration, so the way to the target starts with the removal.
                     assert!(report.contains("couldn't be put back"), "{report}");
                     assert!(
                         report.contains("may have no Astrolabe plugin, hooks or guard"),
                         "{report}"
                     );
-                    assert!(report.contains(&shown(app.cli(), &old)), "{report}");
+                    let all: Vec<String> = steps
+                        .iter()
+                        .map(|(words, _)| format!("`{}`", shown(app.cli(), words)))
+                        .collect();
+                    assert!(
+                        report.contains(&format!("For nightly, run {}.", all.join(", then "))),
+                        "{report}"
+                    );
+                    assert!(
+                        report.contains(&format!(
+                            "For main, run `{}`.",
+                            shown(app.cli(), &app.install())
+                        )),
+                        "{report}"
+                    );
                 } else {
                     assert!(
                         report.contains("The previous registration was put back"),
@@ -1459,9 +1534,16 @@ mod tests {
                 false,
             )
             .unwrap_err();
+            // Nothing is registered now, so each way back starts with its add.
             assert!(report.contains("couldn't be put back"), "{report}");
-            assert!(report.contains(&shown(app.cli(), add)), "{report}");
-            assert!(report.contains(&shown(app.cli(), &old)), "{report}");
+            assert!(
+                report.contains(&format!("For nightly, run `{}`", shown(app.cli(), add))),
+                "{report}"
+            );
+            assert!(
+                report.contains(&format!("For main, run `{}`", shown(app.cli(), &old))),
+                "{report}"
+            );
         }
     }
 

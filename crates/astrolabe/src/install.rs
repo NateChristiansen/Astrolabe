@@ -287,12 +287,17 @@ fn prune(directory: &Path, keep: &Path) -> usize {
     entries
         .flatten()
         .filter(|entry| {
-            entry
+            // Only a name this installer gives: the prefix, then its twelve random bytes
+            // in hex. A folder someone else put under the prefix is theirs.
+            let ours = entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".astrolabe-backup-")
-                && entry.path() != keep
-                // A real folder only: a link under that name is not this installer's.
+                .strip_prefix(".astrolabe-backup-")
+                .is_some_and(|id| {
+                    id.len() == 24 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                });
+            ours && entry.path() != keep
+                // A real folder only: this doesn't follow a link, which is never removed.
                 && entry.file_type().is_ok_and(|kind| kind.is_dir())
         })
         .filter(|entry| fs::remove_dir_all(entry.path()).is_ok())
@@ -555,21 +560,34 @@ mod tests {
     #[test]
     fn a_prune_leaves_everything_while_recovery_is_pending_and_other_files_always() {
         let root = scratch("prune-pending");
-        let old = root.join(".astrolabe-backup-old");
-        let named = root.join(".astrolabe-backup-named");
-        let newest = root.join(".astrolabe-backup-newest");
+        // The shape this installer gives a backup: twelve random bytes in hex.
+        let old = root.join(".astrolabe-backup-0123456789abcdef01234567");
+        let named = root.join(".astrolabe-backup-89abcdef0123456789abcdef");
+        let newest = root.join(".astrolabe-backup-fedcba9876543210fedcba98");
         for folder in [&old, &named, &newest] {
             fs::create_dir(folder).unwrap();
             fs::write(folder.join(names()[0]), "a program").unwrap();
         }
-        // Not this installer's: a file under the backup prefix, and another folder.
+        // Not this installer's: a file under the backup prefix, another folder, and
+        // folders someone made under the prefix with names the installer never gives.
         fs::write(root.join(".astrolabe-backup-file"), "kept").unwrap();
         fs::create_dir(root.join("unrelated")).unwrap();
+        let manual = root.join(".astrolabe-backup-manual");
+        let longer = root.join(".astrolabe-backup-0123456789abcdef01234567-mine");
+        let upper = root.join(".astrolabe-backup-0123456789ABCDEF0123456Z");
+        for folder in [&manual, &longer, &upper] {
+            fs::create_dir(folder).unwrap();
+            fs::write(folder.join("precious"), "kept").unwrap();
+        }
+        // A link under an installer-shaped name is never followed or removed.
+        #[cfg(unix)]
+        let link = root.join(".astrolabe-backup-00112233445566778899aabb");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&manual, &link).unwrap();
         fs::write(root.join(PENDING), format!("Backup: {}\n", named.display())).unwrap();
         assert_eq!(prune(&root, &newest), 0);
-        assert_eq!(
-            backups(&root).len(),
-            4,
+        assert!(
+            old.is_dir() && named.is_dir() && newest.is_dir(),
             "nothing goes while a marker exists"
         );
 
@@ -578,6 +596,16 @@ mod tests {
         assert!(newest.is_dir() && !old.exists() && !named.exists());
         assert!(root.join(".astrolabe-backup-file").is_file());
         assert!(root.join("unrelated").is_dir());
+        for folder in [&manual, &longer, &upper] {
+            assert_eq!(
+                fs::read_to_string(folder.join("precious")).unwrap(),
+                "kept",
+                "{}",
+                folder.display()
+            );
+        }
+        #[cfg(unix)]
+        assert!(fs::symlink_metadata(&link).is_ok());
         fs::remove_dir_all(root).unwrap();
     }
 
