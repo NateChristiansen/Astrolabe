@@ -410,6 +410,8 @@ mod catalog_tests {
 }
 
 /// Joining changes only the membership property, retaining even legacy effort formatting.
+/// In a header that never closes, a membership line already there is replaced and none is
+/// added; filing refuses such a note before it gets here.
 pub fn set_initiative_property(text: &str, slug: &str) -> String {
     let clean = text.strip_prefix('\u{feff}').unwrap_or(text);
     let bom = &text[..text.len() - clean.len()];

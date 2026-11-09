@@ -692,6 +692,13 @@ fn initiative_inner(
                 ));
             }
         }
+        // A header that never closes has no line to write the membership before, so the
+        // join would be reported without happening.
+        if crate::effort::header_bounds(&text).is_some_and(|at| !at.closed()) {
+            return Err(format!(
+                "effort {number}'s header never closes: its first line is `---` and no later line is, so there's no place to write its membership. Nothing was written. Tell the owner the note needs a line of just `---` after its last property"
+            ));
+        }
         // A raw property edit keeps the joined effort's Current state, stamps and all prose unchanged.
         let joined = crate::effort::set_initiative_property(&text, &page_slug);
         files.push((rel.clone(), joined));
