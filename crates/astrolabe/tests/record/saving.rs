@@ -400,8 +400,11 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     );
     assert!(ok, "{out}");
     let text = mac.effort_text(1);
+    let day = today();
     assert!(
-        text.contains("## Pieces\n- [x] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n"),
+        text.contains(&format!(
+            "## Pieces\n- [x] Tether cap ({day})\n- [ ] Goo at speed\n- [ ] Goo splats\n"
+        )),
         "{text}"
     );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Goo\"");
@@ -430,7 +433,7 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     );
     assert!(
         mac.effort_text(1)
-            .contains("- [ ] Tether cap\n- [x] Goo at speed\n")
+            .contains(&format!("- [ ] Tether cap\n- [x] Goo at speed ({day})\n"))
     );
     // Pieces survive a Current state save.
     assert!(
@@ -445,6 +448,123 @@ fn pieces_are_matched_by_name_and_survive_saves() {
     assert!(ok, "{out}");
     let v: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["efforts"][0]["pieces"], json!({"done": 1, "total": 3}));
+}
+
+#[test]
+fn pieces_are_a_living_list_that_never_loses_a_ticked_outcome() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Tether cap\n- [ ] Goo at speed\n- [ ] Goo splats\n",
+    );
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --pieces-file pieces.md --tick Tether"
+        )
+        .1
+    );
+    let day = today();
+    // A revision rewords, adds and strikes unticked lines; the ticked one is kept with its
+    // stamp, and a ticked line given back without its stamp is still the same outcome.
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [x] tether cap\n- [ ] Goo at any speed\n- ~~Goo splats~~ dropped 2026-11-08: art covers it\n- [ ] Landed on main\n",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("- [x] tether cap\n- [ ] Goo at any speed\n- ~~Goo splats~~ dropped"),
+        "{text}"
+    );
+    let (out, ok) = mac.run(&mac.demo, &["efforts", "--all"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v["efforts"][0]["pieces"],
+        json!({"done": 1, "total": 3}),
+        "a struck line isn't counted"
+    );
+    assert!(mac.bash("s1", "astrolabe effort save --tick \"Goo at\"").1);
+    let before = mac.effort_text(1);
+    assert!(
+        before.contains(&format!("- [x] Goo at any speed ({day})")),
+        "{before}"
+    );
+    // Dropping a ticked line, or giving it back unticked, is refused and writes nothing.
+    for (name, list) in [
+        ("dropped.md", "- [x] tether cap\n- [ ] Landed on main\n"),
+        (
+            "unticked.md",
+            "- [x] tether cap\n- [ ] Goo at any speed\n- [ ] Landed on main\n",
+        ),
+    ] {
+        write(&mac.demo.join(name), list);
+        let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --pieces-file {name}"));
+        assert!(
+            !ok && out.contains("loses ticked outcomes")
+                && out.contains("- [x] Goo at any speed")
+                && !out.contains("- [x] tether cap")
+                && out.contains("Nothing was written"),
+            "{out}"
+        );
+        assert_eq!(mac.effort_text(1), before);
+    }
+    // --untick stays the way back, and drops the stamp; ticking again stamps anew.
+    assert!(
+        mac.bash("s1", "astrolabe effort save --untick \"Goo at\"")
+            .1
+    );
+    assert!(mac.effort_text(1).contains("- [ ] Goo at any speed\n"));
+}
+
+#[test]
+fn a_dispatcher_sets_another_efforts_pieces_after_reading_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Ink pass\n- [ ] Landed\n",
+    );
+    let before = mac.effort_text(1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --effort 1 --pieces-file pieces.md",
+    );
+    assert!(
+        !ok && out.contains("effort read 1") && out.contains("Nothing was written"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), before);
+    assert!(mac.bash("s1", "astrolabe effort read 1").1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --effort 1 --pieces-file pieces.md --tick Ink",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1).contains(&format!(
+            "## Pieces\n- [x] Ink pass ({})\n- [ ] Landed\n",
+            today()
+        )),
+        "{}",
+        mac.effort_text(1)
+    );
+    assert!(
+        !mac.effort_text(2).contains("## Pieces"),
+        "the bound effort is untouched"
+    );
 }
 
 #[test]
@@ -485,7 +605,10 @@ fn inline_code_pieces_can_be_ticked_without_changing_their_text() {
     };
     assert_eq!(
         without_updated(&mac.effort_text(1)),
-        without_updated(&before.replace(&format!("- [ ] {piece}"), &format!("- [x] {piece}")))
+        without_updated(&before.replace(
+            &format!("- [ ] {piece}"),
+            &format!("- [x] {piece} ({})", today())
+        ))
     );
 }
 
@@ -503,18 +626,18 @@ fn an_exact_piece_label_wins_over_longer_labels_even_when_already_checked() {
         "astrolabe effort save --pieces-file pieces.md --tick \"repo note\"",
     );
     assert!(ok, "{out}");
-    assert!(
-        mac.effort_text(1)
-            .contains("- [x] Repo note\n- [ ] Repo note examples")
-    );
+    assert!(mac.effort_text(1).contains(&format!(
+        "- [x] Repo note ({})\n- [ ] Repo note examples",
+        today()
+    )));
     // A different command avoids replaying the previous receipt. The exact checked label
     // still wins rather than checking the longer unfinished label.
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"Repo note\"");
     assert!(ok, "{out}");
-    assert!(
-        mac.effort_text(1)
-            .contains("- [x] Repo note\n- [ ] Repo note examples")
-    );
+    assert!(mac.effort_text(1).contains(&format!(
+        "- [x] Repo note ({})\n- [ ] Repo note examples",
+        today()
+    )));
     // Unticking is outside this change: its existing prefix rule still considers the
     // longer label even when the value is an exact label.
     let before = mac.effort_text(1);

@@ -131,13 +131,10 @@ impl<'a> SaveRequest<'a> {
             ));
         }
         if target.is_some()
-            && (body_plan.is_some()
-                || plan_file.is_some()
-                || journal_text.is_some()
-                || pieces_file.is_some())
+            && (body_plan.is_some() || plan_file.is_some() || journal_text.is_some())
         {
             return Err(format!(
-                "with --effort <n>, --journal, --plan-file and --pieces-file are unavailable. Nothing was written.\n{FORMS}"
+                "with --effort <n>, --journal and --plan-file are unavailable. Nothing was written.\n{FORMS}"
             ));
         }
         if target.is_some() && state.worker.is_true() {
@@ -280,10 +277,36 @@ pub(super) fn edit_bound(
         file.plan = Some(plan.trim().to_owned());
     }
     if let Some(p) = &req.pieces {
+        keeps_ticked(file, p)?;
         file.set_pieces(p);
     }
-    apply_ticks(file, &req.ticks, &req.unticks)?;
+    apply_ticks(file, &req.ticks, &req.unticks, day)?;
     req.change(initiative).apply(file, day)
+}
+
+/// A new list replaces the old only with every ticked outcome still there and still ticked:
+/// a met outcome is history, and only `--untick` reverses one.
+fn keeps_ticked(file: &EffortFile, new: &str) -> Result<(), String> {
+    let mut next = EffortFile::default();
+    next.set_pieces(new);
+    let kept: Vec<String> = next
+        .ticked_labels()
+        .iter()
+        .map(|l| l.to_lowercase())
+        .collect();
+    let lost: Vec<String> = file
+        .ticked_labels()
+        .into_iter()
+        .filter(|l| !kept.contains(&l.to_lowercase()))
+        .map(|l| format!("- [x] {l}"))
+        .collect();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the new Pieces list loses ticked outcomes, which stay in the list as met; keep them ticked, or reverse one with --untick \"<piece>\" first. Nothing was written. Missing or unticked:\n{}",
+        lost.join("\n")
+    ))
 }
 
 /// Who saved it and when.

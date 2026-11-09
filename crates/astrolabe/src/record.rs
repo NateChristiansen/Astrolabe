@@ -964,7 +964,12 @@ fn save_inner(
     Ok(head)
 }
 
-fn apply_ticks(file: &mut EffortFile, ticks: &[&str], unticks: &[&str]) -> Result<(), String> {
+fn apply_ticks(
+    file: &mut EffortFile,
+    ticks: &[&str],
+    unticks: &[&str],
+    day: &str,
+) -> Result<(), String> {
     if !ticks.is_empty() || !unticks.is_empty() {
         let on: Vec<usize> = ticks
             .iter()
@@ -978,10 +983,10 @@ fn apply_ticks(file: &mut EffortFile, ticks: &[&str], unticks: &[&str]) -> Resul
             return Err(format!("{:?} is both ticked and unticked", ticks[i]));
         }
         for at in on {
-            file.tick(at, true);
+            file.tick(at, true, day);
         }
         for at in off {
-            file.tick(at, false);
+            file.tick(at, false, day);
         }
     }
     Ok(())
@@ -1174,11 +1179,14 @@ fn save_target(
         .read_efforts
         .as_ref()
         .and_then(|reads| reads.get(&target.to_string()));
-    if (current.is_some() || !req.ticks.is_empty() || !req.unticks.is_empty())
+    if (current.is_some()
+        || req.pieces.is_some()
+        || !req.ticks.is_empty()
+        || !req.unticks.is_empty())
         && delivered.is_none()
     {
         return Err(format!(
-            "run `astrolabe effort read {target}` first: a body or tick needs the note delivered in this session. Nothing was written.\n{FORMS}"
+            "run `astrolabe effort read {target}` first: a body, pieces list or tick needs the note delivered in this session. Nothing was written.\n{FORMS}"
         ));
     }
     if delivered.is_some_and(|hash| hash != &on_disk_hash) {

@@ -28,7 +28,7 @@ For example:
 
 > Fix the broken links. Work autonomously and keep the changes local.
 
-The agent records these choices with the effort, so they carry over when you resume it. An approved plan with several steps includes a checklist of pieces. Built and checked work waits in review until review, acceptance or landing; blocked work needs something resolved before it can continue.
+The agent records these choices with the effort, so they carry over when you resume it. Work with several steps keeps a checklist of pieces, written at the start and revised as it goes; a met piece is ticked with its date and stays. Built and checked work waits in review until review, acceptance or landing; blocked work needs something resolved before it can continue.
 
 ## See where things stand
 

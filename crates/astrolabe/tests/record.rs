@@ -9,6 +9,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Today, as a tick stamps it after a piece.
+fn today() -> String {
+    astrolabe::notes::local_day_time().0
+}
+
 /// An effort file on today's month shelf, where `effort new` files it.
 fn shelf(name: &str) -> String {
     let (day, _) = astrolabe::notes::local_day_time();

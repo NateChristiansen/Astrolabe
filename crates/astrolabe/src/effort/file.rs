@@ -418,14 +418,14 @@ impl EffortFile {
             .collect();
         let exact: Vec<_> = items
             .iter()
-            .filter(|(_, l)| piece_text(l).to_lowercase() == wanted)
+            .filter(|(_, l)| piece_label(l).to_lowercase() == wanted)
             .collect();
         let matches: Vec<_> = if !done || exact.is_empty() {
             items
                 .iter()
                 .filter(|(_, l)| {
                     (!done || piece_box(l) == Some(false))
-                        && piece_text(l).to_lowercase().starts_with(&wanted)
+                        && piece_label(l).to_lowercase().starts_with(&wanted)
                 })
                 .collect()
         } else {
@@ -434,7 +434,7 @@ impl EffortFile {
         let names = |items: &[&(usize, &str)]| {
             items
                 .iter()
-                .map(|(_, l)| format!("- {}", piece_text(l)))
+                .map(|(_, l)| format!("- {}", piece_label(l)))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -452,22 +452,31 @@ impl EffortFile {
         }
     }
 
-    /// Ticks or unticks an item resolved by `piece_at` before any checklist changes.
-    pub fn tick(&mut self, at: usize, done: bool) {
+    /// Ticks or unticks an item resolved by `piece_at` before any checklist changes. A tick
+    /// stamps the day its outcome was met; an untick drops the stamp; an item already ticked
+    /// keeps its first day.
+    pub fn tick(&mut self, at: usize, done: bool, day: &str) {
         let text = self.pieces().unwrap_or_default();
         let lines: Vec<String> = text
             .lines()
             .enumerate()
-            .map(|(i, l)| {
-                if i == at {
-                    let mark = if done { "[x]" } else { "[ ]" };
-                    format!("- {mark} {}", piece_text(l))
-                } else {
-                    l.to_owned()
-                }
+            .map(|(i, l)| match (i == at, done, piece_box(l)) {
+                (true, true, Some(false)) => format!("- [x] {} ({day})", piece_label(l)),
+                (true, false, _) => format!("- [ ] {}", piece_label(l)),
+                _ => l.to_owned(),
             })
             .collect();
         self.set_pieces(&lines.join("\n"));
+    }
+
+    /// The labels of ticked items, without their day stamps.
+    pub fn ticked_labels(&self) -> Vec<&str> {
+        self.pieces()
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| piece_box(l) == Some(true))
+            .map(piece_label)
+            .collect()
     }
 
     pub fn render(&self) -> String {
@@ -619,6 +628,25 @@ pub(super) fn piece_text(line: &str) -> &str {
         .trim()
 }
 
+/// An item's text without the ` (YYYY-MM-DD)` a tick stamps at its end, so ticking and
+/// matching by the outcome's words keep working once it's stamped.
+pub(super) fn piece_label(line: &str) -> &str {
+    let text = piece_text(line);
+    text.strip_suffix(')')
+        .and_then(|t| t.rsplit_once(" ("))
+        .filter(|(_, d)| is_day(d))
+        .map_or(text, |(label, _)| label.trim_end())
+}
+
+fn is_day(d: &str) -> bool {
+    let b = d.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            _ => c.is_ascii_digit(),
+        })
+}
+
 /// A file name's slug from a title: lowercase words joined by dashes, at most six.
 pub fn slug(title: &str) -> String {
     let words: Vec<String> = title
@@ -637,6 +665,21 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn a_piece_label_drops_only_a_trailing_day_stamp() {
+        for (line, label) in [
+            ("- [x] Tether cap (2026-11-08)", "Tether cap"),
+            ("- [x] Tether cap", "Tether cap"),
+            (
+                "- [ ] Check (slow) links (soon)",
+                "Check (slow) links (soon)",
+            ),
+            ("- [x] Release (2026-11)", "Release (2026-11)"),
+        ] {
+            assert_eq!(piece_label(line), label, "{line}");
+        }
+    }
 
     #[test]
     fn frontmatter_reads_quotes_lists_casing_and_byte_order_marks() {

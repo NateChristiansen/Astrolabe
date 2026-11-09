@@ -222,11 +222,11 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--decision "chose X over Y: reason"` | Append a dated decision. Repeat the flag for several; each is recorded, in the order given. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
 | `--plan-file <path>` | Replace the saved plan with a UTF-8 text file. |
-| `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Include existing checked items you want to retain. |
-| `--tick "<piece>"` | Check a piece, ignoring case. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
+| `--pieces-file <path>` | Replace the whole Pieces checklist with a UTF-8 text file. Every checked item must stay checked in the new list, or the save is refused with the missing ones; `--untick` is the way to reverse one. Unchecked items can change freely. |
+| `--tick "<piece>"` | Check a piece, ignoring case, and stamp today's date after it, as `(2026-11-08)`; a piece already checked keeps its date. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 | `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. Existing page names resolve to their slug; unknown names are refused with a pointer to `astrolabe initiative new`. Omitting this option leaves membership untouched. |
-| `--effort <number>` | Save another effort. After `effort read <number>` in this session, a body replaces its Current state and `--tick` / `--untick` change its pieces. Status, wait, reason, decision and initiative flags remain available. Journal, plan replacement and pieces-file writes are refused. The target must share the session's repo or an existing initiative with the bound record, or belong to the bound initiative page; the notes checkout can reach any repo. The bound record is untouched. |
+| `--effort <number>` | Save another effort. After `effort read <number>` in this session, a body replaces its Current state, `--pieces-file` replaces its pieces and `--tick` / `--untick` change them. Status, wait, reason, decision and initiative flags remain available. Journal and plan replacement are refused. The target must share the session's repo or an existing initiative with the bound record, or belong to the bound initiative page; the notes checkout can reach any repo. The bound record is untouched. |
 
 A done save lists any unticked pieces in its reply without refusing the save. Keep a dated explanation of deferred or dropped pieces in the note.
 
@@ -250,10 +250,10 @@ Active again after the upload check.
 ASTROLABE
 ```
 
-Pieces come with an approved plan that has more than one landable step, one independently checkable outcome per line. A one-step fix or spike needs none. A tick means its outcome is met, which can be on a branch; if landing is a deliverable, record it as a piece. File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
+Pieces are a living list of landable outcomes, one independently checkable outcome per line. The agent writes them when the work starts, as its best current guess from the plan or brief, and revises them on any save. A one-step fix or spike needs none. Unticked lines can be added, reworded or dropped; a dropped line stays struck with its date and reason, as `- ~~Check slow connections~~ dropped 2026-11-08: covered by the retry work`, which the piece count skips. A tick means its outcome is met, which can be on a branch, and stamps the day; if landing is a deliverable, record it as a piece. File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
 
 ```markdown
-- [x] Keep the upload selection
+- [x] Keep the upload selection (2026-11-08)
 - [ ] Check slow connections
 ```
 
