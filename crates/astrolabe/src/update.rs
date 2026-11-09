@@ -1300,8 +1300,10 @@ mod tests {
     }
 
     fn fail(dir: &Path, calls: &[&[String]]) {
-        let lines: Vec<String> = calls.iter().map(|words| words.join(" ")).collect();
-        std::fs::write(dir.join("fail.txt"), lines.join("\n") + "\n").unwrap();
+        // Windows' findstr matches a whole line only when it ends as Windows' lines do.
+        let end = if cfg!(windows) { "\r\n" } else { "\n" };
+        let lines: Vec<String> = calls.iter().map(|words| words.join(" ") + end).collect();
+        std::fs::write(dir.join("fail.txt"), lines.concat()).unwrap();
     }
 
     #[test]
