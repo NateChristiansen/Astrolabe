@@ -13,14 +13,14 @@ Run the commands below in your own terminal. Use Bash or zsh on macOS/Linux, or 
 
 ## 1. Download and install the program
 
-**Release candidate:** prebuilt downloads are being prepared. Until `v0.5.0` appears on the [releases page](https://github.com/NateChristiansen/Astrolabe/releases), use [Build from source](#build-from-source). The commands below describe that release, not a download that is already available.
+**Release candidate:** prebuilt downloads are being prepared. Until `v0.6.0` appears on the [releases page](https://github.com/NateChristiansen/Astrolabe/releases), use [Build from source](#build-from-source). The commands below describe that release, not a download that is already available.
 
 The first release targets Apple silicon and Intel Macs, x64 Windows, and x64 Linux with glibc. See [versions and compatibility](versions.md) for the tested systems. Install into your own account; administrator access is not needed.
 
 ### macOS / Linux
 
 ```sh
-curl --fail --location --output install.sh https://github.com/NateChristiansen/Astrolabe/releases/download/v0.5.0/install.sh
+curl --fail --location --output install.sh https://github.com/NateChristiansen/Astrolabe/releases/download/v0.6.0/install.sh
 sh install.sh
 "$HOME/.local/bin/astrolabe" --version
 ```
@@ -28,7 +28,7 @@ sh install.sh
 ### Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest https://github.com/NateChristiansen/Astrolabe/releases/download/v0.5.0/install.ps1 -OutFile install.ps1
+Invoke-WebRequest https://github.com/NateChristiansen/Astrolabe/releases/download/v0.6.0/install.ps1 -OutFile install.ps1
 & .\install.ps1
 & "$env:USERPROFILE/.local/bin/astrolabe.exe" --version
 ```
@@ -44,7 +44,7 @@ Choose the app you use, or install in both. These commands let the app fetch the
 ### Claude Code
 
 ```sh
-claude plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git#v0.5.0
+claude plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git#v0.6.0
 claude plugin install astrolabe@astrolabe
 ```
 
@@ -53,7 +53,7 @@ This installs at user scope. See the [Claude Code plugin guide](https://code.cla
 ### Codex
 
 ```sh
-codex plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git --ref v0.5.0
+codex plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git --ref v0.6.0
 codex plugin add astrolabe@astrolabe
 ```
 
