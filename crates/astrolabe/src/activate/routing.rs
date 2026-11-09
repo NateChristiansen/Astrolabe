@@ -707,6 +707,12 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                             ),
                         }
                     }
+                    // The hook's time for reading repos is gone, so a repo not read proves
+                    // nothing about it: the session keeps its effort and guard, is told
+                    // the hook was slow, and nothing is blocked for someone to repair.
+                    Err(_) if crate::deadline::reading_time_is_up() => {
+                        crate::deadline::START_OUT_OF_TIME.to_owned()
+                    }
                     Err(why) => {
                         // Context failed, protection mustn't: stay on, and block until repaired.
                         let mut state = state.clone();

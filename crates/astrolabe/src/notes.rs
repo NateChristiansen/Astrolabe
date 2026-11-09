@@ -20,6 +20,9 @@ const INTENTS: &str = "ops";
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
+/// There while this program rebases the notes checkout. Left behind, it says a rebase
+/// found in the checkout is this program's own, cut short, and not the owner's by hand.
+const REBASING: &str = "rebase-started";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
 /// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
@@ -134,7 +137,10 @@ impl Notes {
             .open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         match crate::deadline::lock(&file).map_err(|e| format!("notes lock: {e}"))? {
-            crate::deadline::Wait::Held => Ok(Held(file)),
+            crate::deadline::Wait::Held => {
+                self.settle();
+                Ok(Held(file))
+            }
             crate::deadline::Wait::Busy(waited) => Err(format!(
                 "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
                 crate::deadline::seconds(waited)
@@ -152,18 +158,85 @@ impl Notes {
             .write(true)
             .open(self.state.join(LOCK))
             .ok()?;
-        FileExt::try_lock_exclusive(&file)
+        let held = FileExt::try_lock_exclusive(&file)
             .ok()?
-            .then_some(Held(file))
+            .then_some(Held(file))?;
+        self.settle();
+        Some(held)
     }
 
+    /// Under the lock, before anything else: a rebase this program began and never ended
+    /// (its process was killed, or the machine went down) is put back, hand edits and
+    /// all, so no one works on a checkout left partway. A rebase with no word from this
+    /// program is the owner's and is left alone; writes refuse until it's ended.
+    fn settle(&self) {
+        let marker = self.state.join(REBASING);
+        if !marker.exists() {
+            return;
+        }
+        if self.mid_rebase() {
+            let _ = self.git_cleanup(&["rebase", "--abort"]);
+        }
+        if !self.mid_rebase() {
+            let _ = std::fs::remove_file(marker);
+        }
+    }
+
+    /// Before the notes are read: if this program left a rebase cut short, the checkout
+    /// holds another machine's files and not this one's, so it's put back first. Taking
+    /// the lock does that.
+    pub(crate) fn heal(&self) {
+        if self.state.join(REBASING).exists() {
+            let _ = self.lock();
+        }
+    }
+
+    /// Whether a rebase is under way in the checkout, by the folders git keeps for one.
+    pub(crate) fn mid_rebase(&self) -> bool {
+        let dot = self.root.join(".git");
+        let dir = match dot.is_dir() {
+            true => dot,
+            // A linked worktree keeps its own elsewhere.
+            false => match self.git(&["rev-parse", "--absolute-git-dir"]) {
+                Ok(dir) => PathBuf::from(dir.trim()),
+                Err(_) => return false,
+            },
+        };
+        dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists()
+    }
+
+    /// A git call in the notes checkout, as part of a pull or a write.
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        crate::worktree::git(&self.root, &args)
+        crate::worktree::git_as(crate::deadline::Git::Notes, &self.root, &args)
     }
 
-    /// Files the index holds unmerged: a save can't stage those, so nothing is written.
+    /// A git call that puts the checkout back after a step was stopped. It has its own
+    /// time in a hook, never what's left of the hook's.
+    fn git_cleanup(&self, args: &[&str]) -> Result<String, String> {
+        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
+        crate::worktree::git_as(crate::deadline::Git::Cleanup, &self.root, &args)
+    }
+
+    /// What a write must not land on, checked before anything is touched. A hook with too
+    /// little time left: the write would be stopped partway. A checkout mid-rebase or off
+    /// its branch: a commit there is dropped when the rebase ends or the branch is checked
+    /// out again. Files the index holds unmerged: a save can't stage those.
     pub(crate) fn refuse_unmerged(&self) -> Result<(), String> {
+        if let Some(left) = crate::deadline::short_of(crate::deadline::Step::Write) {
+            return Err(format!(
+                "this hook had {} s left, too little to write the notes safely, so nothing was written. Run the same command again",
+                crate::deadline::seconds(left)
+            ));
+        }
+        if self.mid_rebase() {
+            return Err("the notes checkout is in the middle of a rebase; finish it there, or end it with `git rebase --abort`, first. Nothing was written".to_owned());
+        }
+        if let Err(why) = self.git(&["symbolic-ref", "--quiet", "HEAD"])
+            && why.is_empty()
+        {
+            return Err("the notes checkout isn't on a branch (its HEAD is detached); check its branch out there first. Nothing was written".to_owned());
+        }
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .unwrap_or_default();

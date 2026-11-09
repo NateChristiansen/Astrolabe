@@ -30,7 +30,9 @@ pub struct Done {
 pub(crate) fn notes_here() -> Result<(Repos, Notes), String> {
     let dir = state_dir().ok_or("Astrolabe has no home folder for its state")?;
     let (registry, root) = activate::notes_and_repos()?;
-    Ok((registry, Notes::new(root, dir)))
+    let notes = Notes::new(root, dir);
+    notes.heal();
+    Ok((registry, notes))
 }
 
 /// The one repo note this folder belongs to, for a new effort.

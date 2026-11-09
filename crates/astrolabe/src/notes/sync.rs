@@ -1,14 +1,16 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms, tidy_journal,
-    write_text,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, REBASING, SYNC, content_hash, hash, md_files, now_ms,
+    tidy_journal, write_text,
 };
+use crate::deadline::Step;
 use serde_json::{Value, json};
 
 impl Notes {
     /// A git call that may touch the network, stopped when its time is up (see `deadline`).
     fn git_timed(&self, args: &[&str]) -> Result<String, String> {
-        crate::worktree::git_network(&self.root, args)
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(AsRef::as_ref).collect();
+        crate::worktree::git_as(crate::deadline::Git::Network, &self.root, &args)
     }
 
     pub(crate) fn has_remote(&self) -> bool {
@@ -52,6 +54,12 @@ impl Notes {
                 left / 1000
             )));
         }
+        // The one step a hook can do without: late in its time it works from the local copy.
+        if crate::deadline::short_of(Step::Pull).is_some() {
+            return Err(Pull::Offline(
+                "this hook had no time left for a pull".to_owned(),
+            ));
+        }
         if let Err(why) = self.git_timed(&["fetch", "--quiet"]) {
             self.record_sync("offline", &why);
             if why.contains("took over") {
@@ -65,9 +73,26 @@ impl Notes {
 
     /// The rebase half of a pull, onto what the last fetch brought.
     fn rebase(&self) -> Pull {
+        if crate::deadline::short_of(Step::Rebase).is_some() {
+            return Pull::Offline(
+                "fetched, but this hook had no time left to rebase onto it".to_owned(),
+            );
+        }
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let stashes_before = self.stashes();
-        match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
+        // Noted before it starts, so a process that dies partway leaves word that the
+        // rebase in the checkout is this program's to put back (see `Notes::settle`).
+        let _ = write_text(&self.state.join(REBASING), "");
+        let rebased = self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]);
+        if rebased.is_err() {
+            // Its own time, not what's left of the hook's: a rebase is stopped exactly
+            // when nothing is left, and the checkout must not stay partway.
+            let _ = self.git_cleanup(&["rebase", "--abort"]);
+        }
+        if !self.mid_rebase() {
+            let _ = std::fs::remove_file(self.state.join(REBASING));
+        }
+        match rebased {
             Ok(_) => {
                 self.clear_sync("diverged");
                 if let Err(why) = self.keep_stash(&stashes_before) {
@@ -90,8 +115,9 @@ impl Notes {
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
                 Pull::Offline(why)
             }
+            // Stopped for time and put back: nothing diverged, the next pull does it.
+            Err(why) if crate::deadline::out_of_time(&why) => Pull::Offline(why),
             Err(why) => {
-                let _ = self.git(&["rebase", "--abort"]);
                 self.record_sync("diverged", &why);
                 self.changed();
                 Pull::Diverged(why)
@@ -142,7 +168,7 @@ impl Notes {
             self.record_sync("stash", &kept.join("\n"));
         }
         if new.is_some() {
-            self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
+            self.git_cleanup(&["reset", "--quiet", "--hard"]).map_err(|why| {
                 format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
             })?;
         }

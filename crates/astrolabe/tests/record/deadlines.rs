@@ -108,8 +108,8 @@ fn a_held_notes_lock_refuses_a_save_with_a_reply() {
     let (before, log) = (mac.effort_text(1), mac.log());
     let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
     let held = notes.lock().unwrap();
-    let env = [("ASTROLABE_HOOK_BUDGET_MS", "4000")];
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(12));
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
     let Answer::Shown(text, ok) = answer else {
         panic!("a reply through the ticket, not a denial or silence");
     };
@@ -121,7 +121,7 @@ fn a_held_notes_lock_refuses_a_save_with_a_reply() {
         text.contains("so nothing was written. Run the same command again"),
         "{text}"
     );
-    assert!(took < Duration::from_secs(4), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
     assert_eq!(mac.effort_text(1), before);
     assert_eq!(mac.log(), log);
     assert!(mac.unfinished().is_empty(), "nothing was planned or left");
@@ -138,9 +138,9 @@ fn a_held_notes_lock_at_session_start_still_delivers_context() {
     assert!(mac.bash("s1", NEW).1);
     let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
     let _held = notes.lock().unwrap();
-    let env = [("ASTROLABE_HOOK_BUDGET_MS", "4000")];
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
     let input = json!({"session_id": "s1", "cwd": mac.demo, "source": "resume"});
-    let (out, took) = mac.timed_event("session-start", &input, &env, Duration::from_secs(12));
+    let (out, took) = mac.timed_event("session-start", &input, &env, Duration::from_secs(25));
     let answer: Value = serde_json::from_str(out.trim()).expect("context, not silence");
     let text = answer["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -149,7 +149,7 @@ fn a_held_notes_lock_at_session_start_still_delivers_context() {
         text.contains("Smooth ink") && text.contains("Notes not refreshed from origin (no lock)"),
         "{text}"
     );
-    assert!(took < Duration::from_secs(4), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
 }
 
 #[cfg(unix)]
@@ -160,10 +160,10 @@ fn a_hanging_git_refuses_a_save_inside_the_budget() {
     assert!(mac.bash("s1", NEW).1);
     let path = mac.git_shim("for a in \"$@\"; do [ \"$a\" = commit ] && exec sleep 60; done");
     let env = [
-        ("ASTROLABE_HOOK_BUDGET_MS", "6000"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "10000"),
         ("PATH", path.as_str()),
     ];
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(20));
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(30));
     let Answer::Shown(text, ok) = answer else {
         panic!("a reply through the ticket, not a denial or silence");
     };
@@ -172,7 +172,7 @@ fn a_hanging_git_refuses_a_save_inside_the_budget() {
             && text.contains(" s, when this hook's time ran out"),
         "{text}"
     );
-    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
     // The write is planned and unfinished: the next hook that writes finishes it.
     let left = mac.unfinished();
     assert!(left.len() == 1 && left[0]["committed"] != true, "{left:?}");
@@ -205,8 +205,8 @@ fn a_commit_stopped_at_its_limit_leaves_no_index_lock_and_no_children() {
         &format!("#!/bin/sh\necho $$ > '{}'\nexec sleep 60\n", pid.display()),
     );
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let env = [("ASTROLABE_HOOK_BUDGET_MS", "6000")];
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(20));
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "10000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(30));
     let Answer::Shown(text, ok) = answer else {
         panic!("a reply through the ticket, not a denial or silence");
     };
@@ -214,7 +214,7 @@ fn a_commit_stopped_at_its_limit_leaves_no_index_lock_and_no_children() {
         !ok && text.starts_with("Effort NOT saved: git commit was stopped after "),
         "{text}"
     );
-    assert!(took < Duration::from_secs(6), "{took:?}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
     // Git was asked to stop, so it took its lock files with it; killed outright it leaves
     // them, and every later save fails until someone removes them by hand.
     let locks: Vec<_> = std::fs::read_dir(mac.notes.join(".git"))
@@ -325,4 +325,200 @@ fn a_flooding_fetch_is_not_a_timeout() {
     assert!(took < Duration::from_secs(10), "{took:?}");
     let record = std::fs::read_to_string(mac.state().join("sync.json")).unwrap();
     assert!(!record.contains("backoff_until_ms"), "{record}");
+}
+
+/// A notes checkout whose next pull has to replay a local commit over one from another
+/// machine, with a hand edit in the tree, and a git hook that hangs once, in the middle of
+/// that rebase. Returns where the hanging process writes its id.
+#[cfg(unix)]
+fn a_rebase_that_hangs(world: &World, mac: &Machine) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    write(
+        &pc.notes.join("knowledge/other.md"),
+        "FROM THE OTHER MACHINE",
+    );
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-q", "-m", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    let owner = mac.notes.join("knowledge/owner.md");
+    std::fs::write(&owner, "OWNER-TEXT\nA HAND EDIT\n").unwrap();
+    let (once, pid) = (mac.dir.0.join("hung.once"), mac.dir.0.join("hung.pid"));
+    let hook = mac.notes.join(".git/hooks/reference-transaction");
+    write(
+        &hook,
+        &format!(
+            "#!/bin/sh\ndir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  echo $$ > '{pid}'\n  exec sleep 60\nfi\nexit 0\n",
+            once = once.display(),
+            pid = pid.display()
+        ),
+    );
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    pid
+}
+
+/// The checkout as a hook must leave it: on its branch, no rebase under way, no lock files,
+/// the hand edit still in the tree and not parked in a stash.
+#[cfg(unix)]
+fn assert_settled(mac: &Machine) {
+    let dot = mac.notes.join(".git");
+    assert!(!dot.join("rebase-merge").exists(), "left mid-rebase");
+    assert!(!dot.join("rebase-apply").exists(), "left mid-rebase");
+    assert_eq!(
+        git(&mac.notes, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
+    let locks: Vec<_> = std::fs::read_dir(&dot)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".lock"))
+        .collect();
+    assert!(locks.is_empty(), "{locks:?}");
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT\nA HAND EDIT\n"
+    );
+    assert_eq!(git(&mac.notes, &["stash", "list"]), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rebase_stopped_by_the_hooks_time_leaves_a_clean_checkout() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    a_rebase_that_hangs(&world, &mac);
+    // The hook's real time: the rebase is stopped at 6 s of its 16, put back, and the rest
+    // of the hook has a loaded machine's worth of room to build the session's context.
+    let input = json!({"session_id": "s1", "cwd": mac.demo, "source": "resume"});
+    let (out, took) = mac.timed_event("session-start", &input, &[], Duration::from_secs(40));
+    assert!(took < Duration::from_secs(16), "{took:?}");
+    let answer: Value = serde_json::from_str(out.trim()).expect("context, not silence");
+    let text = answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.contains("Notes not refreshed from origin (git rebase was stopped after "),
+        "{text}"
+    );
+    assert_settled(&mac);
+    // Stopped for time isn't divergence: nothing is recorded for a session to be told.
+    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(!status.contains("diverged"), "{status}");
+    // The next pull, with nothing in its way, brings the other machine's work in.
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    assert_settled(&mac);
+    assert_eq!(mac.log(), "0001: started\ntheirs\nseed\n");
+    assert!(mac.notes.join("knowledge/other.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hook_killed_mid_rebase_is_healed_by_the_next_one() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pid = a_rebase_that_hangs(&world, &mac);
+    let input = json!({"session_id": "s1", "cwd": mac.demo, "source": "resume"});
+    let mut hook = mac.command(&mac.demo, &["hook", "session-start", "--if-active"]);
+    hook.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut hook = hook.spawn().unwrap();
+    (hook.stdin.take().unwrap())
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let started = std::time::Instant::now();
+    while !pid.exists() || std::fs::read_to_string(&pid).unwrap().trim().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no rebase began"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The hook dies where it stands, as when the app gives up on it, and the git under it
+    // is told to stop, as the hook's own backstop does on its way out.
+    hook.kill().unwrap();
+    hook.wait().unwrap();
+    let hung = std::fs::read_to_string(&pid).unwrap();
+    let group = Command::new("ps")
+        .args(["-o", "pgid=", "-p", hung.trim()])
+        .output()
+        .unwrap();
+    let group = String::from_utf8(group.stdout).unwrap();
+    let killed = Command::new("kill")
+        .args(["-TERM", "--", &format!("-{}", group.trim())])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        mac.notes.join(".git/rebase-merge").exists(),
+        "the fixture should leave the checkout mid-rebase"
+    );
+    // The next hook that works with the notes puts the checkout back before it reads them.
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    assert_settled(&mac);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    assert_settled(&mac);
+    assert!(mac.log().contains("0001: checkpoint"), "{}", mac.log());
+}
+
+#[test]
+fn a_write_against_a_checkout_mid_rebase_is_refused_and_loses_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // The owner, rebasing by hand in the notes checkout, stopped partway: the conflict is
+    // resolved in the index and the rebase not continued, so HEAD is detached.
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    git(&mac.notes, &["fetch", "-q"]);
+    let rebase = Command::new("git")
+        .args(["rebase", "origin/main"])
+        .current_dir(&mac.notes)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!rebase.status.success(), "the fixture should conflict");
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "BOTH").unwrap();
+    git(&mac.notes, &["add", "knowledge/owner.md"]);
+    assert!(mac.notes.join(".git/rebase-merge").exists());
+    let head = git(&mac.notes, &["rev-parse", "HEAD"]);
+    // A write an earlier hook planned and never finished.
+    let effort = shelf("0001-smooth-ink.md");
+    let text = std::fs::read_to_string(mac.notes.join(&effort)).unwrap();
+    let intent = json!({
+        "key": "crashed-key", "files": [[effort, text.replace("smooth the ink", "CRASHED smooth the ink")]],
+        "renames": [], "journal": [], "message": "0001: checkpoint", "base": null, "states": []
+    });
+    write(
+        &mac.state().join("ops/crashed-key.json"),
+        &intent.to_string(),
+    );
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(
+        !ok && out.contains("the notes checkout is in the middle of a rebase"),
+        "{out}"
+    );
+    // Nothing went onto the detached HEAD, where the rebase's end would drop it.
+    assert_eq!(git(&mac.notes, &["rev-parse", "HEAD"]), head);
+    let left = mac.unfinished();
+    assert!(left.len() == 1 && left[0]["committed"] != true, "{left:?}");
+    // It isn't Astrolabe's rebase, so it's left for the owner, who ends it.
+    assert!(mac.notes.join(".git/rebase-merge").exists());
+    git(&mac.notes, &["rebase", "--abort"]);
+    let (out, _) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
+    let log = git(&mac.notes, &["log", "--format=%s", "main"]);
+    assert!(log.contains("0001: checkpoint"), "{out}\n{log}");
+    assert!(mac.effort_text(1).contains("CRASHED smooth the ink"));
+    assert!(mac.unfinished().iter().all(|op| op["result"].is_string()));
 }

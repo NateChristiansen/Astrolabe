@@ -30,12 +30,12 @@ const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
 /// a git verb (before that git call starts).
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
 
-/// The most a fetch or push may take inside a hook, which leaves a save time to finish
-/// after a slow one. A call that uses all of it counts as offline and starts the backoff.
-const HOOK_NETWORK: Duration = Duration::from_secs(8);
-/// A fetch or push given at least this long that still didn't finish counts the same,
-/// though the hook had less than the whole allowance left for it.
-const NETWORK_FLOOR: Duration = Duration::from_secs(5);
+/// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
+/// without, so it gets the early part of the hook's time and no more.
+const HOOK_NETWORK: Duration = Duration::from_secs(5);
+/// A fetch or push given at least this long that still didn't finish counts as offline and
+/// starts the backoff, though the hook had less than the whole allowance left for it.
+const NETWORK_FLOOR: Duration = Duration::from_secs(3);
 /// The same outside a hook, where nothing waits on it but a background sync.
 const NETWORK: Duration = Duration::from_secs(15);
 /// The most a local git call may take outside a hook, so one that hangs can't hold the
@@ -55,9 +55,37 @@ impl Clock {
         self.answer * 3 / 4
     }
 
-    /// Kept after a lock wait or a fetch for the write that follows it.
+    /// Kept after a lock wait for the write that follows it.
     fn reserve(&self) -> Duration {
         (self.work() / 4).min(Duration::from_secs(3))
+    }
+
+    /// A pull ends here, fetch and rebase both, so that with the worst case after it (a
+    /// rebase stopped, then put back) the rest of the hook still has its time.
+    fn pull(&self) -> Duration {
+        self.work() / 2
+    }
+
+    /// The least a rebase is started with.
+    fn rebase(&self) -> Duration {
+        self.work() / 12
+    }
+
+    /// The least a notes write is started with.
+    fn write(&self) -> Duration {
+        self.work() / 8
+    }
+
+    /// What a call that puts the checkout back gets, whatever the hook has left: it runs
+    /// after a step was stopped, which is when nothing is left.
+    fn cleanup(&self) -> Duration {
+        self.work() / 6
+    }
+
+    /// Git calls that only read, for a session's context, end here: later than the notes
+    /// work, so a slow pull or write can't make a repo read as not a repo.
+    fn read(&self) -> Duration {
+        self.answer * 7 / 8
     }
 
     fn left(&self, until: Duration) -> Duration {
@@ -95,7 +123,7 @@ const OUT_OF_TIME: &str = "Astrolabe's hook ran out of time before it finished w
 
 const FAILED: &str = "Astrolabe's hook failed before it finished with this command, so it blocks the command rather than let it run unguarded. If it was an `astrolabe` command, run `astrolabe notes status` to see whether its write landed before running it again; any other command can be run again as it is. If this keeps happening, the plugin is broken: tell the owner, who can run `astrolabe off` in a terminal to stop Astrolabe on this machine until it's fixed.";
 
-const START_OUT_OF_TIME: &str = "Astrolabe's session-start hook ran out of time, so this session got none of its notes or effort context. The guard still runs on each command. Run `astrolabe activate --status` to see where this session stands, and tell the owner the hook was slow.";
+pub(crate) const START_OUT_OF_TIME: &str = "Astrolabe's session-start hook ran out of time, so this session got none of its notes or effort context. The guard still runs on each command. Run `astrolabe activate --status` to see where this session stands, and tell the owner the hook was slow.";
 
 /// How long this event's hook may spend reading its input.
 pub(crate) fn read_time(event: &str) -> Duration {
@@ -149,6 +177,7 @@ pub(crate) fn start(event: &str) {
             crate::hook::print(&fallback);
         }
         state.said = true;
+        crate::worktree::stop_running();
         // Exits holding the answer, so the hook's own thread can't add a second one. A write
         // it was in the middle of is left as a crash leaves it: planned, for the next
         // writer to finish.
@@ -251,6 +280,42 @@ pub(crate) fn lock_within(file: &File, wait: Duration) -> std::io::Result<Wait> 
     }
 }
 
+/// A step a hook does only when it has the time for it.
+pub(crate) enum Step {
+    /// Fetching the notes: skipped, the hook works from the local copy.
+    Pull,
+    /// Rebasing onto what was fetched: skipped, and done by the next pull.
+    Rebase,
+    /// Writing the notes: refused before anything is touched.
+    Write,
+}
+
+/// How much time a hook has for `step` when that's too little to start it; None when it
+/// has enough, or this isn't a hook.
+pub(crate) fn short_of(step: Step) -> Option<Duration> {
+    let clock = CLOCK.get()?;
+    let (until, need) = match step {
+        Step::Pull => (clock.pull(), clock.rebase() * 2),
+        Step::Rebase => (clock.pull(), clock.rebase()),
+        Step::Write => (clock.work(), clock.write()),
+    };
+    let left = clock.left(until);
+    (left < need).then_some(left)
+}
+
+/// What a git call is for, which decides how long it may run.
+#[derive(Clone, Copy)]
+pub(crate) enum Git {
+    /// A fetch or push.
+    Network,
+    /// Work in the notes checkout: a write's steps, a rebase.
+    Notes,
+    /// A read of some repo, for what a session is told.
+    Read,
+    /// Putting the checkout back after a step was stopped: `rebase --abort`, a reset.
+    Cleanup,
+}
+
 /// How long one git call may run, and what to say if it's stopped.
 pub(crate) struct Limit {
     pub(crate) time: Duration,
@@ -281,35 +346,62 @@ impl Limit {
     }
 }
 
-/// The limit for a git call starting now: one that may touch the network, or a local one.
-pub(crate) fn git_limit(network: bool) -> Limit {
+/// A failure that says the hook's time ran out, not that git found something wrong.
+pub(crate) fn out_of_time(why: &str) -> bool {
+    why.contains("when this hook's time ran out") || why.contains("this hook's time had run out")
+}
+
+/// The limit for a git call starting now, or None when a hook has no time left for one of
+/// its kind: a call started with no time is a call killed at once, partway through
+/// whatever it was changing.
+pub(crate) fn git_limit(kind: Git) -> Option<Limit> {
     let Some(clock) = CLOCK.get() else {
-        return match network {
-            true => Limit {
+        return Some(match kind {
+            Git::Network => Limit {
                 time: NETWORK,
                 cut: Cut::Network,
             },
-            false => Limit {
+            _ => Limit {
                 time: LOCAL,
                 cut: Cut::Local,
             },
-        };
+        });
     };
-    let left = clock.left(clock.work());
-    if network {
-        // Whatever follows a fetch still needs its share.
-        let left = left.saturating_sub(clock.reserve());
-        let time = left.min(HOOK_NETWORK);
-        let cut = match time >= NETWORK_FLOOR {
-            true => Cut::Network,
-            false => Cut::Hook,
-        };
-        return Limit { time, cut };
+    let hook = |time: Duration| {
+        (!time.is_zero()).then_some(Limit {
+            time,
+            cut: Cut::Hook,
+        })
+    };
+    match kind {
+        Git::Network => {
+            // A rebase may follow a fetch, inside the pull's own time.
+            let left = clock.left(clock.pull()).saturating_sub(clock.rebase());
+            let time = left.min(HOOK_NETWORK);
+            match time >= NETWORK_FLOOR {
+                true => Some(Limit {
+                    time,
+                    cut: Cut::Network,
+                }),
+                false => hook(time),
+            }
+        }
+        Git::Notes => hook(clock.left(clock.work())),
+        Git::Read => hook(clock.left(clock.read())),
+        Git::Cleanup => hook(clock.cleanup()),
     }
-    Limit {
-        time: left,
-        cut: Cut::Hook,
-    }
+}
+
+/// Whether a hook's time for reading repos has run out, so its git reads no longer start.
+pub(crate) fn reading_time_is_up() -> bool {
+    CLOCK
+        .get()
+        .is_some_and(|clock| clock.left(clock.read()).is_zero())
+}
+
+/// What a call not started says.
+pub(crate) fn not_started(verb: &str) -> String {
+    format!("git {verb} wasn't started, because this hook's time had run out")
 }
 
 /// Whole seconds from one up, tenths below, as a reply names a wait.
@@ -368,6 +460,15 @@ mod tests {
             };
             assert!(clock.work() < answer && clock.reserve() < clock.work());
             assert!(read_time(event) < clock.work());
+            assert!(clock.work() < clock.read() && clock.read() < answer);
+            // The two events that pull. The worst pull: a rebase stopped at the pull's end,
+            // asked and then killed, then put back with its own time, asked and then
+            // killed. The write after it still has what a write needs.
+            if timeout == Duration::from_secs(20) {
+                let grace = Duration::from_millis(500);
+                let worst = clock.pull() + grace + clock.cleanup() + grace;
+                assert!(worst + clock.write() <= clock.work(), "{event}: {worst:?}");
+            }
         }
     }
 
@@ -425,12 +526,15 @@ mod tests {
     #[test]
     fn outside_a_hook_only_git_is_capped() {
         // No test here starts a clock, so this is a process that isn't a hook.
-        let network = git_limit(true);
+        let network = git_limit(Git::Network).unwrap();
         assert_eq!(network.stopped("fetch"), "git fetch took over 15 s");
-        let local = git_limit(false);
-        assert_eq!(
-            local.stopped("rebase"),
-            "git rebase was stopped after 120 s"
-        );
+        for kind in [Git::Notes, Git::Read, Git::Cleanup] {
+            let local = git_limit(kind).unwrap();
+            assert_eq!(
+                local.stopped("rebase"),
+                "git rebase was stopped after 120 s"
+            );
+        }
+        assert!(short_of(Step::Write).is_none());
     }
 }

@@ -5,40 +5,35 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use crate::deadline::Git;
+
+/// A read of the repo at `cwd`, for what a session is told.
 pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
-    run_git(Command::new("git").args(args), cwd)
+    git_as(Git::Read, cwd, args)
 }
 
 /// The same, with stdout as git wrote it: file names in `-z` output are bytes, and a lossy
 /// decode could make two names one.
 pub(crate) fn git_bytes(cwd: &Path, args: &[&std::ffi::OsStr]) -> Result<Vec<u8>, String> {
-    run_git_bytes(Command::new("git").args(args), cwd)
+    run_git(Git::Read, Command::new("git").args(args), cwd)
 }
 
 type Output = std::result::Result<String, String>;
 
-/// A git call that may touch the network: stopped sooner than a local one, and when it
-/// uses its whole allowance the failure says "took over", which callers take as offline.
-pub(crate) fn git_network(cwd: &Path, args: &[&str]) -> Output {
-    let limit = crate::deadline::git_limit(true);
-    run_git_within(Command::new("git").args(args), cwd, &limit)
+/// A git call of one kind, which decides how long it may run (see `deadline`): a fetch or
+/// push, work in the notes checkout, a read, or putting a checkout back.
+pub(crate) fn git_as(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
+    run_git(kind, Command::new("git").args(args), cwd)
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-fn run_git(command: &mut Command, cwd: &Path) -> Output {
-    run_git_bytes(command, cwd).map(|out| String::from_utf8_lossy(&out).into_owned())
-}
-
-fn run_git_bytes(command: &mut Command, cwd: &Path) -> Result<Vec<u8>, String> {
-    run_git_within(command, cwd, &crate::deadline::git_limit(false))
-}
-
-fn run_git_within(
-    command: &mut Command,
-    cwd: &Path,
-    limit: &crate::deadline::Limit,
-) -> Result<Vec<u8>, String> {
+fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, String> {
     let verb = verb(command);
+    // A hook with no time left for this call doesn't start it: started, it would be
+    // stopped at once, partway through whatever it changes.
+    let Some(limit) = crate::deadline::git_limit(kind) else {
+        return Err(crate::deadline::not_started(&verb));
+    };
     crate::deadline::stall(&verb);
     command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
     match run(command, limit.time) {
@@ -100,6 +95,7 @@ fn run(command: &mut Command, limit: Duration) -> std::io::Result<Ran> {
         .stderr(Stdio::piped());
     own_group(command);
     let mut child = command.spawn()?;
+    let _running = Running::new(&child);
     let (closed, closing) = mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
     let stderr = drain(child.stderr.take(), closed);
@@ -148,6 +144,46 @@ fn run(command: &mut Command, limit: Duration) -> std::io::Result<Ran> {
         stdout: take(&stdout),
         stderr: take(&stderr),
     }))
+}
+
+/// The child this process is waiting on, so a hook whose time is up can take it along
+/// instead of leaving it to work on a checkout nobody holds the lock for.
+static RUNNING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+struct Running;
+
+impl Running {
+    fn new(child: &std::process::Child) -> Self {
+        RUNNING.store(child.id(), std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Stops the git call under way, if any, as the process exits: asked, then killed.
+#[cfg(unix)]
+pub(crate) fn stop_running() {
+    let id = RUNNING.load(std::sync::atomic::Ordering::SeqCst);
+    if id == 0 {
+        return;
+    }
+    let group = -(id as libc::pid_t);
+    // Safety: `kill` takes no pointers; the group is one this process made for its child.
+    unsafe { libc::kill(group, libc::SIGTERM) };
+    std::thread::sleep(Duration::from_millis(100));
+    // Safety: as above.
+    unsafe { libc::kill(group, libc::SIGKILL) };
+}
+
+/// Windows can't reach a child by its id from here; it's left running.
+#[cfg(not(unix))]
+pub(crate) fn stop_running() {
+    let _ = RUNNING.load(std::sync::atomic::Ordering::SeqCst);
 }
 
 /// A process group of the child's own, so stopping it reaches what it started (a commit

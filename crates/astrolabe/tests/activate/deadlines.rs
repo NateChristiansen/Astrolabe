@@ -143,15 +143,17 @@ fn a_held_approval_lock_denies_inside_the_budget() {
         .open(f.state().join("s1.allow.lock"))
         .unwrap();
     FileExt::lock_exclusive(&lock).unwrap();
-    let env = [("ASTROLABE_HOOK_BUDGET_MS", "3000")];
-    let limit = Duration::from_secs(10);
+    // The lock wait ends a little past half the hook's time; the rest is room for a slow
+    // machine to start the program and its git calls.
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let limit = Duration::from_secs(25);
     let (answer, took) = f.timed("pre-command", &shell(&f, command), &env, limit);
     let answer = answer.expect("a denial while the approval can't be read");
     assert!(
         reason(&answer).starts_with("Astrolabe denied force-push"),
         "{answer}"
     );
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
     // Recording one waits the same bounded time and says why it gave up.
     let (answer, took) = f.timed("pre-command", &shell(&f, mint), &env, limit);
     let shown = answer.unwrap()["hookSpecificOutput"]["updatedInput"]["command"]
@@ -166,7 +168,7 @@ fn a_held_approval_lock_denies_inside_the_budget() {
         text.starts_with("Approval refused: this session's approval file was busy for the "),
         "{text}"
     );
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert!(took < Duration::from_secs(8), "{took:?}");
     drop(lock);
     // The approval was never spent: with the lock free it lets the command through once.
     assert_eq!(f.hook(shell(&f, command)), None);
@@ -225,4 +227,32 @@ fn a_machine_thats_off_gets_no_clock_and_no_answer() {
     let (answer, took) = f.timed("pre-command", &shell(&f, "echo hi"), &env, limit);
     assert_eq!(answer, None);
     assert!(took < Duration::from_secs(2), "{took:?}");
+}
+
+#[test]
+fn a_session_start_that_runs_out_of_time_blocks_nothing() {
+    let f = Fixture::new();
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
+    // Held up in its first look at a repo until its time for reading repos is gone: the
+    // looks after it aren't started, which reads like a folder that isn't a repo.
+    let env = [
+        ("ASTROLABE_HOOK_BUDGET_MS", "2000"),
+        ("ASTROLABE_HOOK_TEST_STALL", "rev-parse:1800"),
+    ];
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "resume"});
+    let (answer, took) = f.timed("session-start", &input, &env, Duration::from_secs(10));
+    let answer = answer.expect("a line of context, not silence");
+    let text = answer["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.starts_with("Astrolabe's session-start hook ran out of time"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    // Being slow once is no reason to block the session's commands until someone repairs it.
+    let state = std::fs::read_to_string(f.state().join("s1.json")).unwrap();
+    assert!(!state.contains("reload_failed"), "{state}");
+    assert_eq!(f.hook(shell(&f, "echo hi")), None);
 }
