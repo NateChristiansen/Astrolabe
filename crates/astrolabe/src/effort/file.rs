@@ -629,9 +629,13 @@ pub(super) fn piece_text(line: &str) -> &str {
 }
 
 /// An item's text without the ` (YYYY-MM-DD)` a tick stamps at its end, so ticking and
-/// matching by the outcome's words keep working once it's stamped.
+/// matching by the outcome's words keep working once it's stamped. Only a ticked item has a
+/// stamp: an unticked item's trailing date is its own, such as a deadline.
 pub(super) fn piece_label(line: &str) -> &str {
     let text = piece_text(line);
+    if piece_box(line) != Some(true) {
+        return text;
+    }
     text.strip_suffix(')')
         .and_then(|t| t.rsplit_once(" ("))
         .filter(|(_, d)| is_day(d))
@@ -676,9 +680,25 @@ mod file_tests {
                 "Check (slow) links (soon)",
             ),
             ("- [x] Release (2026-11)", "Release (2026-11)"),
+            ("- [ ] Demo build (2026-12-01)", "Demo build (2026-12-01)"),
         ] {
             assert_eq!(piece_label(line), label, "{line}");
         }
+    }
+
+    #[test]
+    fn ticking_keeps_a_date_that_belongs_to_the_outcome() {
+        let mut f = EffortFile::default();
+        f.set_pieces("- [ ] Demo build (2026-12-01)");
+        let at = f.piece_at("Demo build (2026-12-01)", true).unwrap();
+        f.tick(at, true, "2026-11-08");
+        assert_eq!(
+            f.pieces(),
+            Some("- [x] Demo build (2026-12-01) (2026-11-08)")
+        );
+        let at = f.piece_at("demo build (2026-12-01)", false).unwrap();
+        f.tick(at, false, "2026-11-08");
+        assert_eq!(f.pieces(), Some("- [ ] Demo build (2026-12-01)"));
     }
 
     #[test]
