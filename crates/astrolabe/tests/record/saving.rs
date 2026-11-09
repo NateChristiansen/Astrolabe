@@ -361,9 +361,14 @@ fn plan_sources_preserve_section_boundaries() {
         "astrolabe effort save <<'ASTROLABE'\ng.\n## Decisions\nASTROLABE",
     );
     assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
-    write(&mac.demo.join("pieces.md"), "## Pieces\n- [ ] x\n");
+    // The section's own heading leading the file is dropped; any other is refused.
+    write(&mac.demo.join("pieces.md"), "- [ ] x\n## Decisions\n");
     let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
     assert!(!ok && out.contains("can't hold a `## ` heading"), "{out}");
+    write(&mac.demo.join("headed.md"), "## Pieces\n- [ ] x\n");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file headed.md");
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(1).contains("## Pieces\n- [ ] x\n"));
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save <<'ASTROLABE'\n## Plan\n### Step one\nfirst\n### Step two\nsecond\nASTROLABE",
@@ -473,9 +478,18 @@ fn pieces_are_a_living_list_that_never_loses_a_ticked_outcome() {
         &mac.demo.join("pieces.md"),
         "- [x] tether cap\n- [ ] Goo at any speed\n- ~~Goo splats~~ dropped 2026-11-08: art covers it\n- [ ] Landed on main\n",
     );
+    // Headed with the section's own line, as agents often write it: the heading is dropped.
+    write(
+        &mac.demo.join("pieces.md"),
+        &format!(
+            "## Pieces\n{}",
+            std::fs::read_to_string(mac.demo.join("pieces.md")).unwrap()
+        ),
+    );
     let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
     assert!(ok, "{out}");
     let text = mac.effort_text(1);
+    assert!(!text.contains("## Pieces\n## Pieces"), "{text}");
     assert!(
         text.contains("- [x] tether cap\n- [ ] Goo at any speed\n- ~~Goo splats~~ dropped"),
         "{text}"

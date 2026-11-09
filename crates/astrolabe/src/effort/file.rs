@@ -410,7 +410,7 @@ impl EffortFile {
         let text = self
             .pieces()
             .ok_or("this effort has no `## Pieces` checklist; add one with --pieces-file")?;
-        let wanted = label.to_lowercase();
+        let wanted = match_key(label);
         let items: Vec<(usize, &str)> = text
             .lines()
             .enumerate()
@@ -418,14 +418,14 @@ impl EffortFile {
             .collect();
         let exact: Vec<_> = items
             .iter()
-            .filter(|(_, l)| piece_label(l).to_lowercase() == wanted)
+            .filter(|(_, l)| match_key(piece_label(l)) == wanted)
             .collect();
         let matches: Vec<_> = if !done || exact.is_empty() {
             items
                 .iter()
                 .filter(|(_, l)| {
                     (!done || piece_box(l) == Some(false))
-                        && piece_label(l).to_lowercase().starts_with(&wanted)
+                        && match_key(piece_label(l)).starts_with(&wanted)
                 })
                 .collect()
         } else {
@@ -642,6 +642,12 @@ pub(super) fn piece_label(line: &str) -> &str {
         .map_or(text, |(label, _)| label.trim_end())
 }
 
+/// How a tick's value is compared with a label: case and inline-code backticks ignored,
+/// because a flag value can't carry a backtick and pieces often name a command in code.
+fn match_key(text: &str) -> String {
+    text.replace('`', "").trim().to_lowercase()
+}
+
 fn is_day(d: &str) -> bool {
     let b = d.as_bytes();
     b.len() == 10
@@ -684,6 +690,14 @@ mod file_tests {
         ] {
             assert_eq!(piece_label(line), label, "{line}");
         }
+    }
+
+    #[test]
+    fn a_tick_matches_a_piece_whose_label_starts_with_inline_code() {
+        let mut f = EffortFile::default();
+        f.set_pieces("- [ ] `tally --csv` prints a header\n- [ ] `tally --out` writes a file");
+        assert_eq!(f.piece_at("tally --csv", true), Ok(0));
+        assert_eq!(f.piece_at("tally --out writes a file", true), Ok(1));
     }
 
     #[test]

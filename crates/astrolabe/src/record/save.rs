@@ -168,9 +168,12 @@ impl<'a> SaveRequest<'a> {
             .map(|p| read_file("plan-file", p))
             .transpose()?
             .or(body_plan);
+        // A pieces file headed with the section's own `## Pieces` line is the list itself:
+        // the heading is dropped rather than refused, as the effort file adds it back.
         let pieces = pieces_file
             .map(|p| read_file("pieces-file", p))
-            .transpose()?;
+            .transpose()?
+            .map(|t| without_pieces_heading(&t));
         // The file's sections are read back by their `## ` headings, so a heading inside one
         // would split it on the next read; checked after trimming, as it's stored. A plan is
         // the app's own file (Claude's plans use `## `), so its headings are demoted a level
@@ -282,6 +285,15 @@ pub(super) fn edit_bound(
     }
     apply_ticks(file, &req.ticks, &req.unticks, day)?;
     req.change(initiative).apply(file, day)
+}
+
+fn without_pieces_heading(text: &str) -> String {
+    let trimmed = text.trim_start();
+    match trimmed.split_once('\n') {
+        Some((first, rest)) if first.trim().eq_ignore_ascii_case("## pieces") => rest.to_owned(),
+        None if trimmed.trim().eq_ignore_ascii_case("## pieces") => String::new(),
+        _ => text.to_owned(),
+    }
 }
 
 /// A new list replaces the old only with every ticked outcome still there and still ticked:
