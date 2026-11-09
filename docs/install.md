@@ -189,13 +189,14 @@ To update by hand instead:
 
    ```sh
    # Claude Code
-   claude plugin uninstall astrolabe@astrolabe
-   claude plugin marketplace remove astrolabe
+   claude plugin uninstall astrolabe@astrolabe --keep-data
+   claude plugin marketplace remove astrolabe --scope user
 
    # Codex
-   codex plugin remove astrolabe@astrolabe
    codex plugin marketplace remove astrolabe
    ```
+
+   In Claude Code, uninstalling first with `--keep-data` keeps the plugin's saved data, which removing the marketplace would otherwise delete, and `--scope user` leaves a project's own declaration alone. Codex keeps the plugin's entry and replaces its installed copy when you add it again.
 
 3. Repeat [step 2](#2-install-the-plugin-in-your-agent-app) using the new release tag. This also moves an existing local marketplace to the hosted source. Removing the old registration does not erase your notes.
 4. Review and trust any changed hooks, restart your app, and repeat the [session check](#5-start-your-first-session).

@@ -786,11 +786,6 @@ fn run(
             ));
             continue;
         }
-        let Err(why) = perform(*app, cli, &steps) else {
-            report.push(format!("{label}: plugin {done} {git_ref}."));
-            continue;
-        };
-        failed = true;
         let commands = |steps: &[(Vec<String>, bool)], all: bool| {
             let shown: Vec<String> = steps
                 .iter()
@@ -799,6 +794,22 @@ fn run(
                 .collect();
             shown.join(", then ")
         };
+        let Err(why) = perform(*app, cli, &steps) else {
+            // An app can report success for a copy it left alone, so look again.
+            let stale = matches!(plan, Plugin::Reinstall)
+                && !copies(*app).is_some_and(|(installed, source)| !differs(&installed, &source));
+            if stale {
+                failed = true;
+                report.push(format!(
+                    "{label}: the reinstall ran, but the installed copy still doesn't match its marketplace's copy, so it was left as it was. To finish, run {} and read what they print.",
+                    commands(&steps, true)
+                ));
+            } else {
+                report.push(format!("{label}: plugin {done} {git_ref}."));
+            }
+            continue;
+        };
+        failed = true;
         let retry = commands(&steps, false);
         report.push(match plan {
             Plugin::Reregister(Some((back, old))) => match perform(*app, cli, back) {
@@ -1038,6 +1049,15 @@ mod tests {
         }
     }
 
+    /// The installed copy as a real app would leave it: `current` once the app's install
+    /// command has been called, `stale` until then.
+    fn installed(dir: &Path, app: App, stale: &Path, current: &Path) -> PathBuf {
+        match calls(dir).contains(&app.install().join(" ")) {
+            true => current.to_path_buf(),
+            false => stale.to_path_buf(),
+        }
+    }
+
     fn calls(dir: &Path) -> Vec<String> {
         std::fs::read_to_string(dir.join("calls.txt"))
             .unwrap_or_default()
@@ -1182,7 +1202,10 @@ mod tests {
         // copy predates a new hook: the case the version-keyed caches miss.
         let copies = |app| {
             Some((
-                if app == App::Claude { &stale } else { &current }.clone(),
+                match app {
+                    App::Claude => installed(&dir.0, app, &stale, &current),
+                    App::Codex => current.clone(),
+                },
                 source.clone(),
             ))
         };
@@ -1294,7 +1317,7 @@ mod tests {
             Channel::Nightly,
             &nightly(true),
             &seen,
-            &|_| Some((stale.clone(), source.clone())),
+            &|app| Some((installed(&dir.0, app, &stale, &current), source.clone())),
             &unasked,
             &dir.0,
             false,
@@ -1437,6 +1460,37 @@ mod tests {
             assert!(report.contains("couldn't be put back"), "{report}");
             assert!(report.contains(&shown(app.cli(), add)), "{report}");
             assert!(report.contains(&shown(app.cli(), &old)), "{report}");
+        }
+    }
+
+    #[test]
+    fn a_reinstall_that_leaves_the_copy_stale_fails_and_says_how_to_finish() {
+        let source = Scratch::new("unchanged-source");
+        let new = plugin(&source.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&source.0.join("stale"), OLD_HOOKS);
+        for app in App::ALL {
+            let dir = Scratch::new(&format!("unchanged-{}", app.cli()));
+            let seen = only(app, fake_cli(&dir.0), "nightly");
+            // Every command succeeds, as when an app calls a stale copy already installed.
+            let report = run(
+                Channel::Nightly,
+                &nightly(true),
+                &seen,
+                &|_| Some((stale.clone(), new.clone())),
+                &|_| Ok(()),
+                &dir.0,
+                false,
+                false,
+            )
+            .unwrap_err();
+            assert!(!report.contains("plugin reinstalled from"), "{report}");
+            assert!(
+                report.contains("still doesn't match its marketplace's copy"),
+                "{report}"
+            );
+            for (words, _) in app.reinstall() {
+                assert!(report.contains(&shown(app.cli(), &words)), "{report}");
+            }
         }
     }
 
