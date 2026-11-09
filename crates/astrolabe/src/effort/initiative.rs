@@ -414,29 +414,24 @@ pub fn set_initiative_property(text: &str, slug: &str) -> String {
     let clean = text.strip_prefix('\u{feff}').unwrap_or(text);
     let bom = &text[..text.len() - clean.len()];
     let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    if clean.lines().next() != Some("---") {
+    let Some(at) = super::file::header_bounds(text) else {
         return format!("{bom}---{eol}initiative: {slug}{eol}---{eol}{clean}");
-    }
-    let mut out = bom.to_owned();
-    let mut inside = true;
+    };
+    let mut out = text[..at.start].to_owned();
     let mut written = false;
-    for (i, line) in clean.split_inclusive('\n').enumerate() {
-        if i > 0 && inside && line.trim_end() == "---" {
-            if !written {
-                out += &format!("initiative: {slug}{eol}");
-            }
-            inside = false;
-        }
-        if i > 0 && inside && is_initiative_key(line) {
-            if !written {
-                out += &format!("initiative: {slug}{eol}");
-                written = true;
-            }
-        } else {
+    for line in text[at.start..at.end].split_inclusive('\n') {
+        if !is_initiative_key(line) {
             out += line;
+        } else if !written {
+            out += &format!("initiative: {slug}{eol}");
+            written = true;
         }
     }
-    out
+    // A new line goes before the closing line; a header that never closes has none.
+    if !written && at.closed() {
+        out += &format!("initiative: {slug}{eol}");
+    }
+    out + &text[at.end..]
 }
 
 /// Whether a header line holds the initiative key as the shared header reader sees it:
@@ -503,6 +498,47 @@ mod property_tests {
             set_initiative_property(text, "new"),
             "\u{feff}---\r\ninitiative: new\r\nstatus: active\r\n---\r\n# 0001 One\r\n"
         );
+    }
+
+    #[test]
+    fn an_oddly_shaped_header_gains_or_replaces_only_the_membership_line() {
+        for (text, joined) in [
+            (
+                "---  \nstatus: active\n---\n# 0001 One\n",
+                "---  \nstatus: active\ninitiative: new\n---\n# 0001 One\n",
+            ),
+            (
+                "--- \nInitiative: old\nstatus: active\n--- \n# 0001 One\n",
+                "--- \ninitiative: new\nstatus: active\n--- \n# 0001 One\n",
+            ),
+            (
+                "---\nstatus: active\n---\t\n# 0001 One\n\n---\nInitiative: body\n---\n",
+                "---\nstatus: active\ninitiative: new\n---\t\n# 0001 One\n\n---\nInitiative: body\n---\n",
+            ),
+            (
+                "---\n---\n# 0001 One\n",
+                "---\ninitiative: new\n---\n# 0001 One\n",
+            ),
+            (
+                "\u{feff}---  \r\nInitiative: old\r\n---  \r\n# 0001 One",
+                "\u{feff}---  \r\ninitiative: new\r\n---  \r\n# 0001 One",
+            ),
+            (
+                "---\nstatus: active\n---",
+                "---\nstatus: active\ninitiative: new\n---",
+            ),
+            ("# 0001 One\n", "---\ninitiative: new\n---\n# 0001 One\n"),
+            (
+                "\u{feff}# 0001 One\r\n",
+                "\u{feff}---\r\ninitiative: new\r\n---\r\n# 0001 One\r\n",
+            ),
+        ] {
+            let out = set_initiative_property(text, "new");
+            assert_eq!(out, joined, "{text:?}");
+            assert_eq!(initiative_lines(&out), 1, "{out:?}");
+            // Joining again changes nothing.
+            assert_eq!(set_initiative_property(&out, "new"), out, "{text:?}");
+        }
     }
 
     #[test]
