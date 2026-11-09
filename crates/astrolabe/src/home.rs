@@ -316,9 +316,15 @@ mod tests {
         // The prose names four efforts out of number order: two members, an abandoned
         // member, and one that belongs to another initiative now. Members 5, 6 and 9 joined
         // through their own front matter and the prose never heard of them.
+        // A fifth is an effort with no status line that was never a member.
+        std::fs::write(
+            notes.root.join("efforts/0030-plain.md"),
+            "---\nrepo: demo\n---\n# 0030 Plain\n\n## Current state\nParked.\n",
+        )
+        .unwrap();
         let (text, prose) = shared_work_page(
             &notes,
-            "## Efforts and order\n\n1. [Seventh](../efforts/0007-member.md). Starts it.\n2. [Fourth](../efforts/0004-member.md). Follows.\n3. [Dropped](../efforts/0008-member.md). Was turned down.\n4. [Gone](../efforts/0010-member.md). Moved out.\n\n## What completion means\n\nAll of it works.\n",
+            "## Efforts and order\n\n1. [Seventh](../efforts/0007-member.md). Starts it.\n2. [Fourth](../efforts/0004-member.md). Follows.\n3. [Dropped](../efforts/0008-member.md). Was turned down.\n4. [Gone](../efforts/0010-member.md). Moved out.\n5. [Old](../efforts/0030-plain.md). Moved elsewhere.\n\n## What completion means\n\nAll of it works.\n",
         );
         // The prose keeps its order and its text.
         let at = |needle: &str| {
@@ -337,13 +343,17 @@ mod tests {
         at(
             "Gone</a><span class=\"stat s-done\">done</span><span class=\"stat left\">not a member</span></span>Moved out.</li>",
         );
+        // One with no status has no status pill and still says it isn't a member.
+        at(
+            "<span class=\"etitle\"><a href=\"/efforts/0030-plain.md\">Old</a><span class=\"stat left\">not a member</span></span>Moved elsewhere.</li>",
+        );
         // The members the prose doesn't mention follow its list, in number order, each
         // with its status, before the next section.
         let listed = "<p class=\"members-label\">Other members</p>\n<ul class=\"members\">\n\
             <li><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></li>\n\
             <li><a href=\"/efforts/0006-member.md\">6 Member</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span></li>\n\
             <li><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span></li>\n</ul>\n";
-        assert!(at("Moved out.</li>") < at(listed));
+        assert!(at("Moved elsewhere.</li>") < at(listed));
         assert!(at(listed) < at("What completion means</h2>"));
         // No member is listed twice, and no other initiative's member is listed at all.
         for n in [4, 5, 6, 7, 8, 9, 10] {

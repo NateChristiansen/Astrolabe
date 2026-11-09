@@ -327,21 +327,27 @@ fn with_effort_status<'a>(
             _ => None,
         };
         let pill = effort.and_then(status_pill);
-        let end = pill.as_ref().and_then(|_| {
-            events[i..]
-                .iter()
-                .position(|e| matches!(e, Event::End(TagEnd::Link)))
-                .map(|k| i + k)
-        });
+        // An effort with no status has no pill, and can still be one the list names
+        // that isn't a member.
+        let left = effort.is_some_and(|e| !is_member(e));
+        let end = (pill.is_some() || left)
+            .then(|| {
+                events[i..]
+                    .iter()
+                    .position(|e| matches!(e, Event::End(TagEnd::Link)))
+                    .map(|k| i + k)
+            })
+            .flatten();
         if let Some(effort) = effort.filter(|e| members.is_some() && is_member(e)) {
             linked.extend(effort.file.as_deref());
             after_last_member = Some(out.len());
         }
-        let (Some(effort), Some(pill), Some(end)) = (effort, pill, end) else {
+        let Some(end) = end else {
             out.push(events[i].clone());
             i += 1;
             continue;
         };
+        let pill = pill.unwrap_or_default();
         let opens = i == 0
             || matches!(
                 events[i - 1],
@@ -355,10 +361,10 @@ fn with_effort_status<'a>(
             _ => None,
         };
         if let Some(rest) = rest {
-            let left = if is_member(effort) {
-                ""
-            } else {
+            let left = if left {
                 "<span class=\"stat left\">not a member</span>"
+            } else {
+                ""
             };
             out.push(Event::Html("<span class=\"etitle\">".into()));
             out.extend(events[i..=end].iter().cloned());
@@ -369,7 +375,9 @@ fn with_effort_status<'a>(
             i = end + 2;
         } else {
             out.extend(events[i..=end].iter().cloned());
-            out.push(Event::Html(pill.into()));
+            if !pill.is_empty() {
+                out.push(Event::Html(pill.into()));
+            }
             i = end + 1;
         }
     }
