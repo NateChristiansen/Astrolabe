@@ -180,11 +180,11 @@ On Windows:
 & "$env:USERPROFILE/.local/bin/astrolabe.exe" update
 ```
 
-It keeps you on your channel: **release** if your plugin is registered at a release tag, **nightly** if it follows `main`. Add `--channel nightly` or `--channel release` to switch, or `--dry-run` to see the plan first. The nightly is a prerelease rebuilt on every push to `main`. It isn't reviewed like a release. The command refreshes the plugin in Claude Code and Codex when their commands are on PATH, and skips an app it can't find. On the same nightly tag it still reinstalls a plugin whose files changed, such as a new hook. Then restart your app and repeat the [session check](#5-start-your-first-session). The [command reference](commands.md#update) has the details.
+It keeps you on your channel: **release** if your plugin is registered at a release tag, **nightly** if it follows `main`. Add `--channel nightly` or `--channel release` to switch, or `--dry-run` to see the plan first. The nightly is a prerelease rebuilt on every push to `main`. It isn't reviewed like a release. The command refreshes the plugin in Claude Code and Codex when their commands are on PATH, and skips an app it can't find. On the same nightly tag it still reinstalls a plugin whose files changed, such as a new hook, without removing the marketplace. When the plugin has to move to another tag, it checks the tag can be fetched before removing the old registration, and if a step still fails it puts the old registration back or prints the commands to run. Then restart your app and repeat the [session check](#5-start-your-first-session). The [command reference](commands.md#update) has the details.
 
 To update by hand instead:
 
-1. Download the new release's installer as in [step 1](#1-download-and-install-the-program) and run it. Use the same release tag for both downloads and the marketplace. Each successful update keeps the previous program files in the backup folder printed by the installer.
+1. Download the new release's installer as in [step 1](#1-download-and-install-the-program) and run it. Use the same release tag for both downloads and the marketplace. Each successful update keeps the previous program files in the backup folder printed by the installer, and removes the backup folders of earlier updates.
 2. Remove the old plugin and marketplace registration in each app you use:
 
    ```sh
@@ -200,11 +200,11 @@ To update by hand instead:
 3. Repeat [step 2](#2-install-the-plugin-in-your-agent-app) using the new release tag. This also moves an existing local marketplace to the hosted source. Removing the old registration does not erase your notes.
 4. Review and trust any changed hooks, restart your app, and repeat the [session check](#5-start-your-first-session).
 
-Marketplace refresh alone does not update the program, and on the nightly it doesn't update the installed plugin either: each app keeps that copy by the plugin's version, which stays the same across nightlies. Remove and re-add the plugin after the refresh, as `astrolabe update` does. A pinned marketplace also stays on its selected release until you change the registration. Astrolabe's installers do not enable background updates.
+Marketplace refresh alone does not update the program, and on the nightly it doesn't update the installed plugin either: each app keeps that copy by the plugin's version, which stays the same across nightlies. Reinstall the plugin after the refresh, as `astrolabe update` does: in Codex add it again, and in Claude Code uninstall it with `--keep-data` and install it. A pinned marketplace also stays on its selected release until you change the registration. Astrolabe's installers do not enable background updates.
 
 If Windows reports a file in use, close the named Astrolabe sessions and stop its board process in Task Manager, then retry. The installer does not kill processes. See [troubleshooting](troubleshooting.md) for conflicting or interrupted installations.
 
-To roll back, run the previous release's installer and register that release's marketplace again. Keep the printed backup folder until the new session check passes. [Recovery instructions](releases.md#recover-an-interrupted-installation) explain how to restore those original files.
+To roll back, run the previous release's installer and register that release's marketplace again. Keep the printed backup folder until the new session check passes; it is the only one kept, and the next successful update replaces it. [Recovery instructions](releases.md#recover-an-interrupted-installation) explain how to restore those original files.
 
 ## Build from source
 
