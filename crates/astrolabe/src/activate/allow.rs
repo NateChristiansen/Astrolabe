@@ -1,7 +1,6 @@
 //! A quoted approval is an agent's claim, bound by the hook to one exact command.
 use super::{now_ms, read_state, state_path};
 use crate::{guard, hook};
-use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::Write;
@@ -43,8 +42,13 @@ fn lock(dir: &Path, session: &str) -> Result<std::fs::File, String> {
         .write(true)
         .open(state_path(dir, session).with_extension("allow.lock"))
         .map_err(|e| e.to_string())?;
-    FileExt::lock_exclusive(&file).map_err(|e| e.to_string())?;
-    Ok(file)
+    match crate::deadline::lock(&file).map_err(|e| e.to_string())? {
+        crate::deadline::Wait::Held => Ok(file),
+        crate::deadline::Wait::Busy(waited) => Err(format!(
+            "this session's approval file was busy for the {} s this hook could wait",
+            crate::deadline::seconds(waited)
+        )),
+    }
 }
 
 fn lease_path(dir: &Path, session: &str) -> PathBuf {

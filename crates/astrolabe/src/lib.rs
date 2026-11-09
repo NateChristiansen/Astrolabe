@@ -3,6 +3,7 @@ pub mod activate;
 pub mod application;
 pub mod board;
 pub mod codex_setup;
+mod deadline;
 pub mod effort;
 pub mod guard;
 pub mod home;

@@ -13,9 +13,6 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// How long a network git call may take before it counts as offline, so a save never hangs
-/// on a bad connection.
-const NETWORK_SECS: u64 = 15;
 /// Back off after a network timeout so later hooks do not pay the same delay repeatedly.
 const BACKOFF_MS: i64 = 5 * 60 * 1000;
 const INTENTS: &str = "ops";
@@ -123,7 +120,9 @@ impl Notes {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Blocks until this process holds the machine's one notes writer lock.
+    /// Waits for the machine's one notes writer lock: as long as it takes outside a hook,
+    /// and inside one for the share of its time a hook can wait (see `deadline`), after
+    /// which the write is refused with nothing touched.
     pub fn lock(&self) -> Result<Held, String> {
         std::fs::create_dir_all(&self.state)
             .map_err(|e| format!("{}: {e}", self.state.display()))?;
@@ -134,8 +133,13 @@ impl Notes {
             .write(true)
             .open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        FileExt::lock_exclusive(&file).map_err(|e| format!("notes lock: {e}"))?;
-        Ok(Held(file))
+        match crate::deadline::lock(&file).map_err(|e| format!("notes lock: {e}"))? {
+            crate::deadline::Wait::Held => Ok(Held(file)),
+            crate::deadline::Wait::Busy(waited) => Err(format!(
+                "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
+                crate::deadline::seconds(waited)
+            )),
+        }
     }
 
     /// The writer lock if it's free now; None while a writer holds it, so a background

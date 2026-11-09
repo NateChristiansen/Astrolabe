@@ -1,44 +1,14 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, NETWORK_SECS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms,
-    tidy_journal, write_text,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms, tidy_journal,
+    write_text,
 };
 use serde_json::{Value, json};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 impl Notes {
-    /// A git call that may touch the network, killed after `NETWORK_SECS`.
+    /// A git call that may touch the network, stopped when its time is up (see `deadline`).
     fn git_timed(&self, args: &[&str]) -> Result<String, String> {
-        let mut child = Command::new("git")
-            .args(args)
-            .current_dir(&self.root)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("git could not start: {e}"))?;
-        let started = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-                    return if status.success() {
-                        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-                    } else {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
-                    };
-                }
-                Ok(None) if started.elapsed() > Duration::from_secs(NETWORK_SECS) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("git {} took over {NETWORK_SECS} s", args[0]));
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => return Err(e.to_string()),
-            }
-        }
+        crate::worktree::git_network(&self.root, args)
     }
 
     pub(crate) fn has_remote(&self) -> bool {
