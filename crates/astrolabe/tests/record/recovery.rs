@@ -373,7 +373,7 @@ fn recovery_of_a_write_that_already_committed_keeps_a_newer_edit() {
     );
     assert!(
         !mac.journal_today().contains("must not appear twice"),
-        "a landed write's journal line isn't written again"
+        "recovery of a landed write skips its journal step"
     );
     assert!(
         mac.state().join("s8.json").exists(),

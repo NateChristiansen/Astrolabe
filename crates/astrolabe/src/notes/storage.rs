@@ -311,6 +311,7 @@ impl Notes {
                 "--",
             ];
             commit.extend(&changed);
+            commit.push(NOT_TEMP);
             self.git(&commit)?;
         }
         op.committed = true;
