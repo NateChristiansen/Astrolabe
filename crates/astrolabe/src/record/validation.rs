@@ -65,14 +65,27 @@ pub(super) fn check_wait(wait: &str, worker: Option<&str>) -> Result<(), String>
     }
     let words: Vec<String> = ask
         .split_whitespace()
-        .take(3)
         .map(|w| {
             w.trim_matches(|c: char| !c.is_alphanumeric())
                 .to_ascii_lowercase()
         })
+        .filter(|w| !w.is_empty())
+        .take(5)
         .collect();
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
-    if matches!(words[..], ["look", ..] | ["take" | "have", "a", "look"]) {
+    // A "please" ahead of it is the same ask. The word itself, never one it starts ("looks
+    // good to land?", "lookup table or a match?"), and after "take" or "have" within the
+    // few words a look takes ("take a look", "have a quick look", "take another look").
+    let words = match words[..] {
+        ["please", ..] => &words[1..],
+        _ => &words[..],
+    };
+    let look = match words {
+        [] | ["look", ..] => true,
+        ["take" | "have", rest @ ..] => rest.iter().take(3).any(|w| *w == "look"),
+        _ => false,
+    };
+    if look {
         return Err(format!(
             "--waits-for \"{wait}\" doesn't say what the owner should decide or do, so it can't go under Needs you. Lead with the decision or action and say where to see it, as in \"owner: land the export fix on main? 4 seconds instead of 30, on branch export-batch\". If nothing needs them now, leave --waits-for off or name what it does wait on. Nothing was written"
         ));

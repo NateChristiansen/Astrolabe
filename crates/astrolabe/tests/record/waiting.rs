@@ -295,7 +295,7 @@ fn a_session_leaving_an_initiative_page_that_waits_on_the_owner_is_told() {
     let (out, ok) = mac.bash("lead", "astrolabe activate --effort 1");
     assert!(
         ok && out.contains("You're leaving initiative smooth-lines, \"Smooth lines\", and it still shows under Needs you: active, waiting on \"owner: which effort starts first?\".")
-            && out.contains("bind back with `astrolabe activate --initiative smooth-lines` and save it without --waits-for before anything else"),
+            && out.contains("bind back with `astrolabe activate --initiative smooth-lines` and run `astrolabe effort save --waits-for \"\"` before anything else"),
         "{out}"
     );
 }
@@ -323,6 +323,186 @@ fn the_rename_ask_is_the_last_thing_a_bind_says() {
     assert!(
         last.starts_with("Rename this session to \"Smooth lines\" now")
             && last.contains("so the owner can see which initiative it's on."),
+        "{out}"
+    );
+}
+
+fn page_wait(mac: &Machine) -> (String, String) {
+    let text = std::fs::read_to_string(mac.notes.join("initiatives/smooth-lines.md")).unwrap();
+    let file = EffortFile::parse(&text).unwrap();
+    (
+        file.prop("status").unwrap_or_default().to_owned(),
+        file.prop("waits_for").unwrap_or_default().to_owned(),
+    )
+}
+
+/// Catches: a notice whose advice leaves the wait where it was. A save with no --waits-for
+/// keeps the wait of a blocked or review record, and an empty one is refused for blocked,
+/// so each status needs the command that really clears it.
+#[test]
+fn what_the_leaving_notice_says_to_run_clears_the_wait_from_that_status() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    page(&mac);
+    assert!(mac.bash("other", NEW).1);
+    let ask = "owner: which effort starts first?";
+    for (status, said, clear) in [
+        (
+            "blocked",
+            "bind back with `astrolabe activate --initiative smooth-lines` and save it with `astrolabe effort save --status active` and a Current state body before anything else",
+            "astrolabe effort save --status active <<'ASTROLABE'\nThe order is settled.\nASTROLABE\n",
+        ),
+        (
+            "active",
+            "bind back with `astrolabe activate --initiative smooth-lines` and run `astrolabe effort save --waits-for \"\"` before anything else",
+            "astrolabe effort save --waits-for \"\"",
+        ),
+    ] {
+        assert!(
+            mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+                .1
+        );
+        let (out, ok) = mac.bash(
+            "lead",
+            &format!("astrolabe effort save --status {status} --waits-for \"{ask}\" <<'ASTROLABE'\nFiled.\nASTROLABE\n"),
+        );
+        assert!(ok, "{out}");
+        assert_eq!(page_wait(&mac), (status.to_owned(), ask.to_owned()));
+        let (out, ok) = mac.bash("lead", "astrolabe activate --effort 1");
+        assert!(ok && out.contains(said), "{status}: {out}");
+        assert!(
+            !out.contains("save it without --waits-for"),
+            "{status}: {out}"
+        );
+        // Done as told, it's gone from Needs you.
+        assert!(
+            mac.bash("lead", "astrolabe activate --initiative smooth-lines")
+                .1
+        );
+        let (out, ok) = mac.bash("lead", clear);
+        assert!(ok, "{status}: {out}");
+        assert_eq!(
+            page_wait(&mac),
+            ("active".to_owned(), String::new()),
+            "{status}"
+        );
+    }
+    // The same two commands on an effort loaded again, from review and from blocked.
+    for (status, clear) in [
+        ("review", "astrolabe effort save --waits-for \"\""),
+        (
+            "blocked",
+            "astrolabe effort save --status active <<'ASTROLABE'\nAnswered.\nASTROLABE\n",
+        ),
+    ] {
+        assert!(mac.bash("s1", "astrolabe activate --effort 1").1);
+        let (out, ok) = mac.bash(
+            "s1",
+            &format!("astrolabe effort save --status {status} --waits-for \"owner: batch or stream?\" {BODY}"),
+        );
+        assert!(ok, "{out}");
+        let (out, ok) = mac.bash("s1", clear);
+        assert!(ok, "{status}: {out}");
+        assert_eq!(wait(&mac, 1), "", "{status}");
+    }
+}
+
+/// Catches: a session that becomes a worker told to run a save by number and a read, both
+/// of which a worker is refused.
+#[test]
+fn a_session_leaving_for_a_worker_binding_is_told_what_a_worker_can_do() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let second = "astrolabe effort new --title \"Second thing\" --status proposed <<'ASTROLABE'\nthe second thing\nASTROLABE\n";
+    assert!(mac.bash("other", second).1);
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!(
+            "astrolabe effort save --status review --waits-for \"owner: land it on main?\" {BODY}"
+        ),
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe activate --effort 2 --worker");
+    assert!(
+        ok && out.contains("You're leaving effort 1, \"Smooth ink\", and it still shows under Needs you: in review, waiting on \"owner: land it on main?\".")
+            && out.contains("A worker saves only its own effort, so tell your dispatcher now that effort 1 still shows there"),
+        "{out}"
+    );
+    for refused in ["effort save --effort 1", "effort read 1"] {
+        assert!(!out.contains(refused), "{refused}: {out}");
+    }
+}
+
+/// Catches: the look that hides behind a word ("please look", "have a quick look") and an
+/// ask with nothing in it, while a decision that starts like one still goes through.
+#[test]
+fn a_look_behind_another_word_and_an_empty_ask_are_refused() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    for ask in [
+        "owner: please look at the PR",
+        "owner: Please take a look at the PR",
+        "owner: have a quick look",
+        "owner: take another look at the branch",
+        "owner:",
+        "owner: ",
+    ] {
+        let (out, ok) = mac.bash(
+            "s1",
+            &format!("astrolabe effort save --status review --waits-for \"{ask}\" {BODY}"),
+        );
+        assert!(
+            !ok && out.contains("doesn't say what the owner should decide or do"),
+            "{ask:?}: {out}"
+        );
+    }
+    for ask in [
+        "owner: looks good to land on main?",
+        "owner: lookup table A or B?",
+        "owner: have the export take a path, or look it up from the config?",
+    ] {
+        let (out, ok) = mac.bash(
+            "s1",
+            &format!("astrolabe effort save --status review --waits-for \"{ask}\" {BODY}"),
+        );
+        assert!(ok, "{ask}: {out}");
+        assert_eq!(wait(&mac, 1), ask);
+    }
+}
+
+/// Catches: a record that starts showing under Needs you with nothing said, because the wait
+/// it carries is one an old note already held while it was done.
+#[test]
+fn a_reopened_record_that_newly_shows_under_needs_you_gets_the_note() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and merged.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    // As a note written before saves refused a wait on a closed record.
+    let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(n, _)| *n == 1)
+        .unwrap();
+    let text = mac.effort_text(1);
+    assert!(text.contains("waits_for: \"\""), "{text}");
+    write(
+        &mac.notes.join(&rel),
+        &text.replace("waits_for: \"\"", "waits_for: \"owner: three picks\""),
+    );
+    git(&mac.notes, &["commit", "-qam", "an old note"]);
+    assert!(mac.bash("s2", "astrolabe activate --effort 1").1);
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort save --status active --waits-for \"owner: three picks\" <<'ASTROLABE'\nOpen again.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Effort 1 now shows under Needs you as \"three picks\"."),
         "{out}"
     );
 }

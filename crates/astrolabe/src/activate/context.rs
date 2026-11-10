@@ -1021,13 +1021,33 @@ pub(crate) fn leaving(
         let mine = slug(next.initiative_key().or_else(|| bound.prop("initiative"))?)?;
         Some(theirs == mine)
     };
+    let title = if page {
+        file.title.as_str()
+    } else {
+        file.name()
+    };
+    // A worker saves and reads only its own effort, so nothing it could run reaches this one.
+    if next.worker.is_true() {
+        return Some(format!(
+            "You're leaving {record}, \"{title}\", and it still shows under Needs you: {state}, waiting on \"{wait}\". A worker saves only its own effort, so tell your dispatcher now that {record} still shows there: it clears it, or says it still needs the owner."
+        ));
+    }
+    // Once it's this session's record again, the save that clears it: a blocked record keeps
+    // its wait unless its status moves, and any other takes an empty one. Leaving
+    // --waits-for out clears neither a blocked record's wait nor a review's.
+    let bound_save = match status {
+        "blocked" => {
+            "save it with `astrolabe effort save --status active` and a Current state body"
+        }
+        _ => "run `astrolabe effort save --waits-for \"\"`",
+    };
     let clear = if page {
         format!(
-            "bind back with `astrolabe activate --initiative {key}` and save it without --waits-for before anything else"
+            "bind back with `astrolabe activate --initiative {key}` and {bound_save} before anything else"
         )
     } else if reachable() != Some(true) {
         format!(
-            "load it again with `astrolabe activate --effort {key}` and save it without --waits-for before anything else"
+            "load it again with `astrolabe activate --effort {key}` and {bound_save} before anything else"
         )
     } else if status == "blocked" {
         format!(
@@ -1040,11 +1060,6 @@ pub(crate) fn leaving(
     };
     Some(format!(
         "You're leaving {record}, \"{title}\", and it still shows under Needs you: {state}, waiting on \"{wait}\". If the owner has answered, or it isn't theirs to act on now, {clear}. If it still needs them, leave it and tell the owner it's still open.",
-        title = if page {
-            file.title.as_str()
-        } else {
-            file.name()
-        },
     ))
 }
 
