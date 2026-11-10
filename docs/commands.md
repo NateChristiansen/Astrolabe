@@ -96,7 +96,9 @@ Options combine. A browser's saved appearance choice takes precedence in that br
 The home dashboard puts work needing attention and active efforts first, each section
 a grid of cards that fits the window. Every section folds at its heading, and the
 browser remembers the folds. The sidebar opens the overview, efforts, initiatives,
-drafts, journal, lessons and searchable notes. Click the Astrolabe mark to return home;
+drafts, journal, lessons and searchable notes. A lesson or draft written as a file and
+not committed yet is marked "not committed" until the next save on that machine commits
+it. Click the Astrolabe mark to return home;
 a note's back link returns to the view that opened it. Earlier journal updates and
 recently closed work expand in place.
 
@@ -114,7 +116,7 @@ the page is showing older content until the next change or reconnect loads it.
 
 Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only.
 
-The output contains `efforts`, `today`, today's raw `journal` and parsed `journal_lines`, `notes` sync warnings, `lessons` and the `drafts` count. Journal entries, warnings, lessons and drafts are not filtered by repo.
+The output contains `efforts`, `today`, today's raw `journal` and parsed `journal_lines`, `notes` sync warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. Journal entries, warnings, lessons and drafts are not filtered by repo.
 
 ### `notes status` and `notes sync`
 
