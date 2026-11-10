@@ -1,44 +1,44 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, NETWORK_SECS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, Unfit, content_hash, hash, md_files, now_ms,
     tidy_journal, write_text,
 };
+use crate::deadline::Step;
 use serde_json::{Value, json};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+
+/// The status `git rebase` exits with when it started and then stopped on something it
+/// couldn't replay. One that can't start at all, as when another rebase is already under
+/// way, dies with a different status and leaves no state of its own.
+const REBASE_STOPPED: i32 = 1;
+
+/// Whether the rebase in `dir`, found after this call's own rebase failed, is the one this
+/// call began. Never by git's message, which is in the user's language and quotes commit
+/// subjects, but by what doesn't vary: this call's rebase exited with the status of one
+/// that started and stopped, and git recorded the rebase there as begun from `before`,
+/// the commit this call was on, onto `onto`, the commit this call asked for. None was
+/// there the moment before this call's rebase started. One the owner began by hand in
+/// that same moment makes this call's rebase die without starting, which is another
+/// status, so theirs is never taken for this call's, even from the same commit onto the
+/// same one.
+fn began_here(dir: &std::path::Path, code: Option<i32>, before: &str, onto: &str) -> bool {
+    let recorded = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .map(|text| text.trim().to_owned())
+            .unwrap_or_default()
+    };
+    let (before, onto) = (before.trim(), onto.trim());
+    code == Some(REBASE_STOPPED)
+        && !before.is_empty()
+        && !onto.is_empty()
+        && recorded("orig-head") == before
+        && recorded("onto") == onto
+}
 
 impl Notes {
-    /// A git call that may touch the network, killed after `NETWORK_SECS`.
+    /// A git call that may touch the network, stopped when its time is up (see `deadline`).
     fn git_timed(&self, args: &[&str]) -> Result<String, String> {
-        let mut child = Command::new("git")
-            .args(args)
-            .current_dir(&self.root)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("git could not start: {e}"))?;
-        let started = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let out = child.wait_with_output().map_err(|e| e.to_string())?;
-                    return if status.success() {
-                        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-                    } else {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
-                    };
-                }
-                Ok(None) if started.elapsed() > Duration::from_secs(NETWORK_SECS) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("git {} took over {NETWORK_SECS} s", args[0]));
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => return Err(e.to_string()),
-            }
-        }
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(AsRef::as_ref).collect();
+        crate::worktree::git_as(crate::deadline::Git::Network, &self.root, &args)
     }
 
     pub(crate) fn has_remote(&self) -> bool {
@@ -51,10 +51,14 @@ impl Notes {
     /// one that won't reapply stays in the stash, named by id until it's gone, and the tree
     /// is set back to what was pulled, so no save commits a conflict marker.
     pub fn pull(&self) -> Pull {
-        match self.fetch() {
+        let started = std::time::Instant::now();
+        let pulled = match self.fetch() {
             Ok(()) => self.rebase(),
             Err(offline) => offline,
-        }
+        };
+        // For a write refused after it, which says where the hook's time went.
+        crate::deadline::pulled(started.elapsed());
+        pulled
     }
 
     /// A pull that leaves the tree alone unless origin has commits this checkout lacks, for
@@ -82,6 +86,28 @@ impl Notes {
                 left / 1000
             )));
         }
+        // A checkout partway through a rebase, or off its branch, is the owner's to put
+        // right: nothing is fetched or rebased over it, and the write after is refused.
+        match self.unfit() {
+            Ok(None) => {}
+            Ok(Some(Unfit::MidRebase)) => {
+                return Err(Pull::Offline(
+                    "a rebase is already under way in the notes checkout".to_owned(),
+                ));
+            }
+            Ok(Some(Unfit::Detached)) => {
+                return Err(Pull::Offline(
+                    "the notes checkout isn't on a branch".to_owned(),
+                ));
+            }
+            Err(why) => return Err(Pull::Offline(why)),
+        }
+        // The one step a hook can do without: late in its time it works from the local copy.
+        if crate::deadline::short_of(Step::Pull).is_some() {
+            return Err(Pull::Offline(
+                "this hook had no time left for a pull".to_owned(),
+            ));
+        }
         if let Err(why) = self.git_timed(&["fetch", "--quiet"]) {
             self.record_sync("offline", &why);
             if why.contains("took over") {
@@ -95,9 +121,33 @@ impl Notes {
 
     /// The rebase half of a pull, onto what the last fetch brought.
     fn rebase(&self) -> Pull {
+        if crate::deadline::short_of(Step::Rebase).is_some() {
+            return Pull::Offline(
+                "fetched, but this hook had no time left to rebase onto it".to_owned(),
+            );
+        }
+        // Looked at again, right before starting: the fetch took seconds, and a rebase the
+        // owner began by hand meanwhile is theirs. Starting over it would fail, and
+        // cleaning up after that failure would end it.
+        match self.rebase_dir() {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Pull::Offline(
+                    "a rebase is already under way in the notes checkout".to_owned(),
+                );
+            }
+            Err(why) => return Pull::Offline(why),
+        }
+        // The backstop waits for a rebase and what follows it, after it answers.
+        let _under_way = crate::deadline::under_way();
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        let onto = self.git(&["rev-parse", "@{upstream}"]).unwrap_or_default();
         let stashes_before = self.stashes();
-        match self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]) {
+        // Never ended by a hook, which decided above whether there was time to start it.
+        let args = ["rebase", "--quiet", "--autostash", "@{upstream}"].map(AsRef::as_ref);
+        let rebased = crate::worktree::git_or(crate::deadline::Git::Notes, &self.root, &args);
+        let code = rebased.as_ref().err().and_then(|failed| failed.code);
+        match rebased.map_err(|failed| failed.why) {
             Ok(_) => {
                 self.clear_sync("diverged");
                 if let Err(why) = self.keep_stash(&stashes_before) {
@@ -121,7 +171,13 @@ impl Notes {
                 Pull::Offline(why)
             }
             Err(why) => {
-                let _ = self.git(&["rebase", "--abort"]);
+                // Only this call's own rebase is put back: one it started, which then
+                // failed. Never one that was already there, which is why it failed.
+                if let Ok(Some(dir)) = self.rebase_dir()
+                    && began_here(&dir, code, &before, &onto)
+                {
+                    let _ = self.git(&["rebase", "--abort"]);
+                }
                 self.record_sync("diverged", &why);
                 self.changed();
                 Pull::Diverged(why)
@@ -506,5 +562,50 @@ impl Notes {
         } else {
             warnings.join("\n")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REBASE_STOPPED, began_here};
+
+    /// A rebase folder as git leaves one, with what it recorded.
+    fn rebase_folder(name: &str, from: &str, onto: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("astrolabe-rebase-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, text) in [("orig-head", from), ("onto", onto)] {
+            std::fs::write(dir.join(file), format!("{text}\n")).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn only_a_rebase_this_call_began_is_its_to_abort() {
+        let (here, upstream) = ("1111111111111111111111111111111111111111", "2222222222");
+        let is = |name: &str, code: Option<i32>, from: &str, onto: &str| {
+            let dir = rebase_folder(name, from, onto);
+            let ours = began_here(&dir, code, &format!("{here}\n"), &format!("{upstream}\n"));
+            let _ = std::fs::remove_dir_all(dir);
+            ours
+        };
+        let stopped = Some(REBASE_STOPPED);
+        // It started from where this call was, onto what it asked for, and stopped.
+        assert!(is("ours", stopped, here, upstream));
+        // The owner's by hand, begun in the same moment from the same commit onto the same
+        // one: this call's rebase died on finding it, which is another status. What git
+        // said as it died, in whatever language, plays no part.
+        assert!(!is("theirs", Some(128), here, upstream));
+        // Ended by something else, or not run to an end.
+        assert!(!is("signal", None, here, upstream));
+        // Begun somewhere else, or onto something else.
+        assert!(!is("from", stopped, "3333333", upstream));
+        assert!(!is("onto", stopped, here, "4444444"));
+        // Where this call was, or what it asked for, isn't known: nothing is claimed.
+        let dir = rebase_folder("unknown", "", "");
+        assert!(!began_here(&dir, stopped, "", ""));
+        assert!(!began_here(&dir, stopped, here, ""));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

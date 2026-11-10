@@ -191,17 +191,32 @@ pub(super) fn tool_named_in(bytes: &[u8]) -> Option<String> {
 /// switch. Always exits 0, like the hooks it reuses.
 pub fn gate(event: &str) {
     std::panic::set_hook(Box::new(|_| {}));
-    let (bytes, over) = hook::read_stdin();
+    // Off for the machine: nothing at all, as if the plugin weren't there. The input is
+    // still read, so the app's write to the hook ends as it always has.
+    if !state_dir().is_some_and(|dir| machine_on(&dir)) {
+        hook::read_stdin(crate::deadline::read_time(event));
+        return;
+    }
+    // From here the event answers inside its own time, whatever holds it up.
+    crate::deadline::start(event);
+    if std::panic::catch_unwind(|| answer(event)).is_err() {
+        crate::deadline::failed();
+    }
+    crate::deadline::done();
+}
+
+fn answer(event: &str) {
+    let (bytes, over) = hook::read_stdin(crate::deadline::read_time(event));
+    crate::deadline::stall("read");
+    if std::env::var_os("ASTROLABE_HOOK_TEST_PANIC").is_some() {
+        panic!("test");
+    }
     let input: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     let session = input["session_id"].as_str().filter(|s| !s.is_empty());
     // A child agent shares its parent's session id. It gets the guard, as every session does
     // while the machine is on, but no context or authority, can't switch, and doesn't count
     // toward the parent's proof.
     let child = input["agent_id"].as_str().is_some_and(|a| !a.is_empty());
-    // Off for the machine: nothing at all, as if the plugin weren't there.
-    if !state_dir().is_some_and(|dir| machine_on(&dir)) {
-        return;
-    }
     match event {
         "pre-command" => {
             // Too big to read whole: a tool the guard doesn't check still runs, as it would
@@ -249,11 +264,16 @@ pub fn gate(event: &str) {
                         None,
                     ))),
                     None => {
+                        // The verdict first, printed last as before: the owner-reply check
+                        // can be slow, and its time must not cost a verdict already reached.
+                        let verdict = hook::verdict(&bytes, Some(dir));
                         if !child {
                             let _ =
                                 std::panic::catch_unwind(|| crate::reply::check(&input, session));
                         }
-                        guard()
+                        if let Some(denial) = verdict {
+                            hook::say(&denial);
+                        }
                     }
                 },
                 Err(why) => hook::say(&hook::deny(&format!(
@@ -684,6 +704,12 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                                 state.record_label()
                             ),
                         }
+                    }
+                    // The hook's time for reading repos is gone, so a repo not read proves
+                    // nothing about it: the session keeps its effort and guard, is told
+                    // the hook was slow, and nothing is blocked for someone to repair.
+                    Err(_) if crate::deadline::reading_time_is_up() => {
+                        crate::deadline::START_OUT_OF_TIME.to_owned()
                     }
                     Err(why) => {
                         // Context failed, protection mustn't: stay on, and block until repaired.

@@ -23,6 +23,8 @@ Not checked: `onFailure` set from a plugin's `hooks.json` in a live Claude Code 
 
 So in both apps a guard hook that runs out of time or fails lets the command through. The guard has to finish inside its own timeout, and nothing else stands behind it.
 
+Astrolabe's hook answers inside that timeout once it's running, and denies when it fails partway. What's left is a program that's missing or dies as it starts: it gives no answer, so the command runs. A hook that is still writing the notes when its answer is due answers, waits for that git until just inside the timeout, and exits; a git still running then finishes without the hook, which is the same exposure as when the app ends a hook. `onFailure` is not set in the plugin's manifest, because with no matcher it would block every tool call in every session on a machine where the program is missing, and it is unprobed from a plugin.
+
 ## How much hook text reaches the model
 
 **Claude Code** (docs). A hook's `additionalContext`, `systemMessage` and plain output are capped at 10,000 characters, with no setting to raise it. Past the cap the text goes to a file and the model gets the path and a preview of up to 2,000 characters.
