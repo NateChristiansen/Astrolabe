@@ -1,7 +1,7 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms, tidy_journal,
-    write_text,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, Unfit, content_hash, hash, md_files, now_ms,
+    tidy_journal, write_text,
 };
 use crate::deadline::Step;
 use serde_json::{Value, json};
@@ -58,6 +58,22 @@ impl Notes {
                 left / 1000
             )));
         }
+        // A checkout partway through a rebase, or off its branch, is the owner's to put
+        // right: nothing is fetched or rebased over it, and the write after is refused.
+        match self.unfit() {
+            Ok(None) => {}
+            Ok(Some(Unfit::MidRebase)) => {
+                return Err(Pull::Offline(
+                    "a rebase is already under way in the notes checkout".to_owned(),
+                ));
+            }
+            Ok(Some(Unfit::Detached)) => {
+                return Err(Pull::Offline(
+                    "the notes checkout isn't on a branch".to_owned(),
+                ));
+            }
+            Err(why) => return Err(Pull::Offline(why)),
+        }
         // The one step a hook can do without: late in its time it works from the local copy.
         if crate::deadline::short_of(Step::Pull).is_some() {
             return Err(Pull::Offline(
@@ -81,18 +97,6 @@ impl Notes {
             return Pull::Offline(
                 "fetched, but this hook had no time left to rebase onto it".to_owned(),
             );
-        }
-        // A rebase already under way here isn't this pull's: it's the owner's by hand, or
-        // one an earlier process left running. Starting another would fail, and ending
-        // that failure with an abort would end theirs.
-        match self.rebase_dir() {
-            Ok(None) => {}
-            Ok(Some(_)) => {
-                return Pull::Offline(
-                    "fetched, but a rebase is already under way in the notes checkout".to_owned(),
-                );
-            }
-            Err(why) => return Pull::Offline(why),
         }
         // The backstop waits for a rebase and what follows it, after it answers.
         let _under_way = crate::deadline::under_way();
@@ -124,8 +128,12 @@ impl Notes {
                 Pull::Offline(why)
             }
             Err(why) => {
-                // This pull's own rebase, which just failed: put back, as always.
-                let _ = self.git(&["rebase", "--abort"]);
+                // Only this call's own rebase is put back: none was under way when the
+                // pull began (`fetch` checked), so one there now is the one that just
+                // failed. With none there, nothing is aborted.
+                if matches!(self.rebase_dir(), Ok(Some(_))) {
+                    let _ = self.git(&["rebase", "--abort"]);
+                }
                 self.record_sync("diverged", &why);
                 self.changed();
                 Pull::Diverged(why)

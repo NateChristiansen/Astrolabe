@@ -515,6 +515,125 @@ fn a_write_against_a_checkout_mid_rebase_is_refused_and_loses_nothing() {
     assert!(mac.unfinished().iter().all(|op| op["result"].is_string()));
 }
 
+/// The whole save, pull included, against a rebase the owner left partway by hand: nothing
+/// is fetched, the rebase and the resolution they staged are untouched, and the save is
+/// refused. On main the save's own pull failed to start a rebase, cleaned up with an abort
+/// that ended the owner's, and the save then landed.
+#[test]
+fn a_save_and_its_pull_leave_the_owners_rebase_and_resolution_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    git(&mac.notes, &["fetch", "-q"]);
+    let rebase = Command::new("git")
+        .args(["rebase", "origin/main"])
+        .current_dir(&mac.notes)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!rebase.status.success(), "the fixture should conflict");
+    // Resolved and staged, not continued.
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "BOTH").unwrap();
+    git(&mac.notes, &["add", "knowledge/owner.md"]);
+    // Something new on origin since, which a pull would fetch.
+    write(&pc.notes.join("knowledge/later.md"), "LATER");
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-q", "-m", "later"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    let seen = |mac: &Machine| {
+        (
+            git(&mac.notes, &["rev-parse", "HEAD"]),
+            git(&mac.notes, &["rev-parse", "origin/main"]),
+            git(&mac.notes, &["reflog", "--format=%gs"]),
+            git(&mac.notes, &["diff", "--cached", "--name-only"]),
+            std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+            std::fs::read_to_string(mac.notes.join(".git/rebase-merge/orig-head")).unwrap(),
+        )
+    };
+    let before = seen(&mac);
+    assert!(before.3.contains("knowledge/owner.md"), "{}", before.3);
+    // No write is waiting from before, so the save gets as far as its pull.
+    assert!(mac.unfinished().is_empty());
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(
+        !ok && out.contains(
+            "the notes checkout is in the middle of a rebase; finish it there, or end it with `git rebase --abort`, first. Nothing was written"
+        ),
+        "{out}"
+    );
+    assert_eq!(seen(&mac), before, "the owner's rebase was touched");
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+    // A session start pulls too, and says why it didn't.
+    let context = mac.session_start("s1", "resume");
+    assert!(
+        context.contains(
+            "Notes not refreshed from origin (a rebase is already under way in the notes checkout)"
+        ),
+        "{context}"
+    );
+    assert_eq!(seen(&mac), before, "the owner's rebase was touched");
+    // The owner finishes it, with what they resolved, and the save goes through.
+    let continued = Command::new("git")
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
+        .args(["-c", "core.editor=true", "rebase", "--continue"])
+        .current_dir(&mac.notes)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        continued.status.success(),
+        "{}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "BOTH"
+    );
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    assert!(mac.notes.join("knowledge/later.md").exists(), "pulled now");
+}
+
+/// The same for a checkout off its branch: nothing is fetched and nothing written.
+#[test]
+fn a_save_on_a_detached_checkout_pulls_and_writes_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    write(&pc.notes.join("knowledge/later.md"), "LATER");
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-q", "-m", "later"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    git(&mac.notes, &["checkout", "-q", "--detach"]);
+    let seen = |mac: &Machine| {
+        (
+            git(&mac.notes, &["rev-parse", "HEAD"]),
+            git(&mac.notes, &["rev-parse", "origin/main"]),
+            git(&mac.notes, &["reflog", "--format=%gs"]),
+        )
+    };
+    let before = seen(&mac);
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(
+        !ok && out.contains("the notes checkout isn't on a branch (its HEAD is detached)"),
+        "{out}"
+    );
+    assert_eq!(seen(&mac), before);
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+    git(&mac.notes, &["checkout", "-q", "main"]);
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_flooding_fetch_is_not_a_timeout() {

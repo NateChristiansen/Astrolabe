@@ -85,6 +85,12 @@ pub struct LessonClose {
     pub disposed: String,
 }
 
+/// A state of the notes checkout that a pull or a write must leave alone.
+pub(crate) enum Unfit {
+    MidRebase,
+    Detached,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pull {
     Pulled,
@@ -180,6 +186,22 @@ impl Notes {
         crate::worktree::git_as(crate::deadline::Git::Notes, &self.root, &args)
     }
 
+    /// Why the checkout can't take a pull or a write as it stands, if it can't: it's
+    /// partway through a rebase, or off its branch. Either is the owner's to put right,
+    /// so nothing is fetched, rebased or written over it. An error when that couldn't be
+    /// found out.
+    pub(crate) fn unfit(&self) -> Result<Option<Unfit>, String> {
+        if self.rebase_dir()?.is_some() {
+            return Ok(Some(Unfit::MidRebase));
+        }
+        match self.git(&["symbolic-ref", "--quiet", "HEAD"]) {
+            Ok(_) => Ok(None),
+            // Git says a detached HEAD by failing with nothing to say.
+            Err(why) if why.is_empty() => Ok(Some(Unfit::Detached)),
+            Err(why) => Err(why),
+        }
+    }
+
     /// What a write must not land on, checked before anything is planned or touched,
     /// and the only place a write is refused for time: past here it runs to its end. A
     /// hook with too little time left. A checkout mid-rebase or off its branch: a commit
@@ -196,13 +218,12 @@ impl Notes {
                 "the notes checkout couldn't be checked before writing ({why}). Nothing was written"
             )
         };
-        if self.rebase_dir().map_err(unchecked)?.is_some() {
-            return Err("the notes checkout is in the middle of a rebase; finish it there, or end it with `git rebase --abort`, first. Nothing was written".to_owned());
-        }
-        match self.git(&["symbolic-ref", "--quiet", "HEAD"]) {
-            Ok(_) => {}
-            // Git says a detached HEAD by failing with nothing to say.
-            Err(why) if why.is_empty() => {
+        match self.unfit() {
+            Ok(None) => {}
+            Ok(Some(Unfit::MidRebase)) => {
+                return Err("the notes checkout is in the middle of a rebase; finish it there, or end it with `git rebase --abort`, first. Nothing was written".to_owned());
+            }
+            Ok(Some(Unfit::Detached)) => {
                 return Err("the notes checkout isn't on a branch (its HEAD is detached); check its branch out there first. Nothing was written".to_owned());
             }
             Err(why) => return Err(unchecked(why)),
