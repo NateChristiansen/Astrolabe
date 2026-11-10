@@ -79,13 +79,13 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Start each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief. Briefs and reports live in the notes under `.handoffs/{slug}/` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. You review and land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Start each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. You review and land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
 
 /// A role's rules, in the order a session reads them.
-fn rules(role: Role, slug: &str) -> String {
+fn rules(role: Role, handoffs: &str) -> String {
     let form = |journal: &str| SAVE_FORM.replace("{journal}", journal);
     let parts: Vec<String> = match role {
         Role::Effort => vec![
@@ -112,7 +112,7 @@ fn rules(role: Role, slug: &str) -> String {
             STATES_INITIATIVE.into(),
             format!("{JOURNAL_INITIATIVE} {JOURNAL_FORM}"),
             LESSON.into(),
-            ORCHESTRATION.replace("{slug}", slug),
+            ORCHESTRATION.replace("{handoffs}", handoffs),
         ],
     };
     parts.join("\n")
@@ -793,6 +793,11 @@ fn switch_record(
         )?),
         false => None,
     };
+    let handoffs = format!(
+        "{}{}",
+        notes.join(".handoffs").join(&effort.number).display(),
+        std::path::MAIN_SEPARATOR
+    );
     let facts = Facts {
         number: &effort.number,
         title: &effort.title,
@@ -813,9 +818,27 @@ fn switch_record(
             .as_ref()
             .and_then(|f| f.prop("waits_for"))
             .unwrap_or("none"),
+        handoffs: &handoffs,
+    };
+    let seat = seat(cwd);
+    // The names the notes checkout goes by, on this machine or by its remote, so an effort
+    // that names the notes another way isn't taken for another repo's. Not readable is
+    // nothing to say.
+    let home = match seat {
+        Seat::Notes => {
+            common_dir(&notes).and_then(|here| repo_names(&notes, &registry, &notes, &here).ok())
+        }
+        Seat::Shared | Seat::Apart => Some(Vec::new()),
+    };
+    let notice = home.and_then(|home| placed(role, &seat, &facts, &effort.repos, &home));
+    // After the opening, ahead of the settings it qualifies, and where a head cut for the
+    // hook's limit keeps it: a cut takes its room from the end of the rules.
+    let head = match notice {
+        Some(notice) => after_first_paragraph(&lead(role, &facts), &notice),
+        None => lead(role, &facts),
     };
     Ok(Activation {
-        head: lead(role, &facts),
+        head,
         closing: closing(role),
         state,
         parts,
@@ -849,6 +872,8 @@ pub(super) struct Facts<'a> {
     /// An initiative page's status and wait.
     pub status: &'a str,
     pub waits_for: &'a str,
+    /// An initiative's folder of briefs and reports in the notes, as a full path.
+    pub handoffs: &'a str,
 }
 
 fn meaning(names: &[&str; 3], meanings: &[&'static str; 3], value: &str) -> &'static str {
@@ -865,6 +890,70 @@ pub(super) fn instructions(role: Role, f: &Facts) -> String {
     match closing(role) {
         "" => lead(role, f),
         rule => format!("{}\n\n{rule}", lead(role, f)),
+    }
+}
+
+/// Where a binding's session is, as far as it changes what the session is told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Seat {
+    /// The notes checkout or a worktree of it.
+    Notes,
+    /// A repo's main checkout that has other worktrees, so other sessions work in the repo.
+    Shared,
+    /// A worktree, or a checkout with no other worktree.
+    Apart,
+}
+
+/// Read from git, once per binding. Anything git can't say is `Apart`, which says nothing.
+pub(super) fn seat(cwd: &Path) -> Seat {
+    if in_notes(cwd) {
+        return Seat::Notes;
+    }
+    let dir = |which: &str| {
+        let args = ["rev-parse", "--path-format=absolute", which].map(AsRef::as_ref);
+        let out = crate::worktree::git(cwd, &args).ok()?;
+        Some(comparable(Path::new(out.trim())))
+    };
+    // A linked worktree keeps its own git folder under the checkout's; the main one doesn't.
+    let main = dir("--git-dir").is_some_and(|own| Some(own) == dir("--git-common-dir"));
+    let args = ["worktree", "list", "--porcelain"].map(AsRef::as_ref);
+    let list = crate::worktree::git(cwd, &args).unwrap_or_default();
+    // One whose folder is gone is no one's to work in. Git's own mark for that isn't on a
+    // locked entry or in an older git, so the folder is looked for.
+    let live = (list.replace("\r\n", "\n").split("\n\n"))
+        .filter_map(|entry| entry.lines().next()?.strip_prefix("worktree "))
+        .filter(|folder| Path::new(folder).is_dir())
+        .count();
+    match main && live > 1 {
+        true => Seat::Shared,
+        false => Seat::Apart,
+    }
+}
+
+/// What a binding is told about the folder it was made in, when that folder is the wrong
+/// place for its work. A check the program runs, so it's said only where it's true, and a
+/// session anywhere else gets the text it always got.
+pub(super) fn placed(
+    role: Role,
+    seat: &Seat,
+    f: &Facts,
+    repos: &[String],
+    home: &[String],
+) -> Option<String> {
+    let (n, repo) = (f.number, f.repo);
+    // `home` is every name the notes checkout goes by: work in any of them is at home there.
+    let elsewhere = !repo.is_empty() && !repos.iter().any(|r| home.contains(r));
+    match (role, seat) {
+        (Role::Worker, Seat::Notes) if elsewhere => Some(format!(
+            "This session started in the notes checkout, but effort {n}'s work is in {repo}. A session takes its repo's rules from the folder it starts in, so this one has the notes' rules and not {repo}'s. Change no file in {repo} from here. Tell your dispatcher now that this worker has to be started again in a folder of {repo}, and stop until it answers."
+        )),
+        (Role::Initiative, Seat::Notes) if elsewhere && repos.len() == 1 => Some(format!(
+            "This initiative's work is all in {repo}, and this session is in the notes checkout. An orchestrator for one repo sits in that repo, so it reviews and lands with the repo's rules. Say so to the owner once, then carry on here unless they move it."
+        )),
+        (Role::Effort | Role::Worker, Seat::Shared) if f.authority != "read" => Some(format!(
+            "This folder is {repo}'s main checkout, which other sessions share, so one of them can switch its branch or change files under you. Change no project file here: work in a worktree of your own, made before your first edit and named in any plan. {repo}'s note says where worktrees go; ask first if its rules say to."
+        )),
+        _ => None,
     }
 }
 
@@ -910,7 +999,7 @@ fn lead(role: Role, f: &Facts) -> String {
                 Role::Initiative => NOTES_FREE.to_owned(),
                 _ => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
             },
-            rules = rules(role, f.number),
+            rules = rules(role, f.handoffs),
         ),
         Role::Initiative => format!(
             "Astrolabe is on in this session for initiative {slug}, \"{title}\" ({provider} session {session}, repo {repo}).\n\nPage: {path}\nStatus: {status}\nWaits for: {wait}\nSettings set by the owner: involvement: {inv}: {inv_m}. Authority: {auth}: {auth_m}. {NOTES_FREE}. A narrower current instruction wins.\n\n{GUARD_SCOPE}\n\n{proof}Report the initiative and what the status says. Until it says proven, claim no protection.\n\nSave this initiative with `astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"]` with a body:\n  astrolabe effort save --status active <<'ASTROLABE'\n  <where the initiative stands>\n\n  <choices and reasons>\n\n  <next and unchecked>\n  ASTROLABE\nDecisions are appended and dated. A journal line replaces today's line for this initiative. Done requires an acceptance statement in the body and every member done or abandoned. Use --reason with abandoned. Pieces, ticks, plans and initiative membership are unavailable on an initiative. Detach with `astrolabe activate --off`; the machine guard stays.\n\n{freshness}\n\n{rules}",
@@ -928,7 +1017,7 @@ fn lead(role: Role, f: &Facts) -> String {
             auth_m = auth_m,
             proof = f.proof,
             freshness = f.freshness,
-            rules = rules(role, f.number),
+            rules = rules(role, f.handoffs),
         ),
     }
 }
@@ -1245,6 +1334,7 @@ mod tests {
             freshness: "FRESH",
             status: "active",
             waits_for: "none",
+            handoffs: "/home/sam/notes/.handoffs/7/",
         }
     }
 
@@ -1341,7 +1431,11 @@ mod tests {
                 "astrolabe lesson close",
                 "own separate session, never a subagent",
                 "`astrolabe activate --effort <n> --worker` alone first",
-                "`.handoffs/7/`",
+                "Give each one a start folder in its effort's repo, never just your own folder",
+                "a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits",
+                "That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't.",
+                "names its brief by full path",
+                "under `/home/sam/notes/.handoffs/7/` so another session can resume",
                 "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
                 "Done requires an acceptance statement",
                 "PROOF\nReport the initiative",
@@ -1926,6 +2020,7 @@ mod tests {
             freshness: "Last saved by workbench · codex at 2026-11-09T14:02-07:00, on main at 00a76cc. That was another machine: anything after that save there isn't visible from here. Here now: main at 13ee99e, moved since that save.",
             status: "active",
             waits_for: "none",
+            handoffs: "/home/sam/workspace/notes/.handoffs/audit-fixes/",
         }
     }
 
@@ -1971,6 +2066,180 @@ mod tests {
                     head + list + files <= HOOK_LIMIT,
                     "{role:?}, {shells}: the head leaves no room to name its notes"
                 );
+                // The same with the longest notice about where the session is: an owner's
+                // effort on Windows, resumed in a shared main checkout, is the tight one.
+                let repos = ["astrolabe".to_owned()];
+                let told = [Seat::Notes, Seat::Shared]
+                    .iter()
+                    .filter_map(|seat| placed(role?, seat, &f, &repos, &[AGENT.to_owned()]))
+                    .map(|notice| counted("claude", &notice) + 2)
+                    .max()
+                    .unwrap_or(0);
+                eprintln!(
+                    "{role:?}, {shells}: told where it is, head {}, left {} once its {} files are named",
+                    head + told,
+                    HOOK_LIMIT.saturating_sub(head + told + list + files),
+                    a.parts.len(),
+                );
+                assert!(
+                    head + told + list + files <= HOOK_LIMIT,
+                    "{role:?}, {shells}: a notice about its folder leaves no room to name its notes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_binding_in_the_wrong_folder_is_told_and_any_other_is_told_nothing() {
+        let (demo, both, notes, named) = (
+            vec!["demo".to_owned()],
+            vec!["demo".to_owned(), "other".to_owned()],
+            vec!["demo".to_owned(), AGENT.to_owned()],
+            vec!["notes".to_owned()],
+        );
+        let f = facts("check in at plan", "edit");
+        let home = [AGENT.to_owned(), "notes".to_owned()];
+        let told = |role, seat, repos: &[String]| placed(role, &seat, &f, repos, &home);
+        let said = |role, seat, repos: &[String], opening: &str| {
+            let notice = told(role, seat, repos).unwrap_or_default();
+            assert!(notice.starts_with(opening), "{role:?} {seat:?}: {notice:?}");
+        };
+        said(
+            Role::Worker,
+            Seat::Notes,
+            &demo,
+            "This session started in the notes checkout, but effort 7's work is in demo.",
+        );
+        said(
+            Role::Initiative,
+            Seat::Notes,
+            &demo,
+            "This initiative's work is all in demo, and this session is in the notes checkout.",
+        );
+        for role in [Role::Effort, Role::Worker] {
+            said(
+                role,
+                Seat::Shared,
+                &demo,
+                "This folder is demo's main checkout, which other sessions share,",
+            );
+        }
+        // The notes are the owner's seat for any effort, an orchestrator's across repos, and a
+        // worker's when its effort is the notes' own. An orchestrator edits nothing.
+        for (role, seat, repos) in [
+            (Role::Effort, Seat::Notes, &demo),
+            (Role::Worker, Seat::Notes, &notes),
+            (Role::Worker, Seat::Notes, &named),
+            (Role::Initiative, Seat::Notes, &named),
+            (Role::Initiative, Seat::Notes, &both),
+            (Role::Initiative, Seat::Notes, &notes),
+            (Role::Initiative, Seat::Shared, &demo),
+            (Role::Effort, Seat::Apart, &demo),
+            (Role::Worker, Seat::Apart, &demo),
+            (Role::Initiative, Seat::Apart, &demo),
+        ] {
+            assert_eq!(told(role, seat, repos), None, "{role:?} {seat:?} {repos:?}");
+        }
+        // Read authority changes no file, so a shared checkout costs it nothing.
+        let read = facts("check in at plan", "read");
+        for role in [Role::Effort, Role::Worker] {
+            assert_eq!(
+                placed(role, &Seat::Shared, &read, &demo, &home),
+                None,
+                "{role:?}"
+            );
+        }
+        let push = facts("autonomous", "push");
+        assert!(placed(Role::Effort, &Seat::Shared, &push, &demo, &home).is_some());
+    }
+
+    /// An effort's and a worker's rules as main had them before any binding was told where
+    /// it is (fbc24b4), by length and SHA-256. Only the rules: that a real binding adds
+    /// nothing to them where no notice fires is pinned through the hook, in the
+    /// activation tests.
+    #[test]
+    fn an_effort_and_a_worker_with_no_notice_get_the_text_they_always_got() {
+        use sha2::{Digest, Sha256};
+        for (role, authority, length, hash) in [
+            (
+                Role::Effort,
+                "read",
+                7362,
+                "a0c3b440e1d64b04b735089cf20e22a03375baa1fbf34ca514a91baaf8a0965f",
+            ),
+            (
+                Role::Effort,
+                "edit",
+                7365,
+                "7bef85b9d2d8377bb652ad920d1401cdf39e3671d64bca4cf80b789d2762dcb9",
+            ),
+            (
+                Role::Effort,
+                "push",
+                7382,
+                "6c6aa3f4e495c9670e9ed93e1b0c8f792a24f3749a7295dbee23d48cd6962cbd",
+            ),
+            (
+                Role::Worker,
+                "read",
+                5761,
+                "00a5501b5e0315bff1e7630339b7f5eb380364a9eccecfc97f2ae9891e99fc2d",
+            ),
+            (
+                Role::Worker,
+                "edit",
+                5764,
+                "fb8d8942cb3e4dbb1d0c5f8f44ed5dddd812e9739b40039ec6ad5ce912d5f540",
+            ),
+            (
+                Role::Worker,
+                "push",
+                5781,
+                "96977b4c93e643e59b421ceb780f3b347177670b0dde427e1c55e5f67cb14259",
+            ),
+        ] {
+            let t = instructions(role, &facts("check in at plan", authority));
+            let now = format!("{:x}", Sha256::digest(t.as_bytes()));
+            assert_eq!(
+                (t.len(), now.as_str()),
+                (length, hash),
+                "{role:?} {authority}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_head_cut_for_the_limit_keeps_what_it_was_told_about_its_folder() {
+        // No one line grew, so the room comes from the end of the rules.
+        let fresh = "A note write is unfinished. ".repeat(50);
+        let folder = format!("/home/{}notes", "a-long-folder/".repeat(12));
+        let repos = ["demo".to_owned()];
+        for provider in APPS {
+            for (role, seat) in [
+                (Role::Effort, Seat::Shared),
+                (Role::Worker, Seat::Shared),
+                (Role::Worker, Seat::Notes),
+            ] {
+                let mut f = facts("check in at plan", "edit");
+                f.freshness = &fresh;
+                let notice = placed(role, &seat, &f, &repos, &[AGENT.to_owned()]).unwrap();
+                let mut a = session(provider, Some(role), &f, notes(&folder, 400));
+                for n in 0..30 {
+                    let file = format!("{folder}/knowledge/{n}.md");
+                    a.parts.push(part(&format!("note {n}"), "", &file));
+                }
+                a.head = after_first_paragraph(&a.head, &notice);
+                let t = a.fitted();
+                within(provider, &t, &format!("{role:?}"));
+                assert!(t.contains("cut this text here"), "{role:?}: {t}");
+                let opening = a.head.split("\n\n").next().unwrap();
+                assert!(
+                    t.starts_with(&format!("{opening}\n\n{notice}\n\nSettings from")),
+                    "{role:?}: {t}"
+                );
+                for line in mandatory(Some(role)) {
+                    assert!(t.contains(line), "{role:?} lacks {line:?}");
+                }
             }
         }
     }

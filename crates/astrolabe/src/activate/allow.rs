@@ -92,6 +92,15 @@ fn log(dir: &Path, event: &str, lease: &Lease) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Dropping the session's effort cancels the approvals it was waiting to use, as it always has.
+pub(super) fn cancel(dir: &Path, session: &str) -> Result<(), String> {
+    let _held = lock(dir, session)?;
+    match std::fs::remove_file(lease_path(dir, session)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn mint(
     dir: &Path,
     input: &Value,
@@ -144,7 +153,8 @@ pub(super) fn mint(
         );
     }
     let _held = lock(dir, session)?;
-    read_state(dir, session)?.ok_or("load an effort before recording an approval")?;
+    // No effort is fine; a state file this program can't read is not.
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let at = now_ms();
     let lease = Lease {
@@ -175,9 +185,8 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
         return Ok(false);
     };
     let _held = lock(dir, session)?;
-    let Some(_) = read_state(dir, session)? else {
-        return Ok(false);
-    };
+    // The hook already denies a session whose state it can't read; this holds if that changes.
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let now = now_ms();
     let Some(index) = leases.iter().position(|lease| {
@@ -200,15 +209,14 @@ mod tests {
     use super::mint;
     use serde_json::json;
 
-    /// The approval's own form is checked first, and the session's effort last: a command
-    /// that gets as far as the effort was taken as `astrolabe allow`.
+    /// A command taken as `astrolabe allow` is recorded; one that runs another program is
+    /// refused for its form.
     #[test]
     fn a_windows_path_and_the_exe_name_are_the_program() {
         let dir = std::env::temp_dir().join(format!("astrolabe-allow-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = json!({"cwd": dir, "tool_name": "Bash"});
         let rest = "allow --once \"git push --force\" --said \"Yes, run that.\"";
-        let no_effort = Err("load an effort before recording an approval".to_owned());
         for (program, powershell) in [
             ("astrolabe", false),
             ("astrolabe.exe", false),
@@ -220,15 +228,15 @@ mod tests {
             let command = format!("{program} {rest}");
             assert_eq!(
                 mint(&dir, &input, &command, "s1", powershell),
-                no_effort,
+                Ok(()),
                 "{command}"
             );
         }
         for program in ["notastrolabe", "astrolabe.exe.bak", "/x/astrolabe2"] {
             let command = format!("{program} {rest}");
-            assert_ne!(
+            assert_eq!(
                 mint(&dir, &input, &command, "s1", false),
-                no_effort,
+                Err("use --once and a nonempty --said quote, run alone".to_owned()),
                 "{command}"
             );
         }

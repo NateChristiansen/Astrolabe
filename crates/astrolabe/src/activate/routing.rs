@@ -29,6 +29,7 @@ pub(super) fn commit(dir: &Path, session: &str, change: &Change) -> Result<(), S
         Change::Keep => Ok(()),
         Change::Write(state) => write_json(&path, state),
         Change::Remove => {
+            super::allow::cancel(dir, session)?;
             std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))
         }
     }

@@ -51,7 +51,7 @@ fn main() {
             }
         }
         ["allow", ..] => fail(
-            "No approval recorded: astrolabe allow must run alone through the plugin's pre-command hook with an effort loaded.",
+            "No approval recorded: astrolabe allow must run alone through the plugin's pre-command hook.",
         ),
         [first @ ("effort" | "journal" | "initiative"), rest @ ..] => {
             // Only the hook does the work; here the body is read so the command can be told
