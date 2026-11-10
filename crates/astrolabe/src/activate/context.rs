@@ -423,13 +423,20 @@ impl Activation {
             kept -= 1;
         }
         // The head alone is too long, or its list of files is: the head is cut and says so.
-        // The first file is the effort's own, named unless its path would take the head's
-        // opening lines with it; the others follow while there's room.
+        // The cut names every note's file, as the uncut text would have: a session told of
+        // only the effort's own read none of the owner's standing notes (eval, 2026-11-09).
+        // So the list stays whole like the role's ending, and the room comes out of the
+        // head. Only a list over a third of the limit loses files, from its end, because
+        // with the ending it would leave the head no room at all; real paths take a tenth.
         let files = files(&self.parts);
-        let first = files.first().filter(|f| size(f) <= HOOK_LIMIT / 4);
-        let close = match first {
-            Some(first) => format!("\n\n{CUT}, and read now:{first}"),
-            None => format!("\n\n{CUT}."),
+        let mut list = 0;
+        let listed = files.iter().take_while(|file| {
+            list += size(file);
+            list <= HOOK_LIMIT / 3
+        });
+        let close = match listed.count() {
+            0 => format!("\n\n{CUT}."),
+            n => format!("\n\n{CUT}, and read now:{}", files[..n].concat()),
         };
         // What a cut leaves whole at the end, because the role isn't safe without it: a
         // worker's restrictions, and for a session with no effort everything after the
@@ -466,18 +473,13 @@ impl Activation {
                 "",
             ),
         };
-        let mut text = format!("{}{close}", &front[..stays]);
         let rest = [rest, ending].map(|t| t.trim_start_matches('\n'));
         let rest: String = (rest.iter().filter(|t| !t.is_empty()))
             .map(|t| format!("\n\n{t}"))
             .collect();
-        for file in files.iter().skip(1).take_while(|_| first.is_some()) {
-            if size(&text) + size(file) + size(&rest) > HOOK_LIMIT {
-                break;
-            }
-            text += file;
-        }
-        (text + &rest).trim_start().to_owned()
+        format!("{}{close}{rest}", &front[..stays])
+            .trim_start()
+            .to_owned()
     }
 }
 
@@ -1604,6 +1606,72 @@ mod tests {
         assert!(size <= HOOK_LIMIT, "{what}: {size} for {provider}");
     }
 
+    /// Every note reaches the session: inline, or as a file it's told to read. Only a list
+    /// of files too long to keep whole, over a third of the limit, loses any, from its end.
+    fn carries(provider: &str, a: &Activation, text: &str, what: &str) {
+        let entry = |p: &Part| format!("\n- {}", p.files[0]);
+        let list: usize = a.parts.iter().map(|p| counted(provider, &entry(p))).sum();
+        let cut = text.contains("Astrolabe cut this text here");
+        for (n, part) in a.parts.iter().enumerate() {
+            if cut && list > HOOK_LIMIT / 3 && n > 0 {
+                continue;
+            }
+            let inline = format!("\n\n--- {}\n\n{}", part.title, part.body);
+            assert!(
+                text.contains(&entry(part)) || text.contains(&inline),
+                "{what}: {} is neither inline nor named",
+                part.files[0]
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_text_names_every_note_the_uncut_text_does() {
+        // A stamp that lists more unpushed work than a hook's text can carry.
+        let stamp = format!(
+            "Last saved by workbench at 2026-11-09T14:02-07:00, on main at 00a76cc, {}tree dirty then.",
+            "an unpushed commit, ".repeat(600)
+        );
+        let folder = "/home/sam/workspace/notes";
+        for provider in APPS {
+            for role in ROLES {
+                let mut f = facts("check in at plan", "edit");
+                f.freshness = &stamp;
+                let mut parts = notes(folder, 400);
+                parts.insert(1, part("efforts/0007-sample.md, Pieces", "- [ ] one", &format!("{folder}/efforts/0007-sample.md: only its `## Pieces` section, up to the next `## ` heading.")));
+                parts.insert(
+                    2,
+                    part(
+                        "Initiative",
+                        "[Audit](initiatives/audit.md)",
+                        &format!(
+                            "{folder}/initiatives/audit.md: the initiative's title and path only."
+                        ),
+                    ),
+                );
+                let a = session(provider, role, &f, parts);
+                let t = a.fitted();
+                let what = format!("{role:?}, {provider}");
+                within(provider, &t, &what);
+                assert!(t.contains("Astrolabe cut this text here"), "{what}: {t}");
+                // All seven, in the order the uncut text gives them, straight after the cut.
+                let list: String = a
+                    .parts
+                    .iter()
+                    .map(|p| format!("\n- {}", p.files[0]))
+                    .collect();
+                assert!(
+                    t.contains(&format!("tell the owner, and read now:{list}\n\n")),
+                    "{what}: {t}"
+                );
+                carries(provider, &a, &t, &what);
+                for line in mandatory(role) {
+                    assert!(t.contains(line), "{what} lacks {line:?}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_head_too_long_for_the_hook_is_cut_and_points_at_the_effort_file() {
         // Warnings from the notes have no bound of their own, and they sit in the head.
@@ -1615,6 +1683,7 @@ mod tests {
                 let a = session(provider, role, &f, notes("/home/sam/notes", 400));
                 let t = a.fitted();
                 within(provider, &t, &format!("{role:?}"));
+                carries(provider, &a, &t, &format!("{role:?}"));
                 for line in mandatory(role) {
                     assert!(t.contains(line), "{role:?} lacks {line:?}");
                 }
@@ -1647,6 +1716,7 @@ mod tests {
                 let a = session(provider, role, &f, Vec::new());
                 let t = a.fitted();
                 within(provider, &t, &format!("{role:?}"));
+                carries(provider, &a, &t, &format!("{role:?}"));
                 for line in mandatory(role) {
                     assert!(t.contains(line), "{role:?} lacks {line:?}");
                 }
@@ -1668,6 +1738,7 @@ mod tests {
                 let a = session(provider, role, &f, notes(&folder, 3000));
                 let t = a.fitted();
                 within(provider, &t, &format!("{role:?}"));
+                carries(provider, &a, &t, &format!("{role:?}"));
                 for line in mandatory(role) {
                     assert!(t.contains(line), "{role:?} lacks {line:?}");
                 }
@@ -1843,6 +1914,7 @@ mod tests {
                         .collect();
                     let t = a.fitted();
                     within(provider, &t, &what);
+                    carries(provider, &a, &t, &what);
                     for line in mandatory(role) {
                         assert!(t.contains(line), "{what} lacks {line:?}");
                     }
