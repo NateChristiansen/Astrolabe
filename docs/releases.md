@@ -46,11 +46,11 @@ Publication is manual after review: create the version tag on the tested revisio
 
 The program and plugin share a version, but the installer does not modify app configuration. Users update the program, replace the marketplace registration with the new tag, install the matching plugin, review changed hooks, and start a fresh session.
 
-The install receipt records a format version, release version, and binary hash. Future updates refuse a managed executable whose bytes no longer match. An unreceipted `astrolabe`, symlinks and unrelated files are refused. An `astrolabe-trial` copy that matches the receipt is moved into the backup; any other file by that name is left in place. A successful update retains old files in the printed `.astrolabe-backup-*` folder. Notes and the machine state remain outside this transaction.
+The install receipt records a format version, release version, and binary hash. Future updates refuse a managed executable whose bytes no longer match. An unreceipted `astrolabe`, symlinks and unrelated files are refused. An `astrolabe-trial` copy that matches the receipt is moved into the backup; any other file by that name is left in place. A successful update retains old files in the printed `.astrolabe-backup-*` folder and removes the installer's older backup folders, so one rollback copy stays. Nothing is removed while `.astrolabe-install-pending` exists, because that marker names a backup to recover from. Notes and the machine state remain outside this transaction.
 
-For a normal rollback, rerun the previous release's installer and register its matching plugin. Keep the backup until the fresh-session check succeeds.
+For a normal rollback, rerun the previous release's installer and register its matching plugin. Keep the backup until the fresh-session check succeeds; the next successful install replaces it with its own.
 
-`astrolabe update` runs those same steps: the published installer, then the documented plugin commands in each app it finds.
+`astrolabe update` runs those same steps: the published installer, then the plugin commands in each app it finds. A marketplace already at the target tag is refreshed and never removed. A move to another tag is checked first, removes as little as each app allows, and on a failed step restores the old registration or prints the commands that do; the [command reference](commands.md#update) has the details. If the installer stops, the command reports what is in the install folder instead of assuming the previous program is still there.
 
 ## Nightly
 
