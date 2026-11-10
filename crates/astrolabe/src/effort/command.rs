@@ -68,8 +68,8 @@ impl EffortCommand {
         let text = text.trim();
         let (head, body) = split_body(text)?;
         let mut words = Words::new(head);
-        let program = words.next_word()?.ok_or("empty command")?;
-        if program != "astrolabe" && !program.ends_with("/astrolabe") {
+        let program = words.program()?.ok_or("empty command")?;
+        if !is_astrolabe(&program) {
             return Err(format!("{program:?} isn't the astrolabe program"));
         }
         let verb = match words.next_word()?.as_deref() {
@@ -245,9 +245,15 @@ pub(crate) fn astrolabe_args(words: &[String]) -> Option<&[String]> {
     let at = words
         .iter()
         .position(|w| !LEAD.contains(&w.as_str()) && !is_assignment(w))?;
-    let program = words[at].as_str();
-    (program == "astrolabe" || program.ends_with("/astrolabe") || program.ends_with("\\astrolabe"))
-        .then(|| &words[at + 1..])
+    is_astrolabe(&words[at]).then(|| &words[at + 1..])
+}
+
+/// Whether a command's first word is this program: `astrolabe` by name, or a path to it
+/// with either separator, with or without Windows' `.exe`. The one answer for every place
+/// that asks, so a command claimed by one is never refused by the next.
+pub(crate) fn is_astrolabe(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name == "astrolabe" || name == "astrolabe.exe"
 }
 
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
@@ -422,16 +428,38 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
 
 /// The command line and its body apart: a POSIX heredoc `<<'ASTROLABE' … ASTROLABE`, a
 /// PowerShell here-string `@' … '@`, or no body. The delimiter must be the one word, quoted
-/// (either quote), alone on its closing line.
+/// (either quote), alone on its closing line. The body starts at the first marker outside
+/// double quotes, as the shell reads it: one inside a quoted value, such as a title holding
+/// `@'`, is part of that value.
 pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
-    let heredoc = [
+    const HEREDOCS: [&str; 4] = [
         "<<'ASTROLABE'",
         "<<\"ASTROLABE\"",
         "<< 'ASTROLABE'",
         "<< \"ASTROLABE\"",
-    ]
-    .iter()
-    .find_map(|mark| text.find(mark).map(|at| (at, mark.len())));
+    ];
+    let (mut heredoc, mut here_string) = (None, None);
+    let mut quoted = false;
+    for (at, c) in text.char_indices() {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if quoted || c == '"' {
+            continue;
+        }
+        let rest = &text[at..];
+        if let Some(mark) = HEREDOCS.iter().find(|mark| rest.starts_with(**mark)) {
+            heredoc = Some((at, mark.len()));
+        } else if rest.starts_with("@'") {
+            here_string = Some(at);
+        } else if rest.starts_with("<<") {
+            return Err(format!("a heredoc here must be <<'{DELIMITER}'"));
+        } else {
+            continue;
+        }
+        // What follows the first marker is the body, read by its own rules.
+        break;
+    }
     if let Some((at, len)) = heredoc {
         let head = &text[..at];
         let rest = &text[at + len..];
@@ -453,7 +481,7 @@ pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
         }
         return Ok((head, Some(body)));
     }
-    if let Some(at) = text.find("@'") {
+    if let Some(at) = here_string {
         let head = &text[..at];
         let rest = &text[at + 2..];
         let (first, rest) = rest
@@ -474,9 +502,6 @@ pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
             return Err("nothing may follow the closing '@ line".to_owned());
         }
         return Ok((head, Some(body)));
-    }
-    if text.contains("<<") {
-        return Err(format!("a heredoc here must be <<'{DELIMITER}'"));
     }
     Ok((text, None))
 }
@@ -522,6 +547,49 @@ impl<'a> Words<'a> {
         let text = text.trim();
         let text = text.strip_prefix("& ").unwrap_or(text);
         Self { rest: text }
+    }
+
+    /// The program, the one word that may be a path: bare, where a backslash is a Windows
+    /// separator, or whole in either quote, as PowerShell calls a path with `& '…'`. What
+    /// it refuses, it refuses in the words `next_word` uses.
+    pub(crate) fn program(&mut self) -> Result<Option<String>, String> {
+        self.rest = self.rest.trim_start();
+        let single = self.rest.strip_prefix('\'');
+        if let Some((path, after)) = single.and_then(|quoted| quoted.split_once('\'')) {
+            if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+                return Err("a closing quote must end its word".to_owned());
+            }
+            self.rest = after;
+            return Ok(Some(path.to_owned()));
+        }
+        if let Some(quoted) = self.rest.strip_prefix('"') {
+            let (path, after) = quoted.split_once('"').ok_or("an unclosed double quote")?;
+            if let Some(c) = path.chars().find(|c| "$`".contains(*c)) {
+                return Err(format!(
+                    "{c:?} inside a quoted value: the shell would read it; leave it out"
+                ));
+            }
+            if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+                return Err("a closing quote must end its word".to_owned());
+            }
+            self.rest = after;
+            return Ok(Some(path.to_owned()));
+        }
+        let end = self
+            .rest
+            .find(char::is_whitespace)
+            .unwrap_or(self.rest.len());
+        let word = &self.rest[..end];
+        if word.is_empty() {
+            return Ok(None);
+        }
+        if let Some(c) = word.chars().find(|c| "\"'$`;|&<>()".contains(*c)) {
+            return Err(format!(
+                "{c:?} in a bare word {word:?}: quote the value with double quotes, or leave the character out"
+            ));
+        }
+        self.rest = &self.rest[end..];
+        Ok(Some(word.to_owned()))
     }
 
     pub(crate) fn next_word(&mut self) -> Result<Option<String>, String> {
@@ -624,6 +692,76 @@ mod tests {
         ] {
             let err = EffortCommand::parse(text).unwrap_err();
             assert!(err.contains(why), "{text:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_body_marker_inside_a_quoted_value_is_part_of_the_value() {
+        // A title that happens to hold a here-string's opening, with no body at all.
+        let cmd = EffortCommand::parse("astrolabe effort save --decision \"Meet @'Home\"").unwrap();
+        assert_eq!(cmd.flag("decision"), Some("Meet @'Home"));
+        assert_eq!(cmd.body, None);
+        // The same before a real here-string, and before a real heredoc.
+        let text = "astrolabe effort new --title \"Meet @'Home\" @'\nGoal line.\n'@";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(cmd.flag("title"), Some("Meet @'Home"));
+        assert_eq!(cmd.body.as_deref(), Some("Goal line."));
+        let text =
+            "astrolabe effort new --title \"Meet @'Home\" <<'ASTROLABE'\nGoal @'line.\nASTROLABE";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(cmd.flag("title"), Some("Meet @'Home"));
+        assert_eq!(cmd.body.as_deref(), Some("Goal @'line."));
+        // A heredoc's opening in a value, with a here-string for the body.
+        let text = "astrolabe effort save --decision \"chose <<'ASTROLABE' over @': one form\" @'\nWhere it stands.\n'@";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(
+            cmd.flag("decision"),
+            Some("chose <<'ASTROLABE' over @': one form")
+        );
+        assert_eq!(cmd.body.as_deref(), Some("Where it stands."));
+        // And `<<` in a value is words, not a heredoc that must be the one form.
+        let cmd =
+            EffortCommand::parse("astrolabe journal \"Shifted with << in the mask.\"").unwrap();
+        assert_eq!(cmd.body.as_deref(), Some("Shifted with << in the mask."));
+        // Outside quotes each is still what it was.
+        let err = EffortCommand::parse("astrolabe effort save <<EOF\nx\nEOF").unwrap_err();
+        assert!(err.contains("<<'ASTROLABE'"), "{err}");
+    }
+
+    /// The program is `astrolabe` however it's called: by name, by a path with either
+    /// separator, quoted as PowerShell calls a path, with or without `.exe`.
+    #[test]
+    fn a_windows_path_and_the_exe_name_are_the_program() {
+        for program in [
+            "astrolabe",
+            "astrolabe.exe",
+            "/Users/x/.local/bin/astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe.exe",
+            "C:/Users/x/.local/bin/astrolabe.exe",
+            "& 'C:\\Users\\x\\.local\\bin\\astrolabe.exe'",
+            "& \"C:/Program Files/astrolabe/astrolabe.exe\"",
+        ] {
+            // Claimed, where a command is found in a chain.
+            let save = format!("{program} effort save --status active");
+            assert!(EffortCommand::is_effort_command(&save), "{save}");
+            // And read, where the claimed command is parsed.
+            let cmd = EffortCommand::parse(&save).unwrap_or_else(|why| panic!("{save}: {why}"));
+            assert_eq!(
+                (cmd.verb.as_str(), cmd.flag("status")),
+                ("save", Some("active"))
+            );
+        }
+        for program in [
+            "notastrolabe",
+            "astrolabe.exe.bak",
+            "C:\\Users\\x\\astrolabe2",
+            "astrolabe.sh",
+        ] {
+            let save = format!("{program} effort save --status active");
+            assert!(!EffortCommand::is_effort_command(&save), "{save}");
+            let err = EffortCommand::parse(&save).unwrap_err();
+            assert!(err.contains("isn't the astrolabe program"), "{save}: {err}");
         }
     }
 

@@ -253,7 +253,15 @@ fn answer(event: &str) {
             }
             let answer = std::panic::catch_unwind(|| switch_command(&input, session, child));
             if let Ok(Some(answer)) = answer {
-                return hook::say(&answer);
+                // A write is answered when this hook's own answer goes out with its result:
+                // it's marked so as the answer is printed, and its intent removed after. If
+                // the backstop answered first, the session was denied: the backstop marked
+                // the intent unanswered, it stays with its reply, and the session's retry
+                // is given that reply instead of writing again.
+                if hook::said(&answer, crate::record::mark_answered) {
+                    crate::record::answered();
+                }
+                return;
             }
             // A commit is work the save should cover; a child's counts for its parent.
             if let (Some(session), Some(command)) =
@@ -418,13 +426,21 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
         "cmd"
     };
     let command = tool_input[key].as_str()?.trim();
-    let words: Vec<&str> = command.split_whitespace().collect();
-    if matches!(words.as_slice(), ["astrolabe", "on" | "off", ..]) {
+    // What each simple command of the line that runs astrolabe is given, read the way the
+    // effort and notes commands are found: wherever it sits in a chain, behind an
+    // assignment or `time`, by name, `.exe` name or path, with its words quoted or not. One
+    // answer in the hook to whether a command is astrolabe's.
+    let runs: Vec<Vec<String>> = (crate::effort::command::simple_commands(command).iter())
+        .filter_map(|words| crate::effort::command::astrolabe_args(words))
+        .map(<[String]>::to_vec)
+        .collect();
+    let runs_verb = |verb: &str| (runs.iter()).any(|args| args.first().is_some_and(|v| v == verb));
+    if runs_verb("on") || runs_verb("off") {
         return Some(hook::deny(
             "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
         ));
     }
-    if words.get(..2) == Some(&["astrolabe", "allow"]) {
+    if runs_verb("allow") {
         if child {
             return Some(hook::deny(
                 "A subagent can't record an owner approval; report to the parent session.",
@@ -524,15 +540,17 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 None,
             ),
         };
+        crate::deadline::stall("ticket");
         let left = state_dir()
             .ok_or_else(|| "no home folder".to_owned())
             .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref(), Some(&cwd)));
         return Some(match left {
             Ok(ticket) => {
-                // The ticket now holds the result, so the intent that held it can go. A
+                // The ticket holds the result, but the session has it only once this hook's
+                // answer goes out, so the intent that held it goes then (see `answer`). A
                 // failed one keeps its intent, which is its recovery plan.
                 if let (Some(op_key), true) = (op_key, ok) {
-                    crate::record::forget(&op_key);
+                    crate::record::answers(&op_key);
                 }
                 rewrite_to_show(tool_input, key, &ticket, powershell)
             }
@@ -541,18 +559,24 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             )),
         });
     }
-    if words.get(..2) != Some(&["astrolabe", "activate"]) {
+    if !runs_verb("activate") {
         return None;
     }
-    let mut parser = crate::effort::command::Words::new(command);
-    let mut owned = Vec::new();
-    loop {
-        match parser.next_word() {
-            Ok(Some(word)) => owned.push(word),
-            Ok(None) => break,
-            Err(_) => return None,
+    // Only a plain command is taken as the switch, so it's exactly what the hook read:
+    // astrolabe first, then words the strict reader accepts. One with shell around it
+    // isn't rewritten: it runs bare, and the program refuses it and says to run it alone.
+    let plain = || {
+        let mut parser = crate::effort::command::Words::new(command);
+        let program = parser.program().ok()??;
+        let mut owned = vec![program];
+        while let Some(word) = parser.next_word().ok()? {
+            owned.push(word);
         }
-    }
+        let taken = crate::effort::command::is_astrolabe(&owned[0])
+            && owned.get(1).is_some_and(|verb| verb == "activate");
+        taken.then_some(owned)
+    };
+    let owned = plain()?;
     let words: Vec<&str> = owned.iter().map(String::as_str).collect();
     if words.contains(&"--show") {
         return Some(hook::deny(

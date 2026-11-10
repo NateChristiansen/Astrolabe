@@ -90,6 +90,9 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         digest: None,
         result: None,
         cwd: None,
+        session: None,
+        bound: None,
+        at_ms: None,
         rebaseline: None,
     };
     notes.apply(&op).ok()?;

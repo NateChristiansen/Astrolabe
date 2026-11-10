@@ -116,9 +116,9 @@ the page is showing older content until the next change or reconnect loads it.
 "$HOME/.local/bin/astrolabe" home --open --theme dark
 ```
 
-### `efforts [--repo <name>] [--all]`
+### `efforts [--repo <name>] [--all] [--json]`
 
-Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only.
+Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only. `--json` is accepted and changes nothing, as the output is JSON either way. Any other argument, or a `--repo` with no name, is refused.
 
 The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
 

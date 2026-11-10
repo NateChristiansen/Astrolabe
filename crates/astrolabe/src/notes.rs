@@ -22,6 +22,14 @@ const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
+/// How long after a write was first attempted the same command is taken for its retry, when
+/// the attempt's own hook never answered: time for a session to read the denial, look at
+/// `notes status` and run the command again.
+pub const RETRY_MS: i64 = 5 * 60_000;
+/// What a write finished by a later run has for a result: the reply it would have had was
+/// never made.
+pub const RECOVERED: &str =
+    "Finished by a later run: this write landed; the reply for it was lost.";
 /// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
 pub const EOL_RULE: &str = "* text=auto eol=lf\n";
 
@@ -71,6 +79,19 @@ pub struct Op {
     /// The folder the command ran in, with the digest.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The session whose command this answers, so its retry is told from another
+    /// session's command with the same words.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// The record that session is on once this write lands, as `SessionState::record_label`
+    /// names it; None for a session on none. The same words after the session moved to
+    /// another record are a request about that one.
+    #[serde(default)]
+    pub bound: Option<String>,
+    /// When the command was first attempted. A retry is matched on this, never on the
+    /// intent file's time, which moves whenever a later run finishes the write.
+    #[serde(default)]
+    pub at_ms: Option<i64>,
     /// The notes checkout itself, when the command ran there: the states' nudge baseline is
     /// taken again as they're written, after the commit, since that commit is in the folder
     /// the fingerprint reads. Kept in the intent so a replay does the same.
@@ -315,6 +336,7 @@ impl Notes {
             file.number()
         }
         .unwrap_or(0);
+        let before = content_hash(&text);
         let rendered = if unclosed {
             text
         } else {
@@ -325,6 +347,7 @@ impl Notes {
             ));
             file.render()
         };
+        let renumbered = content_hash(&rendered);
         let key = format!("renumber-{old_number:04}-{next:04}");
         let mut files = vec![(new_rel.clone(), rendered)];
         // The renumbered effort's own journal lines follow it: the ones written by the
@@ -361,6 +384,9 @@ impl Notes {
             digest: None,
             result: None,
             cwd: None,
+            session: None,
+            bound: None,
+            at_ms: None,
             rebaseline: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
@@ -388,6 +414,17 @@ impl Notes {
                 }) = &mut state.binding
                 {
                     *key = next.to_string();
+                }
+                // A session that has the note exactly as it stands now, just before the
+                // renumber, has it as renumbered too: the renumber changes its number and
+                // adds the line saying so, nothing the session wrote. So its next save isn't
+                // refused as made over text it hasn't seen, whoever made the renumber: its
+                // own save's pull, a sync, another session. Never otherwise: a session
+                // behind the note stays behind it. The plan is always made from the note as
+                // it is, since one that never began is dropped and made again.
+                if state.delivered.as_deref() == Some(before.as_str()) {
+                    state.delivered.set(renumbered.clone());
+                    state.delivered_ms.set(now_ms());
                 }
                 op.states.push((path, state.to_value()));
             }

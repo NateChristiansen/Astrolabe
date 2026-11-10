@@ -117,7 +117,7 @@ pub(super) fn mint(
     let [program, verb, once, exact, said, quote] = parsed.as_slice() else {
         return Err("use astrolabe allow --once \"<exact command>\" --said \"<the owner's words>\", run alone".into());
     };
-    if program != "astrolabe"
+    if !crate::effort::command::is_astrolabe(program)
         || verb != "allow"
         || once != "--once"
         || said != "--said"
@@ -202,4 +202,44 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
     persist(dir, session, &leases)?;
     log(dir, "lease-used", &lease)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mint;
+    use serde_json::json;
+
+    /// A command taken as `astrolabe allow` is recorded; one that runs another program is
+    /// refused for its form.
+    #[test]
+    fn a_windows_path_and_the_exe_name_are_the_program() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-allow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = json!({"cwd": dir, "tool_name": "Bash"});
+        let rest = "allow --once \"git push --force\" --said \"Yes, run that.\"";
+        for (program, powershell) in [
+            ("astrolabe", false),
+            ("astrolabe.exe", false),
+            ("/Users/x/.local/bin/astrolabe", false),
+            ("C:/Users/x/.local/bin/astrolabe.exe", false),
+            ("C:\\Users\\x\\.local\\bin\\astrolabe", true),
+            ("C:\\Users\\x\\.local\\bin\\astrolabe.exe", true),
+        ] {
+            let command = format!("{program} {rest}");
+            assert_eq!(
+                mint(&dir, &input, &command, "s1", powershell),
+                Ok(()),
+                "{command}"
+            );
+        }
+        for program in ["notastrolabe", "astrolabe.exe.bak", "/x/astrolabe2"] {
+            let command = format!("{program} {rest}");
+            assert_eq!(
+                mint(&dir, &input, &command, "s1", false),
+                Err("use --once and a nonempty --said quote, run alone".to_owned()),
+                "{command}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

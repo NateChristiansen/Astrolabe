@@ -4,7 +4,12 @@ use crate::hook::comparable;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-pub(super) const TICKET_LIFE_MS: i64 = 60_000;
+/// How long a result is kept for the session that asked for it. The read the app runs in
+/// place of the command can come long after the hook left it: an approval prompt can sit
+/// until the owner is back. Nothing tells the program a ticket was read, so age alone removes
+/// one, when a later ticket is written. A ticket's name is 32 random hex digits handed only
+/// to the command it answers, so no other session or command is shown it.
+pub(super) const TICKET_LIFE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 pub(super) const NO_TICKET: &str = "No effort loaded: the plugin's hook didn't take this command, so it can't be bound to this session. That alone doesn't tell whether a guard runs here, so claim no protection until `astrolabe activate --status` says proven. Run the command alone, exactly as written, with nothing before or after it. If it still fails: Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.";
 
@@ -14,7 +19,7 @@ pub(super) fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(
     crate::notes::write_text(path, &text)
 }
 
-/// What the hook did, left for the command to print. Old ones go as new ones come.
+/// What the hook did, left for the command to print. Ones past their life go as new ones come.
 pub(super) fn leave(dir: &Path, text: &str, ok: bool) -> Result<String, String> {
     leave_with(dir, text, ok, None, None)
 }
@@ -123,7 +128,7 @@ pub(crate) fn shown_for(
     best.map(|(at, text, ok)| (text, ok, now_ms() - at))
 }
 
-/// Only while fresh. Reads and nothing else, so it works inside a client's sandbox.
+/// Only within a ticket's life. Reads and nothing else, so it works inside a client's sandbox.
 pub(super) fn show(dir: &Path, ticket: &str) -> Result<(String, bool), String> {
     let bad = || "that ticket isn't one the hook just issued".to_owned();
     if ticket.len() != 32 || !ticket.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -144,6 +149,62 @@ pub fn command(args: &[&str]) -> (String, bool) {
         (["--show", ticket], Some(dir)) => show(&dir, ticket)
             .unwrap_or_else(|why| (format!("No effort loaded: {why}. {NO_TICKET}"), false)),
         _ => (NO_TICKET.to_owned(), false),
+    }
+}
+
+#[cfg(test)]
+mod life_tests {
+    use super::{leave, now_ms, show, write_json};
+    use serde_json::json;
+    use std::time::{Duration, SystemTime};
+
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "astrolabe-tickets-{name}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(dir.join("shown")).unwrap();
+        dir
+    }
+
+    /// Both of a ticket's files, as if the hook had left them `ago` earlier.
+    fn age(dir: &std::path::Path, ticket: &str, ago: Duration) {
+        for ext in ["json", "txt"] {
+            let path = dir.join("shown").join(format!("{ticket}.{ext}"));
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(SystemTime::now() - ago).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_ticket_read_minutes_after_the_hook_left_it_still_shows_its_result() {
+        let dir = folder("late");
+        let ticket = "0123456789abcdef0123456789abcdef";
+        let body = json!({"text": "Saved effort 1.", "ok": true, "at_ms": now_ms() - 5 * 60_000});
+        write_json(&dir.join("shown").join(format!("{ticket}.json")), &body).unwrap();
+        assert_eq!(show(&dir, ticket), Ok(("Saved effort 1.".to_owned(), true)));
+        // Past its life it's gone, as before.
+        let body =
+            json!({"text": "Saved effort 1.", "ok": true, "at_ms": now_ms() - 8 * 24 * 3_600_000});
+        write_json(&dir.join("shown").join(format!("{ticket}.json")), &body).unwrap();
+        assert!(show(&dir, ticket).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_later_ticket_removes_only_ones_past_their_life() {
+        let dir = folder("sweep");
+        let slow = leave(&dir, "Saved effort 1.", true).unwrap();
+        let old = leave(&dir, "Saved effort 2.", true).unwrap();
+        age(&dir, &slow, Duration::from_secs(5 * 60));
+        age(&dir, &old, Duration::from_secs(8 * 24 * 3600));
+        leave(&dir, "Saved effort 3.", true).unwrap();
+        let text =
+            |ticket: &str| std::fs::read_to_string(super::ticket_text(&dir.join("shown"), ticket));
+        assert_eq!(text(&slow).unwrap(), "Saved effort 1.\n");
+        assert!(text(&old).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

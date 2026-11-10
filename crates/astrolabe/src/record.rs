@@ -127,6 +127,103 @@ fn canonical_membership(root: &Path, name: &str) -> Result<String, String> {
     crate::effort::resolve_initiative(&pages, name).map(|page| page.slug.clone())
 }
 
+/// The key a command is written under: its own, or its first attempt's when it's a retry.
+enum Attempt {
+    /// A retry of a command whose first attempt left its reply: that reply.
+    Answered(String),
+    Key(String),
+}
+
+/// A retry is a new tool call, so it comes with a new key. It's the same request as a write
+/// this session attempted with the same command, in the same folder and on the same record,
+/// that its session is known never to have been told of (see `Notes::earlier_attempt`). If
+/// that attempt got as far as its reply, the retry gets that reply. If a later run finished
+/// the write, no reply was ever made: the retry takes the first attempt's key and is told
+/// what a repeat of that call is told.
+fn attempt(notes: &Notes, cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Attempt {
+    // The same tool call again is known by its key, as it always was.
+    if notes.already_applied(key) {
+        return Attempt::Key(key.to_owned());
+    }
+    let bound = bound_label(&notes.state, session);
+    let first = notes.earlier_attempt(
+        &cmd.digest(),
+        &crate::hook::comparable(cwd),
+        session,
+        bound.as_deref(),
+    );
+    let Some(first) = first else {
+        return Attempt::Key(key.to_owned());
+    };
+    // The retry's answer, if it works and goes out, is the first attempt's too.
+    told().earlier = Some(first.key.clone());
+    match first.result {
+        Some(reply) if reply != notes::RECOVERED => Attempt::Answered(reply),
+        _ => Attempt::Key(first.key),
+    }
+}
+
+/// The writes this hook's answer tells the session about once it goes out, and before that
+/// the earlier attempt a retry in this hook was matched to.
+#[derive(Default)]
+struct Told {
+    writes: Vec<String>,
+    earlier: Option<String>,
+}
+
+fn told() -> std::sync::MutexGuard<'static, Told> {
+    static TOLD: std::sync::Mutex<Told> = std::sync::Mutex::new(Told {
+        writes: Vec::new(),
+        earlier: None,
+    });
+    TOLD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// This hook's command worked and its result is left for the session: its answer, once it
+/// goes out, tells the session about the write with this key, and about the earlier
+/// attempt it was a retry of. A command that failed tells the session of neither.
+pub(crate) fn answers(key: &str) {
+    let mut told = told();
+    told.writes.push(key.to_owned());
+    if let Some(earlier) = told.earlier.take() {
+        told.writes.push(earlier);
+    }
+}
+
+/// The hook's own answer is going out, so the session is told: each write it's told about
+/// is marked answered, and the same words after this are a new request. Done as the answer
+/// is printed and without the notes lock, which a sync the write started may hold by now.
+/// Not called when the backstop answered first; those intents stay for the session's retry.
+pub(crate) fn mark_answered() {
+    if let Some(dir) = state_dir() {
+        let notes = Notes::new(PathBuf::new(), dir);
+        for key in &told().writes {
+            notes.mark_answered(key);
+        }
+    }
+}
+
+/// After the answer: the marked intents go now if the notes lock is free, and otherwise
+/// when a later write or sync holds it. Nothing waits here.
+pub(crate) fn answered() {
+    let writes = std::mem::take(&mut told().writes);
+    if !writes.is_empty()
+        && let Ok((_, notes)) = notes_here()
+        && let Some(_held) = notes.try_lock()
+    {
+        for key in writes {
+            notes.forget(&key);
+        }
+    }
+}
+
+/// The record a session is on, as an op names it; None for a session on none.
+fn bound_label(dir: &Path, session: &str) -> Option<String> {
+    (read_state(dir, session).ok().flatten())
+        .filter(|state| state.bound_key().is_some())
+        .map(|state| state.record_label())
+}
+
 /// `astrolabe effort new`, in the hook.
 pub fn new(
     cmd: &EffortCommand,
@@ -195,14 +292,20 @@ fn new_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         // Done before, by this call or its interrupted first run: the result it had, or the
-        // effort it bound.
+        // effort it bound. A write a later run finished has no result of its own to give.
         if let Some(result) = notes
             .intents()
             .into_iter()
             .find(|op| op.key == key)
             .and_then(|op| op.result)
+            .filter(|result| result != notes::RECOVERED)
         {
             return Ok(result);
         }
@@ -338,6 +441,9 @@ fn new_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: Some(format!("effort {number}")),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -487,6 +593,9 @@ pub fn take_up(
         digest: None,
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: None,
+        bound: None,
+        at_ms: None,
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -611,6 +720,11 @@ fn initiative_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         let result = notes
             .intents()
@@ -752,6 +866,9 @@ fn initiative_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: bound_label(&notes.state, session),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -806,8 +923,7 @@ fn save_inner(
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
-    let req = SaveRequest::parse(cmd, &state, cwd)?;
-    let record = &req.record;
+    let mut req = SaveRequest::parse(cmd, &state, cwd)?;
     let _held = notes.lock()?;
     let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
@@ -816,12 +932,32 @@ fn save_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         return Ok(format!(
-            "Already saved: this same tool call was done before (a retry), so nothing new was written to {record}."
+            "Already saved: this same tool call was done before (a retry), so nothing new was written to {}.",
+            req.record
         ));
     }
     let pulled = crate::application::pull(&notes);
+    // The pull, or the recovery before it, can renumber this session's effort, when another
+    // machine's effort had the number first. The session's state follows the file, so the
+    // request is read again from where the effort is now, not from the path it had.
+    let mut notes_lines = Vec::new();
+    if let Some(moved) = read_state(&dir, session)?.filter(|now| now.file != state.file) {
+        let was = state.bound_key().unwrap_or_default().to_owned();
+        state = moved;
+        req = SaveRequest::parse(cmd, &state, cwd)?;
+        let now = state.bound_key().unwrap_or_default();
+        notes_lines.push(format!(
+            "This save's pull renumbered the effort from {was} to {now}, because another machine's effort had {was} first; it's effort {now} from here on."
+        ));
+    }
+    let record = &req.record;
     let initiative = req
         .initiative
         .map(|name| canonical_membership(&notes.root, name))
@@ -876,7 +1012,6 @@ fn save_inner(
     }
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
-    let mut notes_lines = Vec::new();
     if req.plan_shifted {
         notes_lines.push(
             "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."
@@ -934,6 +1069,9 @@ fn save_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: Some(state.record_label()),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -1280,6 +1418,9 @@ fn save_target(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: Some(state.record_label()),
+        at_ms: Some(notes::now_ms()),
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -1411,6 +1552,11 @@ fn journal_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         return Ok("Already written: this same tool call was done before (a retry), so nothing new went in the journal.".to_owned());
     }
@@ -1438,6 +1584,9 @@ fn journal_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: None,
+        at_ms: Some(notes::now_ms()),
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -1467,7 +1616,12 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
             && !wants_value;
         if a.contains('\n') || positional {
             body = Some((*a).to_owned());
-        } else if a.contains(' ') || a.is_empty() {
+        } else if a.is_empty()
+            || a.contains(|c: char| c.is_whitespace() || "\"'$`\\;|&<>()".contains(c))
+        {
+            // The shell's quoting is gone by here, so every argument a bare word can't
+            // hold is quoted again: an apostrophe with no space beside it too. One holding
+            // a character no quoted value may is refused below, as the hook refused it.
             words.push(format!("\"{a}\""));
         } else {
             words.push((*a).to_owned());
@@ -1492,7 +1646,10 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     let here = std::env::current_dir()
         .map(|c| crate::hook::comparable(&c))
         .unwrap_or_default();
+    let notes = Notes::new(std::path::PathBuf::new(), dir.clone());
     if let Some((text, ok, age_ms)) = activate::shown_for(&dir, &digest, &here, RECENT_MS) {
+        // Shown here, the session has its answer, whatever its hook managed to say.
+        notes.mark_shown(&digest, &here);
         return (
             format!(
                 "{text}\n\n(This is the result of a command with this exact text, run in this folder {} s ago through the hook. If that was another session, this one's command wasn't taken by the hook and recorded nothing.)",
@@ -1501,13 +1658,15 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
             ok,
         );
     }
-    let notes = Notes::new(std::path::PathBuf::new(), dir);
     if let Some(op) = notes.intent_for(&digest, &here) {
         return match op.result {
-            Some(result) => (
+            Some(result) => {
+                notes.mark_shown(&digest, &here);
+                (
                 format!("{result}\n\n(Recovered from the hook's record of this command: its reply was lost on the way.)"),
                 true,
-            ),
+            )
+            }
             None => ("This write may still be finishing in the hook; run `astrolabe notes status` in a moment to see.".to_owned(), false),
         };
     }
