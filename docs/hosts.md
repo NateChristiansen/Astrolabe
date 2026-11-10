@@ -105,7 +105,32 @@ The real `config.toml` can change during a run for unrelated reasons, such as th
 
 **Claude Code** (probe and docs). `CLAUDE_CONFIG_DIR` points the CLI at another folder. Plugin and marketplace commands wrote only to that folder, and the real marketplace and plugin files were unchanged, by hash. A fresh folder is not signed in (`claude auth status`), and on macOS the sign-in is not a file that can be copied in. The docs give a folder-trust field in the user config file and say an unattended run never shows the trust dialog; they don't say whether such a run records trust.
 
-Not checked: a signed-in session in a disposable Claude Code folder.
+### Signing in to a disposable folder
+
+**Claude Code** (docs). `claude setup-token` makes a one-year token for scripts. It "does not save the token anywhere", and the CLI reads it from the `CLAUDE_CODE_OAUTH_TOKEN` environment variable. It needs a paid plan, uses the subscription, and "can only make model requests". Among credential sources it comes after a cloud provider, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` and `apiKeyHelper`, and before a stored sign-in. Bare mode does not read it. With `CLAUDE_CONFIG_DIR` set, a stored sign-in's Keychain entry is keyed to that folder, so a different folder reads a different entry. Source: [authentication](https://code.claude.com/docs/en/authentication).
+
+Probed, with no model request made (2.1.316):
+
+- in a fresh folder with a clean environment, `claude auth status` reports `"loggedIn": false`; with `CLAUDE_CODE_OAUTH_TOKEN` set to a made-up value it reports `"authMethod": "oauth_token"`, so the variable is honored there
+- a `claude -p` run in a fresh folder with no sign-in stops at its first request, costs nothing, writes only inside that folder, and records no folder trust in that folder's `.claude.json`
+
+**Codex** (docs and probe, 0.166.0). `cli_auth_credentials_store` chooses where the sign-in is kept: `file` (`auth.json` under `CODEX_HOME`), `keyring`, `auto` or `ephemeral`. The docs describe copying `auth.json` to a machine without a browser; they don't say what happens when two folders refresh the same sign-in. In a `CODEX_HOME` with no `auth.json`, `codex login status` prints "Not logged in" and exits 1. Source: [authentication](https://learn.chatgpt.com/docs/auth).
+
+### Hooks and trust in a disposable folder
+
+**Claude Code** (probe, 2.1.316). A plugin given with `--plugin-dir` ran its `SessionStart` and `UserPromptSubmit` hooks in a fresh, untrusted folder under `-p`, with no install, enable or trust step. With `projects["<path>"].hasTrustDialogAccepted` and `hasCompletedOnboarding` set to `true` in the folder's `.claude.json`, the terminal interface in a fresh folder went straight to its prompt, with no first-run screen or trust dialog; only the first field is documented.
+
+**Codex** (probe, 0.166.0). A plugin installed from a local marketplace folder lands in `plugins/cache/<marketplace>/<plugin>/<version>` under `CODEX_HOME`. An unattended run there with the plugin's hooks untrusted ran none of them and said nothing.
+
+### Who sent a prompt
+
+**Claude Code** (probe, 2.1.316). A prompt typed into the terminal interface is recorded in the session's transcript with `origin.kind` `human`; a prompt given with `-p` has no such tag. This held in a fresh config folder driven through a pseudo-terminal. A test of behavior that depends on who sent a message has to use the interface.
+
+### What a session passes to a session it starts
+
+**Claude Code** (probe, 2.1.316, desktop app). A shell command run by an agent session inherits that session's app environment: its account and organization ids, its session id, a messaging socket and token, and switches such as the one that turns on bare mode. A CLI started from that shell with another `CLAUDE_CONFIG_DIR` wrote those account ids into the other folder's `.claude.json`. A session started for a test needs an environment built from nothing, not a copy with names removed.
+
+Not checked: a session signed in by token in a disposable Claude Code folder, under `-p` and in the interface; whether a signed-in `-p` run records folder trust; whether `codex login` with `CODEX_HOME` set signs in only that folder; whether Codex hook trust survives replacing the installed plugin copy; Codex's terminal interface under a pseudo-terminal.
 
 ## A bare argument to PowerShell
 
