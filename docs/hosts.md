@@ -134,6 +134,12 @@ Probed, with no model request made (2.1.316):
 
 Not checked: a session signed in by token in a disposable Claude Code folder, under `-p` and in the interface; whether a signed-in `-p` run records folder trust; whether `codex login` with `CODEX_HOME` set signs in only that folder; whether Codex hook trust survives replacing the installed plugin copy; Codex's terminal interface under a pseudo-terminal.
 
+## A session's name from a hook
+
+**Claude Code** (observed in the desktop app, 2026-11-09; one session's own record and one probe on a live session). A `sessionTitle` in a prompt hook's answer sets Claude Code's own title for the session, which its transcript records. A prompt that arrives as a message from another session runs that hook as a typed one does. The desktop app's sidebar keeps a title of its own, whose source it records as set by the app or by its rename tool. Once an agent has set the title with the app's rename tool, a later name from the hook changes Claude Code's title and leaves the sidebar's as it was: an orchestrator's sidebar kept an old effort's name for hours after the hook had named it for its initiative, and a probe name given by the hook never reached the sidebar.
+
+Not checked: whether the sidebar follows a hook's name in a session whose agent never used the rename tool. Every session the hook has named so far also had its agent use the tool, so the record can't say. Until that's known, a bind still asks the agent to rename its session.
+
 ## A bare argument to PowerShell
 
 `pwsh` treats a first argument with no parameter name as a script file: `-File` "is the default parameter if no parameters are present but values are present in the command line" ([about_pwsh](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh)). The page for Windows `powershell.exe` does not state its default.
