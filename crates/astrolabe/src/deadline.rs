@@ -40,12 +40,12 @@ const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
 
 /// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
-/// without, so it gets the early part of the hook's time and no more.
+/// without, so it gets the early part of the hook's time and no more. Cut off here it
+/// proves nothing about the network, only that the hook couldn't wait: it doesn't count as
+/// offline, and starts no backoff.
 const HOOK_NETWORK: Duration = Duration::from_secs(5);
-/// A fetch or push given at least this long that still didn't finish counts as offline and
-/// starts the backoff, though the hook had less than the whole allowance left for it.
-const NETWORK_FLOOR: Duration = Duration::from_secs(3);
-/// The same outside a hook, where nothing waits on it but a background sync.
+/// The same outside a hook, where nothing waits on it but a background sync. One that
+/// uses all of this counts as offline, and later calls back off for a while.
 const NETWORK: Duration = Duration::from_secs(15);
 
 struct Clock {
@@ -416,9 +416,10 @@ pub(crate) struct Limit {
 }
 
 enum Cut {
-    /// A network call that used its whole allowance: offline, and worth backing off from.
+    /// A network call that used its whole allowance outside a hook: offline, and worth
+    /// backing off from.
     Network,
-    /// Stopped because the hook's own time ran out.
+    /// Stopped because the hook's own time ran out, which says nothing about the network.
     Hook,
 }
 
@@ -468,11 +469,7 @@ fn git_run_on(clock: &Clock, kind: Git) -> Run {
         Git::Network => {
             // A rebase may follow a fetch, inside the pull's own time.
             let left = clock.left(clock.pull()).saturating_sub(clock.rebase());
-            let time = left.min(HOOK_NETWORK);
-            match time >= NETWORK_FLOOR {
-                true => within(time, Cut::Network),
-                false => within(time, Cut::Hook),
-            }
+            within(left.min(HOOK_NETWORK), Cut::Hook)
         }
         Git::Notes => Run::Through,
         Git::Read => within(clock.left(clock.read()), Cut::Hook),
@@ -484,6 +481,12 @@ pub(crate) fn reading_time_is_up() -> bool {
     CLOCK
         .get()
         .is_some_and(|clock| clock.left(clock.read()).is_zero())
+}
+
+/// A failure that says a hook's time ran out, not that git found something wrong.
+pub(crate) fn out_of_time(why: &str) -> bool {
+    why.ends_with("when this hook's time ran out")
+        || why.ends_with("because this hook's time had run out")
 }
 
 /// What a call not started says.
@@ -590,12 +593,17 @@ mod tests {
         assert!(time(1, Git::Read).unwrap() <= Duration::from_secs(13));
         assert!(time(13, Git::Read).is_some());
         assert_eq!(time(14, Git::Read), None);
-        // Only a fetch that had most of its time counts as offline.
+        // A fetch a hook cut short never says "took over", which is what starts the
+        // backoff every process on the machine then obeys: only the whole 15 s outside a
+        // hook says the network is down.
         let said = |spent: u64| match git_run_on(&pre_command(spent), Git::Network) {
             Run::Within(limit) => limit.stopped("fetch"),
             _ => panic!("started"),
         };
-        assert_eq!(said(0), "git fetch took over 5 s");
+        assert_eq!(
+            said(0),
+            "git fetch was stopped after 5 s, when this hook's time ran out"
+        );
         assert_eq!(
             said(3),
             "git fetch was stopped after 2 s, when this hook's time ran out"
@@ -652,8 +660,10 @@ mod tests {
             Wait::Busy(_)
         ));
         drop(held);
+        // Free now, give or take a child another test is starting at this moment, which
+        // holds a copy of every open file until it becomes its own program.
         assert!(matches!(
-            lock_within(&waiter, Duration::ZERO).unwrap(),
+            lock_within(&waiter, Duration::from_secs(5)).unwrap(),
             Wait::Held
         ));
         let _ = std::fs::remove_file(path);

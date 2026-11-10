@@ -215,18 +215,42 @@ fn a_slow_session_start_says_it_ran_out_of_time() {
     assert!(took < Duration::from_secs(4), "{took:?}");
 }
 
+/// Off for the machine, the hook is as if it weren't there: it reads its input inside the
+/// event's read time, where it used to wait up to 30 s for input that trickles, and
+/// answers nothing, clock or no clock.
 #[test]
-fn a_machine_thats_off_gets_no_clock_and_no_answer() {
+fn a_machine_thats_off_reads_inside_its_time_and_says_nothing() {
     let f = Fixture::new();
     f.machine("off");
-    let env = [
-        ("ASTROLABE_HOOK_BUDGET_MS", "300"),
-        ("ASTROLABE_HOOK_TEST_STALL", "read:20000"),
-    ];
-    let limit = Duration::from_secs(8);
-    let (answer, took) = f.timed("pre-command", &shell(&f, "echo hi"), &env, limit);
-    assert_eq!(answer, None);
-    assert!(took < Duration::from_secs(2), "{took:?}");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        .args(["hook", "pre-command", "--if-active"])
+        .current_dir(&f.demo)
+        .env(STATE_VAR, f.state())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut pipe = child.stdin.take().unwrap();
+    // A byte at a time, each well inside the idle wait, for about 12 s in all.
+    let writer = std::thread::spawn(move || {
+        for byte in
+            br#"{"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "echo hi"}}"#
+        {
+            if pipe.write_all(&[*byte]).and_then(|_| pipe.flush()).is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    });
+    let started = std::time::Instant::now();
+    let output = child.wait_with_output().unwrap();
+    let took = started.elapsed();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty(), "off means no answer");
+    // The read ends at 4 s of the hook's 16; the input would have taken 12.
+    assert!(took < Duration::from_secs(9), "{took:?}");
+    let _ = writer.join();
 }
 
 #[test]

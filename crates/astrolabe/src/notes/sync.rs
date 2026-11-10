@@ -6,6 +6,16 @@ use super::{
 use crate::deadline::Step;
 use serde_json::{Value, json};
 
+/// Whether a rebase that just failed with `why` left the rebase now in the checkout: git
+/// recorded it as begun from `before`, the commit this call was on, and didn't fail by
+/// finding one already there. `from` is git's record of where the rebase in the checkout
+/// began, if there is a rebase.
+fn began_here(why: &str, before: &str, from: Option<&str>) -> bool {
+    let found_one = why.contains("already a rebase") || why.contains("rebase in progress");
+    let before = before.trim();
+    !found_one && !before.is_empty() && from.is_some_and(|from| from.trim() == before)
+}
+
 impl Notes {
     /// A git call that may touch the network, stopped when its time is up (see `deadline`).
     fn git_timed(&self, args: &[&str]) -> Result<String, String> {
@@ -98,6 +108,18 @@ impl Notes {
                 "fetched, but this hook had no time left to rebase onto it".to_owned(),
             );
         }
+        // Looked at again, right before starting: the fetch took seconds, and a rebase the
+        // owner began by hand meanwhile is theirs. Starting over it would fail, and
+        // cleaning up after that failure would end it.
+        match self.rebase_dir() {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Pull::Offline(
+                    "a rebase is already under way in the notes checkout".to_owned(),
+                );
+            }
+            Err(why) => return Pull::Offline(why),
+        }
         // The backstop waits for a rebase and what follows it, after it answers.
         let _under_way = crate::deadline::under_way();
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
@@ -128,10 +150,14 @@ impl Notes {
                 Pull::Offline(why)
             }
             Err(why) => {
-                // Only this call's own rebase is put back: none was under way when the
-                // pull began (`fetch` checked), so one there now is the one that just
-                // failed. With none there, nothing is aborted.
-                if matches!(self.rebase_dir(), Ok(Some(_))) {
+                // Only this call's own rebase is put back: one it started, which then
+                // failed. Never one that was already there, which is why it failed.
+                let from = self
+                    .rebase_dir()
+                    .ok()
+                    .flatten()
+                    .and_then(|dir| std::fs::read_to_string(dir.join("orig-head")).ok());
+                if began_here(&why, &before, from.as_deref()) {
                     let _ = self.git(&["rebase", "--abort"]);
                 }
                 self.record_sync("diverged", &why);
@@ -518,5 +544,27 @@ impl Notes {
         } else {
             warnings.join("\n")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::began_here;
+
+    #[test]
+    fn only_a_rebase_this_call_began_is_its_to_abort() {
+        let before = "1111111111111111111111111111111111111111\n";
+        let conflict = "error: could not apply 2222222... a hand edit";
+        // It started from where this call was, and then failed: put back.
+        assert!(began_here(conflict, before, Some(before)));
+        // None is there, so there's nothing to put back.
+        assert!(!began_here(conflict, before, None));
+        // One is there that began somewhere else: someone else's.
+        assert!(!began_here(conflict, before, Some("3333333\n")));
+        // It failed because one was already there, even one begun from the same commit.
+        let found = "fatal: It seems that there is already a rebase-merge directory, and\nI wonder if you are in the middle of another rebase.";
+        assert!(!began_here(found, before, Some(before)));
+        // Where this call was isn't known, so nothing is claimed.
+        assert!(!began_here(conflict, "", Some("")));
     }
 }

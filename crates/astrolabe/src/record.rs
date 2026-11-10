@@ -868,7 +868,14 @@ fn save_inner(
             ));
         }
     }
-    let facts = RepoFacts::read(cwd);
+    // A repo that couldn't be read whole is unknown, not unchanged: the save keeps the
+    // fingerprint it had, so the next turn end isn't told the repo moved.
+    let looked = RepoFacts::look(cwd);
+    let unknown = matches!(looked, notes::Looked::Unknown);
+    let facts = match looked {
+        notes::Looked::Facts(facts) => Some(facts),
+        notes::Looked::NotARepo | notes::Looked::Unknown => None,
+    };
     let (day, _) = notes::local_day_time();
     let mut notes_lines = Vec::new();
     if req.plan_shifted {
@@ -904,11 +911,11 @@ fn save_inner(
     };
     let now = notes::now_ms();
     let mut next_state = state.clone();
-    next_state.saved(
-        notes::content_hash(&text),
-        facts.as_ref().map(|f| f.fingerprint.clone()),
-        now,
-    );
+    let baseline = match unknown {
+        true => state.baseline.as_deref().map(str::to_owned),
+        false => facts.as_ref().map(|f| f.fingerprint.clone()),
+    };
+    next_state.saved(notes::content_hash(&text), baseline, now);
     let message = commit_message(req.page_binding, &req.number, status, &before);
     let op = Op {
         reply_after_ms: None,

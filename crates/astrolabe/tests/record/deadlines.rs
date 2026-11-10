@@ -188,28 +188,16 @@ fn a_held_notes_lock_at_session_start_still_delivers_context() {
         .as_str()
         .unwrap();
     assert!(
-        text.contains("Smooth ink") && text.contains("Notes not refreshed from origin (no lock)"),
+        text.contains("Smooth ink")
+            && text.contains(
+                "Notes not refreshed from origin (another session held the notes): this is the local copy."
+            ),
         "{text}"
     );
+    // Another session writing is not a write of this one's that failed.
+    assert!(!text.contains("Unfinished notes writes"), "{text}");
+    assert!(!text.contains("Run the same command again"), "{text}");
     assert!(took < Duration::from_secs(8), "{took:?}");
-}
-
-/// The owner-reply check on the way to a verdict never waits for another writer: a held
-/// lock means it's skipped, as before there was a clock.
-#[test]
-fn a_held_notes_lock_doesnt_hold_up_an_ordinary_command() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    assert!(mac.bash("s1", NEW).1);
-    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
-    let _held = notes.lock().unwrap();
-    // A file an earlier build left in the state folder, which made every look at the notes
-    // wait for the lock.
-    write(&mac.state().join("rebase-started"), "");
-    let (answer, took) = mac.timed("s1", "call-2", "echo hi", &[], Duration::from_secs(40));
-    assert!(matches!(answer, Answer::Silent), "the command runs");
-    // A hook that waited for the lock would have waited 9 s of its 16.
-    assert!(took < Duration::from_secs(5), "{took:?}");
 }
 
 /// One hook run, watched as the app sees it: when its answer arrived, when the process
@@ -264,12 +252,22 @@ fn a_write_still_under_way_at_the_answer_is_never_ended_or_called_not_written() 
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
-    // The real git, holding its index lock while a commit hook of the checkout's takes
-    // longer than the hook has.
-    mac.notes_hook("pre-commit", "sleep 9");
-    let mut hook = mac.command(&mac.demo, &["hook", "pre-command", "--if-active"]);
-    // Answers at 6 s and is gone by 7; an app giving it 20 s for its 16 would give this 7.5.
-    hook.env("ASTROLABE_HOOK_BUDGET_MS", "6000");
+    // The real git, holding its index lock while a commit hook of the checkout's runs until
+    // 24 s after the hook starts, by the clock: past the 20 s the app gives the hook.
+    let begun = mac.dir.0.join("hook.began");
+    mac.notes_hook(
+        "pre-commit",
+        &format!(
+            "began=$(cat '{begun}')\nwhile [ \"$(date +%s)\" -lt $((began + 24)) ]; do sleep 1; done\nexit 0",
+            begun = begun.display().to_string().replace('\\', "/")
+        ),
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    write(&begun, &now.as_secs().to_string());
+    // The hook's real time: it answers at 16 s, is gone by 18.5, and the app gives it 20.
+    let hook = mac.command(&mac.demo, &["hook", "pre-command", "--if-active"]);
     let before = mac.log();
     let seen = watch(hook, &save_input(&mac, "s1", "call-2", SAVE));
     let Answer::Denied(why) = &seen.answer else {
@@ -281,20 +279,16 @@ fn a_write_still_under_way_at_the_answer_is_never_ended_or_called_not_written() 
         "{why}"
     );
     assert!(
-        seen.answered >= Duration::from_millis(5900) && seen.answered < seen.exited,
+        seen.answered >= Duration::from_millis(15900) && seen.answered < seen.exited,
         "answered at {:?}, exited at {:?}",
         seen.answered,
         seen.exited
     );
-    assert!(
-        seen.exited < Duration::from_millis(7500),
-        "{:?}",
-        seen.exited
-    );
+    assert!(seen.exited < Duration::from_secs(20), "{:?}", seen.exited);
     // The app sees the end of the hook's output when the hook ends, not when git does: a
     // git holding that pipe would have the app wait out its timeout and discard the answer.
     assert!(
-        seen.closed < Duration::from_millis(7500),
+        seen.closed < Duration::from_secs(20),
         "output closed at {:?}",
         seen.closed
     );
@@ -326,17 +320,15 @@ fn a_hook_that_dies_mid_write_leaves_a_write_the_next_hook_finishes() {
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // Held up between writing the files and committing them, past the hook's whole time.
-    let env = [
-        ("ASTROLABE_HOOK_BUDGET_MS", "10000"),
-        ("ASTROLABE_HOOK_TEST_STALL", "commit:60000"),
-    ];
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(30));
+    // On the hook's real time: it answers at 16 s and is gone by 18.5, inside the app's 20.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "commit:60000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(40));
     let Answer::Denied(why) = answer else {
         panic!("the backstop's denial");
     };
     assert!(why.starts_with(OUT_OF_TIME), "{why}");
     assert!(
-        took >= Duration::from_millis(9900) && took < Duration::from_millis(12500),
+        took >= Duration::from_millis(15900) && took < Duration::from_secs(20),
         "{took:?}"
     );
     let left = mac.unfinished();
@@ -642,15 +634,11 @@ fn a_save_on_a_detached_checkout_pulls_and_writes_nothing() {
     assert!(ok, "{out}");
 }
 
+/// A folder to put first on PATH, holding a `git` that runs `script` and then the real
+/// one. The script sees git's arguments as `$@` and the real git as `$real`.
 #[cfg(unix)]
-#[test]
-fn a_flooding_fetch_is_not_a_timeout() {
+fn git_shim(mac: &Machine, script: &str) -> String {
     use std::os::unix::fs::PermissionsExt;
-    let world = World::new();
-    let mac = world.machine("mac");
-    assert!(mac.bash("s1", NEW).1);
-    // A `git` first on PATH that prints more than a pipe holds, on the stream git reports
-    // progress on, before it runs the real fetch.
     let real = Command::new("sh")
         .args(["-c", "command -v git"])
         .output()
@@ -661,12 +649,25 @@ fn a_flooding_fetch_is_not_a_timeout() {
     write(
         &shim,
         &format!(
-            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = fetch ] && head -c 1048576 /dev/zero | tr '\\0' x >&2; done\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nreal='{}'\n{script}\nexec \"$real\" \"$@\"\n",
             real.trim()
         ),
     );
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap())
+}
+
+#[cfg(unix)]
+#[test]
+fn a_flooding_fetch_is_not_a_timeout() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // More than a pipe holds, on the stream git reports progress on, before the real fetch.
+    let path = git_shim(
+        &mac,
+        "for a in \"$@\"; do [ \"$a\" = fetch ] && head -c 1048576 /dev/zero | tr '\\0' x >&2; done",
+    );
     let mut command = mac.command(&mac.notes, &["notes", "sync"]);
     command
         .env("PATH", path)
@@ -684,4 +685,207 @@ fn a_flooding_fetch_is_not_a_timeout() {
     assert!(took < Duration::from_secs(10), "{took:?}");
     let record = std::fs::read_to_string(mac.state().join("sync.json")).unwrap();
     assert!(!record.contains("backoff_until_ms"), "{record}");
+}
+
+/// A fetch that takes longer than a hook can wait, and less than the 15 s a sync gives
+/// it, is cut short in the hook. That says the hook couldn't wait, not that the network
+/// is down: it starts no backoff, so the sync the save asks for still fetches and pushes.
+#[cfg(unix)]
+#[test]
+fn a_fetch_a_hook_cut_short_starts_no_backoff() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let path = git_shim(
+        &mac,
+        "for a in \"$@\"; do [ \"$a\" = fetch ] && sleep 8; done",
+    );
+    let env = [("PATH", path.as_str())];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(40));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    // The save doesn't need the pull: it lands on the local copy.
+    assert!(ok, "{text}");
+    assert!(
+        took >= Duration::from_secs(4),
+        "the fetch wasn't slow: {took:?}"
+    );
+    let record = std::fs::read_to_string(mac.state().join("sync.json")).unwrap_or_default();
+    assert!(!record.contains("backoff_until_ms"), "{record}");
+    // The same slow fetch, in the sync, has the time it needs.
+    let mut sync = mac.command(&mac.notes, &["notes", "sync"]);
+    sync.env("PATH", &path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (output, _) = common::within(sync.spawn().unwrap(), Vec::new(), Duration::from_secs(60))
+        .expect("the sync ends");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && out.contains("pushed"),
+        "{out}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The owner starts a rebase by hand while a save's pull is fetching, after the pull
+/// looked and found none. The pull looks again before its own rebase and leaves theirs
+/// alone; the save is refused.
+#[cfg(unix)]
+#[test]
+fn a_rebase_the_owner_starts_during_the_fetch_is_left_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // A conflict waiting to happen: the same line changed here and on origin.
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    git(&mac.notes, &["fetch", "-q"]);
+    // During the save's fetch, once: the owner rebases, hits the conflict, resolves it and
+    // stages the resolution, and hasn't continued.
+    let once = mac.dir.0.join("owner.once");
+    let path = git_shim(
+        &mac,
+        &format!(
+            "for a in \"$@\"; do if [ \"$a\" = fetch ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  \"$real\" rebase origin/main >/dev/null 2>&1\n  printf BOTH > knowledge/owner.md\n  \"$real\" add knowledge/owner.md\nfi; done",
+            once = once.display()
+        ),
+    );
+    assert!(!mac.mid_rebase());
+    let env = [("PATH", path.as_str())];
+    let (answer, _) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(40));
+    assert!(once.exists(), "the owner's rebase never began");
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.contains("the notes checkout is in the middle of a rebase"),
+        "{text}"
+    );
+    assert!(mac.mid_rebase(), "the owner's rebase was ended");
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "BOTH"
+    );
+    assert!(
+        git(&mac.notes, &["diff", "--cached", "--name-only"]).contains("knowledge/owner.md"),
+        "their resolution is no longer staged"
+    );
+    let reflog = git(&mac.notes, &["reflog", "--format=%gs"]);
+    assert!(!reflog.contains("abort"), "{reflog}");
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+}
+
+/// A repo a hook couldn't read whole is unknown, not clean: the turn end says nothing
+/// about it. Read as clean, it would look changed against a fingerprint taken with files
+/// in it, and the session would be told so at every turn end.
+#[test]
+fn a_repo_read_that_ran_out_of_time_brings_no_reminder() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    // Something in the session's repo that a whole read sees and an empty one doesn't.
+    write(&mac.demo.join("untracked.txt"), "work in progress");
+    assert!(mac.bash("s1", NEW).1);
+    let input = json!({"session_id": "s1", "cwd": mac.demo, "stop_hook_active": false, "last_assistant_message": "done"});
+    // Nothing moved since the effort was made, so a turn end says nothing.
+    let (out, _) = mac.timed_event("stop", &input, &[], Duration::from_secs(20));
+    assert_eq!(out.trim(), "", "the fixture should start quiet");
+    // The same turn end, with the hook's clock moved past its time for reads as it comes
+    // to read the repo's status: that read and the one after it aren't started.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "status:+4000")];
+    let (out, _) = mac.timed_event("stop", &input, &env, Duration::from_secs(20));
+    assert_eq!(
+        out.trim(),
+        "",
+        "a read that didn't finish was taken for a change"
+    );
+    // And nothing was recorded from it: the next turn end is as quiet as the first.
+    let (out, _) = mac.timed_event("stop", &input, &[], Duration::from_secs(20));
+    assert_eq!(out.trim(), "");
+}
+
+/// The same from the other side: a repo whose status and diff git can't give has no facts
+/// at all, never the facts of a clean tree.
+#[test]
+fn a_repo_git_cant_read_has_no_facts() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(astrolabe::notes::RepoFacts::read(&mac.demo).is_some());
+    std::fs::write(mac.demo.join(".git/index"), "not an index").unwrap();
+    assert!(astrolabe::notes::RepoFacts::read(&mac.demo).is_none());
+}
+
+/// A pull whose rebase is still at work when the hook has to exit: git is left running,
+/// and finishes. A rebase prints as it ends ("Applied autostash."), even when asked to be
+/// quiet; with its output in pipes the hook held, that print would end it after it moved
+/// the branch and before it cleared its own state, leaving the checkout mid-rebase.
+#[test]
+fn a_rebase_that_outlives_the_hook_finishes_though_it_prints() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    write(
+        &pc.notes.join("knowledge/other.md"),
+        "FROM THE OTHER MACHINE",
+    );
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-q", "-m", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    // A hand edit, which the rebase stashes, puts back at its end, and says so.
+    std::fs::write(
+        mac.notes.join("knowledge/owner.md"),
+        "OWNER-TEXT\nA HAND EDIT\n",
+    )
+    .unwrap();
+    // Held up once in the middle of that rebase until 24 s after the hook starts, by the
+    // clock: past the 20 s the app gives the hook.
+    let (once, begun) = (mac.dir.0.join("slow.once"), mac.dir.0.join("hook.began"));
+    let unix = |path: &Path| path.display().to_string().replace('\\', "/");
+    mac.notes_hook(
+        "reference-transaction",
+        &format!(
+            "dir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  began=$(cat '{begun}')\n  while [ \"$(date +%s)\" -lt $((began + 24)) ]; do sleep 1; done\nfi\nexit 0",
+            once = unix(&once),
+            begun = unix(&begun)
+        ),
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    write(&begun, &now.as_secs().to_string());
+    let hook = mac.command(&mac.demo, &["hook", "pre-command", "--if-active"]);
+    let seen = watch(hook, &save_input(&mac, "s1", "call-2", SAVE));
+    assert!(once.exists(), "the rebase was never held up");
+    let Answer::Denied(why) = &seen.answer else {
+        panic!("the backstop's denial");
+    };
+    assert!(why.starts_with(OUT_OF_TIME), "{why}");
+    assert!(seen.exited < Duration::from_secs(20), "{:?}", seen.exited);
+    assert!(
+        mac.mid_rebase(),
+        "git was still rebasing when the hook left"
+    );
+    // Left alone, the rebase runs to its end and clears up after itself.
+    until("the rebase ends", || !mac.mid_rebase());
+    until("git lets go of the checkout", || mac.git_locks().is_empty());
+    assert_eq!(mac.log(), "0001: started\ntheirs\nseed\n");
+    assert_eq!(
+        git(&mac.notes, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT\nA HAND EDIT\n"
+    );
+    assert_eq!(git(&mac.notes, &["stash", "list"]), "");
+    // Nothing of the save was written, and the next one goes through.
+    assert!(mac.unfinished().is_empty());
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
 }

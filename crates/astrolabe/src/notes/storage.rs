@@ -342,7 +342,8 @@ impl Notes {
         let print = op
             .rebaseline
             .as_deref()
-            .map(|cwd| RepoFacts::read(cwd).map(|f| f.fingerprint));
+            // A look that couldn't be finished leaves the stored baseline as it is.
+            .and_then(|cwd| RepoFacts::read(cwd).map(|f| f.fingerprint));
         for (path, state) in &op.states {
             let mut rebaseline = true;
             let mut state = if let Some(after) = op.reply_after_ms {

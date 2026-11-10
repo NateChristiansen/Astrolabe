@@ -85,6 +85,14 @@ pub struct LessonClose {
     pub disposed: String,
 }
 
+/// Why the notes lock wasn't taken.
+enum Locked {
+    /// Another process held it for all the time this hook could wait.
+    Busy(std::time::Duration),
+    /// The lock file couldn't be opened or locked at all.
+    Failed(String),
+}
+
 /// A state of the notes checkout that a pull or a write must leave alone.
 pub(crate) enum Unfit {
     MidRebase,
@@ -104,7 +112,7 @@ mod process;
 pub(crate) use process::keep_stdio_here;
 mod storage;
 mod sync;
-pub use facts::RepoFacts;
+pub use facts::{Looked, RepoFacts};
 pub use journal::{JournalEntry, JournalLine, parse_journal, tidy_journal};
 
 impl Notes {
@@ -131,21 +139,29 @@ impl Notes {
     /// and inside one for the share of its time a hook can wait (see `deadline`), after
     /// which the write is refused with nothing touched.
     pub fn lock(&self) -> Result<Held, String> {
+        self.take_lock().map_err(|locked| match locked {
+            Locked::Busy(waited) => format!(
+                "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
+                crate::deadline::seconds(waited)
+            ),
+            Locked::Failed(why) => why,
+        })
+    }
+
+    fn take_lock(&self) -> Result<Held, Locked> {
         std::fs::create_dir_all(&self.state)
-            .map_err(|e| format!("{}: {e}", self.state.display()))?;
+            .map_err(|e| Locked::Failed(format!("{}: {e}", self.state.display())))?;
         let path = self.state.join(LOCK);
         let file = File::options()
             .create(true)
             .truncate(false)
             .write(true)
             .open(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        match crate::deadline::lock(&file).map_err(|e| format!("notes lock: {e}"))? {
-            crate::deadline::Wait::Held => Ok(Held(file)),
-            crate::deadline::Wait::Busy(waited) => Err(format!(
-                "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
-                crate::deadline::seconds(waited)
-            )),
+            .map_err(|e| Locked::Failed(format!("{}: {e}", path.display())))?;
+        match crate::deadline::lock(&file) {
+            Ok(crate::deadline::Wait::Held) => Ok(Held(file)),
+            Ok(crate::deadline::Wait::Busy(waited)) => Err(Locked::Busy(waited)),
+            Err(e) => Err(Locked::Failed(format!("notes lock: {e}"))),
         }
     }
 
@@ -385,7 +401,7 @@ impl Notes {
 
     /// Lock, finish leftovers, pull: what a pickup does before reading.
     pub fn refresh(&self) -> (Vec<String>, Pull) {
-        match self.lock() {
+        match self.take_lock() {
             Ok(_held) => {
                 let leftovers = self.reconcile();
                 if !leftovers.is_empty() {
@@ -394,7 +410,13 @@ impl Notes {
                 }
                 (leftovers, self.pull())
             }
-            Err(why) => (vec![why], Pull::Offline("no lock".to_owned())),
+            // Another session writing isn't a write of this one's that failed: the notes
+            // just weren't refreshed this time.
+            Err(Locked::Busy(_)) => (
+                Vec::new(),
+                Pull::Offline("another session held the notes".to_owned()),
+            ),
+            Err(Locked::Failed(why)) => (vec![why], Pull::Offline("no lock".to_owned())),
         }
     }
 }

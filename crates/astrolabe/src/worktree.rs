@@ -36,10 +36,16 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Stri
         // A hook with no time left for this call doesn't start it.
         Run::No => return Err(crate::deadline::not_started(&verb)),
     };
-    // After the hook's answer, the backstop waits for a call in the notes checkout.
-    let _under_way = matches!(kind, Git::Notes).then(crate::deadline::under_way);
     command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
-    match self::run(command, limit) {
+    let ran = match kind {
+        Git::Notes => {
+            // After the hook's answer, the backstop waits for a call in the notes checkout.
+            let _under_way = crate::deadline::under_way();
+            run_kept(command)
+        }
+        Git::Network | Git::Read => self::run(command, limit),
+    };
+    match ran {
         Err(error) => Err(format!("git could not start: {error}")),
         Ok(Ran::Stopped) => match run {
             Run::Within(limit) => Err(limit.stopped(&verb)),
@@ -51,6 +57,65 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Stri
         Ok(Ran::Finished(done)) if done.status.success() => Ok(done.stdout),
         Ok(Ran::Finished(done)) => Err(String::from_utf8_lossy(&done.stderr).trim().to_owned()),
     }
+}
+
+/// Runs a child that may outlive this process to its end, with its output in files
+/// instead of pipes. A git that changes the notes checkout is never ended, and a hook
+/// exits at its time whatever is still running. Pipes this process holds close when it
+/// exits, and git's next line of output then ends it, partway through what it was
+/// changing: a rebase prints as it finishes. Files stay, so git finishes; and with no pipe
+/// to wait on, something git started can't hold this call open after git is done.
+fn run_kept(command: &mut Command) -> std::io::Result<Ran> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let Some(dir) = kept_dir() else {
+        return run(command, None);
+    };
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = |stream: &str| dir.join(format!("{}-{n}.{stream}", std::process::id()));
+    let (out, err) = (name("out"), name("err"));
+    let (Ok(stdout), Ok(stderr)) = (std::fs::File::create(&out), std::fs::File::create(&err))
+    else {
+        return run(command, None);
+    };
+    command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
+    crate::notes::keep_stdio_here();
+    let status = command.spawn()?.wait()?;
+    // Read back whole, or not at all: what git printed is an answer to its caller.
+    let (stdout, stderr) = (std::fs::read(&out)?, std::fs::read(&err)?);
+    let _ = std::fs::remove_file(out);
+    let _ = std::fs::remove_file(err);
+    Ok(Ran::Finished(Finished {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+/// Where a kept child's output goes: beside the plugin's state, or the temp folder. Files
+/// a process left there by exiting before its git did are cleared once they're a day old.
+fn kept_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = match crate::activate::state_dir() {
+            Some(state) => state.join("git-output"),
+            None => std::env::temp_dir().join("astrolabe-git-output"),
+        };
+        std::fs::create_dir_all(&dir).ok()?;
+        let day = Duration::from_secs(24 * 60 * 60);
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age > day);
+            if old {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Some(dir)
+    })
+    .clone()
 }
 
 /// The git command a call runs, past any `-c name=value` before it.
@@ -86,11 +151,12 @@ enum Ran {
     CutOff,
 }
 
-/// Runs a child to its end, or to `limit` if it has one. Both of its streams are read
-/// while it runs, so one that prints more than a pipe holds isn't stalled by it and then
-/// taken for a hang. Its output counts only once both streams reached their end. A child
-/// with no limit is waited for as long as it and its output take, as `Command::output`
-/// would. One at its limit is ended as that would end it: the child alone, at once.
+/// Runs a child that changes nothing (a fetch, a read) to its end, or to `limit` if it has
+/// one. Both of its streams are read while it runs, so one that prints more than a pipe
+/// holds isn't stalled by it and then taken for a hang. Its output counts only once both
+/// streams reached their end. A child with no limit is waited for as long as it and its
+/// output take, as `Command::output` would. One at its limit is ended as that would end
+/// it: the child alone, at once.
 fn run(command: &mut Command, limit: Option<Duration>) -> std::io::Result<Ran> {
     command
         .stdin(Stdio::null())
@@ -295,6 +361,32 @@ mod tests {
             assert_eq!(done.stdout, b"said\n");
             assert!(started.elapsed() < Duration::from_secs(4));
         }
+    }
+
+    /// A child whose output is kept in files gives it back whole, however much, and isn't
+    /// held by something it started that keeps the output open.
+    #[test]
+    fn a_kept_childs_output_is_read_back_whole() {
+        let Ran::Finished(done) = run_kept(&mut child("flood")).unwrap() else {
+            panic!("it's never ended");
+        };
+        assert_eq!(done.status.code(), Some(3));
+        let count = |bytes: &[u8]| bytes.iter().filter(|b| **b == b'x').count();
+        assert!(count(&done.stdout) >= FLOOD, "{}", count(&done.stdout));
+        assert!(count(&done.stderr) >= FLOOD, "{}", count(&done.stderr));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_child_isnt_held_by_what_it_started() {
+        let started = Instant::now();
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 5 & echo said"]);
+        let Ran::Finished(done) = run_kept(&mut command).unwrap() else {
+            panic!("it's never ended");
+        };
+        assert_eq!(done.stdout, b"said\n");
+        assert!(started.elapsed() < Duration::from_secs(4));
     }
 
     #[test]
