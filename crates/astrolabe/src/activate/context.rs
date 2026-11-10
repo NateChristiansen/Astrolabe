@@ -376,10 +376,6 @@ impl Activation {
     pub fn fitted_after(&self, notice: Option<&str>) -> String {
         let provider = self.state.provider.as_deref().unwrap_or_default();
         let size = |text: &str| counted(provider, text);
-        let lead = match notice {
-            Some(notice) => after_first_paragraph(&self.lead(), notice),
-            None => self.lead(),
-        };
         let inline = |parts: &[Part]| -> String {
             let piece = |p: &Part| format!("\n\n--- {}\n\n{}", p.title, p.body);
             parts.iter().map(piece).collect()
@@ -388,26 +384,36 @@ impl Activation {
             let files = parts.iter().flat_map(|p| &p.files);
             files.map(|f| format!("\n- {f}")).collect()
         };
-        let text = format!("{lead}{}", inline(&self.parts));
-        if size(&text) <= HOOK_LIMIT {
-            return text;
-        }
-        // The choice of what goes inline keeps its guess of 200 for each file to read, so a
-        // session gets the notes it got before wherever that held the limit.
-        let reserve = size(NOT_INLINE) + 200 * files(&self.parts).len();
-        let (mut used, mut kept) = (size(&lead), 0);
-        for part in &self.parts {
-            used += size(&inline(std::slice::from_ref(part)));
-            if used + reserve > HOOK_LIMIT {
-                break;
+        // Which notes go inline is chosen as it always was: in bytes, before any notice, and
+        // with a guess of 200 for each file to read. So a session gets the notes it got
+        // before wherever that held the limit.
+        let lead = self.lead();
+        let spills = lead.len() + inline(&self.parts).len() > HOOK_LIMIT;
+        let mut kept = self.parts.len();
+        if spills {
+            let reserve = NOT_INLINE.len() + 200 * files(&self.parts).len();
+            let mut used = lead.len();
+            kept = 0;
+            for part in &self.parts {
+                used += inline(std::slice::from_ref(part)).len();
+                if used + reserve > HOOK_LIMIT {
+                    break;
+                }
+                kept += 1;
             }
-            kept += 1;
         }
-        // Then the text as it will be sent: real paths can be longer than the guess, so notes
-        // move out, last first, until it fits.
+        // Then the text as it will be sent, counted as the app counts it: a notice, or real
+        // paths longer than the guess, can put it over, so notes move out, last first.
+        let lead = match notice {
+            Some(notice) => after_first_paragraph(&lead, notice),
+            None => lead,
+        };
         loop {
             let (now, later) = self.parts.split_at(kept);
-            let text = format!("{lead}{}{NOT_INLINE}{}", inline(now), files(later).concat());
+            let text = match spills || !later.is_empty() {
+                true => format!("{lead}{}{NOT_INLINE}{}", inline(now), files(later).concat()),
+                false => format!("{lead}{}", inline(now)),
+            };
             if size(&text) <= HOOK_LIMIT {
                 return text;
             }
@@ -425,16 +431,59 @@ impl Activation {
             Some(first) => format!("\n\n{CUT}, and read now:{first}"),
             None => format!("\n\n{CUT}."),
         };
-        let mut text = cut(&lead, HOOK_LIMIT - size(&close), &size).to_owned() + &close;
+        // What a cut leaves whole at the end, because the role isn't safe without it: a
+        // worker's restrictions, and for a session with no effort the record rule and the
+        // guard's scope.
+        let ending = match lead.find(RECORD_RULE) {
+            Some(at) => at,
+            None => lead.len() - self.closing.len(),
+        };
+        let ending = match size(&lead[ending..]) > HOOK_LIMIT / 2 {
+            true => lead.len(),
+            false => ending,
+        };
+        let (front, ending) = (lead[..ending].trim_end(), &lead[ending..]);
+        let over = (size(front) + size(&close) + size(ending) + 4).saturating_sub(HOOK_LIMIT);
+        // The room comes out of the line that grew, a title or a stamp or a list of efforts,
+        // where one did: the lines after it are the settings, the guard and the rules. With
+        // no such line, the rules at the head's end go, whole lines at a time.
+        let mut lines = front.split('\n').scan(0, |at, line| {
+            let start = *at;
+            *at += line.len() + 1;
+            Some((start, line))
+        });
+        let grown = lines
+            .by_ref()
+            .max_by_key(|(_, line)| size(line))
+            .filter(|(_, line)| size(line) > GROWN && size(line) >= over + 200);
+        let (stays, rest) = match grown {
+            Some((start, line)) => (
+                start + cut(line, size(line) - over, &size).len(),
+                &front[start + line.len()..],
+            ),
+            None => (
+                cut(front, size(front).saturating_sub(over), &size).len(),
+                "",
+            ),
+        };
+        let mut text = format!("{}{close}", &front[..stays]);
+        let rest = [rest, ending].map(|t| t.trim_start_matches('\n'));
+        let rest: String = (rest.iter().filter(|t| !t.is_empty()))
+            .map(|t| format!("\n\n{t}"))
+            .collect();
         for file in files.iter().skip(1).take_while(|_| first.is_some()) {
-            if size(&text) + size(file) > HOOK_LIMIT {
+            if size(&text) + size(file) + size(&rest) > HOOK_LIMIT {
                 break;
             }
             text += file;
         }
-        text
+        (text + &rest).trim_start().to_owned()
     }
 }
+
+/// Longer than any line the rules and settings hold, so a line this long is one that grew
+/// from what it names.
+const GROWN: usize = 1500;
 
 /// Said before the files a session reads because their notes didn't fit inline.
 const NOT_INLINE: &str = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
@@ -467,9 +516,12 @@ fn cut<'a>(text: &'a str, room: usize, size: &dyn Fn(&str) -> usize) -> &'a str 
     if end == text.len() {
         return text;
     }
-    let kept = &text[..end];
-    let between = kept.rfind('\n').or_else(|| kept.rfind(char::is_whitespace));
-    let mut end = between.unwrap_or(end);
+    // Already at a line's end or between words: nothing to give back.
+    let (kept, next) = text.split_at(end);
+    let line = next.starts_with('\n').then_some(end);
+    let word = next.starts_with(char::is_whitespace).then_some(end);
+    let between = (line.or_else(|| kept.rfind('\n'))).or(word);
+    let mut end = (between.or_else(|| kept.rfind(char::is_whitespace))).unwrap_or(end);
     // A link `[words](target)` the cut would fall inside goes whole.
     for (close, _) in text.match_indices("](") {
         let open = text[..close].rfind('[');
@@ -1325,29 +1377,41 @@ mod tests {
         None,
     ];
 
-    /// The start of a session's text, which it can't do without: what it's bound to, the
-    /// owner's settings, the guard's scope and how to prove it.
-    fn mandatory(role: Option<Role>) -> &'static [&'static str] {
+    /// What a session can't be safe without, however its text was cut: what it's bound to,
+    /// the owner's settings, the guard's scope, how to prove it and not to claim it before,
+    /// a worker's restrictions, and for a session with no effort when work gets recorded.
+    fn mandatory(role: Option<Role>) -> Vec<&'static str> {
+        let guard = "The guard is the plugin's pre-command hook.";
+        let unproven = "Until it says proven, claim no protection";
         match role {
-            Some(Role::Effort | Role::Worker) => &[
-                "Astrolabe is on in this session for effort 7, ",
-                "- involvement: check in at plan: ",
-                "- authority: edit: ",
-                "The guard is the plugin's pre-command hook.",
-                "PROOF",
-                "Report the effort and what the status says.",
-            ],
-            Some(Role::Initiative) => &[
-                "Astrolabe is on in this session for initiative 7, ",
+            Some(Role::Effort | Role::Worker) => {
+                let mut lines = vec![
+                    "Astrolabe is on in this session for effort 7,",
+                    "- involvement: check in at plan: ",
+                    "- authority: edit: ",
+                    guard,
+                    "PROOF",
+                    "Report the effort and what the status says.",
+                    unproven,
+                ];
+                if role == Some(Role::Worker) {
+                    lines.push(WORKER_RULE);
+                }
+                lines
+            }
+            Some(Role::Initiative) => vec![
+                "Astrolabe is on in this session for initiative 7,",
                 "Settings set by the owner: involvement: check in at plan: ",
-                "The guard is the plugin's pre-command hook.",
+                guard,
                 "PROOF",
                 "Report the initiative and what the status says.",
+                unproven,
             ],
-            None => &[
+            None => vec![
                 "Astrolabe is on for this machine, so the guard runs in this session.",
-                "astrolabe effort new --title",
-                "The guard is the plugin's pre-command hook.",
+                RECORD_RULE,
+                GUARD_SCOPE,
+                "Loading or creating an effort proves it for this session; until then, claim no protection.",
             ],
         }
     }
@@ -1444,40 +1508,46 @@ mod tests {
                 let a = session(provider, role, &f, notes("/home/sam/notes", 400));
                 let t = a.fitted();
                 within(provider, &t, &format!("{role:?}"));
-                // What grows without bound in a session with no effort is its opening paragraph,
-                // so only that much of its head is sure to stay.
-                let stays = if role.is_some() {
-                    mandatory(role).len()
-                } else {
-                    1
-                };
-                for line in &mandatory(role)[..stays] {
+                for line in mandatory(role) {
                     assert!(t.contains(line), "{role:?} lacks {line:?}");
                 }
                 assert!(
                     t.contains("\n\nAstrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner, and read now:\n- /home/sam/notes/efforts/0007-sample.md: only its `## Current state` section"),
                     "{role:?}: {t}"
                 );
+                // A worker's restrictions still close its text.
+                assert!(
+                    role != Some(Role::Worker) || t.ends_with(WORKER_RULE),
+                    "{t}"
+                );
             }
         }
     }
 
     #[test]
-    fn a_head_of_any_length_and_no_line_ends_still_fits() {
-        // One line, so there's no line's end to cut at, in text that takes three bytes a
-        // character: a cut inside a character would panic.
-        let title = "題".repeat(20_000);
+    fn a_line_of_any_length_with_nowhere_to_break_still_fits() {
+        // No space to cut at, in text that takes three bytes a character: a cut inside a
+        // character would panic. As a title it's in the opening line, ahead of everything.
+        let long = "題".repeat(20_000);
         for provider in APPS {
-            let mut f = facts("check in at plan", "edit");
-            f.title = &title;
-            let a = session(provider, Some(Role::Effort), &f, Vec::new());
-            let t = a.fitted();
-            within(provider, &t, "a long title");
-            assert!(
-                t.ends_with("so rules or notes are missing: tell the owner."),
-                "{}",
-                &t[t.len() - 200..]
-            );
+            for role in ROLES {
+                let mut f = facts("check in at plan", "edit");
+                // A session with no effort has no title: its opening names the efforts.
+                match role {
+                    Some(_) => f.title = &long,
+                    None => f.freshness = &long,
+                }
+                let a = session(provider, role, &f, Vec::new());
+                let t = a.fitted();
+                within(provider, &t, &format!("{role:?}"));
+                for line in mandatory(role) {
+                    assert!(t.contains(line), "{role:?} lacks {line:?}");
+                }
+                assert!(
+                    t.contains("\n\nAstrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner.\n\n"),
+                    "{role:?}: {t}"
+                );
+            }
         }
     }
 
@@ -1509,64 +1579,82 @@ mod tests {
     }
 
     #[test]
-    fn text_is_counted_as_the_calling_app_counts_it() {
-        // 4,000 characters that take three bytes each: under Claude Code's cap in characters,
-        // over Codex's in bytes.
-        let f = facts("check in at plan", "edit");
-        let body = "語".repeat(4000);
-        let parts = || {
+    fn the_limit_is_counted_as_the_calling_app_counts_it() {
+        let owner = || {
             vec![part(
                 "knowledge/owner.md",
-                &body,
+                "OWNER",
                 "/home/sam/notes/knowledge/owner.md",
             )]
         };
-        let claude = session("claude", None, &f, parts());
-        assert_eq!(claude.fitted(), claude.text(), "whole for Claude Code");
-        let codex = session("codex", None, &f, parts());
-        let t = codex.fitted();
+        // A head over the limit in bytes and under it in characters: Claude Code gets what
+        // it always got, and Codex, limited in bytes, gets it cut.
+        let fresh = "語".repeat(2400);
+        let mut f = facts("check in at plan", "edit");
+        f.freshness = &fresh;
+        let claude = session("claude", None, &f, owner());
+        let was = before(&claude);
+        assert!(was.len() > HOOK_LIMIT && was.encode_utf16().count() < HOOK_LIMIT);
+        assert_eq!(claude.fitted(), was);
+        let t = session("codex", None, &f, owner()).fitted();
         within("codex", &t, "three-byte text");
-        assert!(
-            !t.contains('語')
-                && t.ends_with(
-                    "Read these now, before anything else:\n- /home/sam/notes/knowledge/owner.md"
-                ),
-            "{t}"
-        );
-        // A character outside the first plane counts as two for Claude Code, so 4,000 of
-        // them don't fit beside the head.
-        let body = "🧭".repeat(4000);
-        let claude = session(
-            "claude",
-            None,
-            &f,
-            vec![part("knowledge/owner.md", &body, "/o.md")],
-        );
+        assert!(t.contains("Astrolabe cut this text here"), "{t}");
+        // A character outside the first plane counts as two for Claude Code, so a head under
+        // the limit in characters is still over it.
+        let fresh = "🧭".repeat(4000);
+        f.freshness = &fresh;
+        let claude = session("claude", None, &f, owner());
+        assert!(before(&claude).chars().count() < HOOK_LIMIT);
         let t = claude.fitted();
         within("claude", &t, "two-unit characters");
-        assert!(!t.contains('🧭'), "{t}");
+        assert!(t.contains("Astrolabe cut this text here"), "{t}");
     }
 
     #[test]
     fn a_cut_never_falls_inside_a_markdown_link() {
-        let link = "[the plan for this effort](efforts/2026/11-November/0007-sample.md)";
+        // Spaces inside the link's words and its target, so a cut between words could land
+        // in either.
+        let link = "[the plan for this effort](efforts/2026/11 November/0007 sample.md)";
+        let text = format!("before it {link} after it");
+        let (from, to) = (text.find('[').unwrap(), text.find(')').unwrap() + 1);
+        let bytes = |t: &str| t.len();
+        // Every room there is, so the limit falls on each part of the link in turn.
+        for room in 0..=text.len() {
+            let kept = cut(&text, room, &bytes);
+            assert!(kept.len() <= room && text.starts_with(kept));
+            match room {
+                r if r < to => assert!(!kept.contains('['), "{room}: {kept:?}"),
+                _ => assert!(kept.contains(link), "{room}: {kept:?}"),
+            }
+            // Without the link, the same room would have cut inside it.
+            if (from + 5..to).contains(&room) {
+                let plain = text.replace(['[', ']'], "|");
+                assert!(cut(&plain, room, &bytes).len() > from, "{room}");
+            }
+        }
+        // And through a session's text: a link in the line that grew, moved a character at
+        // a time across the place the limit falls.
+        let (mut whole, mut gone) = (0, 0);
         for provider in APPS {
-            // Every length of text before the link, so the limit falls on each of its parts.
-            for lead in 0..link.len() + 40 {
-                let fresh = format!("{} {link} {}", "x".repeat(lead), "y".repeat(9000));
+            for lead in 6600..7100 {
+                let fresh = format!("{} {link} {}", "x".repeat(lead), "y ".repeat(2500));
                 let mut f = facts("check in at plan", "edit");
                 f.freshness = &fresh;
-                let a = session(provider, None, &f, Vec::new());
-                let t = a.fitted();
+                let t = session(provider, None, &f, Vec::new()).fitted();
                 within(provider, &t, "a link at the limit");
                 let cut = t.split("\n\nAstrolabe cut this text here").next().unwrap();
+                match cut.contains(link) {
+                    true => whole += 1,
+                    false => gone += 1,
+                }
                 assert!(
-                    cut.contains(link) || !cut.contains("[the plan"),
+                    cut.contains(link) || !cut.contains("[the"),
                     "{lead}: {}",
                     &cut[cut.len() - 120..]
                 );
             }
         }
+        assert!(whole > 100 && gone > 100, "{whole} whole, {gone} gone");
     }
 
     #[test]
@@ -1576,26 +1664,12 @@ mod tests {
         for provider in APPS {
             for role in ROLES {
                 let file = "/home/sam/notes/knowledge/owner.md";
-                let small = session(
-                    provider,
-                    role,
-                    &f,
-                    vec![part("knowledge/owner.md", "OWNER", file)],
-                );
-                assert_eq!(
-                    small.fitted_after(Some(note)),
-                    after_first_paragraph(&small.fitted(), note),
-                    "{role:?}: under the limit it's the text with the note added"
-                );
+                let owner = |body: &str| vec![part("knowledge/owner.md", body, file)];
                 // Exactly at the limit without the note, so adding it afterwards went over.
-                let room = HOOK_LIMIT - counted(provider, &small.text()) + "OWNER".len();
-                let full = session(
-                    provider,
-                    role,
-                    &f,
-                    vec![part("knowledge/owner.md", &"x".repeat(room), file)],
-                );
-                assert_eq!(counted(provider, &full.fitted()), HOOK_LIMIT);
+                let small = session(provider, role, &f, owner(""));
+                let room = HOOK_LIMIT - small.text().len();
+                let full = session(provider, role, &f, owner(&"x".repeat(room)));
+                assert_eq!(full.fitted().len(), HOOK_LIMIT);
                 let t = full.fitted_after(Some(note));
                 within(provider, &t, &format!("{role:?} with a note"));
                 let opening = full.head.split("\n\n").next().unwrap();
@@ -1674,38 +1748,55 @@ mod tests {
 
     #[test]
     fn text_that_fitted_before_is_the_same_bytes() {
-        let mut cases = 0;
-        for seed in 0..300 {
+        let note = "Notes not refreshed from origin (offline): this is the local copy.";
+        let (mut whole, mut listed) = (0, 0);
+        for seed in 0..400 {
             let mut size = sizes(seed);
-            let fresh = "F".repeat(size(400));
+            let fill = ["word ", "語の ", "né ", "🧭 "][size(3)];
+            let fresh = fill.repeat(size(80));
             let mut f = facts("check in at plan", "edit");
             f.freshness = &fresh;
+            let bodies: Vec<String> = (0..5).map(|_| fill.repeat(size(400))).collect();
             for role in ROLES {
-                let mut parts = notes("/home/sam/notes", 0);
-                for p in &mut parts {
-                    p.body = "word ".repeat(size(500));
-                }
                 for provider in APPS {
-                    let a = session(provider, role, &f, notes("/home/sam/notes", 0));
-                    let a = Activation {
-                        parts: parts
-                            .iter()
-                            .map(|p| part(&p.title, &p.body, &p.files[0]))
-                            .collect(),
-                        ..a
-                    };
-                    let was = before(&a);
-                    // Codex is counted in bytes, as before. Claude Code is counted in
-                    // characters now, so only text that went whole is sure to be the same:
-                    // a few characters either side of the limit, one more note fits.
-                    if was.len() <= HOOK_LIMIT && (provider == "codex" || was == a.text()) {
-                        assert_eq!(a.fitted(), was, "seed {seed}, {role:?}, {provider}");
-                        cases += 1;
+                    let mut a = session(provider, role, &f, notes("/home/sam/notes", 0));
+                    for (part, body) in a.parts.iter_mut().zip(&bodies) {
+                        part.body = body.clone();
+                    }
+                    for notice in [None, Some(note)] {
+                        // As it was: fitted, then any notice put after the opening.
+                        let was = match notice {
+                            Some(note) => after_first_paragraph(&before(&a), note),
+                            None => before(&a),
+                        };
+                        if counted(provider, &was) > HOOK_LIMIT {
+                            continue;
+                        }
+                        let what = format!("seed {seed}, {role:?}, {provider}, {notice:?}");
+                        assert_eq!(a.fitted_after(notice), was, "{what}");
+                        match was.contains("Read these now") {
+                            true => listed += 1,
+                            false => whole += 1,
+                        }
                     }
                 }
             }
         }
-        assert!(cases > 1000, "only {cases} cases fitted before");
+        assert!(
+            whole > 500 && listed > 500,
+            "{whole} whole, {listed} listed"
+        );
+    }
+
+    #[test]
+    fn no_line_of_the_rules_is_long_enough_to_pass_for_one_that_grew() {
+        for role in ROLES {
+            let f = facts("check in at each step", "push");
+            let a = session("claude", role, &f, Vec::new());
+            for line in a.lead().lines() {
+                assert!(line.len() < GROWN, "{role:?}: {} in {line:?}", line.len());
+            }
+        }
     }
 
     /// Facts as long as a real session's: a full session id, a dated effort path, proof
