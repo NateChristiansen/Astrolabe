@@ -303,11 +303,13 @@ fn initiative_members<'r>(
 /// initiative's Efforts list writes them: the pill ends the line and the stop goes, so
 /// the text after it reads as the description below.
 ///
-/// On an initiative's page, `members` are its members. A title line there for an effort
-/// that isn't one says so, since the prose is written once and an effort can leave. The
-/// members the prose never links are listed after the section that holds its last member
-/// link, or at the end when it links none: the page shows every member, and the stored
-/// prose keeps its own order and text.
+/// On an initiative's page, `members` are its members. Every title line there leads with
+/// its effort's number, so an entry matches the work named after it. A title line for an
+/// effort that isn't a member says so, since the prose is written once and an effort can
+/// leave. The members the prose never links continue the list that holds its last member
+/// title line, in number order and in the same shape; when there's no such list, they're
+/// listed after the section that holds its last member link, or at the end when it links
+/// none. The page shows every member, and the stored prose keeps its own order and text.
 fn with_effort_status<'a>(
     events: Vec<pulldown_cmark::Event<'a>>,
     rows: &BoardData,
@@ -320,6 +322,9 @@ fn with_effort_status<'a>(
     let mut out = Vec::with_capacity(events.len());
     let mut linked: Vec<&str> = Vec::new();
     let mut after_last_member = None;
+    // Where the last member title line that is a list item went, and whether its list
+    // wraps each item in a paragraph.
+    let mut last_title_item = None;
     let mut i = 0;
     while i < events.len() {
         let effort = match &events[i] {
@@ -338,7 +343,8 @@ fn with_effort_status<'a>(
                     .map(|k| i + k)
             })
             .flatten();
-        if let Some(effort) = effort.filter(|e| members.is_some() && is_member(e)) {
+        let member = effort.filter(|e| members.is_some() && is_member(e));
+        if let Some(effort) = member {
             linked.extend(effort.file.as_deref());
             after_last_member = Some(out.len());
         }
@@ -348,11 +354,11 @@ fn with_effort_status<'a>(
             continue;
         };
         let pill = pill.unwrap_or_default();
-        let opens = i == 0
-            || matches!(
-                events[i - 1],
-                Event::Start(Tag::Item) | Event::Start(Tag::Paragraph)
-            );
+        let before = |back: usize| i.checked_sub(back).and_then(|k| events.get(k));
+        let in_item = matches!(before(1), Some(Event::Start(Tag::Item)));
+        let in_loose_item = matches!(before(1), Some(Event::Start(Tag::Paragraph)))
+            && matches!(before(2), Some(Event::Start(Tag::Item)));
+        let opens = i == 0 || in_item || matches!(before(1), Some(Event::Start(Tag::Paragraph)));
         let rest = match events.get(end + 1) {
             Some(Event::Text(t)) if opens => t
                 .strip_prefix('.')
@@ -366,8 +372,22 @@ fn with_effort_status<'a>(
             } else {
                 ""
             };
+            if member.is_some() && (in_item || in_loose_item) {
+                last_title_item = Some((out.len(), in_loose_item));
+            }
             out.push(Event::Html("<span class=\"etitle\">".into()));
-            out.extend(events[i..=end].iter().cloned());
+            out.push(events[i].clone());
+            // On an initiative's page the title leads with its number, unless the prose
+            // already wrote it there.
+            let number = effort.and_then(|e| e.number).filter(|n| {
+                members.is_some()
+                    && !matches!(events.get(i + 1), Some(Event::Text(t))
+                        if t.split_whitespace().next().and_then(|w| w.parse::<u64>().ok()) == Some(*n))
+            });
+            if let Some(n) = number {
+                out.push(Event::Text(format!("{n} ").into()));
+            }
+            out.extend(events[i + 1..=end].iter().cloned());
             out.push(Event::Html(format!("{pill}{left}</span>").into()));
             if !rest.is_empty() {
                 out.push(Event::Text(rest.into()));
@@ -381,54 +401,103 @@ fn with_effort_status<'a>(
             i = end + 1;
         }
     }
-    let unlisted: String = members
+    let unlisted: Vec<_> = members
         .unwrap_or_default()
         .iter()
         .filter(|m| !m.file.as_deref().is_some_and(|f| linked.contains(&f)))
-        .map(|m| {
-            let number = m.number.map(|n| format!("{n} ")).unwrap_or_default();
-            format!(
-                "<li><a href=\"/{}\">{}{}</a>{}</li>\n",
-                esc(&percent(m.file.as_deref().unwrap_or_default())),
-                esc(&number),
-                esc(m.title.as_deref().unwrap_or_default()),
-                status_pill(m).unwrap_or_default()
-            )
-        })
         .collect();
-    if !unlisted.is_empty() {
-        let label = if linked.is_empty() {
-            "Members"
-        } else {
-            "Other members"
-        };
-        let list = Event::Html(
-            format!(
-                "<p class=\"members-label\">{label}</p>\n<ul class=\"members\">\n{unlisted}</ul>\n"
-            )
-            .into(),
-        );
-        // The end of the section that holds the last member link: the next first or
-        // second level heading after it.
-        let at = after_last_member
-            .and_then(|from| {
-                out[from..]
-                    .iter()
-                    .position(|e| {
-                        matches!(
-                            e,
-                            Event::Start(Tag::Heading {
-                                level: HeadingLevel::H1 | HeadingLevel::H2,
-                                ..
-                            })
-                        )
-                    })
-                    .map(|k| from + k)
-            })
-            .unwrap_or(out.len());
-        out.insert(at, list);
+    if unlisted.is_empty() {
+        return out;
     }
+    let items = |loose: bool| -> String {
+        unlisted
+            .iter()
+            .map(|m| {
+                let line = member_line(m);
+                if loose {
+                    format!("<li>\n<p>{line}</p>\n</li>\n")
+                } else {
+                    format!("<li>{line}</li>\n")
+                }
+            })
+            .collect()
+    };
+    // The end of the list that holds the last member title line: its own end, past any
+    // list nested inside it.
+    let list_end = last_title_item.and_then(|(from, loose)| {
+        let mut depth = 0usize;
+        out[from..]
+            .iter()
+            .position(|e| match e {
+                Event::Start(Tag::List(_)) => {
+                    depth += 1;
+                    false
+                }
+                Event::End(TagEnd::List(_)) if depth == 0 => true,
+                Event::End(TagEnd::List(_)) => {
+                    depth -= 1;
+                    false
+                }
+                _ => false,
+            })
+            .map(|k| (from + k, loose))
+    });
+    if let Some((at, loose)) = list_end {
+        out.insert(at, Event::Html(items(loose).into()));
+        return out;
+    }
+    let label = if linked.is_empty() {
+        "Members"
+    } else {
+        "Other members"
+    };
+    let list = Event::Html(
+        format!(
+            "<p class=\"members-label\">{label}</p>\n<ul class=\"members\">\n{}</ul>\n",
+            items(false)
+        )
+        .into(),
+    );
+    // The end of the section that holds the last member link: the next first or
+    // second level heading after it.
+    let at = after_last_member
+        .and_then(|from| {
+            out[from..]
+                .iter()
+                .position(|e| {
+                    matches!(
+                        e,
+                        Event::Start(Tag::Heading {
+                            level: HeadingLevel::H1 | HeadingLevel::H2,
+                            ..
+                        })
+                    )
+                })
+                .map(|k| from + k)
+        })
+        .unwrap_or(out.len());
+    out.insert(at, list);
     out
+}
+
+/// A member the prose doesn't link, drawn the way a title line in an initiative's list
+/// is: its number and title as the link, its status, then the first sentence of its
+/// Current state, or its goal where an older note keeps one, as the description.
+fn member_line(member: &crate::board::EffortRow) -> String {
+    let number = member.number.map(|n| format!("{n} ")).unwrap_or_default();
+    let description = member
+        .state
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| esc(&super::render::first_sentence(s)))
+        .unwrap_or_default();
+    format!(
+        "<span class=\"etitle\"><a href=\"/{}\">{}{}</a>{}</span>{description}",
+        esc(&percent(member.file.as_deref().unwrap_or_default())),
+        esc(&number),
+        esc(member.title.as_deref().unwrap_or_default()),
+        status_pill(member).unwrap_or_default()
+    )
 }
 
 /// The effort a link to an effort's page opens, or None for any other link.

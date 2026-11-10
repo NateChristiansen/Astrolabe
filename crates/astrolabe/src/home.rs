@@ -316,14 +316,14 @@ mod tests {
         let page = super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
         let start = page.find("<div class=\"prose\">").unwrap();
         let prose = &page[start..start + page[start..].find("<aside").unwrap()];
-        // A link that opens its item and ends in a full stop is a title line: the pill
-        // ends it and the stop goes.
+        // A link that opens its item and ends in a full stop is a title line: it leads
+        // with the effort's number, the pill ends it and the stop goes.
         assert!(
-            prose.contains("<li><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">First</a><span class=\"stat s-active\">active</span></span>Does the first thing.</li>"),
+            prose.contains("<li><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">4 First</a><span class=\"stat s-active\">active</span></span>Does the first thing.</li>"),
             "{prose}"
         );
         assert!(
-            prose.contains("Second</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></span>Does the second.</li>"),
+            prose.contains("5 Second</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></span>Does the second.</li>"),
             "{prose}"
         );
         // Mid-sentence, the pill is inline and the sentence stays as written.
@@ -333,14 +333,14 @@ mod tests {
         );
         // A title with nothing after its stop, and a link to a note that isn't an effort.
         assert!(
-            prose.contains("Ninth</a><span class=\"stat s-done\">done</span></span></li>"),
+            prose.contains(">9 Ninth</a><span class=\"stat s-done\">done</span></span></li>"),
             "{prose}"
         );
         assert!(prose.contains("Owner</a>. Not an effort.</li>"), "{prose}");
         // A paragraph opened by an effort link and a stop is a title line too; the same
-        // link inside a sentence is not.
+        // link inside a sentence is not, and keeps its text without a number.
         assert!(
-            prose.contains("<p><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">Fourth</a><span class=\"stat s-active\">active</span></span>Opens this paragraph.</p>"),
+            prose.contains("<p><span class=\"etitle\"><a href=\"/efforts/0004-member.md\">4 Fourth</a><span class=\"stat s-active\">active</span></span>Opens this paragraph.</p>"),
             "{prose}"
         );
         assert!(
@@ -387,29 +387,33 @@ mod tests {
                 .find(needle)
                 .unwrap_or_else(|| panic!("{needle}: {prose}"))
         };
+        // Every title line leads with its effort's number, inside the link.
         assert!(
-            at("Seventh</a><span class=\"stat s-ready\">to start</span></span>Starts it.</li>")
-                < at("Fourth</a><span class=\"stat s-active\">active</span></span>Follows.</li>")
+            at(">7 Seventh</a><span class=\"stat s-ready\">to start</span></span>Starts it.</li>")
+                < at(
+                    ">4 Fourth</a><span class=\"stat s-active\">active</span></span>Follows.</li>"
+                )
         );
         // An abandoned member the prose links says so, and so does one that has left.
         at(
-            "Dropped</a><span class=\"stat s-abandoned\">abandoned</span></span>Was turned down.</li>",
+            ">8 Dropped</a><span class=\"stat s-abandoned\">abandoned</span></span>Was turned down.</li>",
         );
         at(
-            "Gone</a><span class=\"stat s-done\">done</span><span class=\"stat left\">not a member</span></span>Moved out.</li>",
+            ">10 Gone</a><span class=\"stat s-done\">done</span><span class=\"stat left\">not a member</span></span>Moved out.</li>",
         );
         // One with no status has no status pill and still says it isn't a member.
         at(
-            "<span class=\"etitle\"><a href=\"/efforts/0030-plain.md\">Old</a><span class=\"stat left\">not a member</span></span>Moved elsewhere.</li>",
+            "<span class=\"etitle\"><a href=\"/efforts/0030-plain.md\">30 Old</a><span class=\"stat left\">not a member</span></span>Moved elsewhere.</li>",
         );
-        // The members the prose doesn't mention follow its list, in number order, each
-        // with its status, before the next section.
-        let listed = "<p class=\"members-label\">Other members</p>\n<ul class=\"members\">\n\
-            <li><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></li>\n\
-            <li><a href=\"/efforts/0006-member.md\">6 Member</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span></li>\n\
-            <li><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span></li>\n</ul>\n";
-        assert!(at("Moved elsewhere.</li>") < at(listed));
+        // The members the prose doesn't mention continue its numbered list, in number
+        // order and in the same shape: number and title, status, then the first sentence
+        // of Current state. No separate list follows.
+        let listed = "Moved elsewhere.</li>\n\
+            <li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></span>Working.</li>\n\
+            <li><span class=\"etitle\"><a href=\"/efforts/0006-member.md\">6 Member</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span></span>Working.</li>\n\
+            <li><span class=\"etitle\"><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span></span>Working.</li>\n</ol>";
         assert!(at(listed) < at("What completion means</h2>"));
+        assert!(!prose.contains("members-label"), "{prose}");
         // No member is listed twice, and no other initiative's member is listed at all.
         for n in [4, 5, 6, 7, 8, 9, 10] {
             assert_eq!(
@@ -451,7 +455,7 @@ mod tests {
             .collect();
         assert!(order.is_sorted(), "{list}");
         assert!(
-            list.contains("8 Member</a><span class=\"stat s-abandoned\">abandoned</span></li>"),
+            list.contains("<li><span class=\"etitle\"><a href=\"/efforts/0008-member.md\">8 Member</a><span class=\"stat s-abandoned\">abandoned</span></span>Working.</li>"),
             "{list}"
         );
         // A page with no members, and a note that isn't an initiative, get no list; a
@@ -474,6 +478,64 @@ mod tests {
                 "{rel}: {page}"
             );
         }
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
+    fn later_members_continue_the_list_that_holds_the_last_member_title_line() {
+        let notes = crate::board::initiative_fixture();
+        // A list split across two sections: the members it doesn't name go at the end of
+        // the second, which holds the last member title line, and that list's numbering
+        // carries on. A title that already leads with its number keeps it once.
+        let (_, prose) = shared_work_page(
+            &notes,
+            "## First part\n\n1. [Fourth](../efforts/0004-member.md). Starts.\n\n## Second part\n\n2. [0007 Seventh](../efforts/0007-member.md). Then this.\n   - [Ninth](../efforts/0009-member.md) nested inline.\n\n## After\n\nDone.\n",
+        );
+        let second = prose
+            .split("Second part</h2>")
+            .nth(1)
+            .and_then(|s| s.split("<h2").next())
+            .unwrap_or_else(|| panic!("{prose}"));
+        assert!(second.contains("<ol start=\"2\">"), "{second}");
+        assert!(second.contains(">0007 Seventh</a>"), "{second}");
+        let tail = second
+            .rsplit_once("</ul>\n</li>\n")
+            .map(|(_, t)| t)
+            .unwrap_or_else(|| panic!("{second}"));
+        let order: Vec<usize> = [5, 6, 8]
+            .iter()
+            .map(|n| {
+                tail.find(&format!(
+                    "<li><span class=\"etitle\"><a href=\"/efforts/{n:04}-member.md\">{n} Member</a>"
+                ))
+                .unwrap_or_else(|| panic!("{n}: {second}"))
+            })
+            .collect();
+        assert!(order.is_sorted(), "{tail}");
+        assert!(tail.trim_end().ends_with("</ol>"), "{tail}");
+        assert!(!prose.contains("members-label"), "{prose}");
+        // A list whose items are paragraphs gets paragraph items.
+        let (_, prose) = shared_work_page(
+            &notes,
+            "1. [Fourth](../efforts/0004-member.md). Starts.\n\n2. [Seventh](../efforts/0007-member.md). Then this.\n",
+        );
+        assert!(
+            prose.contains(
+                "<li>\n<p><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a>"
+            ),
+            "{prose}"
+        );
+        // Prose that links members only inline has no list to continue, so the rest are
+        // listed after its section, labelled, in the same shape.
+        let (_, prose) = shared_work_page(
+            &notes,
+            "## Plan\n\nStart with [Fourth](../efforts/0004-member.md), then the rest.\n\n## After\n\nDone.\n",
+        );
+        let label = prose
+            .find("<p class=\"members-label\">Other members</p>\n<ul class=\"members\">\n<li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a>")
+            .unwrap_or_else(|| panic!("{prose}"));
+        assert!(label < prose.find("After</h2>").unwrap(), "{prose}");
+        assert!(prose.contains(">Fourth</a><span"), "{prose}");
         std::fs::remove_dir_all(notes.root).unwrap();
     }
 
