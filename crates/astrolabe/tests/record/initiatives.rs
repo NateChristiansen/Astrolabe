@@ -437,6 +437,48 @@ fn invalid_or_conflicting_joins_write_neither_page_nor_members() {
 }
 
 #[test]
+fn a_join_that_cannot_write_membership_refuses_the_whole_filing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("lead", NEW).1);
+    write(
+        &mac.notes.join("efforts/0002-member.md"),
+        "---\nstatus: ready\nrepo: demo\n---\n# 0002 Member\n\n## Current state\nKeep this.\n",
+    );
+    // A hand edit broke the first effort's closing line: all of it reads as header now,
+    // so there's no line to write the membership before.
+    let path = mac.notes.join(shelf("0001-smooth-ink.md"));
+    let broken = std::fs::read_to_string(&path)
+        .unwrap()
+        .replacen("\n---\n", "\n--- x\n", 1);
+    std::fs::write(&path, &broken).unwrap();
+    git(&mac.notes, &["add", "efforts"]);
+    git(&mac.notes, &["commit", "-qm", "members"]);
+    let member = mac.effort_text(2);
+    let before = mac.log().lines().count();
+    for paragraphs in ["effort 1", "effort 2\n\neffort 1"] {
+        let command = format!(
+            "astrolabe initiative new --title \"Join project\" <<'ASTROLABE'\nPurpose.\n\n## Efforts\n{paragraphs}\nASTROLABE\n"
+        );
+        let (out, ok) = mac.bash("lead", &command);
+        assert!(
+            !ok && out.contains("Initiative NOT filed: effort 1's header never closes"),
+            "{paragraphs:?}: {out}"
+        );
+        assert_eq!(mac.effort_text(1), broken);
+        assert_eq!(mac.effort_text(2), member);
+        assert!(!mac.notes.join("initiatives/join-project.md").exists());
+        assert_eq!(mac.log().lines().count(), before);
+    }
+    // The other member still joins by itself.
+    let command = "astrolabe initiative new --title \"Join project\" <<'ASTROLABE'\nPurpose.\n\n## Efforts\neffort 2\nASTROLABE\n";
+    let (out, ok) = mac.bash("lead", command);
+    assert!(ok && out.contains("1 joined"), "{out}");
+    assert!(mac.effort_text(2).contains("initiative: join-project\n"));
+    assert_eq!(mac.effort_text(1), broken);
+}
+
+#[test]
 fn page_journal_replaces_by_slug_without_colliding_with_repository_findings() {
     let world = World::new();
     let mac = world.machine("mac");

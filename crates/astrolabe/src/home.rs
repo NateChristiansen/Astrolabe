@@ -212,6 +212,61 @@ mod tests {
     }
 
     #[test]
+    fn the_board_a_note_page_search_and_a_save_agree_on_where_the_body_starts() {
+        let notes = crate::board::initiative_fixture();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let page = |text: &str| {
+            super::markdown::note_page(
+                text,
+                "efforts/0042-member.md",
+                &rows,
+                &notes.root,
+                NOW,
+                Look::default(),
+            )
+        };
+        let found = |text: &str, word: &str| {
+            super::search::matches("efforts/0042-member.md", text, &[word.to_owned()]).is_some()
+        };
+        let body = "# 0042 Member\n\n## Current state\nBodyword here.\n";
+        let props = "status: active\nrepo: headerword\n";
+        for text in [
+            format!("---\n{props}---\n{body}"),
+            format!("---  \n{props}---\n{body}"),
+            format!("---\n{props}---  \n{body}"),
+            format!("\u{feff}---\n{props}---\n{body}"),
+            format!("\u{feff}--- \n{props}---\t\n{body}").replace('\n', "\r\n"),
+            format!("---\n{props}---\n{body}").replace('\n', "\r\n"),
+            format!("---\n{props}---\n{}", body.trim_end()),
+        ] {
+            // The board's row and a save read the note through one parse.
+            let mut file = crate::effort::EffortFile::parse(&text).unwrap();
+            assert_eq!(file.title, "0042 Member", "{text:?}");
+            assert_eq!(file.current, "Bodyword here.", "{text:?}");
+            assert_eq!(file.prop("repo"), Some("headerword"), "{text:?}");
+            file.set("status", "review");
+            let saved = file.render();
+            assert_eq!(saved.matches("# 0042 Member").count(), 1, "{saved:?}");
+            assert_eq!(saved.matches("Bodyword here.").count(), 1, "{saved:?}");
+            assert_eq!(saved.matches("headerword").count(), 1, "{saved:?}");
+            let html = page(&text);
+            assert!(html.contains("Bodyword here."), "{text:?}: {html}");
+            assert!(html.contains("<i>repo</i>headerword</span>"), "{text:?}");
+            assert_eq!(html.matches("headerword").count(), 1, "{text:?}: {html}");
+            assert!(found(&text, "bodyword"), "{text:?}");
+            assert!(!found(&text, "headerword"), "{text:?}");
+        }
+        // A header that never closes is all header to each of them: no title, no body.
+        let unclosed = format!("---\n{props}{body}");
+        let file = crate::effort::EffortFile::parse(&unclosed).unwrap();
+        assert_eq!((file.title.as_str(), file.current.as_str()), ("", ""));
+        assert_eq!(file.prop("repo"), Some("headerword"));
+        assert!(!page(&unclosed).contains("Bodyword"));
+        assert!(!found(&unclosed, "bodyword") && !found(&unclosed, "headerword"));
+        std::fs::remove_dir_all(notes.root).unwrap();
+    }
+
+    #[test]
     fn an_initiative_page_shows_the_boards_progress_under_its_title() {
         let notes = crate::board::initiative_fixture();
         let rows = crate::board::rows_in(&notes, None, true);
@@ -585,6 +640,32 @@ mod tests {
             .find("<section")
             .map_or(page.len(), |i| start + 1 + i);
         &page[start..end]
+    }
+
+    #[test]
+    fn an_uncommitted_lesson_or_draft_is_marked_and_a_committed_one_is_not() {
+        let rows = json!({
+            "today": "2026-11-05",
+            "lessons": [
+                {"file": "lessons/2026-11-01-gates.md", "title": "Gates"},
+                {"file": "lessons/2026-11-09-new.md", "title": "Just written", "uncommitted": true},
+            ],
+            "drafts": [{"file": "drafts/2026-11-09-reply.md", "title": "Reply", "uncommitted": true}],
+        });
+        let page = render(
+            &serde_json::from_value(rows).unwrap(),
+            Path::new("/n"),
+            NOW,
+            Look::default(),
+        );
+        let mark = " <span class=\"pill uncommitted\" title=\"Only on this machine until the next save here commits it\">not committed</span>";
+        assert!(
+            page.contains(&format!(">Just written</a>{mark}</li>"))
+                && page.contains(&format!(">Reply</a>{mark}</li>")),
+            "{page}"
+        );
+        assert!(page.contains(">Gates</a></li>"), "{page}");
+        assert_eq!(page.matches("not committed</span>").count(), 2);
     }
 
     #[test]

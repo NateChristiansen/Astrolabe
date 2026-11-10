@@ -25,6 +25,45 @@ pub(crate) fn split_frontmatter(text: &str) -> (&str, &str) {
     (&text[start..], "")
 }
 
+/// Where `split_frontmatter` found a note's header, as byte offsets into the whole text, its
+/// byte-order mark included, for a writer that changes the header and keeps every other byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HeaderBounds {
+    /// The header's first byte, after the opening line.
+    pub start: usize,
+    /// The end of the header's last line, where the closing line starts.
+    pub end: usize,
+    /// The body's first byte, after the closing line.
+    pub body: usize,
+}
+
+impl HeaderBounds {
+    /// Whether a closing line ends the header. One that never closes runs to the end of the
+    /// text, so there's no line to write a new property before.
+    pub(crate) fn closed(&self) -> bool {
+        self.end < self.body
+    }
+}
+
+/// The offsets of the header `split_frontmatter` returns, or None for a note with no opening
+/// line. Every writer that splices by byte asks here, so none has its own idea of where the
+/// header ends.
+pub(crate) fn header_bounds(text: &str) -> Option<HeaderBounds> {
+    let clean = text.strip_prefix(BOM).unwrap_or(text);
+    let (header, body) = split_frontmatter(text);
+    // With no opening line the body is the whole text; with one, it's at least a line shorter.
+    if body.len() == clean.len() {
+        return None;
+    }
+    let opener = clean.split_inclusive('\n').next().map_or(0, str::len);
+    let start = text.len() - clean.len() + opener;
+    Some(HeaderBounds {
+        start,
+        end: start + header.len(),
+        body: text.len() - body.len(),
+    })
+}
+
 /// The plain properties at the top of a note: `key: value`, quoted or not, and a list as
 /// `[a, b]` or `- a` lines, joined with commas. Keys are read in lowercase. Nested YAML isn't
 /// read. The board and each note's page both read properties here, so they never disagree.
@@ -120,19 +159,9 @@ pub struct OriginalFile {
 
 /// Byte spans of the body, respecting fenced headings and retaining line endings.
 fn body_spans(text: &str) -> (usize, Vec<(usize, usize, String)>) {
-    let clean = text.strip_prefix(BOM).unwrap_or(text);
-    let bom = text.len() - clean.len();
-    let mut body = bom;
-    if clean.lines().next() == Some("---") {
-        let mut offset = bom;
-        for (i, line) in clean.split_inclusive('\n').enumerate() {
-            offset += line.len();
-            if i > 0 && line.trim_end() == "---" {
-                body = offset;
-                break;
-            }
-        }
-    }
+    // Without a header the body starts after any byte-order mark.
+    let bom = text.len() - text.strip_prefix(BOM).unwrap_or(text).len();
+    let body = header_bounds(text).map_or(bom, |at| at.body);
     let lines: Vec<_> = text[body..].split_inclusive('\n').collect();
     let fenced = fence_mask(lines.iter().map(|l| l.trim_end_matches(['\r', '\n'])));
     let mut starts = Vec::new();
@@ -201,12 +230,9 @@ impl EffortFile {
     pub fn parse(text: &str) -> Result<Self, String> {
         let original_text = text.to_owned();
         let text = text.replace("\r\n", "\n");
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let text = text.strip_prefix(BOM).unwrap_or(&text);
         let props = frontmatter(text);
-        let body = match text.strip_prefix("---\n") {
-            Some(rest) => rest.split_once("\n---\n").map_or("", |(_, b)| b),
-            None => text,
-        };
+        let (_, body) = split_frontmatter(text);
         let mut file = Self {
             props,
             ..Default::default()
@@ -774,6 +800,162 @@ mod file_tests {
         ] {
             assert_eq!(split_frontmatter(text), (header, body), "{text:?}");
         }
+    }
+
+    /// Notes whose header a hand or another editor left in an odd shape, each with the
+    /// same body. `None` is a note with no header at all.
+    fn odd_headers() -> Vec<(&'static str, String)> {
+        let body = "# 0012 Smooth ink\n\nIntro  line.  \n\n## Current state\nOld.\n\n## History\n  keep  these spaces.  \n\n## Decisions\n- 2026-11-03: a over b: why.\n\n## Plan\n1. first\n\n## Order\nlast section\n";
+        let props = "status: active\nrepo: demo\n";
+        let plain = format!("---\n{props}---\n{body}");
+        vec![
+            ("plain", plain.clone()),
+            (
+                "space after the opener",
+                format!("---  \n{props}---\n{body}"),
+            ),
+            (
+                "space after the closer",
+                format!("---\n{props}---  \n{body}"),
+            ),
+            ("tab after the closer", format!("---\n{props}---\t\n{body}")),
+            ("space after both", format!("--- \n{props}--- \n{body}")),
+            ("empty header", format!("---\n---\n{body}")),
+            ("byte-order mark", format!("\u{feff}{plain}")),
+            ("windows line endings", plain.replace('\n', "\r\n")),
+            (
+                "mark, windows endings and spaces",
+                format!("\u{feff}---\n{props}---  \n{body}").replace('\n', "\r\n"),
+            ),
+            ("no final newline", plain.trim_end().to_owned()),
+            (
+                "blank line after the closer",
+                format!("---\n{props}---\n\n{body}"),
+            ),
+            ("no header", body.to_owned()),
+        ]
+    }
+
+    #[test]
+    fn header_bounds_are_the_offsets_of_what_split_frontmatter_returns() {
+        let mut texts: Vec<String> = odd_headers().into_iter().map(|(_, t)| t).collect();
+        texts.extend(
+            [
+                "",
+                "---",
+                "---\n",
+                "---\n---",
+                "---\na: 1\n# T\n",
+                "\u{feff}---\r\na: 1\r\n# T",
+                "\u{feff}# T\n",
+                "\n---\na: 1\n---\n",
+            ]
+            .map(str::to_owned),
+        );
+        for text in texts {
+            let (header, body) = split_frontmatter(&text);
+            match header_bounds(&text) {
+                Some(at) => {
+                    assert_eq!(&text[at.start..at.end], header, "{text:?}");
+                    assert_eq!(&text[at.body..], body, "{text:?}");
+                    let closer = &text[at.end..at.body];
+                    assert_eq!(at.closed(), closer.trim_end() == "---", "{text:?}");
+                    assert!(closer.is_empty() || at.closed(), "{text:?}");
+                }
+                None => {
+                    assert_eq!(header, "", "{text:?}");
+                    assert_eq!(body, text.strip_prefix(BOM).unwrap_or(&text), "{text:?}");
+                }
+            }
+        }
+        assert!(header_bounds("---\na: 1\n# T\n").is_some_and(|at| !at.closed()));
+        assert!(header_bounds("# T\n---\n").is_none());
+    }
+
+    #[test]
+    fn odd_headers_round_trip_and_a_save_keeps_everything_it_does_not_manage() {
+        for (name, text) in odd_headers() {
+            let mut file = EffortFile::parse(&text).unwrap();
+            assert_eq!(file.title, "0012 Smooth ink", "{name}");
+            assert_eq!(file.current, "Old.", "{name}");
+            assert_eq!(file.decisions, "- 2026-11-03: a over b: why.", "{name}");
+            assert_eq!(file.plan.as_deref(), Some("1. first"), "{name}");
+            // Unchanged, it's written back as it was read.
+            assert_eq!(file.render(), text, "{name}");
+            let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let raw = |from: &str, to: &str| {
+                let start = text.find(from).unwrap();
+                let end = if to.is_empty() {
+                    text.len()
+                } else {
+                    text.find(to).unwrap()
+                };
+                text[start..end].to_owned()
+            };
+            let intro = format!("{eol}Intro  line.  {eol}{eol}");
+            let history = raw("## History", "## Decisions");
+            let order = raw("## Order", "");
+            for state in ["First save.", "Second save."] {
+                file.current = state.into();
+                file.set("status", "review");
+                let out = file.render();
+                let saved = EffortFile::parse(&out).unwrap();
+                assert_eq!(saved.title, "0012 Smooth ink", "{name}: {out:?}");
+                assert_eq!(saved.current, state, "{name}");
+                assert_eq!(saved.decisions, file.decisions, "{name}");
+                assert_eq!(saved.plan, file.plan, "{name}");
+                assert_eq!(saved.prop("status"), Some("review"), "{name}");
+                assert_eq!(saved.prop("repo"), file.prop("repo"), "{name}");
+                // One header, one of each section, and the unmanaged text byte for byte.
+                assert_eq!(out.matches("status:").count(), 1, "{name}: {out:?}");
+                for once in [
+                    "# 0012 Smooth ink",
+                    "## Current state",
+                    "## History",
+                    "## Decisions",
+                    "## Plan",
+                    "## Order",
+                    intro.as_str(),
+                    history.as_str(),
+                    order.as_str(),
+                ] {
+                    assert_eq!(out.matches(once).count(), 1, "{name}: {once:?} in {out:?}");
+                }
+                assert!(out.ends_with(&order), "{name}: {out:?}");
+                file = saved;
+            }
+        }
+    }
+
+    #[test]
+    fn a_well_formed_note_saves_to_the_same_bytes_as_before() {
+        // What the strict reader wrote for these, kept as written so a change shows.
+        let text = "---\nstatus: active\nrepo: demo\n---\n# 0012 Smooth ink\n\nIntro.\n\n## Current state\nOld.\n\n## History\nold stuff\n\n## Decisions\n- a\n";
+        let mut file = EffortFile::parse(text).unwrap();
+        file.current = "New.".into();
+        assert_eq!(
+            file.render(),
+            "---\nstatus: active\nrepo: demo\n---\n# 0012 Smooth ink\n\nIntro.\n\n## Current state\nNew.\n\n## Decisions\n- a\n## History\nold stuff\n\n"
+        );
+        let crlf = text.replace('\n', "\r\n");
+        let mut file = EffortFile::parse(&format!("\u{feff}{crlf}")).unwrap();
+        file.current = "New.".into();
+        assert_eq!(
+            file.render(),
+            "---\nstatus: active\nrepo: demo\n---\n# 0012 Smooth ink\n\r\nIntro.\r\n\r\n## Current state\nNew.\n\n## Decisions\n- a\n## History\r\nold stuff\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn an_unclosed_header_is_all_header_and_is_written_back_untouched() {
+        let text = "---\nstatus: active\n# 0012 Smooth ink\n\n## Current state\nOld.\n";
+        let file = EffortFile::parse(text).unwrap();
+        assert_eq!(file.prop("status"), Some("active"));
+        assert_eq!((file.title.as_str(), file.current.as_str()), ("", ""));
+        assert_eq!(file.render(), text);
+        assert_eq!(file.purpose(), None);
+        let (body, spans) = body_spans(text);
+        assert_eq!((body, spans.len()), (text.len(), 0));
     }
 
     #[test]

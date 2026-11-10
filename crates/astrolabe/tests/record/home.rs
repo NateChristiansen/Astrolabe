@@ -750,6 +750,80 @@ fn a_preview_serves_beside_the_machine_and_saves_nothing() {
     assert!(!ok && out.contains("leave out --serve"), "{out}");
 }
 
+#[test]
+fn the_board_marks_a_lesson_or_draft_that_is_not_committed_yet() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    for rel in ["lessons/2026-11-01-kept.md", "drafts/2026-11-01-sent.md"] {
+        write(&mac.notes.join(rel), "# Already committed\n");
+    }
+    git(&mac.notes, &["add", "lessons", "drafts"]);
+    git(&mac.notes, &["commit", "-qm", "Add pages"]);
+    // Written as plain files since: git has no commit of them, so no sync can carry them.
+    write(
+        &mac.notes.join("lessons/2026-11-09-new.md"),
+        "# Just written\n",
+    );
+    write(
+        &mac.notes.join("drafts/2026-11-09-reply.md"),
+        "# Half a reply\n",
+    );
+    // An edit to a committed one waits the same way.
+    write(
+        &mac.notes.join("drafts/2026-11-01-sent.md"),
+        "# Already committed\n\nand edited\n",
+    );
+    let pages = |v: &Value, key: &str| -> Vec<(String, bool)> {
+        v[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["file"].as_str().unwrap().to_owned(),
+                    p["uncommitted"] == true,
+                )
+            })
+            .collect()
+    };
+    let (out, ok) = mac.run(&mac.demo, &["efforts"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        pages(&v, "lessons"),
+        [
+            ("lessons/2026-11-01-kept.md".to_owned(), false),
+            ("lessons/2026-11-09-new.md".to_owned(), true)
+        ]
+    );
+    assert_eq!(
+        pages(&v, "drafts"),
+        [
+            ("drafts/2026-11-01-sent.md".to_owned(), true),
+            ("drafts/2026-11-09-reply.md".to_owned(), true)
+        ]
+    );
+    assert!(
+        v["lessons"][0].get("uncommitted").is_none(),
+        "a committed page's row is what it was: {out}"
+    );
+    // The next save commits them, and the board it redraws drops the marks.
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"kept going\"");
+    assert!(ok, "{out}");
+    let (out, ok) = mac.run(&mac.demo, &["efforts"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    for key in ["lessons", "drafts"] {
+        assert!(pages(&v, key).iter().all(|(_, waiting)| !waiting), "{out}");
+    }
+    let page = std::fs::read_to_string(mac.notes.join("home.html")).unwrap();
+    assert!(
+        page.contains("2026-11-09-new.md") && !page.contains("not committed</span>"),
+        "{page}"
+    );
+}
+
 /// Copies a program the test will run. If this process wrote the copy itself, another test
 /// thread could fork while the file was open for writing, and its child would keep that
 /// handle until it execs; Linux refuses to run a file open for writing ("text file busy",

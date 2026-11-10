@@ -53,6 +53,10 @@ pub struct Pieces {
 pub struct Lesson {
     pub file: String,
     pub title: String,
+    /// Git has no commit of the file as it stands, so no sync can carry it yet. Left out of
+    /// the JSON when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uncommitted: bool,
 }
 
 /// A page and progress derived from its members, independent of board filters.
@@ -235,6 +239,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             progress,
         });
     }
+    let uncommitted = uncommitted_pages(notes);
     let (day, _) = notes::local_day_time();
     let mut journal =
         std::fs::read_to_string(notes.root.join(notes::journal_file(&day))).unwrap_or_default();
@@ -259,9 +264,50 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         journal_lines: notes::parse_journal(&journal),
         journal,
         notes: warnings,
-        lessons: lessons_in(&notes.root),
-        drafts: drafts_in(&notes.root),
+        lessons: mark_uncommitted(lessons_in(&notes.root), &uncommitted),
+        drafts: mark_uncommitted(drafts_in(&notes.root), &uncommitted),
     }
+}
+
+/// The lessons and drafts git reports as untracked, changed or staged: written as plain
+/// files, they wait for the next notes write to commit them, and until then no other machine
+/// can have them. Read here, once, because rendering runs no git. A folder that isn't a
+/// checkout marks nothing.
+fn uncommitted_pages(notes: &Notes) -> std::collections::BTreeSet<String> {
+    let status = notes
+        .git(&[
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            "lessons",
+            "drafts",
+        ])
+        .unwrap_or_default();
+    let mut paths = std::collections::BTreeSet::new();
+    let mut entries = status.split('\0');
+    while let Some(entry) = entries.next() {
+        let (Some(code), Some(path)) = (entry.get(..2), entry.get(3..)) else {
+            continue;
+        };
+        // A rename or copy is followed by the path it came from, which isn't a page here.
+        if code.contains(['R', 'C']) {
+            entries.next();
+        }
+        paths.insert(path.to_owned());
+    }
+    paths
+}
+
+fn mark_uncommitted(
+    mut pages: Vec<Lesson>,
+    uncommitted: &std::collections::BTreeSet<String>,
+) -> Vec<Lesson> {
+    for page in &mut pages {
+        page.uncommitted = uncommitted.contains(&page.file);
+    }
+    pages
 }
 
 /// The notes' inbox: every `lessons/*.md`, by name, since a triaged lesson is deleted and
@@ -302,6 +348,7 @@ fn pages_in(root: &Path, folder: &str) -> Vec<Lesson> {
             Lesson {
                 file: format!("{folder}/{name}"),
                 title,
+                uncommitted: false,
             }
         })
         .collect()

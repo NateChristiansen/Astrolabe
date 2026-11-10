@@ -70,7 +70,7 @@ Pushes run in the background after every save, and again at a turn end, session 
 
 The journal uses Git's union merge driver. Hidden entry metadata identifies the effort or initiative and writing machine, allowing a writer to replace its own entry and the board to collapse duplicate entries. This reduces conflicts when machines add to the same day; it doesn't remove the need to check sync errors.
 
-When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/`, `journal/` and `initiatives/`, plus `.gitattributes`, including hand edits there. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
+When working in the notes checkout, a pull stashes hand edits around the rebase. If they can't be reapplied, they stay in the stash and the next reply reports it. Recording commits include changes under `efforts/`, `journal/`, `initiatives/`, `lessons/` and `drafts/`, plus `.gitattributes`, including hand edits there. Lessons and drafts are written as plain files, so the next save, journal entry or filing on that machine is what commits one, as it stands, under that write's own subject; a sync then carries it. `lesson close` is the exception: its two commits hold only the lesson it closes. Other staged files stay staged and out of those commits; knowledge notes and repo registration changes need a separate commit.
 
 ## Files and local state
 
@@ -83,6 +83,8 @@ Personal content lives in the notes checkout and is read at runtime:
 - `journal/<year>/<month>/<day>.md`: the owner's history, written by agents rather than generated from tool activity.
 - `lessons/`: an inbox of friction waiting for triage. The board lists it; sessions don't automatically receive it, so unreviewed observations don't become standing instructions. Triaged entries are deleted.
 - `drafts/`: text waiting for the owner to post or decide on. The board counts it; nothing delivers it to a session. Closed drafts are deleted.
+
+  The board lists both from disk, so it shows what this machine has. A lesson or draft that Git reports as untracked, changed or staged is marked "not committed": no other machine can have it until a notes write here commits it. That fact is read from `git status` when the board's data is collected; rendering runs no Git.
 - `initiatives/`: initiative records; the board reads their members from effort frontmatter.
 - `.handoffs/`: material agents write for each other, hidden behind the board's dot-folder toggle.
 

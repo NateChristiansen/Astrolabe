@@ -322,8 +322,14 @@ fn lessons_section(rows: &BoardData, at: At) -> String {
 fn inbox_section(at: At, class: &str, title: &str, pages: &[Lesson], empty: &str) -> String {
     let mut lines = String::new();
     for page in pages {
+        // Collected with the board's data: a page git hasn't committed is on this machine only.
+        let mark = if page.uncommitted {
+            " <span class=\"pill uncommitted\" title=\"Only on this machine until the next save here commits it\">not committed</span>"
+        } else {
+            ""
+        };
         lines += &format!(
-            "<li><a href=\"{}\">{}</a></li>\n",
+            "<li><a href=\"{}\">{}</a>{mark}</li>\n",
             esc(&at.links.href(at.root, page.file.as_str())),
             esc(page.title.as_str())
         );
