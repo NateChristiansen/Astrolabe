@@ -320,9 +320,10 @@ pub(super) fn edit_bound(
     req.change(initiative).apply(file, day)
 }
 
-/// The plan without its own Pieces section, and that section's checklist when it has one: a
-/// heading named Pieces at any level, up to the next heading at its level or above. A
-/// section with no checklist item stays in the plan, since it isn't a list of pieces.
+/// The plan without the checklist under its own Pieces heading, and that checklist when it
+/// has one: a heading named Pieces at any level, and the checkbox lines in its own text,
+/// before any deeper heading. Everything else in the section stays in the plan where it was,
+/// under its heading; the heading goes only when nothing else is left under it.
 fn lift_plan_pieces(plan: &str) -> (String, Option<String>) {
     let lines: Vec<&str> = plan.split('\n').collect();
     let fenced = crate::effort::fence_mask(lines.iter().copied());
@@ -344,16 +345,45 @@ fn lift_plan_pieces(plan: &str) -> (String, Option<String>) {
     let end = (at + 1..lines.len())
         .find(|i| heads[*i].is_some_and(|(m, _)| m <= n))
         .unwrap_or(lines.len());
-    let section = lines[at + 1..end].join("\n");
-    let checklist = section.lines().any(|l| {
-        let l = l.trim_start();
-        l.starts_with("- [ ] ") || l.starts_with("- [x] ") || l.starts_with("- [X] ")
-    });
-    if !checklist {
+    // The section's own text runs to its first deeper heading.
+    let own_end = (at + 1..end).find(|i| heads[*i].is_some()).unwrap_or(end);
+    let is_box = |i: usize| {
+        let l = lines[i].trim_start();
+        !fenced[i]
+            && (l.starts_with("- [ ] ") || l.starts_with("- [x] ") || l.starts_with("- [X] "))
+    };
+    let lifted: Vec<&str> = (at + 1..own_end)
+        .filter(|&i| is_box(i))
+        .map(|i| lines[i])
+        .collect();
+    if lifted.is_empty() {
         return (plan.to_owned(), None);
     }
-    let rest = [&lines[..at], &lines[end..]].concat().join("\n");
-    (rest.trim().to_owned(), Some(section.trim().to_owned()))
+    let kept: Vec<&str> = (at + 1..end)
+        .filter(|&i| !(i < own_end && is_box(i)))
+        .map(|i| lines[i])
+        .collect();
+    let mut out: Vec<&str> = lines[..at].to_vec();
+    if kept.iter().any(|l| !l.trim().is_empty()) {
+        out.push(lines[at]);
+        // Lines taken out of a run of text leave no doubled blank line behind.
+        for line in kept {
+            if line.trim().is_empty() && out.last().is_some_and(|l| l.trim().is_empty()) {
+                continue;
+            }
+            out.push(line);
+        }
+    }
+    out.extend(&lines[end..]);
+    let lifted = lifted
+        .iter()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (
+        out.join("\n").trim().to_owned(),
+        Some(lifted.trim().to_owned()),
+    )
 }
 
 fn without_pieces_heading(text: &str) -> String {

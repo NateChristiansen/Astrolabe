@@ -1732,3 +1732,59 @@ fn a_goal_is_the_bodys_first_plain_paragraph_or_nothing() {
     assert!(ok, "{out}");
     assert!(mac.effort_text(2).contains("## Current state\nGoing."));
 }
+
+#[test]
+fn a_plans_pieces_section_keeps_its_prose_when_its_checklist_is_lifted() {
+    let plan = "## Steps\n1. Do it.\n\n## Pieces\nOrdered by risk; Beta needs the owner's sign-off.\n- [ ] Alpha\n- [ ] Beta\n\n### How each is checked\nAlpha by the replay test.\n\n## Risks\nNone.\n";
+    // What stays of the plan's Pieces section, its headings shifted a level as stored.
+    let kept = "### Pieces\nOrdered by risk; Beta needs the owner's sign-off.\n\n#### How each is checked\nAlpha by the replay test.\n\n### Risks\nNone.";
+    // No Pieces yet, Pieces already, and a pieces file given with the plan.
+    for (case, before, with_file, after) in [
+        ("none yet", None, None, "- [ ] Alpha\n- [ ] Beta"),
+        ("already", Some("- [ ] Gamma\n"), None, "- [ ] Gamma"),
+        ("file given", None, Some("- [ ] Delta\n"), "- [ ] Delta"),
+    ] {
+        let world = World::new();
+        let mac = world.machine("mac");
+        assert!(mac.bash("s1", NEW).1);
+        if let Some(list) = before {
+            write(&mac.demo.join("first.md"), list);
+            assert!(
+                mac.bash("s1", "astrolabe effort save --pieces-file first.md")
+                    .1
+            );
+        }
+        write(&mac.demo.join("plan.md"), plan);
+        let command = match with_file {
+            Some(list) => {
+                write(&mac.demo.join("pieces.md"), list);
+                "astrolabe effort save --plan-file plan.md --pieces-file pieces.md"
+            }
+            None => "astrolabe effort save --plan-file plan.md",
+        };
+        let (out, ok) = mac.bash("s1", command);
+        assert!(ok, "{case}: {out}");
+        let text = mac.effort_text(1);
+        assert!(text.contains(kept), "{case}: {text}");
+        assert!(
+            text.contains(&format!("## Pieces\n{after}\n")),
+            "{case}: {text}"
+        );
+        assert!(!text.contains("### Pieces\n- [ ]"), "{case}: {text}");
+    }
+    // A section that held only its checklist goes, heading and all.
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.demo.join("plan.md"),
+        "## Steps\n1. Do it.\n\n## Pieces\n- [ ] Alpha\n\n## Risks\nNone.\n",
+    );
+    assert!(
+        mac.bash("s1", "astrolabe effort save --plan-file plan.md")
+            .1
+    );
+    let text = mac.effort_text(1);
+    assert!(text.contains("1. Do it.\n\n### Risks\nNone."), "{text}");
+    assert!(!text.contains("### Pieces"), "{text}");
+}
