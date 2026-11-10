@@ -139,3 +139,21 @@ fn an_orchestrator_is_told_where_a_worker_starts_and_when_it_sits_in_the_notes()
     assert!(ok && text.contains("never just your own folder"), "{text}");
     quiet(&text, "an orchestrator in its repo");
 }
+
+#[test]
+fn a_git_read_the_hook_has_no_time_for_leaves_the_notice_out() {
+    let f = Fixture::new();
+    worktree(&f.demo, "lane");
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok && text.contains(SHARED), "{text}");
+    // At the look for other worktrees the hook's clock is moved on 15 s, past its time for
+    // reading repos, so that look isn't started. What it would have shown isn't guessed:
+    // the session gets its effort's text with no word about its folder.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "worktree:+15000")];
+    let resumed = f.session_start("s1", &f.demo, &env).unwrap();
+    assert!(
+        resumed.contains("Astrolabe is on in this session for effort 70"),
+        "{resumed}"
+    );
+    quiet(&resumed, "a session whose folder couldn't be read in time");
+}
