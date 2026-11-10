@@ -181,7 +181,7 @@ pub(super) fn note_page(
         other => other,
     });
     let members = initiative_members(rel, rows, root);
-    let events = with_effort_status(events.collect(), rows, members.as_deref());
+    let events = with_effort_status(events.collect(), rows, members.as_deref(), root);
     let mut rendered = String::new();
     html::push_html(&mut rendered, events.into_iter());
     // The rail beside the text holds the outline, when there are sections to jump
@@ -309,11 +309,14 @@ fn initiative_members<'r>(
 /// leave. The members the prose never links continue the list that holds its last member
 /// title line, in number order and in the same shape; when there's no such list, they're
 /// listed after the section that holds its last member link, or at the end when it links
-/// none. The page shows every member, and the stored prose keeps its own order and text.
+/// none. Those that joined after the prose was written say when, so the up-front plan
+/// still reads apart from what came later. The page shows every member, and the stored
+/// prose keeps its own order and text.
 fn with_effort_status<'a>(
     events: Vec<pulldown_cmark::Event<'a>>,
     rows: &BoardData,
     members: Option<&[&crate::board::EffortRow]>,
+    root: &Path,
 ) -> Vec<pulldown_cmark::Event<'a>> {
     use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
     let is_member = |effort: &crate::board::EffortRow| {
@@ -422,11 +425,13 @@ fn with_effort_status<'a>(
     if unlisted.is_empty() {
         return out;
     }
+    // A page whose prose links no member had no up-front list for anyone to join later.
+    let later = !linked.is_empty();
     let items = |loose: bool| -> String {
         unlisted
             .iter()
             .map(|m| {
-                let line = member_line(m);
+                let line = member_line(m, later.then_some(root));
                 if loose {
                     format!("<li>\n<p>{line}</p>\n</li>\n")
                 } else {
@@ -495,9 +500,25 @@ fn with_effort_status<'a>(
 
 /// A member the prose doesn't link, drawn the way a title line in an initiative's list
 /// is: its number and title as the link, its status, then the first sentence of its
-/// Current state, or its goal where an older note keeps one, as the description.
-fn member_line(member: &crate::board::EffortRow) -> String {
+/// Current state, or its goal where an older note keeps one, as the description. With the
+/// notes' `root`, it joined after the prose was written, and a quiet tag after its status
+/// says when, from the day its note was created.
+fn member_line(member: &crate::board::EffortRow, root: Option<&Path>) -> String {
     let number = member.number.map(|n| format!("{n} ")).unwrap_or_default();
+    let added = root
+        .zip(member.file.as_deref())
+        .and_then(|(root, file)| std::fs::read_to_string(root.join(file)).ok())
+        .and_then(|text| crate::effort::EffortFile::parse(&text).ok())
+        .and_then(|note| {
+            chrono::NaiveDate::parse_from_str(note.prop("created")?.trim(), "%Y-%m-%d").ok()
+        })
+        .map(|day| {
+            format!(
+                "<span class=\"stat added\">added {}</span>",
+                day.format("%b %-d")
+            )
+        })
+        .unwrap_or_default();
     let description = member
         .state
         .as_deref()
@@ -505,7 +526,7 @@ fn member_line(member: &crate::board::EffortRow) -> String {
         .map(|s| esc(&super::render::first_sentence(s)))
         .unwrap_or_default();
     format!(
-        "<span class=\"etitle\"><a href=\"/{}\">{}{}</a>{}</span>{description}",
+        "<span class=\"etitle\"><a href=\"/{}\">{}{}</a>{}{added}</span>{description}",
         esc(&percent(member.file.as_deref().unwrap_or_default())),
         esc(&number),
         esc(member.title.as_deref().unwrap_or_default()),

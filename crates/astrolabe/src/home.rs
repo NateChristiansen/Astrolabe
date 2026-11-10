@@ -350,6 +350,17 @@ mod tests {
         std::fs::remove_dir_all(notes.root).unwrap();
     }
 
+    /// Gives fixture effort `n` the day its note was created.
+    fn created_on(notes: &Notes, n: u32, day: &str) {
+        let path = notes.root.join(format!("efforts/{n:04}-member.md"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replacen("updated:", &format!("created: {day}\nupdated:"), 1),
+        )
+        .unwrap();
+    }
+
     /// The shared-work page of the fixture with `body` as its prose, written to disk the
     /// way a stored page is, and that page rendered.
     fn shared_work_page(notes: &Notes, body: &str) -> (String, String) {
@@ -377,6 +388,11 @@ mod tests {
             "---\nrepo: demo\n---\n# 0030 Plain\n\n## Current state\nParked.\n",
         )
         .unwrap();
+        // Members that joined later say when; one whose note has no created day says
+        // nothing, and the prose's own entries never do.
+        for n in [5, 7, 9] {
+            created_on(&notes, n, &format!("2026-11-{n:02}"));
+        }
         let (text, prose) = shared_work_page(
             &notes,
             "## Efforts and order\n\n1. [Seventh](../efforts/0007-member.md). Starts it.\n2. [Fourth](../efforts/0004-member.md). Follows.\n3. [Dropped](../efforts/0008-member.md). Was turned down.\n4. [Gone](../efforts/0010-member.md). Moved out.\n5. [Old](../efforts/0030-plain.md). Moved elsewhere.\n\n## What completion means\n\nAll of it works.\n",
@@ -407,13 +423,15 @@ mod tests {
         );
         // The members the prose doesn't mention continue its numbered list, in number
         // order and in the same shape: number and title, status, then the first sentence
-        // of Current state. No separate list follows.
+        // of Current state, with a quiet tag saying when each joined. No separate list
+        // follows.
         let listed = "Moved elsewhere.</li>\n\
-            <li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span></span>Working.</li>\n\
+            <li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span><span class=\"stat added\">added Nov 5</span></span>Working.</li>\n\
             <li><span class=\"etitle\"><a href=\"/efforts/0006-member.md\">6 Member</a><span class=\"stat s-review\">in review</span><span class=\"stat need\">needs you</span></span>Working.</li>\n\
-            <li><span class=\"etitle\"><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span></span>Working.</li>\n</ol>";
+            <li><span class=\"etitle\"><a href=\"/efforts/0009-member.md\">9 Member</a><span class=\"stat s-done\">done</span><span class=\"stat added\">added Nov 9</span></span>Working.</li>\n</ol>";
         assert!(at(listed) < at("What completion means</h2>"));
         assert!(!prose.contains("members-label"), "{prose}");
+        assert_eq!(prose.matches("stat added").count(), 2, "{prose}");
         // No member is listed twice, and no other initiative's member is listed at all.
         for n in [4, 5, 6, 7, 8, 9, 10] {
             assert_eq!(
@@ -436,7 +454,10 @@ mod tests {
     #[test]
     fn a_page_whose_prose_names_no_member_lists_them_all_at_its_end() {
         let notes = crate::board::initiative_fixture();
+        created_on(&notes, 5, "2026-11-05");
         let (_, prose) = shared_work_page(&notes, "## Purpose\n\nWork together.\n");
+        // With no up-front list, no member joined it later, so none is tagged as added.
+        assert!(!prose.contains("stat added"), "{prose}");
         let list = prose
             .split("Work together.</p>")
             .nth(1)
@@ -484,6 +505,7 @@ mod tests {
     #[test]
     fn later_members_continue_the_list_that_holds_the_last_member_title_line() {
         let notes = crate::board::initiative_fixture();
+        created_on(&notes, 5, "2026-11-05");
         // A list split across two sections: the members it doesn't name go at the end of
         // the second, which holds the last member title line, and that list's numbering
         // carries on. A title that already leads with its number keeps it once.
@@ -542,6 +564,7 @@ mod tests {
             &notes,
             "## Plan\n\nStart with [Fourth](../efforts/0004-member.md), then the rest.\n\n## After\n\nDone.\n",
         );
+        assert!(prose.contains("5 Member</a><span class=\"stat s-blocked\">blocked</span><span class=\"stat need\">needs you</span><span class=\"stat added\">added Nov 5</span></span>"), "{prose}");
         let label = prose
             .find("<p class=\"members-label\">Other members</p>\n<ul class=\"members\">\n<li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a>")
             .unwrap_or_else(|| panic!("{prose}"));

@@ -1731,8 +1731,10 @@ html[data-view=notes] .main {
   margin-bottom: 3px;
 }
 
-/* An effort the page's list names that isn't a member of the initiative. */
-.prose .stat.left {
+/* An effort the page's list names that isn't a member of the initiative, and one that
+   joined after the list was written. */
+.prose .stat.left,
+.prose .stat.added {
   border-style: dashed;
 }
 
