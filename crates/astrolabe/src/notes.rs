@@ -20,28 +20,6 @@ const INTENTS: &str = "ops";
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
-/// Word left while this program rebases the notes checkout: which checkout, the commit the
-/// rebase started from, the git process doing it, and when. Left behind, it says a rebase
-/// found in the checkout that matches all of that is this program's own, cut short, and
-/// not the owner's by hand.
-const REBASING: &str = "rebase-started";
-/// How long after word was left its rebase's own record may be dated and still be that
-/// rebase: git writes it within moments of starting.
-const REBASE_BEGINS_MS: i64 = 60_000;
-/// How long the git process named in the word is waited for before its rebase counts as
-/// cut short anyway: far past any rebase of notes, and a bound on an id the system has
-/// since given to another process.
-const REBASE_RUNS_MS: i64 = 10 * 60_000;
-
-/// What `REBASING` holds.
-#[derive(Serialize, Deserialize)]
-struct Rebasing {
-    root: String,
-    orig: String,
-    #[serde(default)]
-    pid: Option<u32>,
-    at_ms: i64,
-}
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
 /// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
@@ -117,27 +95,11 @@ pub enum Pull {
 mod facts;
 mod journal;
 mod process;
+pub(crate) use process::keep_stdio_here;
 mod storage;
 mod sync;
 pub use facts::RepoFacts;
 pub use journal::{JournalEntry, JournalLine, parse_journal, tidy_journal};
-
-impl Rebasing {
-    /// Whether the rebase in `dir` is the one this word was left for: begun from the same
-    /// commit, and at about the time the word was left.
-    fn began(&self, dir: &Path) -> bool {
-        let record = dir.join("orig-head");
-        let from = std::fs::read_to_string(&record).unwrap_or_default();
-        let at_ms = std::fs::metadata(&record)
-            .and_then(|meta| meta.modified())
-            .ok()
-            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|at| at.as_millis() as i64);
-        from.trim() == self.orig
-            && !self.orig.is_empty()
-            && at_ms.is_some_and(|at| (-5_000..REBASE_BEGINS_MS).contains(&(at - self.at_ms)))
-    }
-}
 
 impl Notes {
     pub fn new(root: PathBuf, state: PathBuf) -> Self {
@@ -173,10 +135,7 @@ impl Notes {
             .open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         match crate::deadline::lock(&file).map_err(|e| format!("notes lock: {e}"))? {
-            crate::deadline::Wait::Held => {
-                self.settle();
-                Ok(Held(file))
-            }
+            crate::deadline::Wait::Held => Ok(Held(file)),
             crate::deadline::Wait::Busy(waited) => Err(format!(
                 "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
                 crate::deadline::seconds(waited)
@@ -194,83 +153,9 @@ impl Notes {
             .write(true)
             .open(self.state.join(LOCK))
             .ok()?;
-        let held = FileExt::try_lock_exclusive(&file)
+        FileExt::try_lock_exclusive(&file)
             .ok()?
-            .then_some(Held(file))?;
-        self.settle();
-        Some(held)
-    }
-
-    /// Under the lock, before anything else: a rebase this program began and never ended
-    /// (its process was killed, or the machine went down) is put back, hand edits and
-    /// all, so no one works on a checkout left partway. Only a rebase the word left
-    /// matches is this program's; any other is the owner's and is left alone, and writes
-    /// refuse until it's ended. One whose git is still running is left to finish.
-    fn settle(&self) {
-        let marker = self.state.join(REBASING);
-        let Ok(bytes) = std::fs::read(&marker) else {
-            return;
-        };
-        let forget = || {
-            let _ = std::fs::remove_file(&marker);
-        };
-        // Word in a shape this build doesn't write, or for another checkout, says nothing
-        // about a rebase here.
-        let Ok(word) = serde_json::from_slice::<Rebasing>(&bytes) else {
-            return forget();
-        };
-        if word.root != crate::hook::comparable(&self.root) {
-            return forget();
-        }
-        let dir = match self.rebase_dir() {
-            Ok(Some(dir)) => dir,
-            // The rebase ended, or never began.
-            Ok(None) => return forget(),
-            // Not known: the word stays for the next look.
-            Err(_) => return,
-        };
-        if !word.began(&dir) {
-            return forget();
-        }
-        let age = now_ms() - word.at_ms;
-        if (0..REBASE_RUNS_MS).contains(&age) && word.pid.is_some_and(crate::worktree::alive) {
-            return;
-        }
-        let _ = self.git_cleanup(&["rebase", "--abort"]);
-        if matches!(self.rebase_dir(), Ok(None)) {
-            forget();
-        }
-    }
-
-    /// Leaves word that this program is about to rebase from `orig`, and by which git
-    /// process once that's known.
-    pub(super) fn rebasing(&self, orig: &str, pid: Option<u32>) {
-        let word = Rebasing {
-            root: crate::hook::comparable(&self.root),
-            orig: orig.to_owned(),
-            pid,
-            at_ms: now_ms(),
-        };
-        if let Ok(text) = serde_json::to_string(&word) {
-            let _ = write_text(&self.state.join(REBASING), &text);
-        }
-    }
-
-    /// The rebase this program ran is over, or never began: its word goes, unless the
-    /// checkout is still partway through it.
-    pub(super) fn rebased(&self) {
-        if matches!(self.rebase_dir(), Ok(None)) {
-            let _ = std::fs::remove_file(self.state.join(REBASING));
-        }
-    }
-
-    /// Before the notes are read: if this program left a rebase cut short, the checkout
-    /// holds another machine's files and not this one's, so it's put back first. Taking
-    /// the lock does that.
-    pub(crate) fn heal(&self) {
-        if self.state.join(REBASING).exists() {
-            let _ = self.lock();
-        }
+            .then_some(Held(file))
     }
 
     /// The folder git keeps for a rebase under way in the checkout, if there is one; an
@@ -288,29 +173,22 @@ impl Notes {
             .find(|folder| folder.exists()))
     }
 
-    /// A git call in the notes checkout, as part of a pull or a write.
+    /// A git call in the notes checkout, as part of a pull or a write. A hook never ends
+    /// one: whether there was time for its step was decided before the step began.
     pub fn git(&self, args: &[&str]) -> Result<String, String> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
         crate::worktree::git_as(crate::deadline::Git::Notes, &self.root, &args)
     }
 
-    /// A git call that puts the checkout back after a step was stopped. It has its own
-    /// time in a hook, never what's left of the hook's.
-    fn git_cleanup(&self, args: &[&str]) -> Result<String, String> {
-        let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        crate::worktree::git_as(crate::deadline::Git::Cleanup, &self.root, &args)
-    }
-
-    /// What a write must not land on, checked before anything is touched. A hook with too
-    /// little time left: the write would be stopped partway. A checkout mid-rebase or off
-    /// its branch: a commit there is dropped when the rebase ends or the branch is checked
-    /// out again. Files the index holds unmerged: a save can't stage those.
+    /// What a write must not land on, checked before anything is planned or touched,
+    /// and the only place a write is refused for time: past here it runs to its end. A
+    /// hook with too little time left. A checkout mid-rebase or off its branch: a commit
+    /// there is dropped when the rebase ends or the branch is checked out again. Files
+    /// the index holds unmerged: a save can't stage those. This program only refuses: a
+    /// rebase it finds is the owner's to end.
     pub(crate) fn refuse_unmerged(&self) -> Result<(), String> {
-        if let Some(left) = crate::deadline::short_of(crate::deadline::Step::Write) {
-            return Err(format!(
-                "this hook had {} s left, too little to write the notes safely, so nothing was written. Run the same command again",
-                crate::deadline::seconds(left)
-            ));
+        if let Some(why) = crate::deadline::no_time_to_write() {
+            return Err(why);
         }
         // A check that couldn't be run refuses too: nothing is written on a guess.
         let unchecked = |why: String| {
@@ -333,6 +211,7 @@ impl Notes {
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .map_err(unchecked)?;
         if unmerged.trim().is_empty() {
+            crate::deadline::writing();
             return Ok(());
         }
         Err(format!(

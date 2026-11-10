@@ -23,10 +23,14 @@ impl Notes {
     /// one that won't reapply stays in the stash, named by id until it's gone, and the tree
     /// is set back to what was pulled, so no save commits a conflict marker.
     pub fn pull(&self) -> Pull {
-        match self.fetch() {
+        let started = std::time::Instant::now();
+        let pulled = match self.fetch() {
             Ok(()) => self.rebase(),
             Err(offline) => offline,
-        }
+        };
+        // For a write refused after it, which says where the hook's time went.
+        crate::deadline::pulled(started.elapsed());
+        pulled
     }
 
     /// A pull that leaves the tree alone unless origin has commits this checkout lacks, for
@@ -79,8 +83,8 @@ impl Notes {
             );
         }
         // A rebase already under way here isn't this pull's: it's the owner's by hand, or
-        // one whose git is still running. Starting another would fail, and ending that
-        // failure with an abort would end theirs.
+        // one an earlier process left running. Starting another would fail, and ending
+        // that failure with an abort would end theirs.
         match self.rebase_dir() {
             Ok(None) => {}
             Ok(Some(_)) => {
@@ -90,29 +94,12 @@ impl Notes {
             }
             Err(why) => return Pull::Offline(why),
         }
+        // The backstop waits for a rebase and what follows it, after it answers.
+        let _under_way = crate::deadline::under_way();
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let stashes_before = self.stashes();
-        // Word left before it starts, and again with the git process once that's known, so
-        // a process that dies partway leaves it said that the rebase in the checkout is
-        // this program's to put back (see `Notes::settle`). It goes on every path where
-        // the rebase ended or never began.
-        let from = before.trim().to_owned();
-        self.rebasing(&from, None);
-        let args = ["rebase", "--quiet", "--autostash", "@{upstream}"].map(AsRef::as_ref);
-        // On the pull's time, not the write's: a rebase that hangs must leave the save
-        // that asked for the pull the time it needs.
-        let rebased = crate::worktree::git_started(
-            crate::deadline::Git::Rebase,
-            &self.root,
-            &args,
-            &mut |pid| self.rebasing(&from, Some(pid)),
-        );
-        if rebased.is_err() {
-            // Its own time, not what's left of the hook's: a rebase is stopped exactly
-            // when nothing is left, and the checkout must not stay partway.
-            let _ = self.git_cleanup(&["rebase", "--abort"]);
-        }
-        self.rebased();
+        // Never ended by a hook, which decided above whether there was time to start it.
+        let rebased = self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]);
         match rebased {
             Ok(_) => {
                 self.clear_sync("diverged");
@@ -136,9 +123,9 @@ impl Notes {
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
                 Pull::Offline(why)
             }
-            // Stopped for time and put back: nothing diverged, the next pull does it.
-            Err(why) if crate::deadline::out_of_time(&why) => Pull::Offline(why),
             Err(why) => {
+                // This pull's own rebase, which just failed: put back, as always.
+                let _ = self.git(&["rebase", "--abort"]);
                 self.record_sync("diverged", &why);
                 self.changed();
                 Pull::Diverged(why)
@@ -189,7 +176,7 @@ impl Notes {
             self.record_sync("stash", &kept.join("\n"));
         }
         if new.is_some() {
-            self.git_cleanup(&["reset", "--quiet", "--hard"]).map_err(|why| {
+            self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
                 format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
             })?;
         }

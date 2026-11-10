@@ -1,13 +1,20 @@
 //! One clock per hook event. Both apps let a command run when its pre-command hook times out
 //! or fails (docs/hosts.md), so a hook has to answer inside the time its manifest gives it,
-//! whatever holds it up. Two layers: a backstop thread that answers and exits at the event's
-//! answer-by time, for anything that blocks; and limits on the lock waits and git calls that
-//! end sooner, so the hook normally has time left to say why a write was refused.
+//! whatever holds it up. A backstop thread answers at the event's answer-by time, for
+//! anything that blocks. Before that, lock waits are bounded, and a hook does a step (a
+//! pull, a rebase, a notes write) only when it has the time for it.
+//!
+//! A hook never ends a git call that changes the notes checkout: stopped partway, a
+//! rebase or a commit leaves the checkout in a state the next write has to be protected
+//! from. It decides before starting one whether there's time, and once started lets it
+//! finish. Fetches and reads change nothing and are ended at their limit.
 //!
 //! A process that is not a hook (a terminal command, the detached sync, the board server)
-//! starts no clock: it waits for a lock as long as it takes, and only its git calls are capped.
+//! starts no clock: it waits for a lock as long as it takes, and only its network git
+//! calls are limited.
 use serde_json::{Value, json};
 use std::fs::File;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -25,9 +32,11 @@ fn answer_by(event: &str) -> Duration {
 
 /// Tests shorten an event's time, in milliseconds. It can only shorten.
 const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
-/// Tests hold a hook up at a named point: `<point>:<milliseconds>`. The points are `read`
-/// (input read, nothing judged), `verdict` (the guard's verdict reached, not yet printed) and
-/// a git verb (before that git call starts).
+/// Tests hold a hook up at a named point: `<point>:<milliseconds>` waits that long there,
+/// and `<point>:+<milliseconds>` moves the hook's clock on by that much without waiting,
+/// so a test can put a hook late in its time with the backstop still far off. The points
+/// are `read` (input read, nothing judged), `verdict` (the guard's verdict reached, not
+/// yet printed) and a git verb (before that git call starts).
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
 
 /// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
@@ -38,19 +47,26 @@ const HOOK_NETWORK: Duration = Duration::from_secs(5);
 const NETWORK_FLOOR: Duration = Duration::from_secs(3);
 /// The same outside a hook, where nothing waits on it but a background sync.
 const NETWORK: Duration = Duration::from_secs(15);
-/// The most a local git call may take outside a hook, so one that hangs can't hold the
-/// notes lock for good. Far above any real call: the slowest seen was 43 s.
-const LOCAL: Duration = Duration::from_secs(120);
 
 struct Clock {
     start: Instant,
-    /// When the backstop answers and exits.
+    /// When the backstop answers.
     answer: Duration,
+    /// Time a test has moved the clock on by, in milliseconds.
+    moved_on: AtomicU64,
 }
 
 impl Clock {
-    /// Lock waits and git calls end here, so what follows them (the reply, its ticket)
-    /// still fits before the backstop.
+    fn new(answer: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            answer,
+            moved_on: AtomicU64::new(0),
+        }
+    }
+
+    /// A notes write starts before here, and lock waits end sooner still, so what follows
+    /// (the write, the reply, its ticket) fits before the backstop.
     fn work(&self) -> Duration {
         self.answer * 3 / 4
     }
@@ -60,8 +76,8 @@ impl Clock {
         (self.work() / 4).min(Duration::from_secs(3))
     }
 
-    /// A pull ends here, fetch and rebase both, so that with the worst case after it (a
-    /// rebase stopped, then put back) the rest of the hook still has its time.
+    /// A pull is the one step a hook can do without, so it has the early part of the
+    /// hook's time: its fetch ends by here, and its rebase starts before here or not at all.
     fn pull(&self) -> Duration {
         self.work() / 2
     }
@@ -76,24 +92,39 @@ impl Clock {
         self.work() / 8
     }
 
-    /// What a call that puts the checkout back gets, whatever the hook has left: it runs
-    /// after a step was stopped, which is when nothing is left.
-    fn cleanup(&self) -> Duration {
-        self.work() / 6
-    }
-
-    /// Git calls that only read, for a session's context, end here: later than the notes
-    /// work, so a slow pull or write can't make a repo read as not a repo.
+    /// Git calls that only read a repo, for a session's context, end here: later than
+    /// the notes work, so a slow pull or write can't make a repo read as not a repo.
     fn read(&self) -> Duration {
         self.answer * 7 / 8
     }
 
+    /// The hook exits by here whatever is still running: after the answer, and just
+    /// inside the app's timeout, because an app that gives up on a hook discards what the
+    /// hook printed.
+    fn exit(&self) -> Duration {
+        self.answer + self.answer * 5 / 32
+    }
+
+    fn spent(&self) -> Duration {
+        self.start.elapsed() + Duration::from_millis(self.moved_on.load(Ordering::Relaxed))
+    }
+
     fn left(&self, until: Duration) -> Duration {
-        until.saturating_sub(self.start.elapsed())
+        until.saturating_sub(self.spent())
     }
 }
 
 static CLOCK: OnceLock<Clock> = OnceLock::new();
+
+/// How many things are under way that the backstop waits for after it answers: a git call
+/// in the notes checkout, a pull.
+static UNDER_WAY: AtomicUsize = AtomicUsize::new(0);
+/// A notes write passed its gate in this hook: it runs to its end.
+static WRITING: AtomicBool = AtomicBool::new(false);
+/// The hook's own thread is finished.
+static DONE: AtomicBool = AtomicBool::new(false);
+/// How long this hook's pull of the notes took, in milliseconds; 0 when it made none.
+static PULL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// The one answer a hook gives. Whoever holds this prints or exits; nobody prints twice.
 struct Answer {
@@ -142,10 +173,8 @@ fn budget(event: &str) -> Duration {
 /// Starts the event's clock and its backstop. Called once, before the hook reads anything.
 pub(crate) fn start(event: &str) {
     let answer_at = budget(event);
-    let clock = Clock {
-        start: Instant::now(),
-        answer: answer_at,
-    };
+    let clock = Clock::new(answer_at);
+    let exit_after = clock.exit() - answer_at;
     if CLOCK.set(clock).is_err() {
         return;
     }
@@ -170,17 +199,28 @@ pub(crate) fn start(event: &str) {
     }
     std::thread::spawn(move || {
         std::thread::sleep(answer_at);
-        let mut state = answer();
-        if !state.said
-            && let Some(fallback) = state.fallback.take()
         {
-            crate::hook::print(&fallback);
+            // The answer is on time whatever git is doing. From here the hook's own thread
+            // prints nothing: `said` is set, so there is one answer.
+            let mut state = answer();
+            if !state.said
+                && let Some(fallback) = state.fallback.take()
+            {
+                crate::hook::print(&fallback);
+            }
+            state.said = true;
         }
-        state.said = true;
-        crate::worktree::stop_running();
-        // Exits holding the answer, so the hook's own thread can't add a second one. A write
-        // it was in the middle of is left as a crash leaves it: planned, for the next
-        // writer to finish.
+        // Then a notes write or a pull still under way gets what's left before the app's
+        // own timeout to finish, since ending it partway is what leaves a checkout
+        // needing repair. Past that the hook exits anyway and git is left running, with
+        // the write's intent for the next writer: the same as when the app ends a hook.
+        let exit_at = Instant::now() + exit_after;
+        while !DONE.load(Ordering::SeqCst)
+            && Instant::now() < exit_at
+            && (WRITING.load(Ordering::SeqCst) || UNDER_WAY.load(Ordering::SeqCst) > 0)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::process::exit(0);
     });
 }
@@ -223,21 +263,55 @@ pub(crate) fn failed() {
 /// The hook is returning: whatever it decided stands, and the backstop adds nothing.
 pub(crate) fn done() {
     answer().said = true;
+    DONE.store(true, Ordering::SeqCst);
 }
 
-/// Holds a hook up at `point`, for tests.
-pub(crate) fn stall(point: &str) {
-    if CLOCK.get().is_none() {
-        return;
+/// Held while something is under way that the backstop waits for after it answers.
+pub(crate) struct UnderWay;
+
+pub(crate) fn under_way() -> UnderWay {
+    UNDER_WAY.fetch_add(1, Ordering::SeqCst);
+    UnderWay
+}
+
+impl Drop for UnderWay {
+    fn drop(&mut self) {
+        UNDER_WAY.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// A notes write passed its gate: from here it isn't refused for time, and the backstop
+/// waits for it after answering.
+pub(crate) fn writing() {
+    WRITING.store(true, Ordering::SeqCst);
+}
+
+/// This hook's pull of the notes took `time`, for a write refused after it to say so.
+pub(crate) fn pulled(time: Duration) {
+    PULL_MS.store(time.as_millis() as u64, Ordering::SeqCst);
+}
+
+/// Holds a hook up at `point`, or moves its clock on, for tests.
+pub(crate) fn stall(point: &str) {
+    let Some(clock) = CLOCK.get() else {
+        return;
+    };
     let Ok(stall) = std::env::var(STALL_VAR) else {
         return;
     };
-    if let Some((at, ms)) = stall.split_once(':')
-        && at == point
-        && let Ok(ms) = ms.parse()
-    {
-        std::thread::sleep(Duration::from_millis(ms));
+    let Some((at, time)) = stall.split_once(':') else {
+        return;
+    };
+    if at != point {
+        return;
+    }
+    match time.strip_prefix('+') {
+        Some(ms) => {
+            clock
+                .moved_on
+                .fetch_add(ms.parse().unwrap_or(0), Ordering::Relaxed);
+        }
+        None => std::thread::sleep(Duration::from_millis(time.parse().unwrap_or(0))),
     }
 }
 
@@ -280,20 +354,24 @@ pub(crate) fn lock_within(file: &File, wait: Duration) -> std::io::Result<Wait> 
     }
 }
 
-/// A step a hook does only when it has the time for it.
+/// A step a hook does only when it has the time for it. Each is decided before the step
+/// starts and never again: a step that has started runs to its end.
 pub(crate) enum Step {
     /// Fetching the notes: skipped, the hook works from the local copy.
     Pull,
     /// Rebasing onto what was fetched: skipped, and done by the next pull.
     Rebase,
-    /// Writing the notes: refused before anything is touched.
+    /// Writing the notes: refused before anything is planned or touched.
     Write,
 }
 
 /// How much time a hook has for `step` when that's too little to start it; None when it
 /// has enough, or this isn't a hook.
 pub(crate) fn short_of(step: Step) -> Option<Duration> {
-    let clock = CLOCK.get()?;
+    short_of_on(CLOCK.get()?, step)
+}
+
+fn short_of_on(clock: &Clock, step: Step) -> Option<Duration> {
     let (until, need) = match step {
         Step::Pull => (clock.pull(), clock.rebase() * 2),
         Step::Rebase => (clock.pull(), clock.rebase()),
@@ -303,19 +381,32 @@ pub(crate) fn short_of(step: Step) -> Option<Duration> {
     (left < need).then_some(left)
 }
 
-/// What a git call is for, which decides how long it may run.
+/// Why a notes write isn't started, when this hook has too little time left for one. It
+/// names the pull when the hook made one, since that is where the time went.
+pub(crate) fn no_time_to_write() -> Option<String> {
+    let left = seconds(short_of(Step::Write)?);
+    let pull = Duration::from_millis(PULL_MS.load(Ordering::SeqCst));
+    Some(match pull.is_zero() {
+        true => format!(
+            "this hook had {left} s left, too little to write the notes safely, so nothing was written. Run the same command again"
+        ),
+        false => format!(
+            "this hook's pull of the notes took {} s and left {left} s, too little to write them safely, so nothing was written. Run the same command again",
+            seconds(pull)
+        ),
+    })
+}
+
+/// What a git call is for, which decides whether it may be ended.
 #[derive(Clone, Copy)]
 pub(crate) enum Git {
-    /// A fetch or push.
+    /// A fetch or push: ended at its limit.
     Network,
-    /// Work in the notes checkout: a write's steps.
+    /// A call in the notes checkout, as part of a pull or a write: never ended. Whether
+    /// there's time for it was decided before its step began.
     Notes,
-    /// The rebase half of a pull, which ends with the pull's time and not the write's.
-    Rebase,
-    /// A read of some repo, for what a session is told.
+    /// A read of some repo, for what a session is told: ended at its limit in a hook.
     Read,
-    /// Putting the checkout back after a step was stopped: `rebase --abort`, a reset.
-    Cleanup,
 }
 
 /// How long one git call may run, and what to say if it's stopped.
@@ -329,8 +420,6 @@ enum Cut {
     Network,
     /// Stopped because the hook's own time ran out.
     Hook,
-    /// A local call outside a hook that ran absurdly long.
-    Local,
 }
 
 impl Limit {
@@ -343,55 +432,37 @@ impl Limit {
             Cut::Hook => {
                 format!("git {verb} was stopped after {time} s, when this hook's time ran out")
             }
-            Cut::Local => format!("git {verb} was stopped after {time} s"),
         }
     }
 }
 
-/// A failure that says the hook's time ran out, not that git found something wrong.
-pub(crate) fn out_of_time(why: &str) -> bool {
-    why.contains("when this hook's time ran out") || why.contains("this hook's time had run out")
+/// Whether a git call starting now may run, and for how long.
+pub(crate) enum Run {
+    /// To its own end.
+    Through,
+    /// Ended at this limit.
+    Within(Limit),
+    /// Not at all: a hook has no time left for a call of its kind.
+    No,
 }
 
-/// The limit for a git call starting now, or None when a hook has no time left for one of
-/// its kind: a call started with no time is a call killed at once, partway through
-/// whatever it was changing.
-pub(crate) fn git_limit(kind: Git) -> Option<Limit> {
-    let Some(clock) = CLOCK.get() else {
-        return Some(match kind {
-            Git::Network => Limit {
+pub(crate) fn git_run(kind: Git) -> Run {
+    match CLOCK.get() {
+        Some(clock) => git_run_on(clock, kind),
+        None => match kind {
+            Git::Network => Run::Within(Limit {
                 time: NETWORK,
                 cut: Cut::Network,
-            },
-            _ => Limit {
-                time: LOCAL,
-                cut: Cut::Local,
-            },
-        });
-    };
-    in_a_hook(clock, kind, !cfg!(windows))
+            }),
+            Git::Notes | Git::Read => Run::Through,
+        },
+    }
 }
 
-/// The limit inside a hook. `stops_cleanly` is whether a git call that has started can be
-/// stopped without harm: on Unix it's asked first and removes its lock files; on Windows
-/// it can only be ended outright, which leaves `index.lock`, and every later save is then
-/// refused until someone removes the file by hand. So there a call that changes the
-/// checkout is still not started without time for it, but once started it's left to
-/// finish: the backstop answers on time, the process exits, git ends on its own, and the
-/// write's intent covers what's left. A fetch or a read changes nothing and is ended.
-fn in_a_hook(clock: &Clock, kind: Git, stops_cleanly: bool) -> Option<Limit> {
-    let hook = |time: Duration| {
-        (!time.is_zero()).then_some(Limit {
-            time,
-            cut: Cut::Hook,
-        })
-    };
-    let changes = |time: Duration| match stops_cleanly {
-        true => hook(time),
-        false => (!time.is_zero()).then_some(Limit {
-            time: LOCAL,
-            cut: Cut::Local,
-        }),
+fn git_run_on(clock: &Clock, kind: Git) -> Run {
+    let within = |time: Duration, cut: Cut| match time.is_zero() {
+        true => Run::No,
+        false => Run::Within(Limit { time, cut }),
     };
     match kind {
         Git::Network => {
@@ -399,17 +470,12 @@ fn in_a_hook(clock: &Clock, kind: Git, stops_cleanly: bool) -> Option<Limit> {
             let left = clock.left(clock.pull()).saturating_sub(clock.rebase());
             let time = left.min(HOOK_NETWORK);
             match time >= NETWORK_FLOOR {
-                true => Some(Limit {
-                    time,
-                    cut: Cut::Network,
-                }),
-                false => hook(time),
+                true => within(time, Cut::Network),
+                false => within(time, Cut::Hook),
             }
         }
-        Git::Notes => changes(clock.left(clock.work())),
-        Git::Rebase => changes(clock.left(clock.pull())),
-        Git::Read => hook(clock.left(clock.read())),
-        Git::Cleanup => changes(clock.cleanup()),
+        Git::Notes => Run::Through,
+        Git::Read => within(clock.left(clock.read()), Cut::Hook),
     }
 }
 
@@ -475,56 +541,78 @@ mod tests {
             let timeout = Duration::from_secs(hook["timeout"].as_u64().unwrap());
             let answer = answer_by(event);
             assert!(answer <= timeout * 4 / 5, "{event}: {answer:?}");
-            let clock = Clock {
-                start: Instant::now(),
-                answer,
-            };
+            let clock = Clock::new(answer);
             assert!(clock.work() < answer && clock.reserve() < clock.work());
             assert!(read_time(event) < clock.work());
             assert!(clock.work() < clock.read() && clock.read() < answer);
-            // The two events that pull. The worst pull: a rebase stopped at the pull's end,
-            // asked and then killed, then put back with its own time, asked and then
-            // killed. The write after it still has what a write needs.
-            if timeout == Duration::from_secs(20) {
-                let grace = Duration::from_millis(500);
-                let worst = clock.pull() + grace + clock.cleanup() + grace;
-                assert!(worst + clock.write() <= clock.work(), "{event}: {worst:?}");
-            }
+            // The hook is gone, whatever git is doing, with room before the app gives up.
+            assert!(answer < clock.exit(), "{event}");
+            assert!(
+                clock.exit() <= timeout * 19 / 20,
+                "{event}: {:?}",
+                clock.exit()
+            );
+            // A pull that ends on time leaves a write its time.
+            assert!(clock.pull() + clock.write() < clock.work());
+        }
+    }
+
+    /// A pre-command hook's clock with `spent` seconds gone.
+    fn pre_command(spent: u64) -> Clock {
+        let clock = Clock::new(answer_by("pre-command"));
+        clock.moved_on.store(spent * 1000, Ordering::Relaxed);
+        clock
+    }
+
+    #[test]
+    fn a_hook_never_ends_git_in_the_notes_checkout() {
+        for spent in [0, 5, 11, 13, 15, 30] {
+            assert!(matches!(
+                git_run_on(&pre_command(spent), Git::Notes),
+                Run::Through
+            ));
         }
     }
 
     #[test]
-    fn where_git_cant_be_stopped_cleanly_a_started_change_is_left_to_finish() {
-        let pre_command = |spent: u64| Clock {
-            start: Instant::now() - Duration::from_secs(spent),
-            answer: answer_by("pre-command"),
+    fn a_fetch_and_a_read_are_ended_and_not_started_late() {
+        let time = |spent, kind| match git_run_on(&pre_command(spent), kind) {
+            Run::Within(limit) => Some(limit.time),
+            Run::No => None,
+            Run::Through => panic!("never ended"),
         };
-        let time = |clock: &Clock, kind, cleanly| in_a_hook(clock, kind, cleanly).map(|l| l.time);
-        let early = pre_command(1);
-        // Unix: every call ends with the hook's time for it.
-        assert!(time(&early, Git::Notes, true).unwrap() <= Duration::from_secs(11));
-        assert_eq!(time(&early, Git::Cleanup, true), Some(early.cleanup()));
-        // Windows: a call that changes the checkout runs to its own end once started.
-        assert_eq!(time(&early, Git::Notes, false), Some(LOCAL));
-        assert_eq!(time(&early, Git::Cleanup, false), Some(LOCAL));
-        // A fetch and a read change nothing, so they're still ended.
-        assert!(time(&early, Git::Network, false).unwrap() <= HOOK_NETWORK);
-        assert!(time(&early, Git::Read, false).unwrap() <= Duration::from_secs(13));
-        // A rebase ends with the pull, so the write after it has its time.
-        assert!(time(&early, Git::Rebase, true).unwrap() <= Duration::from_secs(5));
-        assert_eq!(time(&early, Git::Rebase, false), Some(LOCAL));
-        let mid = pre_command(7);
-        assert!(in_a_hook(&mid, Git::Rebase, true).is_none());
-        assert!(in_a_hook(&mid, Git::Rebase, false).is_none());
-        assert!(in_a_hook(&mid, Git::Notes, true).is_some());
-        // And on both, past the mark for notes work, one isn't started at all.
-        let late = pre_command(13);
-        assert!(in_a_hook(&late, Git::Notes, true).is_none());
-        assert!(in_a_hook(&late, Git::Notes, false).is_none());
-        assert!(in_a_hook(&late, Git::Network, false).is_none());
-        // Putting the checkout back always has its time.
-        assert!(in_a_hook(&late, Git::Cleanup, true).is_some());
-        assert!(in_a_hook(&late, Git::Cleanup, false).is_some());
+        // A fetch has the early part of the hook and no more.
+        let whole = time(0, Git::Network).unwrap();
+        assert!(whole <= HOOK_NETWORK && whole > HOOK_NETWORK - Duration::from_millis(100));
+        assert!(time(3, Git::Network).unwrap() <= Duration::from_secs(2));
+        assert_eq!(time(5, Git::Network), None);
+        // A read runs until late, then isn't started.
+        assert!(time(1, Git::Read).unwrap() <= Duration::from_secs(13));
+        assert!(time(13, Git::Read).is_some());
+        assert_eq!(time(14, Git::Read), None);
+        // Only a fetch that had most of its time counts as offline.
+        let said = |spent: u64| match git_run_on(&pre_command(spent), Git::Network) {
+            Run::Within(limit) => limit.stopped("fetch"),
+            _ => panic!("started"),
+        };
+        assert_eq!(said(0), "git fetch took over 5 s");
+        assert_eq!(
+            said(3),
+            "git fetch was stopped after 2 s, when this hook's time ran out"
+        );
+    }
+
+    #[test]
+    fn steps_are_gated_before_they_start() {
+        let short = |spent, step| short_of_on(&pre_command(spent), step).is_some();
+        // A pull starts only early, and its rebase only inside the pull's time.
+        assert!(!short(0, Step::Pull) && !short(3, Step::Pull));
+        assert!(short(5, Step::Pull));
+        assert!(!short(4, Step::Rebase));
+        assert!(short(6, Step::Rebase));
+        // A write starts with time to finish before the hook's work mark.
+        assert!(!short(10, Step::Write));
+        assert!(short(11, Step::Write));
     }
 
     #[test]
@@ -579,17 +667,15 @@ mod tests {
     }
 
     #[test]
-    fn outside_a_hook_only_git_is_capped() {
+    fn outside_a_hook_only_network_git_is_limited() {
         // No test here starts a clock, so this is a process that isn't a hook.
-        let network = git_limit(Git::Network).unwrap();
+        let Run::Within(network) = git_run(Git::Network) else {
+            panic!("a fetch is always limited");
+        };
         assert_eq!(network.stopped("fetch"), "git fetch took over 15 s");
-        for kind in [Git::Notes, Git::Rebase, Git::Read, Git::Cleanup] {
-            let local = git_limit(kind).unwrap();
-            assert_eq!(
-                local.stopped("rebase"),
-                "git rebase was stopped after 120 s"
-            );
-        }
+        assert!(matches!(git_run(Git::Notes), Run::Through));
+        assert!(matches!(git_run(Git::Read), Run::Through));
         assert!(short_of(Step::Write).is_none());
+        assert!(no_time_to_write().is_none());
     }
 }

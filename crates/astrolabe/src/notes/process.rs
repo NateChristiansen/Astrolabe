@@ -68,7 +68,7 @@ fn detach(cmd: &mut Command) {
 }
 
 #[cfg(windows)]
-fn keep_stdio_here() {
+pub(crate) fn keep_stdio_here() {
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
     use windows_sys::Win32::System::Console::{
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -86,4 +86,4 @@ fn keep_stdio_here() {
 }
 
 #[cfg(not(windows))]
-fn keep_stdio_here() {}
+pub(crate) fn keep_stdio_here() {}

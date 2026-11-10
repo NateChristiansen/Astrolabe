@@ -234,14 +234,14 @@ fn a_session_start_that_runs_out_of_time_blocks_nothing() {
     let f = Fixture::new();
     let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
     assert!(ok, "{text}");
-    // Held up in its first look at a repo until its time for reading repos is gone: the
-    // looks after it aren't started, which reads like a folder that isn't a repo.
-    let env = [
-        ("ASTROLABE_HOOK_BUDGET_MS", "2000"),
-        ("ASTROLABE_HOOK_TEST_STALL", "rev-parse:1800"),
-    ];
+    // At its first look at a repo the hook's clock is moved on 15 s, past its time for
+    // reading repos, without waiting: that look and the ones after it aren't started,
+    // which reads like a folder that isn't a repo. The backstop, on real time, is 16 s off.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "rev-parse:+15000")];
     let input = json!({"session_id": "s1", "cwd": f.demo, "source": "resume"});
-    let (answer, took) = f.timed("session-start", &input, &env, Duration::from_secs(10));
+    let (answer, took) = f.timed("session-start", &input, &env, Duration::from_secs(14));
+    // So this is the hook's own answer and not its backstop's, which says the same.
+    assert!(took < Duration::from_secs(14), "{took:?}");
     let answer = answer.expect("a line of context, not silence");
     let text = answer["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -250,7 +250,6 @@ fn a_session_start_that_runs_out_of_time_blocks_nothing() {
         text.starts_with("Astrolabe's session-start hook ran out of time"),
         "{text}"
     );
-    assert!(took < Duration::from_secs(5), "{took:?}");
     // Being slow once is no reason to block the session's commands until someone repairs it.
     let state = std::fs::read_to_string(f.state().join("s1.json")).unwrap();
     assert!(!state.contains("reload_failed"), "{state}");

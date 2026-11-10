@@ -1,11 +1,10 @@
 //! Git helpers for reading repo identity and syncing the owner's notes.
+use crate::deadline::{Git, Run};
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
-
-use crate::deadline::Git;
 
 /// A read of the repo at `cwd`, for what a session is told.
 pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
@@ -20,48 +19,34 @@ pub(crate) fn git_bytes(cwd: &Path, args: &[&std::ffi::OsStr]) -> Result<Vec<u8>
 
 type Output = std::result::Result<String, String>;
 
-/// A git call of one kind, which decides how long it may run (see `deadline`): a fetch or
-/// push, work in the notes checkout, a read, or putting a checkout back.
+/// A git call of one kind, which decides whether it may be ended (see `deadline`): a
+/// fetch or push, a call in the notes checkout, or a read.
 pub(crate) fn git_as(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
-    git_started(kind, cwd, args, &mut |_| {})
-}
-
-/// The same, telling `started` the id of the git process once it's running, for a caller
-/// that leaves word of what it began.
-pub(crate) fn git_started(
-    kind: Git,
-    cwd: &Path,
-    args: &[&std::ffi::OsStr],
-    started: &mut dyn FnMut(u32),
-) -> Output {
-    run_git_started(kind, Command::new("git").args(args), cwd, started)
+    run_git(kind, Command::new("git").args(args), cwd)
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, String> {
-    run_git_started(kind, command, cwd, &mut |_| {})
-}
-
-fn run_git_started(
-    kind: Git,
-    command: &mut Command,
-    cwd: &Path,
-    started: &mut dyn FnMut(u32),
-) -> Result<Vec<u8>, String> {
     let verb = verb(command);
     crate::deadline::stall(&verb);
-    // A hook with no time left for this call doesn't start it: started, it would be
-    // stopped at once, partway through whatever it changes.
-    let Some(limit) = crate::deadline::git_limit(kind) else {
-        return Err(crate::deadline::not_started(&verb));
+    let run = crate::deadline::git_run(kind);
+    let limit = match &run {
+        Run::Through => None,
+        Run::Within(limit) => Some(limit.time),
+        // A hook with no time left for this call doesn't start it.
+        Run::No => return Err(crate::deadline::not_started(&verb)),
     };
+    // After the hook's answer, the backstop waits for a call in the notes checkout.
+    let _under_way = matches!(kind, Git::Notes).then(crate::deadline::under_way);
     command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
-    match run_started(command, limit.time, started) {
+    match self::run(command, limit) {
         Err(error) => Err(format!("git could not start: {error}")),
-        Ok(Ran::Stopped) => Err(limit.stopped(&verb)),
+        Ok(Ran::Stopped) => match run {
+            Run::Within(limit) => Err(limit.stopped(&verb)),
+            _ => Err(format!("git {verb} was stopped")),
+        },
         Ok(Ran::CutOff) => Err(format!(
-            "git {verb} ended but its output was cut off: something it started kept the output open for the {} s the call had",
-            crate::deadline::seconds(limit.time)
+            "git {verb} ended but its output was cut off: something it started kept the output open"
         )),
         Ok(Ran::Finished(done)) if done.status.success() => Ok(done.stdout),
         Ok(Ran::Finished(done)) => Err(String::from_utf8_lossy(&done.stderr).trim().to_owned()),
@@ -81,13 +66,9 @@ fn verb(command: &Command) -> String {
     "command".to_owned()
 }
 
-/// The least a child's output gets to reach its end after the child exits, when the call's
-/// own time is nearly spent: a reader thread may not have run yet.
+/// The least a limited child's output gets to reach its end after the child exits, when
+/// the call's own time is nearly spent: a reader thread may not have run yet.
 const DRAIN: Duration = Duration::from_millis(200);
-/// How long a child asked to stop gets to clean up before it's killed. Git removes its lock
-/// files in that time; killed outright it leaves `index.lock`, and every later write to
-/// the checkout fails until someone removes it by hand.
-const STOP_GRACE: Duration = Duration::from_millis(500);
 
 struct Finished {
     status: std::process::ExitStatus,
@@ -97,70 +78,67 @@ struct Finished {
 
 enum Ran {
     Finished(Finished),
-    /// Still running at its limit, and stopped.
+    /// Still running at its limit, and ended.
     Stopped,
-    /// It exited, but its output never reached its end: something it started held a
-    /// stream open. What was read may be short, and short output can read as an answer
-    /// (no unmerged files, no remote), so it's never returned.
+    /// It exited, but its output never reached its end inside the call's time: something
+    /// it started held a stream open. What was read may be short, and short output can
+    /// read as an answer (no unmerged files, no remote), so it's never returned.
     CutOff,
 }
 
-/// Runs a child to its end or to `limit`, whichever is first. Both of its streams are read
+/// Runs a child to its end, or to `limit` if it has one. Both of its streams are read
 /// while it runs, so one that prints more than a pipe holds isn't stalled by it and then
-/// taken for a hang. Its output counts only once both streams reached their end.
-#[cfg(test)]
-fn run(command: &mut Command, limit: Duration) -> std::io::Result<Ran> {
-    run_started(command, limit, &mut |_| {})
-}
-
-fn run_started(
-    command: &mut Command,
-    limit: Duration,
-    started: &mut dyn FnMut(u32),
-) -> std::io::Result<Ran> {
+/// taken for a hang. Its output counts only once both streams reached their end. A child
+/// with no limit is waited for as long as it and its output take, as `Command::output`
+/// would. One at its limit is ended as that would end it: the child alone, at once.
+fn run(command: &mut Command, limit: Option<Duration>) -> std::io::Result<Ran> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    own_group(command);
+    // The hook's own stdout and stderr must not reach the child: on Windows every
+    // inheritable handle passes to a new process, and a git that outlives the hook would
+    // hold the app's pipe open, so the app never sees the end of the hook's answer.
+    crate::notes::keep_stdio_here();
     let mut child = command.spawn()?;
-    let _running = Running::new(&child);
-    started(child.id());
     let (closed, closing) = mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
     let stderr = drain(child.stderr.take(), closed);
-    let end = Instant::now() + limit;
+    let end = limit.map(|limit| Instant::now() + limit);
+    let left = |end: Option<Instant>| end.map(|end| end.saturating_duration_since(Instant::now()));
     let mut open = 2;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        let left = end.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            stop(&mut child);
+        let left = left(end);
+        if left.is_some_and(|left| left.is_zero()) {
+            let _ = child.kill();
+            let _ = child.wait();
             return Ok(Ran::Stopped);
         }
+        let pause = |most: Duration| left.map_or(most, |left| left.min(most));
         // A child closes its streams as it exits, so this wakes when it's done or nearly.
-        match closing.recv_timeout(left.min(Duration::from_millis(50))) {
+        match closing.recv_timeout(pause(Duration::from_millis(50))) {
             Ok(()) => open -= 1,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(left.min(Duration::from_millis(1)));
+                std::thread::sleep(pause(Duration::from_millis(1)));
             }
         }
     };
-    // The rest of the call's own time for the output to end. A grandchild holding a stream
+    // The rest of the call's own time for the output to end: a grandchild holding a stream
     // costs that time, never a short answer.
-    let end = end.max(Instant::now() + DRAIN);
+    let end = end.map(|end| end.max(Instant::now() + DRAIN));
     while open > 0 {
-        let left = end.saturating_duration_since(Instant::now());
-        match closing.recv_timeout(left) {
-            Ok(()) => open -= 1,
-            Err(_) => {
-                stop(&mut child);
-                return Ok(Ran::CutOff);
-            }
+        let ended = match left(end) {
+            Some(left) => closing.recv_timeout(left).is_ok(),
+            None => closing.recv().is_ok(),
+        };
+        if !ended {
+            return Ok(Ran::CutOff);
         }
+        open -= 1;
     }
     let take = |stream: &Mutex<Vec<u8>>| {
         std::mem::take(
@@ -174,116 +152,6 @@ fn run_started(
         stdout: take(&stdout),
         stderr: take(&stderr),
     }))
-}
-
-/// The child this process is waiting on, so a hook whose time is up can take it along
-/// instead of leaving it to work on a checkout nobody holds the lock for.
-static RUNNING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-struct Running;
-
-impl Running {
-    fn new(child: &std::process::Child) -> Self {
-        RUNNING.store(child.id(), std::sync::atomic::Ordering::SeqCst);
-        Self
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        RUNNING.store(0, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Stops the git call under way, if any, as the process exits: asked, then killed.
-#[cfg(unix)]
-pub(crate) fn stop_running() {
-    let id = RUNNING.load(std::sync::atomic::Ordering::SeqCst);
-    if id == 0 {
-        return;
-    }
-    let group = -(id as libc::pid_t);
-    // Safety: `kill` takes no pointers; the group is one this process made for its child.
-    unsafe { libc::kill(group, libc::SIGTERM) };
-    std::thread::sleep(Duration::from_millis(100));
-    // Safety: as above.
-    unsafe { libc::kill(group, libc::SIGKILL) };
-}
-
-/// Windows can't reach a child by its id from here; it's left running.
-#[cfg(not(unix))]
-pub(crate) fn stop_running() {
-    let _ = RUNNING.load(std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Whether a process with this id is running now.
-#[cfg(unix)]
-pub(crate) fn alive(id: u32) -> bool {
-    let Ok(id) = libc::pid_t::try_from(id) else {
-        return false;
-    };
-    // Safety: `kill` takes no pointers, and signal 0 sends nothing: it only asks.
-    id > 0 && unsafe { libc::kill(id, 0) } == 0
-}
-
-#[cfg(windows)]
-pub(crate) fn alive(id: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
-    };
-    // Safety: the handle is checked before use and closed here; nothing outlives the call.
-    unsafe {
-        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, id);
-        if process.is_null() {
-            return false;
-        }
-        // A process still running doesn't signal its handle, so a wait of no time runs out.
-        let running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
-        CloseHandle(process);
-        running
-    }
-}
-
-/// A process group of the child's own, so stopping it reaches what it started (a commit
-/// hook, a credential helper), which could otherwise touch the checkout after the notes
-/// lock is released.
-#[cfg(unix)]
-fn own_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn own_group(_: &mut Command) {}
-
-/// Stops the child and what it started: asked first, so git removes its lock files, then
-/// killed. Also clears a group whose leader already exited.
-#[cfg(unix)]
-fn stop(child: &mut std::process::Child) {
-    let group = -(child.id() as libc::pid_t);
-    // Safety: `kill` takes no pointers. The group is the child's own, made at spawn; if
-    // nothing is left in it the call fails with no effect.
-    unsafe { libc::kill(group, libc::SIGTERM) };
-    let asked = Instant::now();
-    while asked.elapsed() < STOP_GRACE && matches!(child.try_wait(), Ok(None)) {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    // Safety: as above.
-    unsafe { libc::kill(group, libc::SIGKILL) };
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Windows has no signal a console program cleans up on, and no process group to stop:
-/// only the child itself is ended, at once, and what it started lives on. So a hook there
-/// gives no limit to a call that changes the checkout (see `deadline`); this is reached
-/// for fetches and reads, which leave nothing behind.
-#[cfg(not(unix))]
-fn stop(child: &mut std::process::Child) {
-    let _ = STOP_GRACE;
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// Reads a stream to its end on a thread of its own, into a buffer the caller can take
@@ -339,27 +207,33 @@ mod tests {
                 std::process::exit(3);
             }
             Ok("hang") => std::thread::sleep(Duration::from_secs(120)),
+            Ok("slow") => {
+                std::thread::sleep(Duration::from_millis(1200));
+                println!("done at last");
+            }
             _ => {}
         }
     }
 
     #[test]
     fn output_past_a_pipe_buffer_is_read_whole() {
-        let started = Instant::now();
-        let Ran::Finished(done) = run(&mut child("flood"), Duration::from_secs(60)).unwrap() else {
-            panic!("it ends by itself");
-        };
-        assert_eq!(done.status.code(), Some(3));
-        let count = |bytes: &[u8]| bytes.iter().filter(|b| **b == b'x').count();
-        assert!(count(&done.stdout) >= FLOOD, "{}", count(&done.stdout));
-        assert!(count(&done.stderr) >= FLOOD, "{}", count(&done.stderr));
-        assert!(started.elapsed() < Duration::from_secs(30));
+        for limit in [Some(Duration::from_secs(60)), None] {
+            let started = Instant::now();
+            let Ran::Finished(done) = run(&mut child("flood"), limit).unwrap() else {
+                panic!("it ends by itself");
+            };
+            assert_eq!(done.status.code(), Some(3));
+            let count = |bytes: &[u8]| bytes.iter().filter(|b| **b == b'x').count();
+            assert!(count(&done.stdout) >= FLOOD, "{}", count(&done.stdout));
+            assert!(count(&done.stderr) >= FLOOD, "{}", count(&done.stderr));
+            assert!(started.elapsed() < Duration::from_secs(30));
+        }
     }
 
     #[test]
-    fn a_hanging_child_is_stopped_at_its_time() {
+    fn a_child_at_its_limit_is_ended() {
         let started = Instant::now();
-        let ran = run(&mut child("hang"), Duration::from_millis(500)).unwrap();
+        let ran = run(&mut child("hang"), Some(Duration::from_millis(500))).unwrap();
         assert!(matches!(ran, Ran::Stopped));
         let took = started.elapsed();
         assert!(
@@ -368,37 +242,34 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    fn alive(pid: &str) -> bool {
-        let status = Command::new("kill")
-            .args(["-0", pid.trim()])
-            .stderr(Stdio::null())
-            .status();
-        status.unwrap().success()
-    }
-
-    #[cfg(unix)]
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("astrolabe-runner-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// With no limit a child is never ended, however long it takes: this is how a hook runs
+    /// every git call in the notes checkout.
+    #[test]
+    fn a_child_with_no_limit_runs_to_its_own_end() {
+        let started = Instant::now();
+        let Ran::Finished(done) = run(&mut child("slow"), None).unwrap() else {
+            panic!("it's never ended");
+        };
+        assert!(done.status.success());
+        assert!(String::from_utf8_lossy(&done.stdout).contains("done at last"));
+        assert!(started.elapsed() >= Duration::from_millis(1200));
     }
 
     /// Output that never reached its end is an error, however much of it was read: short
-    /// output can read as an answer. The call waits its own time for the end, no longer,
-    /// and takes the grandchild holding the stream with it.
+    /// output can read as an answer. The call waits its own time for the end, no longer.
     #[cfg(unix)]
     #[test]
     fn output_a_grandchild_holds_open_is_cut_off_not_returned() {
-        let dir = scratch("cut-off");
+        let dir =
+            std::env::temp_dir().join(format!("astrolabe-runner-cut-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         let started = Instant::now();
         let mut command = Command::new("sh");
         command
             .args(["-c", "sleep 60 & echo $! > pid; echo said"])
             .current_dir(&dir);
-        let ran = run(&mut command, Duration::from_millis(1500)).unwrap();
+        let ran = run(&mut command, Some(Duration::from_millis(1500))).unwrap();
         assert!(matches!(ran, Ran::CutOff));
         let took = started.elapsed();
         assert!(
@@ -406,7 +277,7 @@ mod tests {
             "{took:?}"
         );
         let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
-        assert!(!alive(&pid), "the grandchild outlived the call");
+        let _ = Command::new("kill").arg(pid.trim()).status();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -414,61 +285,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_grandchild_that_lets_go_of_the_output_is_not_waited_for() {
-        let started = Instant::now();
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 5 >/dev/null 2>&1 & echo said"]);
-        let Ran::Finished(done) = run(&mut command, Duration::from_secs(60)).unwrap() else {
-            panic!("it ends by itself");
-        };
-        assert_eq!(done.stdout, b"said\n");
-        assert!(started.elapsed() < Duration::from_secs(4));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_stopped_child_is_asked_first_and_what_it_started_stops_too() {
-        let dir = scratch("stopped");
-        let mut command = Command::new("sh");
-        // Cleans up when asked to stop, as git does with its lock files.
-        let script = "trap 'rm -f lock; exit 0' TERM; touch lock; sleep 60 & echo $! > pid; wait";
-        command.args(["-c", script]).current_dir(&dir);
-        let ran = run(&mut command, Duration::from_millis(500)).unwrap();
-        assert!(matches!(ran, Ran::Stopped));
-        assert!(
-            !dir.join("lock").exists(),
-            "it was killed before it cleaned up"
-        );
-        let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
-        assert!(!alive(&pid), "what it started outlived it");
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    /// One that ignores the ask is killed once its grace is up.
-    #[cfg(unix)]
-    #[test]
-    fn a_child_that_ignores_the_ask_is_killed() {
-        let started = Instant::now();
-        let mut command = Command::new("sh");
-        command.args(["-c", "trap '' TERM; sleep 60; sleep 60"]);
-        let ran = run(&mut command, Duration::from_millis(300)).unwrap();
-        assert!(matches!(ran, Ran::Stopped));
-        assert!(started.elapsed() < Duration::from_secs(20));
-    }
-
-    #[test]
-    fn a_process_is_alive_until_it_ends() {
-        assert!(super::alive(std::process::id()));
-        let mut hung = child("hang").stdout(Stdio::null()).spawn().unwrap();
-        assert!(super::alive(hung.id()));
-        hung.kill().unwrap();
-        hung.wait().unwrap();
-        assert!(!super::alive(hung.id()));
+        for limit in [Some(Duration::from_secs(60)), None] {
+            let started = Instant::now();
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 5 >/dev/null 2>&1 & echo said"]);
+            let Ran::Finished(done) = run(&mut command, limit).unwrap() else {
+                panic!("it ends by itself");
+            };
+            assert_eq!(done.stdout, b"said\n");
+            assert!(started.elapsed() < Duration::from_secs(4));
+        }
     }
 
     #[test]
     fn a_program_that_isnt_there_is_an_error_not_a_hang() {
         let mut command = Command::new("astrolabe-no-such-program");
-        assert!(run(&mut command, Duration::from_secs(5)).is_err());
+        assert!(run(&mut command, Some(Duration::from_secs(5))).is_err());
     }
 
     #[test]
