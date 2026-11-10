@@ -70,6 +70,39 @@ fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
 }
 
 #[test]
+fn a_resumed_effort_with_a_head_too_long_for_the_hook_is_cut_and_names_its_file() {
+    let f = Fixture::new();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    // A title long enough that the head alone is over the cut, in text that takes more
+    // bytes than characters.
+    let title = "題名 ".repeat(900);
+    let effort = f.dir.0.join("notes/efforts/0070-demo.md");
+    std::fs::write(
+        &effort,
+        EFFORT.replace("title: 0070 Demo", &format!("title: {title}")),
+    )
+    .unwrap();
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    let size = text.encode_utf16().count();
+    assert!(size <= 9800, "{size}");
+    assert!(
+        text.contains("Astrolabe is on in this session for effort 70, \"題名 ")
+            && text.contains("- authority: edit: ")
+            && text.contains("Prove the guard for this session")
+            && text.contains("Report the effort and what the status says."),
+        "the head's opening lines stay: {text}"
+    );
+    let close = "\n\nAstrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner, and read now:\n- ";
+    let (_, files) = text.split_once(close).expect(&text);
+    // The effort's own file always; the others only while there's room, which the two
+    // shells' proof steps on Windows leave none of.
+    assert!(
+        files.contains("0070-demo.md: only its `## Current state` section"),
+        "{files}"
+    );
+}
+
+#[test]
 fn voices_rules_reach_a_session_from_a_checkout_with_windows_line_endings() {
     let f = Fixture::new();
     write(
