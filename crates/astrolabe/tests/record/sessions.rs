@@ -670,3 +670,65 @@ fn the_hook_takes_astrolabe_by_its_exe_name_or_a_path() {
         assert_eq!(mac.hook_json("pre-command", input), None, "{program}");
     }
 }
+
+/// The hook finds an astrolabe command the way it finds an effort command: wherever it
+/// sits in the line, behind an assignment or `time`, with its words quoted or not. So the
+/// machine switch, an approval and the session switch never reach the shell by a spelling
+/// the effort commands are already caught in.
+#[test]
+fn the_hook_takes_an_astrolabe_command_wherever_it_sits_in_the_line() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let hook = |command: &str| {
+        let input = json!({"session_id": "s1", "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": "call-9", "tool_input": {"command": command}});
+        mac.hook_json("pre-command", input)
+            .map(|answer| answer["hookSpecificOutput"].clone())
+    };
+    let shown = |answer: &Value| {
+        let read = answer["updatedInput"]["command"].as_str().unwrap();
+        let path = (read.strip_prefix("cat '"))
+            .and_then(|p| p.strip_suffix('\''))
+            .unwrap_or_else(|| panic!("{answer}"));
+        std::fs::read_to_string(path).unwrap()
+    };
+    for off in [
+        "FOO=1 astrolabe off",
+        "time astrolabe off",
+        "cd x && astrolabe off",
+        "astrolabe \"off\"",
+        "astrolabe 'on'",
+        "true; /Users/x/.local/bin/astrolabe.exe off",
+    ] {
+        let answer = hook(off).unwrap_or_else(|| panic!("the hook let it through: {off}"));
+        let why = answer["permissionDecisionReason"].as_str();
+        assert!(
+            why.is_some_and(|why| why.starts_with("The machine switch is the owner's")),
+            "{off}: {answer}"
+        );
+    }
+    // A session switch is taken only when it's run alone, as before: with shell around it,
+    // it runs bare and the program refuses it. Its words may be quoted.
+    for switch in [
+        "cd x && astrolabe activate --effort 1",
+        "FOO=1 astrolabe activate --status",
+        "astrolabe activate --status; ls",
+    ] {
+        assert_eq!(hook(switch), None, "{switch}");
+    }
+    let answer = hook("astrolabe \"activate\" \"--status\"").unwrap();
+    assert!(shown(&answer).starts_with("Astrolabe is on for effort 1"));
+    // An approval that isn't run alone is refused in the hook.
+    let allow = "cd x && astrolabe allow --once \"git push --force\" --said \"Yes, run that.\"";
+    let answer = hook(allow).unwrap_or_else(|| panic!("the hook let it through: {allow}"));
+    let text = shown(&answer);
+    assert!(text.starts_with("Approval refused:"), "{text}");
+    // Text that only names a command is not one.
+    for text in [
+        "echo \"astrolabe off\"",
+        "echo 'run astrolabe activate --off alone'",
+        "grep -n \"astrolabe allow\" README.md # astrolabe off",
+    ] {
+        assert_eq!(hook(text), None, "{text}");
+    }
+}
