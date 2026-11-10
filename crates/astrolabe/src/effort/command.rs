@@ -422,16 +422,38 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
 
 /// The command line and its body apart: a POSIX heredoc `<<'ASTROLABE' … ASTROLABE`, a
 /// PowerShell here-string `@' … '@`, or no body. The delimiter must be the one word, quoted
-/// (either quote), alone on its closing line.
+/// (either quote), alone on its closing line. The body starts at the first marker outside
+/// double quotes, as the shell reads it: one inside a quoted value, such as a title holding
+/// `@'`, is part of that value.
 pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
-    let heredoc = [
+    const HEREDOCS: [&str; 4] = [
         "<<'ASTROLABE'",
         "<<\"ASTROLABE\"",
         "<< 'ASTROLABE'",
         "<< \"ASTROLABE\"",
-    ]
-    .iter()
-    .find_map(|mark| text.find(mark).map(|at| (at, mark.len())));
+    ];
+    let (mut heredoc, mut here_string) = (None, None);
+    let mut quoted = false;
+    for (at, c) in text.char_indices() {
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if quoted || c == '"' {
+            continue;
+        }
+        let rest = &text[at..];
+        if let Some(mark) = HEREDOCS.iter().find(|mark| rest.starts_with(**mark)) {
+            heredoc = Some((at, mark.len()));
+        } else if rest.starts_with("@'") {
+            here_string = Some(at);
+        } else if rest.starts_with("<<") {
+            return Err(format!("a heredoc here must be <<'{DELIMITER}'"));
+        } else {
+            continue;
+        }
+        // What follows the first marker is the body, read by its own rules.
+        break;
+    }
     if let Some((at, len)) = heredoc {
         let head = &text[..at];
         let rest = &text[at + len..];
@@ -453,7 +475,7 @@ pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
         }
         return Ok((head, Some(body)));
     }
-    if let Some(at) = text.find("@'") {
+    if let Some(at) = here_string {
         let head = &text[..at];
         let rest = &text[at + 2..];
         let (first, rest) = rest
@@ -474,9 +496,6 @@ pub(super) fn split_body(text: &str) -> Result<(&str, Option<String>), String> {
             return Err("nothing may follow the closing '@ line".to_owned());
         }
         return Ok((head, Some(body)));
-    }
-    if text.contains("<<") {
-        return Err(format!("a heredoc here must be <<'{DELIMITER}'"));
     }
     Ok((text, None))
 }
@@ -625,6 +644,39 @@ mod tests {
             let err = EffortCommand::parse(text).unwrap_err();
             assert!(err.contains(why), "{text:?}: {err}");
         }
+    }
+
+    #[test]
+    fn a_body_marker_inside_a_quoted_value_is_part_of_the_value() {
+        // A title that happens to hold a here-string's opening, with no body at all.
+        let cmd = EffortCommand::parse("astrolabe effort save --decision \"Meet @'Home\"").unwrap();
+        assert_eq!(cmd.flag("decision"), Some("Meet @'Home"));
+        assert_eq!(cmd.body, None);
+        // The same before a real here-string, and before a real heredoc.
+        let text = "astrolabe effort new --title \"Meet @'Home\" @'\nGoal line.\n'@";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(cmd.flag("title"), Some("Meet @'Home"));
+        assert_eq!(cmd.body.as_deref(), Some("Goal line."));
+        let text =
+            "astrolabe effort new --title \"Meet @'Home\" <<'ASTROLABE'\nGoal @'line.\nASTROLABE";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(cmd.flag("title"), Some("Meet @'Home"));
+        assert_eq!(cmd.body.as_deref(), Some("Goal @'line."));
+        // A heredoc's opening in a value, with a here-string for the body.
+        let text = "astrolabe effort save --decision \"chose <<'ASTROLABE' over @': one form\" @'\nWhere it stands.\n'@";
+        let cmd = EffortCommand::parse(text).unwrap();
+        assert_eq!(
+            cmd.flag("decision"),
+            Some("chose <<'ASTROLABE' over @': one form")
+        );
+        assert_eq!(cmd.body.as_deref(), Some("Where it stands."));
+        // And `<<` in a value is words, not a heredoc that must be the one form.
+        let cmd =
+            EffortCommand::parse("astrolabe journal \"Shifted with << in the mask.\"").unwrap();
+        assert_eq!(cmd.body.as_deref(), Some("Shifted with << in the mask."));
+        // Outside quotes each is still what it was.
+        let err = EffortCommand::parse("astrolabe effort save <<EOF\nx\nEOF").unwrap_err();
+        assert!(err.contains("<<'ASTROLABE'"), "{err}");
     }
 
     #[test]
