@@ -373,6 +373,12 @@ fn new_inner(
     for line in &beside {
         head += &format!("\n\n{line}");
     }
+    if let Some(left) = previous
+        .as_ref()
+        .and_then(|p| activate::leaving(p, Some(&activation.state), cwd))
+    {
+        head += &format!("\n\n{left}");
+    }
     let text = format!("{head}\n\n{}", activation.text());
     crate::application::finish(&notes, key, &text);
     Ok(text)
@@ -877,7 +883,11 @@ fn save_inner(
                 .to_owned(),
         );
     }
+    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
     let before = edit_bound(&mut file, &req, initiative, &day)?;
+    if let Some(wait) = newly_needs_owner(&file, &waited) {
+        notes_lines.push(validation::needs_you_note(record, wait));
+    }
     let machine = notes::machine_name();
     let journal = req
         .journal_line(key, &machine, notes::now_ms(), &day)
@@ -1025,6 +1035,12 @@ fn require_transition_body(
         ));
     }
     Ok(())
+}
+
+/// The wait a save just put on the owner, if the record didn't already carry that one.
+fn newly_needs_owner<'a>(file: &'a EffortFile, waited: &str) -> Option<&'a str> {
+    file.prop("waits_for")
+        .filter(|wait| wait.starts_with("owner:") && *wait != waited)
 }
 
 fn unfinished_pieces(file: &EffortFile) -> String {
@@ -1220,7 +1236,12 @@ fn save_target(
     let status = req.status.as_deref();
     require_transition_body(&file, status, current)?;
     let (day, _) = notes::local_day_time();
+    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
     let before = edit_bound(&mut file, req, initiative, &day)?;
+    let needs_you: Vec<String> = newly_needs_owner(&file, &waited)
+        .map(|wait| validation::needs_you_note(&format!("effort {target}"), wait))
+        .into_iter()
+        .collect();
     let now = notes::local_stamp();
     let machine = notes::machine_name();
     stamp_saver(
@@ -1265,7 +1286,7 @@ fn save_target(
         pulled,
         sync_started,
         unchanged: Some(&state.record_label()),
-        notes_lines: &[],
+        notes_lines: &needs_you,
         issue: None,
         unfinished: &unfinished_pieces(&file),
     });

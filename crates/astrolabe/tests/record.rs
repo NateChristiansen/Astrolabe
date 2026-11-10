@@ -454,3 +454,5 @@ mod synchronization;
 
 #[path = "record/replying.rs"]
 mod replying;
+#[path = "record/waiting.rs"]
+mod waiting;

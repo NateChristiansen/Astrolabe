@@ -56,7 +56,13 @@ pub(super) fn act(
         ["--off"] => match previous {
             Ok(None) => ("This session has no effort set.".to_owned(), true, Change::Keep, String::new()),
             _ => (
-                "This session has no effort or initiative now. The guard stays while Astrolabe is on for this machine.".to_owned(),
+                {
+                    let gone = "This session has no effort or initiative now. The guard stays while Astrolabe is on for this machine.";
+                    match previous.ok().flatten().and_then(|p| super::leaving(&p, None, cwd)) {
+                        Some(left) => format!("{gone}\n\n{left}"),
+                        None => gone.to_owned(),
+                    }
+                },
                 true,
                 Change::Remove,
                 "Astrolabe could NOT drop this session's effort, so it stays as it was".to_owned(),
@@ -68,6 +74,9 @@ pub(super) fn act(
             match switch_initiative(name, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
                 Ok(activation) => {
                     let mut text = activation.text();
+                    if let Some(left) = previous.as_ref().and_then(|p| super::leaving(p, Some(&activation.state), cwd)) {
+                        text = after_first_paragraph(&text, &left);
+                    }
                     if let Some(note) = refreshed { text = after_first_paragraph(&text, &note); }
                     (text, true, Change::Write(Box::new(activation.state)), "Initiative binding could not be saved".into())
                 }
@@ -113,6 +122,10 @@ pub(super) fn act(
                         }
                     }
                     let mut text = activation.text();
+                    // Ahead of anything about the folder: it's the one thing to do first.
+                    if let Some(left) = previous.as_ref().and_then(|p| super::leaving(p, Some(&activation.state), cwd)) {
+                        text = after_first_paragraph(&text, &left);
+                    }
                     if let Some(note) = refreshed {
                         text = after_first_paragraph(&text, &note);
                     }

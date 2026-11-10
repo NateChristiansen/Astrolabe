@@ -124,12 +124,12 @@ fn a_later_save_clears_the_owner_wait_unless_still_blocked() {
     // A check-in while active: the owner answers, and the next save carries no status.
     let (out, ok) = mac.bash(
         "s1",
-        &format!("astrolabe effort save --waits-for \"owner: look at the plan\" {body}"),
+        &format!("astrolabe effort save --waits-for \"owner: go on the plan?\" {body}"),
     );
     assert!(ok, "{out}");
     assert!(
         mac.effort_text(1)
-            .contains("waits_for: \"owner: look at the plan\"")
+            .contains("waits_for: \"owner: go on the plan?\"")
     );
     let (out, ok) = mac.bash("s1", &format!("astrolabe effort save {body}"));
     assert!(ok, "{out}");

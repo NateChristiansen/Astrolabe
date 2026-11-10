@@ -19,7 +19,7 @@ pub(crate) use context::SHAPE;
 pub use context::{
     Activation, Effort, GUARD_SCOPE, RECORD_RULE, WORKER_RULE, read_effort, session_name, switch_on,
 };
-pub(crate) use context::{STILL_ON, no_note};
+pub(crate) use context::{STILL_ON, leaving, no_note};
 pub(crate) use proof::session_token;
 pub use proof::{probe_dir, shell_of, status};
 use repos::notes_checked;
