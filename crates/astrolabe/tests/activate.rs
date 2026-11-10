@@ -426,6 +426,8 @@ mod deadlines;
 mod hooks;
 #[path = "activate/naming.rs"]
 mod naming;
+#[path = "activate/places.rs"]
+mod places;
 #[path = "activate/proof.rs"]
 mod proof;
 #[path = "activate/repositories.rs"]

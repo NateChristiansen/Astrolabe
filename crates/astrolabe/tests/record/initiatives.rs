@@ -162,7 +162,10 @@ fn an_initiative_binding_saves_resumes_reports_and_detaches() {
             && out.contains("Pieces")
             && out.contains("Status: active")
             && out.contains("`astrolabe effort read <n>`")
-            && out.contains("`.handoffs/smooth-lines/`"),
+            && out.contains(&format!(
+                ".handoffs{sep}smooth-lines{sep}` so another session can resume",
+                sep = std::path::MAIN_SEPARATOR
+            )),
         "{out}"
     );
     let state_path = mac.state().join("lead.json");

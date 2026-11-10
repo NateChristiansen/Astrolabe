@@ -206,7 +206,9 @@ ASTROLABE
 | `--involvement "<value>"` | Applied to the page and every new effort; default `check in at plan`. |
 | `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
-The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.handoffs/<initiative slug>/` in the notes.
+The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.handoffs/<initiative slug>/` in the notes. A worker starts in a folder of its effort's repo, in a worktree of its own, and the orchestrator's text gives that folder of briefs as a full path.
+
+Binding tells a session when its folder is the wrong place for its work: a worker bound in the notes checkout for another repo's effort, an effort with edit or push authority bound in a main checkout that has other worktrees, and an orchestrator for a one-repo initiative bound in the notes checkout. A session anywhere else is told nothing more.
 
 The existing session binding stays unchanged. No journal line is written by filing. The reply gives the activation command and actual commit/sync outcome. A planning-only spike closes without `--initiative`; the page links it as provenance.
 
