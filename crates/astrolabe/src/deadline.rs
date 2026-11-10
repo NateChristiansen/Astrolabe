@@ -483,12 +483,6 @@ pub(crate) fn reading_time_is_up() -> bool {
         .is_some_and(|clock| clock.left(clock.read()).is_zero())
 }
 
-/// A failure that says a hook's time ran out, not that git found something wrong.
-pub(crate) fn out_of_time(why: &str) -> bool {
-    why.ends_with("when this hook's time ran out")
-        || why.ends_with("because this hook's time had run out")
-}
-
 /// What a call not started says.
 pub(crate) fn not_started(verb: &str) -> String {
     format!("git {verb} wasn't started, because this hook's time had run out")

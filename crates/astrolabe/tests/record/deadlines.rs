@@ -889,3 +889,160 @@ fn a_rebase_that_outlives_the_hook_finishes_though_it_prints() {
     let (out, ok) = mac.bash("s1", SAVE);
     assert!(ok, "{out}");
 }
+
+impl Machine {
+    fn session_state(&self, session: &str) -> Value {
+        serde_json::from_slice(
+            &std::fs::read(self.state().join(format!("{session}.json"))).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// What a turn end says to the session, if anything.
+    fn turn_end(&self, session: &str) -> String {
+        let input = json!({"session_id": session, "cwd": self.demo, "stop_hook_active": false, "last_assistant_message": "done"});
+        let (out, _) = self.timed_event("stop", &input, &[], Duration::from_secs(20));
+        out.trim().to_owned()
+    }
+}
+
+const MOVED: &str = "the repo changed since the last save";
+
+/// A session with no fingerprint of its repo stored, because the repo couldn't be read
+/// when it was bound, is told nothing about the repo having moved: there's nothing to
+/// compare with. The turn end takes the repo as it is, and the next one compares with that.
+#[test]
+fn a_session_with_no_stored_fingerprint_isnt_told_its_repo_moved() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    write(&mac.demo.join("untracked.txt"), "work in progress");
+    assert!(mac.bash("s1", NEW).1);
+    // A second session picks the effort up with its clock moved past its time for reads as
+    // it comes to read the repo's status, so that read isn't started.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "status:+14500")];
+    let (answer, _) = mac.timed(
+        "s2",
+        "call-1",
+        "astrolabe activate --effort 1",
+        &env,
+        Duration::from_secs(14),
+    );
+    assert!(matches!(answer, Answer::Shown(_, true)), "the effort loads");
+    assert_eq!(
+        mac.session_state("s2")["baseline"],
+        Value::Null,
+        "a read that didn't finish was stored as the repo's fingerprint"
+    );
+    // Nothing changed in the repo, and the turn end says nothing.
+    assert_eq!(mac.turn_end("s2"), "");
+    assert!(mac.session_state("s2")["baseline"].is_string());
+    assert_eq!(mac.turn_end("s2"), "");
+    // From there a real change is seen.
+    write(&mac.demo.join("more.txt"), "more work");
+    assert!(mac.turn_end("s2").contains(MOVED));
+}
+
+/// A save whose own read of the repo failed makes no claim about the repo: not the
+/// fingerprint of the save before it, which the work since has left behind.
+#[test]
+fn a_save_that_couldnt_read_its_repo_makes_no_claim_about_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let saved_with = mac.session_state("s1")["baseline"].clone();
+    assert!(saved_with.is_string());
+    // Work since that save, then a save while git can't read the repo's status.
+    write(&mac.demo.join("work.txt"), "work since the first save");
+    let index = mac.demo.join(".git/index");
+    let was = std::fs::read(&index).unwrap();
+    std::fs::write(&index, "not an index").unwrap();
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    std::fs::write(&index, was).unwrap();
+    assert_eq!(
+        mac.session_state("s1")["baseline"],
+        Value::Null,
+        "the save kept a fingerprint it didn't take"
+    );
+    // The turn end right after that save has nothing to say about the repo.
+    assert_eq!(mac.turn_end("s1"), "");
+    write(&mac.demo.join("later.txt"), "work after the second save");
+    assert!(mac.turn_end("s1").contains(MOVED));
+}
+
+/// This pull's own rebase, stopped on a conflict, is put back whatever the conflicting
+/// commit is called: whose rebase it is comes from what git recorded, not from its message,
+/// which quotes the commit's subject.
+#[test]
+fn a_conflict_whose_subject_reads_like_gits_own_words_is_still_put_back() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    let subject = "owner: there is already a rebase in progress on the plan";
+    git(&mac.notes, &["commit", "-q", "-am", subject]);
+    let (out, ok) = mac.bash("s1", SAVE);
+    // The pull couldn't replay that commit, so it put the checkout back and said so; the
+    // save landed on the local copy.
+    assert!(ok && out.contains("Notes diverged from origin"), "{out}");
+    assert!(!mac.mid_rebase(), "this pull's own rebase was left partway");
+    assert_eq!(
+        git(&mac.notes, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
+    assert!(mac.log().starts_with("0001: checkpoint\n"), "{}", mac.log());
+}
+
+/// The owner starts a rebase by hand in the instant after the pull looked again and before
+/// its own rebase starts, from the same commit and onto the same one. The pull's rebase
+/// fails on finding it, and the pull leaves it: git recorded theirs as not a quiet one,
+/// and this pull asked for a quiet one.
+#[cfg(unix)]
+#[test]
+fn a_rebase_the_owner_starts_in_the_same_instant_is_left_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    // As the pull's own rebase is about to start, once: the owner's, to the conflict,
+    // resolved and staged and not continued.
+    let once = mac.dir.0.join("owner.once");
+    let path = git_shim(
+        &mac,
+        &format!(
+            "case \" $* \" in *\" rebase \"*\" --autostash \"*) if [ ! -e '{once}' ]; then\n  : > '{once}'\n  \"$real\" rebase origin/main >/dev/null 2>&1\n  printf BOTH > knowledge/owner.md\n  \"$real\" add knowledge/owner.md\nfi;; esac",
+            once = once.display()
+        ),
+    );
+    let env = [("PATH", path.as_str())];
+    let (answer, _) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(40));
+    assert!(once.exists(), "the owner's rebase never began");
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.contains("the notes checkout is in the middle of a rebase"),
+        "{text}"
+    );
+    assert!(mac.mid_rebase(), "the owner's rebase was ended");
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "BOTH"
+    );
+    assert!(
+        git(&mac.notes, &["diff", "--cached", "--name-only"]).contains("knowledge/owner.md"),
+        "their resolution is no longer staged"
+    );
+    let reflog = git(&mac.notes, &["reflog", "--format=%gs"]);
+    assert!(!reflog.contains("abort"), "{reflog}");
+}

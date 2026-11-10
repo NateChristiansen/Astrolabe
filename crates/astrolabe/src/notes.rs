@@ -112,7 +112,7 @@ mod process;
 pub(crate) use process::keep_stdio_here;
 mod storage;
 mod sync;
-pub use facts::{Looked, RepoFacts};
+pub use facts::RepoFacts;
 pub use journal::{JournalEntry, JournalLine, parse_journal, tidy_journal};
 
 impl Notes {

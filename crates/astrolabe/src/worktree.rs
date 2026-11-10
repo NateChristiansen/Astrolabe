@@ -14,7 +14,7 @@ pub(crate) fn git(cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
 /// The same, with stdout as git wrote it: file names in `-z` output are bytes, and a lossy
 /// decode could make two names one.
 pub(crate) fn git_bytes(cwd: &Path, args: &[&std::ffi::OsStr]) -> Result<Vec<u8>, String> {
-    run_git(Git::Read, Command::new("git").args(args), cwd)
+    run_git(Git::Read, Command::new("git").args(args), cwd).map_err(|failed| failed.why)
 }
 
 type Output = std::result::Result<String, String>;
@@ -22,11 +22,25 @@ type Output = std::result::Result<String, String>;
 /// A git call of one kind, which decides whether it may be ended (see `deadline`): a
 /// fetch or push, a call in the notes checkout, or a read.
 pub(crate) fn git_as(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
+    git_or(kind, cwd, args).map_err(|failed| failed.why)
+}
+
+/// How a git call failed: what it said, and the status it exited with when it ran to an
+/// end. The status is the same in every language and whatever a commit is called, where
+/// the message is neither.
+pub(crate) struct Failed {
+    pub(crate) why: String,
+    pub(crate) code: Option<i32>,
+}
+
+/// The same as `git_as`, keeping the exit status of a call that failed.
+pub(crate) fn git_or(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Result<String, Failed> {
     run_git(kind, Command::new("git").args(args), cwd)
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
-fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, String> {
+fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Failed> {
+    let unrun = |why: String| Failed { why, code: None };
     let verb = verb(command);
     crate::deadline::stall(&verb);
     let run = crate::deadline::git_run(kind);
@@ -34,9 +48,14 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Stri
         Run::Through => None,
         Run::Within(limit) => Some(limit.time),
         // A hook with no time left for this call doesn't start it.
-        Run::No => return Err(crate::deadline::not_started(&verb)),
+        Run::No => return Err(unrun(crate::deadline::not_started(&verb))),
     };
-    command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
+    // In git's own language, whatever the user's: the few places that read a message (no
+    // upstream, a push refused for being behind) must read the same on every machine.
+    command
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C");
     let ran = match kind {
         Git::Notes => {
             // After the hook's answer, the backstop waits for a call in the notes checkout.
@@ -46,16 +65,19 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Stri
         Git::Network | Git::Read => self::run(command, limit),
     };
     match ran {
-        Err(error) => Err(format!("git could not start: {error}")),
-        Ok(Ran::Stopped) => match run {
-            Run::Within(limit) => Err(limit.stopped(&verb)),
-            _ => Err(format!("git {verb} was stopped")),
-        },
-        Ok(Ran::CutOff) => Err(format!(
+        Err(error) => Err(unrun(format!("git could not start: {error}"))),
+        Ok(Ran::Stopped) => Err(unrun(match run {
+            Run::Within(limit) => limit.stopped(&verb),
+            _ => format!("git {verb} was stopped"),
+        })),
+        Ok(Ran::CutOff) => Err(unrun(format!(
             "git {verb} ended but its output was cut off: something it started kept the output open"
-        )),
+        ))),
         Ok(Ran::Finished(done)) if done.status.success() => Ok(done.stdout),
-        Ok(Ran::Finished(done)) => Err(String::from_utf8_lossy(&done.stderr).trim().to_owned()),
+        Ok(Ran::Finished(done)) => Err(Failed {
+            why: String::from_utf8_lossy(&done.stderr).trim().to_owned(),
+            code: done.status.code(),
+        }),
     }
 }
 
@@ -91,31 +113,33 @@ fn run_kept(command: &mut Command) -> std::io::Result<Ran> {
     }))
 }
 
-/// Where a kept child's output goes: beside the plugin's state, or the temp folder. Files
-/// a process left there by exiting before its git did are cleared once they're a day old.
+/// Where a kept child's output goes: a folder of its own in the plugin's state folder,
+/// which is the user's. With no state folder there's nowhere of the user's own to put it,
+/// and the caller uses pipes: never a shared temp folder, where another user could have
+/// put a link under the name this would write to. Files a process left by exiting before
+/// its git did are cleared once they're a day old.
 fn kept_dir() -> Option<std::path::PathBuf> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = match crate::activate::state_dir() {
-            Some(state) => state.join("git-output"),
-            None => std::env::temp_dir().join("astrolabe-git-output"),
-        };
-        std::fs::create_dir_all(&dir).ok()?;
-        let day = Duration::from_secs(24 * 60 * 60);
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let old = entry
-                .metadata()
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|at| at.elapsed().ok())
-                .is_some_and(|age| age > day);
-            if old {
-                let _ = std::fs::remove_file(entry.path());
-            }
+    DIR.get_or_init(|| kept_dir_in(crate::activate::state_dir()))
+        .clone()
+}
+
+fn kept_dir_in(state: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let dir = state?.join("git-output");
+    std::fs::create_dir_all(&dir).ok()?;
+    let day = Duration::from_secs(24 * 60 * 60);
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > day);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
         }
-        Some(dir)
-    })
-    .clone()
+    }
+    Some(dir)
 }
 
 /// The git command a call runs, past any `-c name=value` before it.
@@ -387,6 +411,29 @@ mod tests {
         };
         assert_eq!(done.stdout, b"said\n");
         assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn with_no_state_folder_output_is_never_kept_in_a_shared_one() {
+        assert_eq!(kept_dir_in(None), None);
+        let state = std::env::temp_dir().join(format!("astrolabe-kept-{}", std::process::id()));
+        assert_eq!(
+            kept_dir_in(Some(state.clone())),
+            Some(state.join("git-output"))
+        );
+        let _ = std::fs::remove_dir_all(state);
+    }
+
+    /// Git is run in its own language, so a message this program reads says the same
+    /// whatever the user's.
+    #[test]
+    fn git_is_run_in_its_own_language() {
+        let cwd = std::env::current_dir().unwrap();
+        for kind in [Git::Read, Git::Notes, Git::Network] {
+            let args = ["-c", "alias.env=!env", "env"].map(AsRef::as_ref);
+            let env = git_as(kind, &cwd, &args).unwrap();
+            assert!(env.lines().any(|line| line == "LC_ALL=C"), "{env}");
+        }
     }
 
     #[test]

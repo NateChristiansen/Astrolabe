@@ -23,42 +23,15 @@ pub struct RepoFacts {
     pub fingerprint: String,
 }
 
-/// What a look at a repo came to.
-pub enum Looked {
-    Facts(RepoFacts),
-    /// The folder isn't a git checkout.
-    NotARepo,
-    /// It couldn't be read whole: a hook's time for reads ran out, or git failed partway.
-    /// Nothing is known, which is not the same as nothing having changed, so no reminder
-    /// comes of it and it never replaces a fingerprint already stored.
-    Unknown,
-}
-
 impl RepoFacts {
     /// Facts of the repo at `cwd`, or None when it isn't a git checkout or couldn't be
-    /// read whole.
+    /// read whole (a hook's time for reads ran out, or git failed partway). None is "not
+    /// known", which is not the same as nothing having changed: no fingerprint is stored
+    /// from it, and a session with none stored is told nothing about its repo moving.
     pub fn read(cwd: &Path) -> Option<Self> {
-        match Self::look(cwd) {
-            Looked::Facts(facts) => Some(facts),
-            Looked::NotARepo | Looked::Unknown => None,
-        }
-    }
-
-    /// The same, telling a folder that isn't a repo from a repo that couldn't be read.
-    pub fn look(cwd: &Path) -> Looked {
-        let run = |args: &[&str]| {
-            let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-            crate::worktree::git(cwd, &args)
-        };
-        let head = match run(&["rev-parse", "HEAD"]) {
-            Ok(head) => head.trim().to_owned(),
-            Err(why) if crate::deadline::out_of_time(&why) => return Looked::Unknown,
-            Err(_) => return Looked::NotARepo,
-        };
-        match Self::read_from(cwd, head) {
-            Some(facts) => Looked::Facts(facts),
-            None => Looked::Unknown,
-        }
+        let args = ["rev-parse", "HEAD"].map(AsRef::as_ref);
+        let head = crate::worktree::git(cwd, &args).ok()?.trim().to_owned();
+        Self::read_from(cwd, head)
     }
 
     /// The rest, once HEAD is known. None when the status or the diff couldn't be read: an
