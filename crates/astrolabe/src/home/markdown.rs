@@ -516,8 +516,9 @@ pub(super) fn resolve_link(root: &Path, from: &str, dest: &str) -> Option<String
     let dir = from.rsplit_once('/').map_or("", |(d, _)| d);
     // The name as written first, then with its escapes read: a name holding a space or a
     // `#` can only be linked encoded. A decoded `\` is refused, since Windows reads it as
-    // a separator the checks below don't.
-    let decoded = super::server::decode(path).filter(|d| d != path && !d.contains('\\'));
+    // a separator the checks below don't, and a decoded `:`, since the check above refuses
+    // one as written: an escape must not spell a drive or a scheme.
+    let decoded = super::server::decode(path).filter(|d| d != path && !d.contains(['\\', ':']));
     let mut candidates = Vec::new();
     for path in std::iter::once(path).chain(decoded.as_deref()) {
         candidates.push(normalize(&format!("{dir}/{path}")));

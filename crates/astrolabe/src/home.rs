@@ -1256,6 +1256,17 @@ mod tests {
         assert_eq!(to("%2E%2E/%2E%2E/secret.md"), None);
         assert_eq!(to("..%2F..%2Fsecret.md"), None);
         assert_eq!(to("..%5C..%5Csecret.md"), None);
+        // Nor does a decoded `:`, which the check on the link as written refuses: a drive
+        // or a scheme can't be spelled with an escape instead.
+        std::fs::write(dir.join("notes/knowledge/a:b.md"), "# n\n").unwrap_or_default();
+        assert_eq!(to("a%3Ab.md"), None);
+        let outside = dir.join("secret.md");
+        let drive = outside
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replacen(':', "%3A", 1);
+        assert_eq!(to(&drive), None);
+        assert_eq!(to("C%3A/Users/me/x.txt"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
