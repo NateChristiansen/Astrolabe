@@ -127,7 +127,7 @@ pub(super) fn act(
 
 /// A refresh note after the opening paragraph, never before it: that paragraph begins
 /// "Astrolabe is on", the line a pickup checks before trusting the rest.
-fn after_first_paragraph(text: &str, note: &str) -> String {
+pub(super) fn after_first_paragraph(text: &str, note: &str) -> String {
     match text.split_once("\n\n") {
         Some((first, rest)) => format!("{first}\n\n{note}\n\n{rest}"),
         None => format!("{text}\n\n{note}"),
@@ -677,10 +677,8 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                             session,
                             &Change::Write(Box::new(activation.state.clone())),
                         ) {
-                            Ok(()) => match refreshed {
-                                Some(note) => after_first_paragraph(&activation.fitted(), &note),
-                                None => activation.fitted(),
-                            },
+                            // The note is fitted with the rest, so it can't push the text over.
+                            Ok(()) => activation.fitted_after(refreshed.as_deref()),
                             Err(why) => format!(
                                 "Astrolabe stays on for {}, guard included, but couldn't save its reload: {why}. Tell the owner.",
                                 state.record_label()
@@ -711,7 +709,7 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
         }
         Ok(None) => {
             let Some(effort) = launched else {
-                return Some(fresh(&cwd));
+                return Some(fresh(&cwd, provider(input)));
             };
             let shells = session_shells(provider(input));
             Some(
