@@ -359,14 +359,27 @@ fn with_effort_status<'a>(
         let in_loose_item = matches!(before(1), Some(Event::Start(Tag::Paragraph)))
             && matches!(before(2), Some(Event::Start(Tag::Item)));
         let opens = i == 0 || in_item || matches!(before(1), Some(Event::Start(Tag::Paragraph)));
+        // The title line's description, and how many events after the link it takes. On
+        // an initiative's page a link that fills its list item is a title line too, the
+        // way an Efforts list without descriptions writes them.
         let rest = match events.get(end + 1) {
             Some(Event::Text(t)) if opens => t
                 .strip_prefix('.')
                 .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-                .map(|r| r.trim_start().to_owned()),
+                .map(|r| (r.trim_start().to_owned(), 1)),
+            Some(Event::End(TagEnd::Item)) if members.is_some() && in_item => {
+                Some((String::new(), 0))
+            }
+            Some(Event::End(TagEnd::Paragraph))
+                if members.is_some()
+                    && in_loose_item
+                    && matches!(events.get(end + 2), Some(Event::End(TagEnd::Item))) =>
+            {
+                Some((String::new(), 0))
+            }
             _ => None,
         };
-        if let Some(rest) = rest {
+        if let Some((rest, taken)) = rest {
             let left = if left {
                 "<span class=\"stat left\">not a member</span>"
             } else {
@@ -392,7 +405,7 @@ fn with_effort_status<'a>(
             if !rest.is_empty() {
                 out.push(Event::Text(rest.into()));
             }
-            i = end + 2;
+            i = end + 1 + taken;
         } else {
             out.extend(events[i..=end].iter().cloned());
             if !pill.is_empty() {

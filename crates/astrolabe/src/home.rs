@@ -525,6 +525,17 @@ mod tests {
             ),
             "{prose}"
         );
+        // An Efforts list of bare links, with no stop or description, is a list of title
+        // lines on an initiative's page, and the rest continue it.
+        let (_, prose) = shared_work_page(
+            &notes,
+            "## Efforts\n\n1. [Fourth](../efforts/0004-member.md)\n2. [Seventh](../efforts/0007-member.md)\n",
+        );
+        assert!(
+            prose.contains("<li><span class=\"etitle\"><a href=\"/efforts/0007-member.md\">7 Seventh</a><span class=\"stat s-ready\">to start</span></span></li>\n<li><span class=\"etitle\"><a href=\"/efforts/0005-member.md\">5 Member</a>"),
+            "{prose}"
+        );
+        assert!(!prose.contains("members-label"), "{prose}");
         // Prose that links members only inline has no list to continue, so the rest are
         // listed after its section, labelled, in the same shape.
         let (_, prose) = shared_work_page(
