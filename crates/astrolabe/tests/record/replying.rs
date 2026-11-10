@@ -341,3 +341,51 @@ fn a_reply_leaves_review_status_and_its_wait_untouched() {
         assert_eq!(m.log().lines().count(), commits);
     }
 }
+
+/// Catches: an orchestrator's question staying under Needs you after the owner answered it,
+/// though its text says a reply clears an active or blocked wait.
+#[test]
+fn a_reply_clears_an_owner_wait_on_an_initiative_page() {
+    let world = World::new();
+    let m = world.machine("pc");
+    write(
+        &m.notes.join("initiatives/smooth-lines.md"),
+        include_str!("../fixtures/initiatives/prose.md"),
+    );
+    git(&m.notes, &["add", "initiatives"]);
+    git(&m.notes, &["commit", "-qm", "legacy page"]);
+    assert!(
+        m.bash("s1", "astrolabe activate --initiative smooth-lines")
+            .1
+    );
+    let (out, ok) = m.bash(
+        "s1",
+        "astrolabe effort save --status blocked --waits-for \"owner: which effort starts first?\" <<'ASTROLABE'\nFiled, waiting on the order.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let mut state = session(&m);
+    state["delivered_ms"] = (Machine::now_ms() - 2_000).into();
+    save_session(&m, &state);
+    let read = || {
+        let text = std::fs::read_to_string(m.notes.join("initiatives/smooth-lines.md")).unwrap();
+        EffortFile::parse(&text).unwrap()
+    };
+    let original = read();
+    assert_eq!(
+        original.prop("waits_for"),
+        Some("owner: which effort starts first?")
+    );
+    assert!(m.hook_json("pre-command", input(&m, false)).is_none());
+    let current = read();
+    assert_eq!(current.prop("status"), Some("active"));
+    assert_eq!(current.prop("waits_for").unwrap_or_default(), "");
+    assert_eq!(current.current, original.current);
+    assert_eq!(
+        m.log().lines().next(),
+        Some("initiative smooth-lines: owner replied")
+    );
+    // Once: the next command writes nothing.
+    let commits = m.log().lines().count();
+    assert!(m.hook_json("pre-command", input(&m, false)).is_none());
+    assert_eq!(m.log().lines().count(), commits);
+}

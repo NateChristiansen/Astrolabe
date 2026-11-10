@@ -23,7 +23,13 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
     }
     let after = *state.delivered_ms.as_ref()?;
     let path = state.file.as_deref()?;
-    if !path.starts_with("efforts/")
+    // An orchestrator's page holds its owner questions, and its text says a reply clears one.
+    let page = state.initiative_key().map(str::to_owned);
+    let folder = match page {
+        Some(_) => "initiatives/",
+        None => "efforts/",
+    };
+    if !path.starts_with(folder)
         || Path::new(path)
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
@@ -36,10 +42,11 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         return None;
     }
     let mut effort = EffortFile::parse(&original).ok()?;
-    if effort.number()? != state.effort.as_deref()?.parse::<u32>().ok()?
-        || effort.prop("session")? != session
-        || !can_clear_wait(&effort)
-    {
+    let numbered = match page {
+        Some(_) => true,
+        None => effort.number()? == state.effort.as_deref()?.parse::<u32>().ok()?,
+    };
+    if !numbered || effort.prop("session")? != session || !can_clear_wait(&effort) {
         return None;
     }
     let now = notes::now_ms();
@@ -61,7 +68,10 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
     effort.set("status", "active");
     effort.set("waits_for", "");
     effort.set("updated", &notes::local_stamp());
-    let text = effort.render();
+    let (text, name) = match &page {
+        Some(slug) => (effort.render_initiative(), format!("initiative {slug}")),
+        None => (effort.render(), format!("{:04}", effort.number()?)),
+    };
     let path = path.to_owned();
     state.delivered.set(notes::content_hash(&text));
     state.delivered_ms.set(now);
@@ -70,7 +80,7 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         reply_after_ms: Some(after),
         key: notes::hash(&format!("reply:{session}:{base}:{after}")),
         files: vec![(path, text)],
-        message: format!("{:04}: owner replied", effort.number()?),
+        message: format!("{name}: owner replied"),
         base: Some(base),
         states: vec![(state_path(&notes.state, session), state.to_value())],
         lesson_close: None,

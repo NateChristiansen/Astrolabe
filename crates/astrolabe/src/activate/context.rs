@@ -62,15 +62,15 @@ const STALE: &str = "A stale save is refused with the current text.";
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
 const ORCHESTRATE_FULL: &str = "When the owner picks an orchestrator and workers, the orchestrator binds with `astrolabe activate --initiative <slug>` and keeps its state, cross-effort decisions, owner questions and the day's one journal line on the page, never in an orchestrate effort. Workers save their own state, decisions and pieces, and journal nothing. The orchestrator reviews and lands, then runs `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A stale save is refused with the current text; a shared initiative reaches across repos. Briefs and reports live in the notes under `.handoffs/<initiative slug>/` so another session can resume.";
 
-const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Once built, checked and landed, or with nothing to land, mark it done at any involvement; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
 
 /// Where an owner's effort journals, a member of an initiative included: today's "per
 /// standalone effort" left Codex writing none on a member it picked up (effort 127's eval).
 const JOURNAL_EFFORT: &str = "The journal is the owner's history: one line a day for the effort you're on, on the effort, including one in an initiative; an orchestrator writes its initiative's line on the page instead, and workers write none.";
 
-const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review when built and checked; the dispatcher marks it done.";
+const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused. A question goes to your dispatcher, with --waits-for \"dispatcher: <question>\" only if it blocks the work; a follow-up goes in Current state's last paragraph. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review with --waits-for \"dispatcher: review and land\" when built and checked; the dispatcher marks it done.";
 
-const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Use \"owner: <question>\" for Needs you. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Under autonomous, mark done on your checks; otherwise save in review with --waits-for \"owner: look at …\" and mark done after their look.";
+const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Needs you is --waits-for \"owner: <what to decide or do, and where to see it>\" on this page, only for something they can act on now; a worker's question for the owner comes to you and goes here. A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Mark a member done once it's reviewed and landed, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.";
 
 const JOURNAL_INITIATIVE: &str = "The journal is the owner's history: one line a day for this initiative, on its page; its workers write none.";
 
@@ -141,7 +141,7 @@ pub fn session_name(number: &str, title: &str) -> String {
 /// started outside the app has no such tool and isn't listed there, so it skips this. A Claude
 /// hook names a session only when a prompt is sent, so the Claude desktop app's own tool names
 /// it sooner, and the hook still names it where there's no such tool.
-fn rename(provider: &str, name: &str) -> Option<String> {
+fn rename(provider: &str, name: &str, record: &str) -> Option<String> {
     let (what, tool, otherwise) = match provider {
         "codex" => ("thread", "`set_thread_title` in the Codex app", ""),
         "claude" => (
@@ -152,7 +152,7 @@ fn rename(provider: &str, name: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!(
-        "Rename this {what} to \"{name}\" now with the app's {what}-rename tool ({tool}), so the owner can see which effort it's on. If you have no such tool, skip this and don't mention it{otherwise}."
+        "Rename this {what} to \"{name}\" now with the app's {what}-rename tool ({tool}), so the owner can see which {record} it's on. If you have no such tool, skip this and don't mention it{otherwise}."
     ))
 }
 
@@ -296,6 +296,9 @@ pub struct Activation {
     pub(super) parts: Vec<Part>,
     /// The effort's name, which the session takes only when it takes up the effort's work.
     pub(super) picked: String,
+    /// What a mid-session bind says last, after every note: the ask to rename the session,
+    /// which an orchestrator skipped twice when it sat ahead of the notes (2026-11-09).
+    pub(super) last: Option<String>,
 }
 
 /// One of the owner's notes, whole. Owner goes to every session at its start; whole voice to one
@@ -324,6 +327,9 @@ impl Activation {
         let mut text = self.lead();
         for part in &self.parts {
             text += &format!("\n\n--- {}\n\n{}", part.title, part.body);
+        }
+        if let Some(last) = &self.last {
+            text += &format!("\n\n{last}");
         }
         text
     }
@@ -357,9 +363,9 @@ impl Activation {
         if let Some(name) = self.state.name.as_deref()
             && self.state.named.as_deref() != Some(name)
             && self.state.told.as_deref() != Some(name)
-            && let Some(line) = rename(provider, name)
+            && let Some(line) = rename(provider, name, self.state.record_kind())
         {
-            self.head += &format!("\n\n{line}");
+            self.last = Some(line);
             // Told, not named: Claude's hook still gives the name where the app has no tool.
             let name = name.to_owned();
             self.state.told.set(name);
@@ -843,6 +849,7 @@ fn switch_record(
         state,
         parts,
         picked,
+        last: None,
     })
 }
 
@@ -955,6 +962,105 @@ pub(super) fn placed(
         )),
         _ => None,
     }
+}
+
+/// What a session is told when it moves off a record that still waits on the owner: the
+/// board keeps showing it under Needs you until a save clears it, and nothing else at a bind
+/// reads the record being left (the audit effort sat there for hours, 2026-11-09). `next` is
+/// the binding it moves to, or none when it drops its record. Nothing readable is nothing
+/// to say.
+pub(crate) fn leaving(
+    previous: &SessionState,
+    next: Option<&SessionState>,
+    cwd: &Path,
+) -> Option<String> {
+    let key = previous.bound_key()?;
+    let page = previous.initiative_key().is_some();
+    if next.is_some_and(|n| n.bound_key() == Some(key) && n.initiative_key().is_some() == page) {
+        return None;
+    }
+    let (_, notes) = notes_and_repos().ok()?;
+    let read = |rel: &str| {
+        let text = std::fs::read_to_string(notes.join(rel)).ok()?;
+        crate::effort::EffortFile::parse(&text).ok()
+    };
+    let file = read(previous.file.as_deref()?)?;
+    let status = file.prop("status").unwrap_or_default();
+    let wait = file.prop("waits_for").filter(|w| w.starts_with("owner:"))?;
+    if matches!(status, "done" | "abandoned") {
+        return None;
+    }
+    let state = match status {
+        "review" => "in review",
+        other => other,
+    };
+    let record = previous.record_label();
+    let Some(next) = next else {
+        let mut record = record;
+        if let Some(first) = record.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        return Some(format!(
+            "{record} still shows under Needs you: {state}, waiting on \"{wait}\". If the owner has answered, or it isn't theirs to act on now, load it again and clear that; if it still needs them, tell the owner it's still open."
+        ));
+    };
+    // A save by number reaches an effort in this session's repo, from the notes checkout, or
+    // in the initiative it now shares; anything else is loaded again to be saved.
+    let reachable = || -> Option<bool> {
+        if file.prop("repo") == next.repo.as_deref() || in_notes(cwd) {
+            return Some(true);
+        }
+        let pages = crate::effort::initiative_catalog(&notes).ok()?;
+        let slug = |name: &str| {
+            crate::effort::resolve_initiative(&pages, name)
+                .ok()
+                .map(|p| p.slug.clone())
+        };
+        let theirs = slug(file.prop("initiative")?)?;
+        let bound = read(next.file.as_deref()?)?;
+        let mine = slug(next.initiative_key().or_else(|| bound.prop("initiative"))?)?;
+        Some(theirs == mine)
+    };
+    let title = if page {
+        file.title.as_str()
+    } else {
+        file.name()
+    };
+    // A worker saves and reads only its own effort, so nothing it could run reaches this one.
+    if next.worker.is_true() {
+        return Some(format!(
+            "You're leaving {record}, \"{title}\", and it still shows under Needs you: {state}, waiting on \"{wait}\". A worker saves only its own effort, so tell your dispatcher now that {record} still shows there: it clears it, or says it still needs the owner."
+        ));
+    }
+    // Once it's this session's record again, the save that clears it: a blocked record keeps
+    // its wait unless its status moves, and any other takes an empty one. Leaving
+    // --waits-for out clears neither a blocked record's wait nor a review's.
+    let bound_save = match status {
+        "blocked" => {
+            "save it with `astrolabe effort save --status active` and a Current state body"
+        }
+        _ => "run `astrolabe effort save --waits-for \"\"`",
+    };
+    let clear = if page {
+        format!(
+            "bind back with `astrolabe activate --initiative {key}` and {bound_save} before anything else"
+        )
+    } else if reachable() != Some(true) {
+        format!(
+            "load it again with `astrolabe activate --effort {key}` and {bound_save} before anything else"
+        )
+    } else if status == "blocked" {
+        format!(
+            "clear it before anything else: `astrolabe effort read {key}`, then `astrolabe effort save --effort {key} --status active` with a Current state body"
+        )
+    } else {
+        format!(
+            "clear it before anything else with `astrolabe effort save --effort {key} --waits-for \"\"`, or close it"
+        )
+    };
+    Some(format!(
+        "You're leaving {record}, \"{title}\", and it still shows under Needs you: {state}, waiting on \"{wait}\". If the owner has answered, or it isn't theirs to act on now, {clear}. If it still needs them, leave it and tell the owner it's still open.",
+    ))
 }
 
 /// What comes after the role's lead, once any notices from the binding are in: a worker's
@@ -1202,6 +1308,7 @@ pub(super) fn fresh(cwd: &Path, provider: &str) -> String {
         closing: "",
         parts,
         picked: String::new(),
+        last: None,
     }
     .fitted()
 }
@@ -1562,6 +1669,7 @@ mod tests {
             closing: role.map_or("", closing),
             parts,
             picked: String::new(),
+            last: None,
         }
     }
 
@@ -2153,8 +2261,9 @@ mod tests {
         assert!(placed(Role::Effort, &Seat::Shared, &push, &demo, &home).is_some());
     }
 
-    /// An effort's and a worker's rules as main had them before any binding was told where
-    /// it is (fbc24b4), by length and SHA-256. Only the rules: that a real binding adds
+    /// An effort's and a worker's rules as they stand since Needs you came to mean something
+    /// the owner can act on now (before that, as main had them at fbc24b4, 94 and 287 bytes
+    /// shorter), by length and SHA-256. Only the rules: that a real binding adds
     /// nothing to them where no notice fires is pinned through the hook, in the
     /// activation tests.
     #[test]
@@ -2164,38 +2273,38 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7362,
-                "a0c3b440e1d64b04b735089cf20e22a03375baa1fbf34ca514a91baaf8a0965f",
+                7456,
+                "eb19099c333c99d3a1b0f0fa0216486020ba7fb87e0d4feb230a9ed7ddc411cc",
             ),
             (
                 Role::Effort,
                 "edit",
-                7365,
-                "7bef85b9d2d8377bb652ad920d1401cdf39e3671d64bca4cf80b789d2762dcb9",
+                7459,
+                "2b3eba969113406a2cb38c09d86f1c29450728decc6c772b998be1501416306c",
             ),
             (
                 Role::Effort,
                 "push",
-                7382,
-                "6c6aa3f4e495c9670e9ed93e1b0c8f792a24f3749a7295dbee23d48cd6962cbd",
+                7476,
+                "1dc85344d405666116a355469aa4b5dbb259b2004d06e75ce030f80ff3ae9e7a",
             ),
             (
                 Role::Worker,
                 "read",
-                5761,
-                "00a5501b5e0315bff1e7630339b7f5eb380364a9eccecfc97f2ae9891e99fc2d",
+                6048,
+                "ff33aaa73eb139dc2b1741cb78c256bb48e1b7f52eebaafce2c354c82c4fec50",
             ),
             (
                 Role::Worker,
                 "edit",
-                5764,
-                "fb8d8942cb3e4dbb1d0c5f8f44ed5dddd812e9739b40039ec6ad5ce912d5f540",
+                6051,
+                "70070afb322f5283dceb93ca00840788123bf79f6a44da859374e93c5b96cbd7",
             ),
             (
                 Role::Worker,
                 "push",
-                5781,
-                "96977b4c93e643e59b421ceb780f3b347177670b0dde427e1c55e5f67cb14259",
+                6068,
+                "d3197202634ca4ef75e619e84fdc4f1887d793eb3a614776f99c910b7f780404",
             ),
         ] {
             let t = instructions(role, &facts("check in at plan", authority));
@@ -2206,6 +2315,43 @@ mod tests {
                 "{role:?} {authority}"
             );
         }
+    }
+
+    /// Catches: finished work sent to Needs you by instruction, as every role's text did.
+    #[test]
+    fn no_role_is_told_to_save_finished_work_for_the_owners_look() {
+        for role in [Role::Effort, Role::Worker, Role::Initiative] {
+            let t = text(role);
+            for gone in ["owner: look at", "after their look", "owner: <question>"] {
+                assert!(!t.contains(gone), "{role:?} still says {gone:?}");
+            }
+        }
+        check(
+            Role::Effort,
+            &[
+                "Use \"owner: <the decision or action, and where to see it>\" for Needs you.",
+                "Once built, checked and landed, or with nothing to land, mark it done at any involvement; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.",
+            ],
+            &[],
+        );
+        check(
+            Role::Worker,
+            &[
+                "Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused.",
+                "with --waits-for \"dispatcher: <question>\" only if it blocks the work",
+                "Save in review with --waits-for \"dispatcher: review and land\" when built and checked; the dispatcher marks it done.",
+            ],
+            &[],
+        );
+        check(
+            Role::Initiative,
+            &[
+                "a worker's question for the owner comes to you and goes here.",
+                "A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state.",
+                "Mark a member done once it's reviewed and landed, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.",
+            ],
+            &[],
+        );
     }
 
     #[test]

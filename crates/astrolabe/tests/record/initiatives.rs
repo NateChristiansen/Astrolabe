@@ -177,7 +177,7 @@ fn an_initiative_binding_saves_resumes_reports_and_detaches() {
     state["future"] = json!({"nested":true});
     state["binding"]["future"] = json!({"nested":true});
     write(&state_path, &state.to_string());
-    let (out, ok) = mac.bash("lead", "astrolabe effort save --decision \"chose curves over corners: smoother\" --waits-for \"owner: look at the curves\" <<'ASTROLABE'\nReady for a look.\nASTROLABE\n");
+    let (out, ok) = mac.bash("lead", "astrolabe effort save --decision \"chose curves over corners: smoother\" --waits-for \"owner: curves or corners?\" <<'ASTROLABE'\nReady for a look.\nASTROLABE\n");
     assert!(ok && out.contains("Saved initiative smooth-lines"), "{out}");
     let page = std::fs::read_to_string(mac.notes.join("initiatives/smooth-lines.md")).unwrap();
     let file = astrolabe::effort::EffortFile::parse(&page).unwrap();

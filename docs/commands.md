@@ -235,7 +235,7 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | Option | Effect |
 | --- | --- |
 | `--status <state>` | Set `proposed`, `ready`, `active`, `review`, `blocked`, `done` or `abandoned`. Review means built and checked, waiting for review, acceptance or landing. |
-| `--waits-for "<condition>"` | Record what needs to happen next. Use `owner: <request>` when it needs the owner. Required in the same command as `--status blocked`. Refused on a done or abandoned record, which waits on nothing. An empty value clears it. |
+| `--waits-for "<condition>"` | Record what needs to happen next. `owner: <the decision or action, and where to see it>` puts the record under Needs you, so it's only for something the owner can act on now; the save's reply says so when it sets one. A wait that only asks the owner to look (`owner: look at …`, `owner: please take a look`) or has nothing after `owner:` is refused, because it names nothing to decide, and so is any `owner:` wait from a session bound with `--worker`, whose questions go to its dispatcher. Required in the same command as `--status blocked`. Refused on a done or abandoned record, which waits on nothing. An empty value clears it. |
 | `--reason "<reason>"` | Required with `--status abandoned`, and refused with any other status. Stored under Decisions as a dated `abandoned: <reason>` line, so it stays after later saves replace Current state. |
 | `--decision "chose X over Y: reason"` | Append a dated decision. Repeat the flag for several; each is recorded, in the order given. |
 | `--journal "<entry>"` | Update today's journal line for this effort. A later save from the same machine replaces its earlier line. See [journal format](#journal). |
@@ -250,12 +250,12 @@ A done save lists any unticked pieces in its reply without refusing the save. Ke
 
 When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
 
-A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Review efforts and unsupported or ambiguous transcripts leave the wait alone.
+A human reply in the bound conversation clears an active or blocked `owner:` wait at the next supported pre-command or Stop hook, moving the effort or the bound initiative page into In motion. This updates status only; the agent still interprets the reply and saves its progress. A reply does not grant approval. Review efforts, a worker's effort and unsupported or ambiguous transcripts leave the wait alone.
 
-A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked or in review. A done or abandoned record waits on nothing: a save that would leave one waiting is refused, and the board never shows one in Needs you. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. For example:
+A save without `--waits-for` clears the previous waiting condition unless the effort stays blocked or in review. A done or abandoned record waits on nothing: a save that would leave one waiting is refused, and the board never shows one in Needs you. Give `--waits-for` again while still waiting; use `--status active` after an answer when automatic detection is unavailable. A session that binds to another record, or drops its own with `activate --off`, while the one it leaves still waits on the owner is told so, with the command that clears it. For example:
 
 ```sh
-astrolabe effort save --status blocked --waits-for "owner: try upload retries" <<'ASTROLABE'
+astrolabe effort save --status blocked --waits-for "owner: retry uploads, or fail the batch?" <<'ASTROLABE'
 Blocked, waiting for the upload retry check.
 ASTROLABE
 ```

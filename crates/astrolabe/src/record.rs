@@ -479,6 +479,12 @@ fn new_inner(
     for line in &beside {
         head += &format!("\n\n{line}");
     }
+    if let Some(left) = previous
+        .as_ref()
+        .and_then(|p| activate::leaving(p, Some(&activation.state), cwd))
+    {
+        head += &format!("\n\n{left}");
+    }
     let text = format!("{head}\n\n{}", activation.text());
     crate::application::finish(&notes, key, &text);
     Ok(text)
@@ -1012,7 +1018,11 @@ fn save_inner(
                 .to_owned(),
         );
     }
+    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
     let before = edit_bound(&mut file, &req, initiative, &day)?;
+    if let Some(wait) = newly_needs_owner(&file, &before, &waited) {
+        notes_lines.push(validation::needs_you_note(record, wait));
+    }
     let machine = notes::machine_name();
     let journal = req
         .journal_line(key, &machine, notes::now_ms(), &day)
@@ -1163,6 +1173,18 @@ fn require_transition_body(
         ));
     }
     Ok(())
+}
+
+/// The wait a save just put under Needs you: the record shows there now, and before the save
+/// it didn't, or showed another ask. What the board shows, not the stored words: a closed
+/// record never shows, so one reopened with the wait an old note left on it is new there.
+fn newly_needs_owner<'a>(file: &'a EffortFile, before: &str, waited: &str) -> Option<&'a str> {
+    let shows = |status: &str, wait: &str| {
+        !matches!(status, "done" | "abandoned") && wait.starts_with("owner:")
+    };
+    let wait = file.prop("waits_for").unwrap_or_default();
+    let now = shows(file.prop("status").unwrap_or_default(), wait);
+    (now && !(shows(before, waited) && wait == waited)).then_some(wait)
 }
 
 fn unfinished_pieces(file: &EffortFile) -> String {
@@ -1358,7 +1380,12 @@ fn save_target(
     let status = req.status.as_deref();
     require_transition_body(&file, status, current)?;
     let (day, _) = notes::local_day_time();
+    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
     let before = edit_bound(&mut file, req, initiative, &day)?;
+    let needs_you: Vec<String> = newly_needs_owner(&file, &before, &waited)
+        .map(|wait| validation::needs_you_note(&format!("effort {target}"), wait))
+        .into_iter()
+        .collect();
     let now = notes::local_stamp();
     let machine = notes::machine_name();
     stamp_saver(
@@ -1406,7 +1433,7 @@ fn save_target(
         pulled,
         sync_started,
         unchanged: Some(&state.record_label()),
-        notes_lines: &[],
+        notes_lines: &needs_you,
         issue: None,
         unfinished: &unfinished_pieces(&file),
     });

@@ -48,6 +48,65 @@ pub(super) fn as_current(body: &str) -> Result<String, String> {
     Ok(current)
 }
 
+/// A wait on the owner puts the record under Needs you, so it has to be theirs to act on. A
+/// tool can't tell what a wait means, but two shapes it can: a dispatched worker's, whose
+/// question goes to its dispatcher and which no reply would clear; and one that leads with
+/// "look", the form the session text taught, which names nothing to decide (a quarter of
+/// every owner wait saved before 2026-11-09, half of them with a decision buried further in).
+/// An effort the owner gave an agent directly isn't a worker's and can wait on them.
+pub(super) fn check_wait(wait: &str, worker: Option<&str>) -> Result<(), String> {
+    let Some(ask) = wait.strip_prefix("owner:") else {
+        return Ok(());
+    };
+    if let Some(record) = worker {
+        return Err(format!(
+            "this session is a worker under {record}, bound with --worker, so its effort doesn't go under Needs you: a question goes to the dispatcher, who settles it or puts it to the owner on its own record. If it blocks the work, save with --waits-for \"dispatcher: <question>\" and tell the dispatcher now; if it doesn't, put it in Current state's last paragraph and your report. Nothing was written"
+        ));
+    }
+    let words: Vec<String> = ask
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .take(5)
+        .collect();
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    // A "please" ahead of it is the same ask. The word itself, never one it starts ("looks
+    // good to land?", "lookup table or a match?"), and after "take" or "have" within the
+    // few words a look takes ("take a look", "have a quick look", "take another look").
+    let words = match words[..] {
+        ["please", ..] => &words[1..],
+        _ => &words[..],
+    };
+    let look = match words {
+        [] | ["look", ..] => true,
+        ["take" | "have", rest @ ..] => rest.iter().take(3).any(|w| *w == "look"),
+        _ => false,
+    };
+    if look {
+        return Err(format!(
+            "--waits-for \"{wait}\" doesn't say what the owner should decide or do, so it can't go under Needs you. Lead with the decision or action and say where to see it, as in \"owner: land the export fix on main? 4 seconds instead of 30, on branch export-batch\". If nothing needs them now, leave --waits-for off or name what it does wait on. Nothing was written"
+        ));
+    }
+    Ok(())
+}
+
+/// What a save says when it puts a record under Needs you: the five things the column was
+/// used for that weren't the owner's to act on (2026-11-09), at the one moment the agent is
+/// deciding, where the session's start text has no room for them.
+pub(super) fn needs_you_note(record: &str, wait: &str) -> String {
+    let mut record = record.to_owned();
+    if let Some(first) = record.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let ask = wait.strip_prefix("owner:").unwrap_or(wait).trim();
+    format!(
+        "{record} now shows under Needs you as \"{ask}\". That column is for a decision or action the owner can take now that the notes don't already settle. A follow-up, a courtesy look, work they've planned for later, a wait on an event and a hold they asked for aren't that: if this is one, save again with --waits-for \"\" or with what it really waits on, and put it in Current state's last paragraph."
+    )
+}
+
 /// Closing words that say where the work stands: the board shows that.
 pub(super) const STATUS_WORDS: [&str; 9] = [
     "merged",

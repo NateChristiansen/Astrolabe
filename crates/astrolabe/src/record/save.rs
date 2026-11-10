@@ -2,7 +2,7 @@
 //! from its flags and body, with every refusal that needs no note. Nothing here reads the
 //! notes or writes session state.
 use super::validation::{
-    STATUSES, as_current, check_journal, one_of, shift_plan_headings, split_plan,
+    STATUSES, as_current, check_journal, check_wait, one_of, shift_plan_headings, split_plan,
 };
 use super::{Change, apply_ticks, line_id, saved_text};
 use crate::effort::{EffortCommand, EffortFile, FORMS};
@@ -152,6 +152,9 @@ impl<'a> SaveRequest<'a> {
         }
         if status.as_deref() == Some("blocked") && waits_for.is_none_or(str::is_empty) {
             return Err("blocked needs --waits-for \"<what it waits on>\": the home view shows what could be picked up next by that condition, and v1 had blocked work nobody could tell how to unblock".to_owned());
+        }
+        if let Some(wait) = waits_for {
+            check_wait(wait, state.worker.is_true().then_some(record.as_str()))?;
         }
         if status.as_deref() == Some("abandoned") && reason.is_none() {
             return Err("abandoned needs --reason \"<why>\"".to_owned());
