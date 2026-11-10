@@ -357,3 +357,23 @@ deny	mac	Bash	find . -name x -exec gh run rerun 5 ;
 miss	mac	Bash	gh run rerun 5 && env -S 'gh pr merge 3'
 miss	mac	Bash	gh run rerun 5; sh <<'EOF'⏎gh pr merge 3⏎EOF
 miss	mac	Bash	printf 'cancel\n' | xargs -I rerun sh -c 'gh run rerun 5'
+# A redirect's target is skipped, and the skip ends at a bracket, a separator or a newline:
+# it once carried into a process substitution and ate the program's name (audit, 2026-11-09).
+deny	mac	Bash	cat <(git push --force)
+deny	mac	Bash	tee >(git push --force)
+deny	mac	Bash	echo hi > >(git push --force)
+deny	mac	Bash	echo hi > (git push --force)
+deny	mac	Bash	(echo hi >) git push --force
+deny	mac	Bash	echo hi > ; git push --force
+deny	mac	Bash	echo hi > | git push --force
+deny	mac	Bash	echo hi > & git push --force
+deny	mac	Bash	echo hi >⏎git push --force
+allow	mac	Bash	cat <(git log) > out
+# Three limits the same audit found, recorded and not fixed: the guard grows from real denials.
+# No -Command: pwsh takes a bare argument as a script file (docs/hosts.md); Windows powershell.exe is unprobed.
+miss	win	Bash	pwsh "git push --force"
+miss	win	Bash	powershell.exe "git push --force"
+# cmd has no single quotes, so its & splits here; the guard reads them as quotes in every dialect.
+miss	win	PowerShell	cmd /c "echo 'a & git push --force & echo b'"
+# What xargs appends at run time isn't carried into the shell it starts.
+miss	mac	Bash	echo --force | xargs sh -c 'git push "$@"' sh

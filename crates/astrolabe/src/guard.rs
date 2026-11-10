@@ -145,6 +145,9 @@ impl Parser {
                 c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
                     self.literal_error.get_or_insert(ONE_COMMAND);
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
+                    // A redirect with no target word before this must not skip the next
+                    // command's program, as in `cat <(git push --force)`.
+                    expect = Expect::Word;
                     self.finish(&mut command);
                     match c {
                         c if until == Some(c) && parens == 0 => return,
