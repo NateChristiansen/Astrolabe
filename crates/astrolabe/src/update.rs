@@ -660,6 +660,10 @@ struct Seen {
     unreadable: Option<String>,
 }
 
+/// Said with recovery commands that start with removals whose outcome isn't known.
+const UNSURE: &str =
+    "A removal at the start may report that there is nothing to remove; carry on if it does.";
+
 /// An app's commands in order, each with whether it must succeed.
 type Steps = Vec<(Vec<String>, bool)>;
 
@@ -874,14 +878,19 @@ fn run(
                         commands(&steps, true),
                         commands(plugin, true)
                     ),
+                    // The old marketplace wasn't added, which a removal that didn't take
+                    // would also cause. What is registered is in doubt, so each way starts
+                    // with the removals.
                     Err(again) => format!(
-                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {retry}. For {old}, run {}.",
-                        commands(back, false)
+                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {}. For {old}, run {}. {UNSURE}",
+                        commands(&steps, true),
+                        commands(back, true)
                     ),
                 }
             }
             Plugin::Reregister(None) => format!(
-                "{label}: {why}. {label} may have no Astrolabe plugin, hooks or guard until this succeeds: run {retry}."
+                "{label}: {why}. {label} may have no Astrolabe plugin, hooks or guard until this succeeds: run {}. {UNSURE}",
+                commands(&steps, true)
             ),
             // Only Claude Code's reinstall removes the installed copy first.
             _ if steps.len() > 1 => format!(
@@ -1650,32 +1659,54 @@ mod tests {
                 }
             }
 
-            // Both the move and the way back fail: nothing is hidden, both recoveries print.
-            let dir = Scratch::new(&format!("inject-{}-both", app.cli()));
-            let seen = only(app, fake_cli(&dir.0), "main");
+            // The old marketplace can't be added back, in two ways: the target's add
+            // failed, or the target went in, its install failed, and the removal that
+            // should have cleared it for the old one failed too. What is registered is in
+            // doubt either way, so both sets of commands start with the removal.
             let add = &steps[steps.len() - 2].0;
-            fail(&dir.0, &[add, &old]);
-            let report = run(
-                Channel::Nightly,
-                &nightly(true),
-                &seen,
-                &|_| None,
-                &|_| Ok(()),
-                &dir.0,
-                false,
-                false,
-            )
-            .unwrap_err();
-            // Nothing is registered now, so each way back starts with its add.
-            assert!(report.contains("couldn't be put back"), "{report}");
-            assert!(
-                report.contains(&format!("For nightly, run `{}`", shown(app.cli(), add))),
-                "{report}"
-            );
-            assert!(
-                report.contains(&format!("For main, run `{}`", shown(app.cli(), &old))),
-                "{report}"
-            );
+            let removal = &steps[steps.len() - 3].0;
+            let install = app.install();
+            let back = app.swap(&format!("{REPO}.git"), Some("main"));
+            let all = |steps: &[(Vec<String>, bool)]| {
+                let shown: Vec<String> = steps
+                    .iter()
+                    .map(|(words, _)| format!("`{}`", shown(app.cli(), words)))
+                    .collect();
+                shown.join(", then ")
+            };
+            let cases: [(&str, Vec<&[String]>); 2] = [
+                ("add", vec![add, &old]),
+                ("removal", vec![&install, removal, &old]),
+            ];
+            for (name, failing) in cases {
+                let dir = Scratch::new(&format!("inject-{}-{name}", app.cli()));
+                let seen = only(app, fake_cli(&dir.0), "main");
+                fail(&dir.0, &failing);
+                let report = run(
+                    Channel::Nightly,
+                    &nightly(true),
+                    &seen,
+                    &|_| None,
+                    &|_| Ok(()),
+                    &dir.0,
+                    false,
+                    false,
+                )
+                .unwrap_err();
+                assert!(report.contains("couldn't be put back"), "{name}: {report}");
+                assert!(
+                    report.contains(&format!("For nightly, run {}.", all(&steps))),
+                    "{name}: {report}"
+                );
+                assert!(
+                    report.contains(&format!("For main, run {}.", all(&back))),
+                    "{name}: {report}"
+                );
+                assert!(
+                    report.contains("may report that there is nothing to remove"),
+                    "{name}: {report}"
+                );
+            }
         }
     }
 
