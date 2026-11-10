@@ -595,10 +595,20 @@ mod tests {
         let dir = kept("background");
         let mut shell = Command::new("sh");
         shell
-            .args(["-c", "sleep 3 & echo $! > pid"])
+            .args(["-c", "sleep 60 & echo $! > pid"])
             .current_dir(&dir);
         left_by_a_hook(shell, &dir).wait().unwrap();
-        assert!(!any_held(&dir), "a background command has no input of ours");
+        // The background command has the shell's input until it swaps it for none, which
+        // can be a moment after the shell has ended. It runs far longer than this waits,
+        // so one that kept the marker still fails here.
+        let started = Instant::now();
+        while any_held(&dir) {
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "a background command has no input of ours"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let kill = |dir: &Path| {
             let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
             let _ = Command::new("kill").arg(pid.trim()).status();
@@ -606,7 +616,7 @@ mod tests {
         kill(&dir);
         let mut shell = Command::new("sh");
         shell
-            .args(["-c", "exec 3<&0; sleep 3 <&3 3<&- & echo $! > pid"])
+            .args(["-c", "exec 3<&0; sleep 60 <&3 3<&- & echo $! > pid"])
             .current_dir(&dir);
         left_by_a_hook(shell, &dir).wait().unwrap();
         assert!(any_held(&dir), "kept on purpose, it's held");
