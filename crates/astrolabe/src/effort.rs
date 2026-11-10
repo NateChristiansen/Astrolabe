@@ -4,7 +4,7 @@ mod file;
 mod initiative;
 pub mod roster;
 pub use command::{DELIMITER, EffortCommand, FORMS, INITIATIVE_FLAGS, NEW_FLAGS, SAVE_FLAGS};
-pub use file::{EffortFile, slug};
+pub use file::{EffortFile, plain_goal, slug};
 pub(crate) use file::{fence_mask, frontmatter, header_bounds, split_frontmatter};
 
 /// What an effort's `involvement` may be: how often the owner wants to be asked.

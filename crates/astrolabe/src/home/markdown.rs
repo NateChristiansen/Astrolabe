@@ -335,30 +335,55 @@ fn plan_folded(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark::Ev
 }
 
 /// A piece's ` (added YYYY-MM-DD)`, which a save writes on a piece that came after the plan,
-/// drawn as the quiet tag an initiative's later member gets.
+/// drawn as the quiet tag an initiative's later member gets. Only on a checklist item of the
+/// `## Pieces` section, at the end of its line or before its tick day: the same words
+/// anywhere else, in a code sample say, are text.
 fn with_added_tags(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark::Event<'_>> {
-    use pulldown_cmark::Event;
+    use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
     let mut out = Vec::with_capacity(events.len());
-    for event in events {
-        let Event::Text(text) = &event else {
-            out.push(event);
+    let mut in_pieces = false;
+    let mut heading: Option<(HeadingLevel, String)> = None;
+    let mut task = false;
+    let mut code = 0usize;
+    for (i, event) in events.iter().enumerate() {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => heading = Some((*level, String::new())),
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, text)) = heading.take()
+                    && level <= HeadingLevel::H2
+                {
+                    in_pieces = level == HeadingLevel::H2 && text.trim() == "Pieces";
+                }
+            }
+            Event::Text(t) if heading.is_some() => {
+                if let Some((_, text)) = heading.as_mut() {
+                    text.push_str(t);
+                }
+            }
+            Event::Start(Tag::Item) => task = false,
+            Event::TaskListMarker(_) => task = true,
+            Event::Start(Tag::CodeBlock(_)) => code += 1,
+            Event::End(TagEnd::CodeBlock) => code = code.saturating_sub(1),
+            _ => {}
+        }
+        // The item's own line ends here when what follows closes it or opens a nested list.
+        let ends_line = matches!(
+            events.get(i + 1),
+            None | Some(Event::End(TagEnd::Item | TagEnd::Paragraph))
+                | Some(Event::Start(Tag::List(_)))
+        );
+        let tagged = match event {
+            Event::Text(text)
+                if in_pieces && task && code == 0 && heading.is_none() && ends_line =>
+            {
+                added_at_end(text)
+            }
+            _ => None,
+        };
+        let Some((before, day, after)) = tagged else {
+            out.push(event.clone());
             continue;
         };
-        let Some(at) = text.find(" (added ") else {
-            out.push(event);
-            continue;
-        };
-        let rest = &text[at + " (added ".len()..];
-        let day = rest
-            .get(..10)
-            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-            .filter(|_| rest[10..].starts_with(')'));
-        let Some(day) = day else {
-            out.push(event);
-            continue;
-        };
-        let before = text[..at].to_owned();
-        let after = rest[11..].to_owned();
         out.push(Event::Text(before.into()));
         out.push(Event::Html(
             format!(
@@ -372,6 +397,23 @@ fn with_added_tags(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark
         }
     }
     out
+}
+
+/// A line's text before ` (added YYYY-MM-DD)` at its end, the day, and the tick day after it
+/// if there is one.
+fn added_at_end(text: &str) -> Option<(String, chrono::NaiveDate, String)> {
+    let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let (rest, tick) = match text
+        .strip_suffix(')')
+        .and_then(|t| t.rsplit_once(" ("))
+        .filter(|(_, d)| d.len() == 10 && day(d).is_some())
+    {
+        Some((rest, d)) => (rest, format!(" ({d})")),
+        None => (text, String::new()),
+    };
+    let (before, added) = rest.strip_suffix(')')?.rsplit_once(" (added ")?;
+    let added = day(added).filter(|_| added.len() == 10)?;
+    Some((before.to_owned(), added, tick))
 }
 
 /// The members of the initiative whose page is at `rel`, in number order, or None for any

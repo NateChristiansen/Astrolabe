@@ -680,6 +680,19 @@ mod tests {
             prose.contains("Later one<span class=\"stat added\">added Nov 10</span> (2026-11-11)"),
             "{prose}"
         );
+        // The same words elsewhere are text: in a code sample, in Decisions, or mid-line.
+        let other = text.replace(
+            "## Decisions\n- 2026-11-08: a over b: why.\n",
+            "## Decisions\n- 2026-11-08: a over b (added 2026-11-10)\n\n```\n- [ ] x (added 2026-11-10)\n```\n",
+        ).replace("- [ ] Land it (added 2026-11-10)", "- [ ] Land it (added 2026-11-10) later");
+        std::fs::write(notes.root.join(rel), &other).unwrap();
+        let rows2 = crate::board::rows_in(&notes, None, true);
+        let page2 =
+            super::markdown::note_page(&other, rel, &rows2, &notes.root, NOW, Look::default());
+        assert_eq!(page2.matches("stat added").count(), 1, "{page2}");
+        assert!(
+            page2.contains("a over b (added 2026-11-10)") && page2.contains("x (added 2026-11-10)")
+        );
         // The outline keeps the plan's own entry and none of its inner headings.
         let rail = &page[page.find("<nav class=\"outline\"").unwrap()..];
         let rail = &rail[..rail.find("</nav>").unwrap()];

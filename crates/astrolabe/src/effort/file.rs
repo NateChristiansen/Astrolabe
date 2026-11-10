@@ -293,7 +293,11 @@ impl EffortFile {
             }
         }
         flush(&heading, &mut buf, &mut file);
-        file.lead = lead.trim().to_owned();
+        // Only a plain line of prose is a goal: text there with a heading, a fence or a list
+        // is something else, kept as it is and never written back as a goal.
+        file.lead = plain_goal(&lead)
+            .filter(|_| !lead.trim().contains("\n\n"))
+            .unwrap_or_default();
         file.original = Some(Box::new(OriginalFile {
             text: original_text,
             parsed: file.clone(),
@@ -518,52 +522,61 @@ impl EffortFile {
     }
 
     /// A list that replaces this one, with each piece that came after the plan tagged
-    /// ` (added <day>)`. A piece whose words match one already here keeps that one's tag, or
-    /// its lack of one, so a list copied back without its tags loses none. A new line in
-    /// place of a piece that's gone is a rewording, paired in order, and keeps the gone
-    /// one's tag the same way; a dropped line, struck through, still names its piece. Only
-    /// the new lines left over are tagged.
-    pub fn with_added_tags(&self, new: &str, day: &str) -> String {
-        let old: Vec<(String, String, bool)> = self
-            .pieces()
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| match piece_box(l) {
-                Some(done) => Some((match_key(piece_label(l)), added_suffix(l), done)),
-                None => struck_label(l).map(|s| (match_key(s), String::new(), true)),
-            })
-            .collect();
+    /// ` (added <day>)`. Each line here is matched once, by its words, and a new line that
+    /// matches one keeps that one's tag, or its lack of one, so a list copied back without
+    /// its tags loses none; a line that repeats one already matched is new. A new line in
+    /// place of an unticked one that's gone is a rewording, paired in order, and keeps the
+    /// gone one's tag the same way; a dropped line, struck through, still names its piece.
+    /// The new lines left over are tagged with `day`, or with nothing when there's none, as
+    /// on a re-plan.
+    pub fn with_added_tags(&self, new: &str, day: Option<&str>) -> String {
         let key_of = |l: &str| match piece_box(l) {
             Some(_) => Some(match_key(piece_label(l))),
             None => struck_label(l).map(match_key),
         };
-        let new_keys: Vec<String> = new.lines().filter_map(key_of).collect();
-        let mut gone = old
-            .iter()
-            .filter(|(key, _, done)| !done && !new_keys.contains(key))
-            .map(|(_, suffix, _)| suffix.clone());
-        let lines: Vec<String> = new
+        let old: Vec<(String, String, bool)> = self
+            .pieces()
+            .unwrap_or_default()
             .lines()
-            .map(|line| {
-                let Some(key) = key_of(line) else {
-                    return line.to_owned();
-                };
-                let known = old.iter().find(|(k, _, _)| *k == key);
-                if piece_box(line).is_none() {
-                    // A struck line for a piece this list never had stands for a gone one.
-                    if known.is_none() {
-                        gone.next();
-                    }
-                    return line.to_owned();
+            .filter_map(|l| {
+                let key = key_of(l)?;
+                Some((key, added_suffix(l), piece_box(l) == Some(false)))
+            })
+            .collect();
+        let new_lines: Vec<&str> = new.lines().collect();
+        // First, every line that names a piece here takes the first such piece not taken yet.
+        let mut used = vec![false; old.len()];
+        let matched: Vec<Option<usize>> = new_lines
+            .iter()
+            .map(|l| {
+                let key = key_of(l)?;
+                let at = (0..old.len()).find(|&i| !used[i] && old[i].0 == key)?;
+                used[at] = true;
+                Some(at)
+            })
+            .collect();
+        // Then the unticked pieces nobody took are gone, and the lines left over take their
+        // places in order.
+        let mut gone = (0..old.len()).filter(|&i| !used[i] && old[i].2);
+        new_lines
+            .iter()
+            .zip(matched)
+            .map(|(line, at)| {
+                if key_of(line).is_none() {
+                    return (*line).to_owned();
                 }
-                let suffix = match known {
-                    Some((_, suffix, _)) => suffix.clone(),
-                    None => gone.next().unwrap_or_else(|| format!(" (added {day})")),
+                let at = at.or_else(|| gone.next());
+                if piece_box(line).is_none() {
+                    return (*line).to_owned();
+                }
+                let suffix = match at {
+                    Some(i) => old[i].1.clone(),
+                    None => day.map(|d| format!(" (added {d})")).unwrap_or_default(),
                 };
                 with_added_suffix(line, &suffix)
             })
-            .collect();
-        lines.join("\n")
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The labels of ticked items, without their day stamps.
@@ -614,10 +627,11 @@ impl EffortFile {
                     preamble.push_str(&original.text[*start..*end]);
                 }
             }
-        } else if self.lead.trim().is_empty() {
-            preamble.push('\n');
         } else {
-            preamble += &format!("\n{}\n\n", self.lead.trim());
+            match plain_goal(&self.lead) {
+                Some(goal) => preamble += &format!("\n{goal}\n\n"),
+                None => preamble.push('\n'),
+            }
         }
         if !initiative {
             let at = out
@@ -696,8 +710,8 @@ impl EffortFile {
         out += "---\n";
         out += &format!("# {}\n\n", self.title);
         // An initiative's lead is its purpose, which its own writer places.
-        if !initiative && !self.lead.trim().is_empty() {
-            out += &format!("{}\n\n", self.lead.trim());
+        if let Some(goal) = plain_goal(&self.lead).filter(|_| !initiative) {
+            out += &format!("{goal}\n\n");
         }
         out += &format!("## Current state\n{}\n", self.current.trim());
         if initiative || !self.decisions.trim().is_empty() {
@@ -712,6 +726,40 @@ impl EffortFile {
         }
         out
     }
+}
+
+/// The goal a filing's body gives: its first paragraph on one line, when that paragraph is
+/// plain prose. One with a heading, a fence, a list, a quote, a table or an indented block
+/// isn't, because written under the title it would change how the note reads back.
+pub fn plain_goal(text: &str) -> Option<String> {
+    let first = text
+        .split('\n')
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>();
+    let plain = |l: &&str| {
+        let t = l.trim_start();
+        let indent = l.len() - t.len();
+        let marker = t.starts_with(['#', '>', '|', '<', '`', '~'])
+            || ["- ", "* ", "+ "].iter().any(|m| t.starts_with(m))
+            || t.trim_end()
+                .chars()
+                .all(|c| matches!(c, '-' | '=' | '*' | '_'))
+            || t.split_once(['.', ')']).is_some_and(|(n, rest)| {
+                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && rest.starts_with(' ')
+            });
+        indent < 4 && !marker
+    };
+    if first.is_empty() || !first.iter().all(plain) {
+        return None;
+    }
+    Some(
+        first
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Whether a line is a checklist item, and whether it's ticked.
@@ -912,7 +960,7 @@ mod file_tests {
         let f = with_pieces("- [x] one (2026-11-08)\n- [ ] two");
         let out = f.with_added_tags(
             "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three",
-            "2026-11-10",
+            Some("2026-11-10"),
         );
         assert_eq!(
             out,
@@ -922,7 +970,7 @@ mod file_tests {
         let f = with_pieces(&out);
         let again = f.with_added_tags(
             "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three\n- [ ] four",
-            "2026-11-12",
+            Some("2026-11-12"),
         );
         assert_eq!(
             again,
@@ -935,7 +983,7 @@ mod file_tests {
         let f = with_pieces("- [ ] one\n- [ ] two (added 2026-11-09)\n- [ ] three");
         let out = f.with_added_tags(
             "- [ ] one, said better\n- [ ] two, said better\n- [ ] three\n- [ ] four",
-            "2026-11-10",
+            Some("2026-11-10"),
         );
         assert_eq!(
             out,
@@ -945,11 +993,69 @@ mod file_tests {
         let f = with_pieces("- [ ] one\n- [ ] two");
         let out = f.with_added_tags(
             "- [ ] one\n- ~~two~~ dropped 2026-11-10: not needed\n- [ ] five",
-            "2026-11-10",
+            Some("2026-11-10"),
         );
         assert_eq!(
             out,
             "- [ ] one\n- ~~two~~ dropped 2026-11-10: not needed\n- [ ] five (added 2026-11-10)"
+        );
+    }
+
+    #[test]
+    fn a_repeated_piece_is_added_and_a_replan_keeps_old_tags_without_adding_any() {
+        let f = with_pieces("- [ ] a\n- [ ] b");
+        assert_eq!(
+            f.with_added_tags("- [ ] a\n- [ ] b\n- [ ] a", Some("2026-11-10")),
+            "- [ ] a\n- [ ] b\n- [ ] a (added 2026-11-10)"
+        );
+        let f = with_pieces("- [ ] a\n- [ ] b (added 2026-11-09)");
+        assert_eq!(
+            f.with_added_tags("- [ ] a\n- [ ] b\n- [ ] c", None),
+            "- [ ] a\n- [ ] b (added 2026-11-09)\n- [ ] c"
+        );
+    }
+
+    #[test]
+    fn a_goal_is_plain_prose_on_one_line() {
+        assert_eq!(
+            plain_goal("Smooth the\nink.\n\n## Plan\n1. x").as_deref(),
+            Some("Smooth the ink.")
+        );
+        for not in [
+            "## Plan\nx",
+            "```\nSmooth.",
+            "- a list",
+            "1. a list",
+            "> quote",
+            "    code",
+            "Title\n===",
+            "",
+        ] {
+            assert_eq!(plain_goal(not), None, "{not:?}");
+        }
+        // Text under a title that isn't a plain paragraph is kept as it is, never read as a
+        // goal, and never hides the sections after it once a save rewrites them.
+        for lead in ["### Aside\nx", "Two\n\nparagraphs", "- a list"] {
+            let text = format!("# 0012 Ink\n\n{lead}\n\n## Current state\nOld.\n");
+            let mut f = EffortFile::parse(&text).unwrap();
+            assert_eq!(f.goal(), None, "{lead:?}");
+            f.current = "New.".to_owned();
+            let out = f.render();
+            assert!(
+                out.contains(&format!("{lead}\n\n## Current state\nNew.\n")),
+                "{out}"
+            );
+        }
+        // A goal set to something that isn't plain is never written under the title.
+        let f = EffortFile {
+            title: "0012 Ink".to_owned(),
+            lead: "```\nfenced".to_owned(),
+            current: "Going.".to_owned(),
+            ..Default::default()
+        };
+        assert!(
+            f.render()
+                .contains("# 0012 Ink\n\n## Current state\nGoing.")
         );
     }
 
@@ -969,7 +1075,7 @@ mod file_tests {
         // A ticked later piece copied back bare keeps both its days.
         let f = with_pieces("- [x] two (added 2026-11-09) (2026-11-10)");
         assert_eq!(
-            f.with_added_tags("- [x] two (2026-11-10)", "2026-11-12"),
+            f.with_added_tags("- [x] two (2026-11-10)", Some("2026-11-12")),
             "- [x] two (added 2026-11-09) (2026-11-10)"
         );
     }

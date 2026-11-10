@@ -637,7 +637,7 @@ fn effort_note(
     // Current state is rewritten.
     let mut file = EffortFile {
         title: format!("{number:04} {title}"),
-        lead: current.clone(),
+        lead: crate::effort::plain_goal(&current).unwrap_or_default(),
         current,
         ..Default::default()
     };

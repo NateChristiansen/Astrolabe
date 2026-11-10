@@ -34,6 +34,9 @@ pub(super) struct SaveRequest<'a> {
     pub plan: Option<String>,
     pub plan_shifted: bool,
     pub pieces: Option<String>,
+    /// A checklist the plan carried under its own Pieces heading, lifted out of it: the
+    /// effort's list only when it has none yet, else a copy that's dropped.
+    pub plan_pieces: Option<String>,
     /// The body's Current state as stored.
     pub current: Option<String>,
     /// Lessons this save adds to the effort's list, checked for shape; whether each exists is
@@ -206,13 +209,13 @@ impl<'a> SaveRequest<'a> {
             None => (None, false),
         };
         // A plan file often carries its own Pieces checklist. The effort keeps one list, so
-        // the plan's is lifted out: it's the list when the save gives none, and a copy when
-        // it does.
-        let (plan, lifted) = match plan.map(|p| lift_plan_pieces(&p)) {
+        // the plan's is lifted out of it, and becomes the list only for an effort that has
+        // none and a save that gives none.
+        let (plan, plan_pieces) = match plan.map(|p| lift_plan_pieces(&p)) {
             Some((p, lifted)) => (Some(p), lifted),
             None => (None, None),
         };
-        let pieces = pieces.or(lifted);
+        let plan_pieces = plan_pieces.filter(|_| pieces.is_none());
         // Checked before the lock and the hash: a refused body writes nothing either way.
         let current = body.as_deref().map(as_current).transpose()?;
         Ok(Self {
@@ -232,6 +235,7 @@ impl<'a> SaveRequest<'a> {
             plan,
             plan_shifted,
             pieces,
+            plan_pieces,
             current,
             lessons,
         })
@@ -300,13 +304,16 @@ pub(super) fn edit_bound(
     if let Some(p) = &req.pieces {
         keeps_ticked(file, p)?;
         // A piece that comes after the plan says so. A save that carries a plan is the plan,
-        // and a first list is the one the work starts from, so neither tags anything.
-        let p = if file.pieces().is_some() && req.plan.is_none() {
-            file.with_added_tags(p, day)
+        // so its new pieces aren't tagged, though a piece already tagged keeps its tag; a
+        // first list is the one the work starts from.
+        let p = if file.pieces().is_some() {
+            file.with_added_tags(p, req.plan.is_none().then_some(day))
         } else {
             p.clone()
         };
         file.set_pieces(&p);
+    } else if let Some(p) = req.plan_pieces.as_ref().filter(|_| file.pieces().is_none()) {
+        file.set_pieces(p);
     }
     apply_ticks(file, &req.ticks, &req.unticks, day)?;
     super::lesson::add_to(file, &req.lessons);

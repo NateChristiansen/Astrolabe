@@ -1637,3 +1637,98 @@ fn an_effort_keeps_its_goal_and_tags_pieces_that_come_after_its_plan() {
         "a re-plan tags nothing: {text}"
     );
 }
+
+#[test]
+fn a_plan_saved_again_leaves_the_live_pieces_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let plan = "# Plan\n\n1. Do it.\n\n## Pieces\n- [ ] Alpha\n- [ ] Beta\n";
+    write(&mac.demo.join("plan.md"), plan);
+    assert!(
+        mac.bash("s1", "astrolabe effort save --plan-file plan.md")
+            .1
+    );
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Alpha\n- ~~Beta~~ dropped 2026-11-10: not needed\n- [ ] Gamma\n",
+    );
+    assert!(
+        mac.bash("s1", "astrolabe effort save --pieces-file pieces.md")
+            .1
+    );
+    let day = today();
+    let live = format!(
+        "## Pieces\n- [ ] Alpha\n- ~~Beta~~ dropped 2026-11-10: not needed\n- [ ] Gamma (added {day})\n"
+    );
+    assert!(mac.effort_text(1).contains(&live), "{}", mac.effort_text(1));
+    // The amended plan, with the same list inside it, changes the plan and not the list.
+    write(
+        &mac.demo.join("plan2.md"),
+        &plan.replace("Do it.", "Do it well."),
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --plan-file plan2.md");
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains(&live) && text.contains("Do it well."),
+        "{text}"
+    );
+    assert_eq!(text.matches("Alpha").count(), 1, "{text}");
+    // With a piece ticked, the same plan save still goes through, Current state with it.
+    assert!(mac.bash("s1", "astrolabe effort save --tick Alpha").1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --plan-file plan2.md <<'ASTROLABE'\nStill going.\n\nNothing new.\n\nNext more.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains(&format!("- [x] Alpha ({day})")), "{text}");
+    assert!(text.contains("## Current state\nStill going."), "{text}");
+}
+
+#[test]
+fn a_goal_is_the_bodys_first_plain_paragraph_or_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    // A body with a section after its first paragraph: the goal is that paragraph alone, and
+    // the note reads back and saves.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" <<'ASTROLABE'\nSmooth the ink.\n\n## Plan\n1. Cap it.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("# 0001 Smooth ink\n\nSmooth the ink.\n\n## Current state\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("## Plan").count(), 1, "{text}");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nGoing.\n\nNone.\n\nNext.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("Smooth the ink.\n\n## Current state\nGoing.")
+    );
+    // A first paragraph that isn't plain prose, such as an unclosed fence, gives no goal, so
+    // nothing under the title can hide Current state.
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Fenced\" <<'ASTROLABE'\n```\nSmooth the ink.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(2);
+    assert!(
+        text.contains("# 0002 Fenced\n\n## Current state\n"),
+        "{text}"
+    );
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort save <<'ASTROLABE'\nGoing.\n\nNone.\n\nNext.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.effort_text(2).contains("## Current state\nGoing."));
+}
