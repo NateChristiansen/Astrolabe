@@ -325,6 +325,7 @@ impl Notes {
             file.number()
         }
         .unwrap_or(0);
+        let old_hash = content_hash(&text);
         let rendered = if unclosed {
             text
         } else {
@@ -335,6 +336,7 @@ impl Notes {
             ));
             file.render()
         };
+        let new_hash = content_hash(&rendered);
         let key = format!("renumber-{old_number:04}-{next:04}");
         let mut files = vec![(new_rel.clone(), rendered)];
         // The renumbered effort's own journal lines follow it: the ones written by the
@@ -394,6 +396,12 @@ impl Notes {
             if state.file.as_deref() == Some(old_rel.as_str()) {
                 state.file.set(new_rel.clone());
                 state.effort.set(next.to_string());
+                // A session that had the note as it stood still has it: the renumber changes
+                // its number and adds the line saying so, nothing the session wrote, so its
+                // next save isn't refused as made over text it hasn't seen.
+                if state.delivered.as_deref() == Some(old_hash.as_str()) {
+                    state.delivered.set(new_hash.clone());
+                }
                 if let crate::session::Field::Known(crate::session::Binding::Effort {
                     key, ..
                 }) = &mut state.binding

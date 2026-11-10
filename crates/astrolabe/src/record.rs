@@ -842,8 +842,7 @@ fn save_inner(
     let mut state = read_state(&dir, session)?.ok_or(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
-    let req = SaveRequest::parse(cmd, &state, cwd)?;
-    let record = &req.record;
+    let mut req = SaveRequest::parse(cmd, &state, cwd)?;
     let _held = notes.lock()?;
     let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
@@ -859,10 +858,25 @@ fn save_inner(
     let key = key.as_str();
     if notes.already_applied(key) {
         return Ok(format!(
-            "Already saved: this same tool call was done before (a retry), so nothing new was written to {record}."
+            "Already saved: this same tool call was done before (a retry), so nothing new was written to {}.",
+            req.record
         ));
     }
     let pulled = crate::application::pull(&notes);
+    // The pull can renumber this session's effort, when another machine's effort had the
+    // number first. The session's state follows the file, so the request is read again
+    // from where the effort is now, not from the path it had before the pull.
+    let mut notes_lines = Vec::new();
+    if let Some(moved) = read_state(&dir, session)?.filter(|now| now.file != state.file) {
+        let was = state.bound_key().unwrap_or_default().to_owned();
+        state = moved;
+        req = SaveRequest::parse(cmd, &state, cwd)?;
+        let now = state.bound_key().unwrap_or_default();
+        notes_lines.push(format!(
+            "This save's pull renumbered the effort from {was} to {now}, because another machine's effort had {was} first; it's effort {now} from here on."
+        ));
+    }
+    let record = &req.record;
     let initiative = req
         .initiative
         .map(|name| canonical_membership(&notes.root, name))
@@ -917,7 +931,6 @@ fn save_inner(
     }
     let facts = RepoFacts::read(cwd);
     let (day, _) = notes::local_day_time();
-    let mut notes_lines = Vec::new();
     if req.plan_shifted {
         notes_lines.push(
             "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."

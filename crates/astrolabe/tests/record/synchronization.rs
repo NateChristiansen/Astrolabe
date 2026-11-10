@@ -661,3 +661,49 @@ fn a_lesson_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() 
 fn a_draft_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() {
     a_file_written_by_hand_reaches_the_pc("drafts/2026-11-09-reply.md");
 }
+
+/// Two machines each made an effort 1, and one published first. The other's next save
+/// pulls, which renumbers its effort: the save goes to the effort where it is now, and
+/// says so.
+#[test]
+fn a_save_whose_own_pull_renumbers_its_effort_still_lands() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort new --title \"Other\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 1 created"), "{out}");
+    assert!(pc.sync().1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --journal \"a line for the day\"",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.starts_with("Saved effort 2: status active, journal line written;")
+            && out.contains("renumbered the effort from 1 to 2"),
+        "{out}"
+    );
+    assert!(
+        mac.log().contains("0001 renumbered to 0002"),
+        "{}",
+        mac.log()
+    );
+    assert!(mac.notes.join(shelf("0002-smooth-ink.md")).exists());
+    let journal = mac.journal_today();
+    assert!(
+        journal.contains("a line for the day <!-- 0002 mac "),
+        "{journal}"
+    );
+    // The session saves on from there, with nothing refused as changed behind it.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose a over b: c\"",
+    );
+    assert!(ok && out.starts_with("Saved effort 2"), "{out}");
+    assert!(mac.effort_text(2).contains("chose a over b: c"));
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
+}
