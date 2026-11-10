@@ -330,9 +330,22 @@ pub fn not_a_shell(tool: &str) -> bool {
     tool.starts_with("mcp__") || tool == "apply_patch"
 }
 
-/// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
-/// would remove the client's approval prompt.
+/// Whether a tool's commands are PowerShell: the one answer for the guard's parse, the
+/// proof steps, the denial log and the ticket rewrite. A tool named for it, in any case,
+/// or Codex on Windows, which runs its shell commands there.
+pub fn powershell(tool: &str, codex: bool) -> bool {
+    tool.eq_ignore_ascii_case("powershell") || (cfg!(windows) && codex)
+}
+
+/// `decide_in` for a caller that knows only the tool's name.
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
+    decide_in(powershell(tool, false), tool, input, scope)
+}
+
+/// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
+/// would remove the client's approval prompt. `powershell` is `powershell`'s answer for
+/// the session the command came from.
+pub fn decide_in(powershell: bool, tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     if not_a_shell(tool) {
         return None;
     }
@@ -349,11 +362,7 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     {
         context.cwd = resolve(workdir, &context);
     }
-    let dialect = if tool.eq_ignore_ascii_case("powershell") {
-        Dialect::Ps
-    } else {
-        Dialect::Sh
-    };
+    let dialect = if powershell { Dialect::Ps } else { Dialect::Sh };
     match command_field(input)? {
         Value::String(text) => script(text, dialect, &mut context, 0),
         Value::Array(parts) => {

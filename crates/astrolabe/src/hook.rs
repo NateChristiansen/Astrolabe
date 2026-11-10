@@ -147,7 +147,8 @@ fn judge(bytes: &[u8]) -> Option<String> {
         root: worktree_root(cwd.as_deref()),
         cwd: cwd.as_deref().map(comparable),
     };
-    crate::guard::decide(tool, &input["tool_input"], &scope)
+    let powershell = crate::activate::powershell_input(&input);
+    crate::guard::decide_in(powershell, tool, &input["tool_input"], &scope)
 }
 
 /// The nearest folder holding a `.git`.

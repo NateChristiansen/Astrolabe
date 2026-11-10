@@ -1,6 +1,6 @@
 //! Per-session guard evidence and the commands that establish it.
 use super::context::GUARD_SCOPE;
-use super::routing::{block_reason, in_powershell, provider};
+use super::routing::{block_reason, provider};
 use super::{SWITCH, hook_id, read_state, state_dir};
 use crate::hook::{self};
 use serde_json::Value;
@@ -45,9 +45,15 @@ pub(super) fn make_file(path: &Path, powershell: bool) -> String {
     }
 }
 
+/// Whether a hook input's command is PowerShell, by the guard's one rule.
+pub(crate) fn powershell_input(input: &Value) -> bool {
+    let tool = input["tool_name"].as_str().unwrap_or_default();
+    crate::guard::powershell(tool, provider(input) == "codex")
+}
+
 /// The shell a hook input's command runs in, as the denial log records it.
 pub fn shell_of(input: &Value) -> &'static str {
-    if in_powershell(provider(input), &input["tool_name"]) {
+    if powershell_input(input) {
         "powershell"
     } else {
         "posix"
@@ -82,7 +88,7 @@ pub(super) fn session_shells(provider: &str) -> Vec<bool> {
     if cfg!(windows) && provider == "claude" {
         vec![false, true]
     } else {
-        vec![in_powershell(provider, &Value::Null)]
+        vec![crate::guard::powershell("", provider == "codex")]
     }
 }
 
@@ -201,4 +207,29 @@ pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
         // whichever effort is loaded, so a proof made before the effort still counts.
         proof(session, token, since, powershell)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::routing::in_powershell;
+    use super::*;
+    use serde_json::json;
+
+    /// For every input shape `docs/hosts.md` records, and Claude's PowerShell tool, the one
+    /// rule answers as the routing rule it replaces did, so no session is told anything new.
+    #[test]
+    fn the_one_dialect_rule_agrees_with_the_old_one_on_recorded_shapes() {
+        for tool in ["Bash", "PowerShell", "shell_command"] {
+            for input in [
+                json!({"tool_name": tool, "tool_input": {"command": "ls"}}),
+                json!({"tool_name": tool, "turn_id": "t", "tool_input": {"command": "ls"}}),
+                json!({"tool_name": tool, "transcript_path": "/x/rollout-1.jsonl"}),
+            ] {
+                let old = in_powershell(provider(&input), &input["tool_name"]);
+                assert_eq!(powershell_input(&input), old, "{input}");
+            }
+        }
+        let codex = json!({"turn_id": "t"});
+        assert_eq!(session_shells("codex"), [powershell_input(&codex)]);
+    }
 }

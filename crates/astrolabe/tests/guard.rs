@@ -1,6 +1,6 @@
 //! The bypass table, then the hook as a real process: its one output form and its
 //! failure rule.
-use astrolabe::guard::{Scope, decide, names_denied_program};
+use astrolabe::guard::{Scope, decide, decide_in, names_denied_program, powershell};
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
@@ -134,6 +134,35 @@ fn a_denial_is_json_with_exit_0_and_logged() {
     let entry: Value = serde_json::from_str(log.trim()).unwrap();
     assert_eq!(entry["command"], "sh -c 'git push --force'");
     assert_eq!(entry["agent_id"], "child");
+}
+
+#[test]
+fn the_dialect_is_the_one_rules_answer_not_the_tools_name_alone() {
+    let scope = Scope::default();
+    // In PowerShell `\` is no escape, so the push is its own command; in a POSIX shell it
+    // escapes the `;` and there is only an echo.
+    let input = json!({ "command": r"echo \; git push --force" });
+    assert!(decide_in(true, "shell_command", &input, &scope).is_some());
+    assert!(decide_in(false, "shell_command", &input, &scope).is_none());
+    assert!(powershell("PowerShell", false) && powershell("powershell", false));
+    assert!(!powershell("Bash", false) && !powershell("shell_command", false));
+    assert_eq!(powershell("shell_command", true), cfg!(windows));
+}
+
+#[test]
+fn the_log_names_the_shell_the_guard_read_the_command_in() {
+    let data = temp("dialect");
+    // The guard reads a tool named for PowerShell in any case as PowerShell, where `\` is
+    // no escape, so the push is its own command; the log has to name the same shell.
+    let input = json!({
+        "session_id": "s1", "cwd": data, "tool_name": "powershell",
+        "tool_input": { "command": "echo \\; git push --force" },
+    });
+    let (stdout, _) = run_hook(&data, input.to_string().as_bytes());
+    assert!(stdout.contains("force-push"), "{stdout}");
+    let log = std::fs::read_to_string(data.join(astrolabe::hook::DENIAL_LOG)).unwrap();
+    let entry: Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(entry["shell"], "powershell");
 }
 
 #[test]
