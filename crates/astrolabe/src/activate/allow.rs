@@ -108,7 +108,7 @@ pub(super) fn mint(
     let [program, verb, once, exact, said, quote] = parsed.as_slice() else {
         return Err("use astrolabe allow --once \"<exact command>\" --said \"<the owner's words>\", run alone".into());
     };
-    if program != "astrolabe"
+    if !crate::effort::command::is_astrolabe(program)
         || verb != "allow"
         || once != "--once"
         || said != "--said"
@@ -193,4 +193,45 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
     persist(dir, session, &leases)?;
     log(dir, "lease-used", &lease)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mint;
+    use serde_json::json;
+
+    /// The approval's own form is checked first, and the session's effort last: a command
+    /// that gets as far as the effort was taken as `astrolabe allow`.
+    #[test]
+    fn a_windows_path_and_the_exe_name_are_the_program() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-allow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = json!({"cwd": dir, "tool_name": "Bash"});
+        let rest = "allow --once \"git push --force\" --said \"Yes, run that.\"";
+        let no_effort = Err("load an effort before recording an approval".to_owned());
+        for (program, powershell) in [
+            ("astrolabe", false),
+            ("astrolabe.exe", false),
+            ("/Users/x/.local/bin/astrolabe", false),
+            ("C:/Users/x/.local/bin/astrolabe.exe", false),
+            ("C:\\Users\\x\\.local\\bin\\astrolabe", true),
+            ("C:\\Users\\x\\.local\\bin\\astrolabe.exe", true),
+        ] {
+            let command = format!("{program} {rest}");
+            assert_eq!(
+                mint(&dir, &input, &command, "s1", powershell),
+                no_effort,
+                "{command}"
+            );
+        }
+        for program in ["notastrolabe", "astrolabe.exe.bak", "/x/astrolabe2"] {
+            let command = format!("{program} {rest}");
+            assert_ne!(
+                mint(&dir, &input, &command, "s1", false),
+                no_effort,
+                "{command}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

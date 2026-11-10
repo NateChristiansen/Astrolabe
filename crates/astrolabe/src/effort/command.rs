@@ -68,8 +68,8 @@ impl EffortCommand {
         let text = text.trim();
         let (head, body) = split_body(text)?;
         let mut words = Words::new(head);
-        let program = words.next_word()?.ok_or("empty command")?;
-        if program != "astrolabe" && !program.ends_with("/astrolabe") {
+        let program = words.program()?.ok_or("empty command")?;
+        if !is_astrolabe(&program) {
             return Err(format!("{program:?} isn't the astrolabe program"));
         }
         let verb = match words.next_word()?.as_deref() {
@@ -245,9 +245,15 @@ pub(crate) fn astrolabe_args(words: &[String]) -> Option<&[String]> {
     let at = words
         .iter()
         .position(|w| !LEAD.contains(&w.as_str()) && !is_assignment(w))?;
-    let program = words[at].as_str();
-    (program == "astrolabe" || program.ends_with("/astrolabe") || program.ends_with("\\astrolabe"))
-        .then(|| &words[at + 1..])
+    is_astrolabe(&words[at]).then(|| &words[at + 1..])
+}
+
+/// Whether a command's first word is this program: `astrolabe` by name, or a path to it
+/// with either separator, with or without Windows' `.exe`. The one answer for every place
+/// that asks, so a command claimed by one is never refused by the next.
+pub(crate) fn is_astrolabe(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    name == "astrolabe" || name == "astrolabe.exe"
 }
 
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
@@ -543,6 +549,49 @@ impl<'a> Words<'a> {
         Self { rest: text }
     }
 
+    /// The program, the one word that may be a path: bare, where a backslash is a Windows
+    /// separator, or whole in either quote, as PowerShell calls a path with `& '…'`. What
+    /// it refuses, it refuses in the words `next_word` uses.
+    pub(crate) fn program(&mut self) -> Result<Option<String>, String> {
+        self.rest = self.rest.trim_start();
+        let single = self.rest.strip_prefix('\'');
+        if let Some((path, after)) = single.and_then(|quoted| quoted.split_once('\'')) {
+            if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+                return Err("a closing quote must end its word".to_owned());
+            }
+            self.rest = after;
+            return Ok(Some(path.to_owned()));
+        }
+        if let Some(quoted) = self.rest.strip_prefix('"') {
+            let (path, after) = quoted.split_once('"').ok_or("an unclosed double quote")?;
+            if let Some(c) = path.chars().find(|c| "$`".contains(*c)) {
+                return Err(format!(
+                    "{c:?} inside a quoted value: the shell would read it; leave it out"
+                ));
+            }
+            if !after.is_empty() && !after.starts_with(char::is_whitespace) {
+                return Err("a closing quote must end its word".to_owned());
+            }
+            self.rest = after;
+            return Ok(Some(path.to_owned()));
+        }
+        let end = self
+            .rest
+            .find(char::is_whitespace)
+            .unwrap_or(self.rest.len());
+        let word = &self.rest[..end];
+        if word.is_empty() {
+            return Ok(None);
+        }
+        if let Some(c) = word.chars().find(|c| "\"'$`;|&<>()".contains(*c)) {
+            return Err(format!(
+                "{c:?} in a bare word {word:?}: quote the value with double quotes, or leave the character out"
+            ));
+        }
+        self.rest = &self.rest[end..];
+        Ok(Some(word.to_owned()))
+    }
+
     pub(crate) fn next_word(&mut self) -> Result<Option<String>, String> {
         self.rest = self.rest.trim_start();
         if self.rest.is_empty() {
@@ -677,6 +726,43 @@ mod tests {
         // Outside quotes each is still what it was.
         let err = EffortCommand::parse("astrolabe effort save <<EOF\nx\nEOF").unwrap_err();
         assert!(err.contains("<<'ASTROLABE'"), "{err}");
+    }
+
+    /// The program is `astrolabe` however it's called: by name, by a path with either
+    /// separator, quoted as PowerShell calls a path, with or without `.exe`.
+    #[test]
+    fn a_windows_path_and_the_exe_name_are_the_program() {
+        for program in [
+            "astrolabe",
+            "astrolabe.exe",
+            "/Users/x/.local/bin/astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe.exe",
+            "C:/Users/x/.local/bin/astrolabe.exe",
+            "& 'C:\\Users\\x\\.local\\bin\\astrolabe.exe'",
+            "& \"C:/Program Files/astrolabe/astrolabe.exe\"",
+        ] {
+            // Claimed, where a command is found in a chain.
+            let save = format!("{program} effort save --status active");
+            assert!(EffortCommand::is_effort_command(&save), "{save}");
+            // And read, where the claimed command is parsed.
+            let cmd = EffortCommand::parse(&save).unwrap_or_else(|why| panic!("{save}: {why}"));
+            assert_eq!(
+                (cmd.verb.as_str(), cmd.flag("status")),
+                ("save", Some("active"))
+            );
+        }
+        for program in [
+            "notastrolabe",
+            "astrolabe.exe.bak",
+            "C:\\Users\\x\\astrolabe2",
+            "astrolabe.sh",
+        ] {
+            let save = format!("{program} effort save --status active");
+            assert!(!EffortCommand::is_effort_command(&save), "{save}");
+            let err = EffortCommand::parse(&save).unwrap_err();
+            assert!(err.contains("isn't the astrolabe program"), "{save}: {err}");
+        }
     }
 
     #[test]

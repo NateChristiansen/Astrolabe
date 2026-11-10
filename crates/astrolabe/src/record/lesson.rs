@@ -1,5 +1,5 @@
 //! Closing a lesson is a hook-owned write, with two commits in one recoverable intent.
-use crate::effort::command::{Words, astrolabe_args, simple_commands};
+use crate::effort::command::{Words, astrolabe_args, is_astrolabe, simple_commands};
 use crate::notes::{LessonClose, Notes, Op, Pull};
 use std::path::{Component, Path};
 
@@ -22,23 +22,20 @@ pub(crate) fn parse(command: &str) -> Result<Vec<String>, String> {
     }
     let mut words = Words::new(command);
     let mut args = Vec::new();
+    args.extend(words.program()?);
     while let Some(word) = words.next_word()? {
         args.push(word);
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match refs.as_slice() {
-        [program, "notes", "sync"] if is_program(program) => Ok(args),
-        [program, "lesson", "close", path, "--as", disposition] if is_program(program) => {
+        [program, "notes", "sync"] if is_astrolabe(program) => Ok(args),
+        [program, "lesson", "close", path, "--as", disposition] if is_astrolabe(program) => {
             validate_path(path)?;
             validate_disposition(disposition)?;
             Ok(args)
         }
         _ => Err(format!("Run {FORM}, or astrolabe notes sync, alone")),
     }
-}
-
-fn is_program(program: &str) -> bool {
-    program == "astrolabe" || program.ends_with("/astrolabe")
 }
 
 fn validate_disposition(text: &str) -> Result<(), String> {
@@ -212,4 +209,35 @@ pub fn plain(args: &[&str]) -> (String, bool) {
         format!("Nothing closed: the plugin's hook didn't take this command; run {FORM} alone."),
         false,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{claims, parse};
+
+    #[test]
+    fn a_windows_path_and_the_exe_name_are_the_program() {
+        for program in [
+            "astrolabe",
+            "astrolabe.exe",
+            "/Users/x/.local/bin/astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe",
+            "C:\\Users\\x\\.local\\bin\\astrolabe.exe",
+            "& 'C:\\Users\\x\\.local\\bin\\astrolabe.exe'",
+        ] {
+            let sync = format!("{program} notes sync");
+            assert!(claims(&sync), "{sync}");
+            let args = parse(&sync).unwrap_or_else(|why| panic!("{sync}: {why}"));
+            assert_eq!(args[1..], ["notes", "sync"]);
+            let close = format!("{program} lesson close lessons/a.md --as \"kept as a rule\"");
+            let args = parse(&close).unwrap_or_else(|why| panic!("{close}: {why}"));
+            assert_eq!(args[3..], ["lessons/a.md", "--as", "kept as a rule"]);
+        }
+        for program in ["notastrolabe", "astrolabe.exe.bak", "C:\\x\\astrolabe2"] {
+            assert!(
+                parse(&format!("{program} notes sync")).is_err(),
+                "{program}"
+            );
+        }
+    }
 }
