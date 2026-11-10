@@ -432,9 +432,9 @@ impl Activation {
             None => format!("\n\n{CUT}."),
         };
         // What a cut leaves whole at the end, because the role isn't safe without it: a
-        // worker's restrictions, and for a session with no effort the record rule and the
-        // guard's scope.
-        let ending = match lead.find(RECORD_RULE) {
+        // worker's restrictions, and for a session with no effort everything after the
+        // efforts on offer, which is when to load one, the record rule and the guard's scope.
+        let ending = match lead.find(LOAD_RULE) {
             Some(at) => at,
             None => lead.len() - self.closing.len(),
         };
@@ -524,9 +524,7 @@ fn cut<'a>(text: &'a str, room: usize, size: &dyn Fn(&str) -> usize) -> &'a str 
     let mut end = (between.or_else(|| kept.rfind(char::is_whitespace))).unwrap_or(end);
     // A link `[words](target)` the cut would fall inside goes whole.
     for (close, _) in text.match_indices("](") {
-        let open = text[..close].rfind('[');
-        let shut = text[close..].find(')').map(|n| close + n + 1);
-        if let (Some(open), Some(shut)) = (open, shut)
+        if let Some((open, shut)) = link(text, close)
             && open < end
             && end < shut
         {
@@ -534,6 +532,33 @@ fn cut<'a>(text: &'a str, room: usize, size: &dyn Fn(&str) -> usize) -> &'a str 
         }
     }
     text[..end].trim_end()
+}
+
+/// Where the markdown link whose words end at `close`, a `](`, starts and ends on its line.
+/// Brackets inside the words and bracket pairs inside the target are part of it.
+fn link(text: &str, close: usize) -> Option<(usize, usize)> {
+    let mut depth = 0;
+    let before = text[..close].char_indices().rev();
+    let (open, _) = before.take_while(|(_, c)| *c != '\n').find(|(_, c)| {
+        match c {
+            ']' => depth += 1,
+            '[' if depth > 0 => depth -= 1,
+            '[' => return true,
+            _ => {}
+        }
+        false
+    })?;
+    let mut depth = 0;
+    let after = text[close + 1..].char_indices();
+    let (shut, _) = after.take_while(|(_, c)| *c != '\n').find(|(_, c)| {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        depth == 0
+    })?;
+    Some((open, close + 1 + shut + 1))
 }
 
 /// Everything checked, nothing written: the caller commits `state` once what it says is safe.
@@ -1041,9 +1066,7 @@ pub(super) fn fresh(cwd: &Path, provider: &str) -> String {
         true => format!("{} {offer}", no_note(cwd)),
         false => offer,
     };
-    let mut head = format!(
-        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} Never load or attach to one unless the owner names it: a related guess is theirs to make. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.\n\n{RECORD_RULE}\n\n{GUARD_SCOPE} Loading or creating an effort proves it for this session; until then, claim no protection."
-    );
+    let mut head = no_effort(&offer);
     let mut parts = match owner_note(&notes, "owner") {
         Ok(part) => vec![part],
         Err(why) => {
@@ -1091,6 +1114,18 @@ pub(super) fn fresh(cwd: &Path, provider: &str) -> String {
     }
     .fitted()
 }
+
+/// The head of a session with no effort: what it may load, when work gets recorded, and
+/// the guard.
+fn no_effort(offer: &str) -> String {
+    format!(
+        "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {offer} {LOAD_RULE}\n\n{RECORD_RULE}\n\n{GUARD_SCOPE} Loading or creating an effort proves it for this session; until then, claim no protection."
+    )
+}
+
+/// When a session with no effort may load one: only on the owner's word. It closes the
+/// opening paragraph, after the efforts on offer.
+const LOAD_RULE: &str = "Never load or attach to one unless the owner names it: a related guess is theirs to make. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.";
 
 /// Why a folder no repo matches gets no suggestion, and what would match it, offered only for
 /// the owner to ask for, as the notes are theirs.
@@ -1409,6 +1444,7 @@ mod tests {
             ],
             None => vec![
                 "Astrolabe is on for this machine, so the guard runs in this session.",
+                "Never load or attach to one unless the owner names it: a related guess is theirs to make. When the owner asks to start, resume or switch to an effort (\"pick up 70\", \"work on effort 70\"), run `astrolabe activate --effort <n>` alone.",
                 RECORD_RULE,
                 GUARD_SCOPE,
                 "Loading or creating an effort proves it for this session; until then, claim no protection.",
@@ -1425,10 +1461,7 @@ mod tests {
             },
             head: match role {
                 Some(role) => lead(role, f),
-                None => format!(
-                    "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {}\n\n{RECORD_RULE}\n\n{GUARD_SCOPE} Loading or creating an effort proves it for this session; until then, claim no protection.",
-                    f.freshness
-                ),
+                None => no_effort(f.freshness),
             },
             closing: role.map_or("", closing),
             parts,
@@ -1615,28 +1648,33 @@ mod tests {
         // Spaces inside the link's words and its target, so a cut between words could land
         // in either.
         let link = "[the plan for this effort](efforts/2026/11 November/0007 sample.md)";
-        let text = format!("before it {link} after it");
-        let (from, to) = (text.find('[').unwrap(), text.find(')').unwrap() + 1);
+        // And brackets inside the words, and a bracket pair inside the target.
+        let nested = "[see [the plan] for this effort](efforts/0007 sample.md)";
+        let paired = "[the plan for this effort](efforts/0007 sample (the first) again.md)";
         let bytes = |t: &str| t.len();
-        // Every room there is, so the limit falls on each part of the link in turn.
-        for room in 0..=text.len() {
-            let kept = cut(&text, room, &bytes);
-            assert!(kept.len() <= room && text.starts_with(kept));
-            match room {
-                r if r < to => assert!(!kept.contains('['), "{room}: {kept:?}"),
-                _ => assert!(kept.contains(link), "{room}: {kept:?}"),
-            }
-            // Without the link, the same room would have cut inside it.
-            if (from + 5..to).contains(&room) {
-                let plain = text.replace(['[', ']'], "|");
-                assert!(cut(&plain, room, &bytes).len() > from, "{room}");
+        for link in [link, nested, paired] {
+            let text = format!("before it {link} after it");
+            let (from, to) = (text.find('[').unwrap(), text.rfind(')').unwrap() + 1);
+            // Every room there is, so the limit falls on each part of the link in turn.
+            for room in 0..=text.len() {
+                let kept = cut(&text, room, &bytes);
+                assert!(kept.len() <= room && text.starts_with(kept));
+                match room {
+                    // On any part of the link, the cut backs off to before it.
+                    r if (from..to).contains(&r) => assert_eq!(kept, "before it", "{room}"),
+                    r if r < from => assert!(!kept.contains('['), "{room}: {kept:?}"),
+                    _ => assert!(kept.contains(link), "{room}: {kept:?}"),
+                }
             }
         }
+        // Without a link, the same rooms cut between its words.
+        let plain = format!("before it {} after it", link.replace(['[', ']'], "|"));
+        assert_eq!(cut(&plain, 20, &bytes), "before it |the plan");
         // And through a session's text: a link in the line that grew, moved a character at
         // a time across the place the limit falls.
         let (mut whole, mut gone) = (0, 0);
         for provider in APPS {
-            for lead in 6600..7100 {
+            for lead in 6350..6850 {
                 let fresh = format!("{} {link} {}", "x".repeat(lead), "y ".repeat(2500));
                 let mut f = facts("check in at plan", "edit");
                 f.freshness = &fresh;
