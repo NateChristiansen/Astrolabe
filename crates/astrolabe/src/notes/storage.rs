@@ -22,7 +22,7 @@ impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
     /// markers too, covering a crash after git commits but before the intent is updated.
     fn apply_lesson(&self, op: &Op, lesson: &super::LessonClose) -> Result<(), String> {
-        self.close_lesson(lesson, &format!("disposition-{}", op.key), &op.key)
+        self.close_lesson(lesson, &format!("disposition-{}", op.key), &op.key, false)
     }
 
     /// The lessons a done save closes, after its own commit. Each has its own two keys, never
@@ -31,7 +31,7 @@ impl Notes {
         for (i, lesson) in op.lesson_closes.iter().enumerate() {
             let first = format!("lesson-disposition-{i}-{}", op.key);
             let second = format!("lesson-remove-{i}-{}", op.key);
-            self.close_lesson(lesson, &first, &second)?;
+            self.close_lesson(lesson, &first, &second, true)?;
         }
         Ok(())
     }
@@ -41,6 +41,9 @@ impl Notes {
         lesson: &super::LessonClose,
         first_key: &str,
         key: &str,
+        // A done save's close: its save already landed, so a lesson edited since it was
+        // planned stays open rather than holding every later write back.
+        lenient: bool,
     ) -> Result<(), String> {
         if self.already_applied(key) {
             return Ok(());
@@ -50,30 +53,43 @@ impl Notes {
         let first = self.applied_commit(first_key);
         let have = std::fs::read_to_string(&path).ok();
         if first.is_none() {
-            if have.as_deref() != Some(&lesson.original)
-                && have.as_deref() != Some(&lesson.disposed)
-            {
+            // Gone with no disposition committed: removed by hand or by another close, so
+            // there's nothing left to close, and failing here would fail every later write.
+            let Some(have) = have else {
+                return Ok(());
+            };
+            if have != lesson.original && have != lesson.disposed {
+                if lenient {
+                    return Ok(());
+                }
                 return Err(
                     "the lesson changed before its disposition could be committed".to_owned(),
                 );
             }
             super::write_text(&path, &lesson.disposed)?;
-            self.git(&["add", "--", &literal])?;
             let message = format!(
                 "Record disposition for lesson {}\n\nOp-Key: {first_key}",
                 lesson.path
             );
-            self.git(&[
-                "-c",
-                "user.useConfigOnly=false",
-                "commit",
-                "--quiet",
-                "--only",
-                "-m",
-                &message,
-                "--",
-                &literal,
-            ])?;
+            let committed = self.git(&["add", "--", &literal]).and_then(|_| {
+                self.git(&[
+                    "-c",
+                    "user.useConfigOnly=false",
+                    "commit",
+                    "--quiet",
+                    "--only",
+                    "-m",
+                    &message,
+                    "--",
+                    &literal,
+                ])
+            });
+            if let Err(why) = committed {
+                // The lesson as it was, unstaged: a failure leaves no disposition line behind.
+                let _ = self.git(&["reset", "--quiet", "--", &literal]);
+                let _ = super::write_text(&path, &have);
+                return Err(why);
+            }
         } else if have.as_deref().is_some_and(|text| text != lesson.disposed) {
             return Err("the lesson changed after its disposition was committed".to_owned());
         }

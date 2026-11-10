@@ -743,3 +743,135 @@ fn the_board_and_efforts_json_say_which_effort_answers_each_lesson() {
         "{page}"
     );
 }
+
+/// After a done save, the notes still take writes: nothing is left for recovery to fail on.
+fn later_writes_work(mac: &Machine) {
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash(
+        "later",
+        "astrolabe effort new --title \"Later ink\" <<'ASTROLABE'\nlater\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let status = git(&mac.notes, &["status", "--porcelain", "--", "lessons"]);
+    assert!(status.trim().is_empty(), "lessons left dirty: {status}");
+}
+
+#[test]
+fn one_lesson_under_two_spellings_closes_once_and_leaves_the_notes_writable() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction"]);
+    let (out, ok) = mac.bash(
+        "s1",
+        &new_with("--lesson lessons/friction.md --lesson lessons/./friction.md --lesson lessons//friction.md"),
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("\nlessons: lessons/friction.md\n")
+    );
+    let (out, ok) = mac.bash("s1", DONE);
+    assert!(
+        ok && out.matches("Closed lesson friction.md").count() == 1,
+        "{out}"
+    );
+    assert!(!mac.notes.join("lessons/friction.md").exists());
+    assert_eq!(
+        disposition_of(&mac, "lessons/friction.md")
+            .matches("Fixed by")
+            .count(),
+        1
+    );
+    later_writes_work(&mac);
+}
+
+#[test]
+fn a_lesson_named_in_the_wrong_case_is_refused() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction"]);
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s1", &new_with("--lesson lessons/Friction.md"));
+    assert!(
+        !ok && out.contains("lessons/Friction.md") && out.contains("lessons/friction.md"),
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before);
+    assert!(mac.bash("s1", &new_with("")).1);
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --lesson lessons/FRICTION.md");
+    assert!(!ok && out.contains("lessons/friction.md"), "{out}");
+    later_writes_work(&mac);
+}
+
+#[test]
+fn a_hand_edited_lessons_line_with_repeats_or_the_wrong_case_closes_each_file_once() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction", "second"]);
+    assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+    // The owner edits the property by hand, then reloads the effort.
+    let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(n, _)| *n == 1)
+        .unwrap();
+    let path = mac.notes.join(&rel);
+    let text = std::fs::read_to_string(&path).unwrap().replace(
+        "lessons: lessons/friction.md\n",
+        "lessons: lessons/friction.md, lessons/friction.md, lessons/./friction.md, lessons/Second.md, lessons/second.md\n",
+    );
+    write(&path, &text);
+    git(&mac.notes, &["commit", "-qam", "Hand edit"]);
+    assert!(mac.bash("s1", "astrolabe activate --effort 1").1);
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s1", DONE);
+    assert!(
+        ok && out.matches("Closed lesson friction.md").count() == 1
+            && out.matches("Closed lesson second.md").count() == 1,
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before + 5);
+    for rel in ["lessons/friction.md", "lessons/second.md"] {
+        assert!(!mac.notes.join(rel).exists());
+        assert_eq!(disposition_of(&mac, rel).matches("Fixed by").count(), 1);
+    }
+    later_writes_work(&mac);
+}
+
+#[test]
+fn a_planned_close_whose_lesson_is_gone_is_skipped_and_a_failed_commit_leaves_no_line() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction"]);
+    assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+    // Git refuses every commit that touches the lesson: the save commits, the close fails.
+    let hook = mac.notes.join(".git/hooks/pre-commit");
+    write(
+        &hook,
+        "#!/bin/sh\n! git diff --cached --name-only | grep -q '^lessons/'\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (out, ok) = mac.bash("s1", DONE);
+    assert!(
+        !ok && out.contains("but closing its lessons stopped"),
+        "{out}"
+    );
+    // No disposition line left uncommitted in the lesson.
+    let status = git(&mac.notes, &["status", "--porcelain", "--", "lessons"]);
+    assert!(status.trim().is_empty(), "{status}");
+    assert!(
+        !std::fs::read_to_string(mac.notes.join("lessons/friction.md"))
+            .unwrap()
+            .contains("Fixed by")
+    );
+    // The owner removes the lesson by hand meanwhile: the planned close is skipped.
+    std::fs::remove_file(hook).unwrap();
+    git(&mac.notes, &["rm", "-q", "lessons/friction.md"]);
+    git(&mac.notes, &["commit", "-qm", "Closed by hand"]);
+    later_writes_work(&mac);
+    assert!(mac.effort_text(1).contains("status: done"));
+}

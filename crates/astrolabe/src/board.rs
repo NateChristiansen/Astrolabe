@@ -364,7 +364,7 @@ pub fn drafts_in(root: &Path) -> Vec<Lesson> {
 fn answered(mut lessons: Vec<Lesson>, answers: &[(Vec<String>, Answer)]) -> Vec<Lesson> {
     for lesson in &mut lessons {
         lesson.answered_by = (answers.iter())
-            .filter(|(names, _)| names.contains(&lesson.file))
+            .filter(|(names, _)| names.iter().any(|n| n.eq_ignore_ascii_case(&lesson.file)))
             .map(|(_, answer)| answer)
             .max_by_key(|a| (!matches!(a.status.as_str(), "done" | "abandoned"), a.number))
             .cloned();

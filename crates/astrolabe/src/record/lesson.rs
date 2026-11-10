@@ -61,65 +61,113 @@ fn validate_path(rel: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `--lesson lessons/a.md --lesson lessons/b.md`: each path checked as `lesson close` checks
-/// it, with no comma, since the effort keeps them as one comma list. Repeats collapse.
+/// One spelling per lesson: `lessons/./a.md` and `lessons//a.md` are `lessons/a.md`, since a
+/// path is read by its components. Checked as `lesson close` checks it, with no comma, since
+/// the effort keeps them as one comma list.
+pub(crate) fn normal(rel: &str) -> Result<String, String> {
+    let rel = rel.trim();
+    validate_path(rel)?;
+    if rel.contains(',') {
+        return Err("a lesson path can't hold a comma".to_owned());
+    }
+    let parts: Vec<String> = Path::new(rel)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Ok(parts.join("/"))
+}
+
+/// `--lesson lessons/a.md --lesson lessons/b.md`, each in its one spelling; repeats collapse.
 pub(crate) fn named(values: &[&str]) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     for value in values {
-        let rel = value.trim();
-        validate_path(rel).map_err(|why| format!("--lesson {rel:?}: {why}"))?;
-        if rel.contains(',') {
-            return Err(format!(
-                "--lesson {rel:?}: a lesson path can't hold a comma"
-            ));
-        }
-        if !out.iter().any(|have| have == rel) {
-            out.push(rel.to_owned());
+        let rel = normal(value).map_err(|why| format!("--lesson {:?}: {why}", value.trim()))?;
+        if !out.contains(&rel) {
+            out.push(rel);
         }
     }
     Ok(out)
 }
 
-/// The lessons an effort names, from its `lessons` property.
+/// The lessons an effort names, from its `lessons` property, each in its one spelling and
+/// once. A hand-edited entry that isn't a lesson path is left out: it names nothing to close.
 pub(crate) fn of(file: &crate::effort::EffortFile) -> Vec<String> {
-    file.prop("lessons")
-        .unwrap_or("")
-        .split(',')
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_owned)
-        .collect()
+    let mut out: Vec<String> = Vec::new();
+    for rel in file.prop("lessons").unwrap_or("").split(',') {
+        if let Ok(rel) = normal(rel)
+            && !out.contains(&rel)
+        {
+            out.push(rel);
+        }
+    }
+    out
 }
 
-/// Adds lessons to the effort's list, keeping the ones it has first. Only the newly named
-/// ones are returned, since only those need to exist now: one named earlier may have closed.
-pub(crate) fn add_to(file: &mut crate::effort::EffortFile, add: &[String]) -> Vec<String> {
+/// Adds lessons to the effort's list, keeping the ones it has first.
+pub(crate) fn add_to(file: &mut crate::effort::EffortFile, add: &[String]) {
     let mut list = of(file);
-    let mut added = Vec::new();
+    let before = list.len();
     for rel in add {
         if !list.contains(rel) {
             list.push(rel.clone());
-            added.push(rel.clone());
         }
     }
-    if !added.is_empty() {
+    if list.len() != before {
         file.set("lessons", &list.join(", "));
     }
-    added
+}
+
+/// The lesson as it's named on disk, component by component: the exact name, else the one
+/// name that differs only in case, which a case-insensitive disk opens but git doesn't match.
+/// None when there's no such file. The flag says whether the given spelling was exact.
+pub(crate) fn on_disk(notes: &Notes, rel: &str) -> Option<(String, bool)> {
+    let mut dir = notes.root.clone();
+    let (mut parts, mut exact) = (Vec::new(), true);
+    for part in rel.split('/') {
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let name = match names.iter().find(|n| *n == part) {
+            Some(n) => n.clone(),
+            None => {
+                let mut folded = names
+                    .iter()
+                    .filter(|n| n.to_lowercase() == part.to_lowercase());
+                match (folded.next(), folded.next()) {
+                    (Some(n), None) => {
+                        exact = false;
+                        n.clone()
+                    }
+                    _ => return None,
+                }
+            }
+        };
+        dir.push(&name);
+        parts.push(name);
+    }
+    let rel = parts.join("/");
+    safe_path(notes, &rel).ok().filter(|p| p.is_file())?;
+    Some((rel, exact))
 }
 
 /// Refuses a lesson that isn't in the notes, read after the pull: a mistyped name would
-/// otherwise sit on the effort and never close.
+/// otherwise sit on the effort and never close. A name in the wrong case is refused with
+/// the right one, since git tracks the file by that.
 pub(crate) fn require_open(notes: &Notes, named: &[String]) -> Result<(), String> {
-    let missing: Vec<&str> = named
-        .iter()
-        .filter(|rel| {
-            safe_path(notes, rel)
-                .ok()
-                .is_none_or(|path| !path.is_file())
-        })
-        .map(String::as_str)
-        .collect();
+    let mut missing = Vec::new();
+    for rel in named {
+        match on_disk(notes, rel) {
+            Some((_, true)) => {}
+            Some((disk, false)) => {
+                return Err(format!(
+                    "--lesson names {rel}, but the file is {disk}; name it as it is. Nothing was written"
+                ));
+            }
+            None => missing.push(rel.as_str()),
+        }
+    }
     if missing.is_empty() {
         return Ok(());
     }
@@ -153,10 +201,17 @@ pub(crate) fn closes(
     }
     let disposition = format!("Fixed by effort {number}, {}, done {day}.", file.name());
     let others = others_naming(notes, number);
-    for rel in named {
+    let mut seen: Vec<String> = Vec::new();
+    for named in named {
+        // The file as git tracks it, once, however the property spells it.
+        let rel = on_disk(notes, &named).map_or(named, |(disk, _)| disk);
+        if seen.contains(&rel) {
+            continue;
+        }
+        seen.push(rel.clone());
         let name = rel.strip_prefix("lessons/").unwrap_or(&rel).to_owned();
-        let original = safe_path(notes, &rel)
-            .ok()
+        let original = on_disk(notes, &rel)
+            .and_then(|(disk, _)| safe_path(notes, &disk).ok())
             .and_then(|path| std::fs::read_to_string(path).ok());
         let Some(original) = original else {
             lines.push(format!(
@@ -180,7 +235,7 @@ pub(crate) fn closes(
         ));
         for (n, title, status) in others
             .iter()
-            .filter(|(_, _, _, l)| l.contains(&rel))
+            .filter(|(_, _, _, l)| l.iter().any(|o| o.eq_ignore_ascii_case(&rel)))
             .map(|(n, t, s, _)| (n, t, s))
         {
             lines.push(format!(
