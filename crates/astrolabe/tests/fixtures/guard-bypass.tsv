@@ -370,8 +370,9 @@ deny	mac	Bash	echo hi > & git push --force
 deny	mac	Bash	echo hi >⏎git push --force
 allow	mac	Bash	cat <(git log) > out
 # Three limits the same audit found, recorded and not fixed: the guard grows from real denials.
-# No -Command: pwsh takes a bare argument as a script file (docs/hosts.md); Windows powershell.exe is unprobed.
-miss	win	Bash	pwsh "git push --force"
+# No -Command: pwsh takes a bare argument as a script file (docs/hosts.md), so it runs no push.
+allow	win	Bash	pwsh "git push --force"
+# Windows powershell.exe is unprobed, and may take the same argument as a command.
 miss	win	Bash	powershell.exe "git push --force"
 # cmd has no single quotes, so its & splits here; the guard reads them as quotes in every dialect.
 miss	win	PowerShell	cmd /c "echo 'a & git push --force & echo b'"

@@ -123,7 +123,8 @@ pub(super) fn mint(
         root: None,
         cwd: Some(hook::comparable(&cwd)),
     };
-    let reason = guard::decide(
+    let reason = guard::decide_in(
+        powershell,
         input["tool_name"].as_str().unwrap_or("Bash"),
         &json!({"command":exact}),
         &scope,
@@ -232,6 +233,23 @@ mod tests {
                 "{command}"
             );
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The lease check reads the command in the shell the hook judges it in, not the one
+    /// the tool's name suggests: Codex on Windows runs PowerShell from a tool not named for
+    /// it. There `\` is no escape, so this is a force push the hook denies.
+    #[test]
+    fn a_lease_is_judged_in_the_shell_the_hook_judges_in() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-lease-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = json!({"cwd": dir, "tool_name": "shell_command"});
+        let command = r#"astrolabe allow --once "git push origin\ --force" --said "Yes.""#;
+        assert_eq!(mint(&dir, &input, command, "s1", true), Ok(()));
+        assert_eq!(
+            mint(&dir, &input, command, "s1", false),
+            Err("the guard wouldn't deny that command, so it needs no lease".to_owned())
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
