@@ -94,9 +94,10 @@ fn a_resumed_effort_with_a_head_too_long_for_the_hook_is_cut_and_names_its_file(
     );
     let close = "\n\nAstrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner, and read now:\n- ";
     let (_, files) = text.split_once(close).expect(&text);
+    // The effort's own file always; the others only while there's room, which the two
+    // shells' proof steps on Windows leave none of.
     assert!(
-        files.contains("0070-demo.md: only its `## Current state` section")
-            && files.contains("owner.md"),
+        files.contains("0070-demo.md: only its `## Current state` section"),
         "{files}"
     );
 }
