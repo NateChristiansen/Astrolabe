@@ -112,14 +112,18 @@ The crate stays small enough to build as one package. Modules separate responsib
 
 ### Where changes belong
 
-- `effort/command.rs` parses shell commands and bodies. `effort/file.rs` interprets note properties, sections and checklists. Neither starts processes or writes files.
-- `record.rs` coordinates new efforts, saves and journal entries: the lock, recovery, pull, stale checks and the write stay there, in order. `record/save.rs` holds a save's checked request, its pure record edits, stamps and commit subject, and its reply; it reads no notes and writes no session state. `record/validation.rs` checks prose, settings and plan sections before a write is attempted.
+- `effort/command.rs` parses shell commands and bodies. `effort/file.rs` interprets note properties, sections and checklists. Neither starts processes or writes files. `effort/initiative.rs` reads and writes an initiative page and resolves which page an effort's `initiative` property names. `effort/roster.rs` builds what a reply shows about an initiative's members. `effort.rs` exposes them and holds the allowed involvement and authority values.
+- `record.rs` coordinates new efforts, saves and journal entries: the lock, recovery, pull, stale checks and the write stay there, in order. `record/save.rs` holds a save's checked request, its pure record edits, stamps and commit subject, and its reply; it reads no notes and writes no session state. `record/validation.rs` checks prose, settings and plan sections before a write is attempted. `record/lesson.rs` parses and applies `lesson close`.
 - `notes/storage.rs` owns recoverable operations and commit scope. `notes/sync.rs` owns network Git calls, backoff, merge recovery and synchronization warnings. `notes/journal.rs` owns journal formats; `notes/facts.rs` observes a product checkout; `notes/process.rs` owns detached children and platform handle behavior. `notes.rs` holds the checkout, lock, numbering and shared filesystem primitives.
-- `session.rs` owns session records and the save and acknowledgement transitions. `nudge.rs` decides when work needs a save reminder.
-- `activate/repos.rs` matches checkouts to repository notes. `activate/context.rs` loads effort context. `activate/proof.rs` evaluates guard evidence. `activate/tickets.rs` persists hook replies. `activate/routing.rs` handles provider inputs and applies activation transitions. `activate.rs` exposes the facade and machine switch.
+- `session.rs` owns session records and the save and acknowledgement transitions. `nudge.rs` decides when work needs a save reminder. `reply.rs` clears an owner wait when the bound conversation shows a new human reply.
+- `activate/repos.rs` matches checkouts to repository notes. `activate/context.rs` loads effort context. `activate/proof.rs` evaluates guard evidence. `activate/tickets.rs` persists hook replies. `activate/routing.rs` handles provider inputs and applies activation transitions. `activate/allow.rs` records and consumes a one-time approval for a guarded command. `activate/housekeeping.rs` runs `notes sync` and `lesson close` inside the hook. `activate.rs` exposes the facade and machine switch.
+- `guard.rs` classifies a shell command as allowed or denied; it is pure, and reads what a command says rather than running anything. `hook.rs` reads a hook's input and writes its denial output.
 - `board.rs` collects a typed snapshot for both the board and `efforts --json`. Collection may read Git status; rendering does not run Git.
-- `home/server.rs` handles HTTP and live event streams. `home/render.rs`, `home/markdown.rs` and `home/nav.rs` render the board, notes and navigation. `home/settings.rs` holds appearance and port settings. CSS and JavaScript live beside the renderer and are embedded at build time.
+- `home/server.rs` handles HTTP and live event streams. `home/render.rs`, `home/markdown.rs` and `home/nav.rs` render the board, notes and navigation. `home/search.rs` answers the notes view's search, inside the notes checkout only. `home/settings.rs` holds appearance and port settings. `home.rs` exposes them and writes the standalone board file. CSS and JavaScript live beside the renderer and are embedded at build time.
 - `application.rs` connects completed note operations to presentation. `home_effects.rs` writes the ignored board file and ensures the local server is running. Storage has no dependency on either rendering or server startup.
+- `main.rs` parses the program's arguments and calls the module that owns each command; `lib.rs` lists the modules.
+- `install.rs` installs the executable it was invoked from, replacing only a program the installer's receipt recorded and keeping a backup. `update.rs` moves the program and each app's plugin to the newest release or nightly. `codex_setup.rs` is the opt-in `setup codex` command; no hook or installer calls it.
+- `seed.rs` creates a new notes checkout for `notes init`. `registry.rs` holds the local repo registration helpers. `worktree.rs` runs Git for the modules that read a checkout.
 
 ### Trace a save
 
@@ -146,6 +150,6 @@ Run `scripts/check` before committing. Binary integration fixtures remain in `te
 
 For state changes, verify legacy optional fields and unknown data through a save or resume. For rendering or asset moves, compare collected JSON and rendered HTML with the previous build, then inspect both a normal and narrow viewport. The recorded-backoff test verifies an existing backoff record; it does not simulate a network timeout.
 
-The same checks run in macOS and Windows CI. A local macOS pass does not establish Windows, Linux or live agent-client compatibility.
+The same checks run in macOS, Windows and Linux CI. A local macOS pass does not establish Windows, Linux or live agent-client compatibility.
 
 [Contributing](../CONTRIBUTING.md) · [Command reference](commands.md)

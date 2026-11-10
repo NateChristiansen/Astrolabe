@@ -622,6 +622,13 @@
       return r.text()
     }).then(function (html) {
       var doc = new DOMParser().parseFromString(html, 'text/html');
+      // A 200 that lacks a part this page shows isn't this page, so nothing is swapped.
+      var parts = ['#tree', '#board', '.note'].map(function (sel) {
+        return [$(sel), doc.querySelector(sel)]
+      });
+      if (parts.some(function (p) {
+        return p[0] && !p[1]
+      })) throw new Error('Refresh failed');
       var y = main.scrollTop, treeY = tree.scrollTop, active = document.activeElement;
       var focus = active && active.closest('#board,#tree,.note') ? {
         id: active.id,
@@ -632,9 +639,8 @@
         treeKey: active.closest('details')?.dataset.key,
         text: active.textContent
       } : null;
-      ['#tree', '#board', '.note'].forEach(function (sel) {
-        var a = $(sel), b = doc.querySelector(sel);
-        if (a && b && a.innerHTML !== b.innerHTML) a.innerHTML = b.innerHTML
+      parts.forEach(function (p) {
+        if (p[0] && p[0].innerHTML !== p[1].innerHTML) p[0].innerHTML = p[1].innerHTML
       });
       bindTree();
       foldForView(currentView);

@@ -372,7 +372,6 @@ pub fn machine_name() -> String {
     }
 }
 
-/// Local day and time, in the owner's zone: a UTC date once fell on the next day.
 /// Where an effort created on `day` (`2026-11-05`) is filed: `efforts/2026/11-November`.
 /// The shelf is the month it started, which never changes, so the file never moves and
 /// every link to it holds. A day that doesn't parse files at the root.
@@ -429,6 +428,7 @@ pub fn effort_files(root: &Path) -> Vec<(u32, String)> {
     found
 }
 
+/// Local day and time, in the owner's zone: a UTC date once fell on the next day.
 pub fn local_day_time() -> (String, String) {
     let now = Local::now();
     (
