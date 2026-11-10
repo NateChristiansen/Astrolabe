@@ -218,14 +218,30 @@ impl Notes {
         let (old_rel, new_rel, next) = self.duplicate()?;
         let text = std::fs::read_to_string(self.root.join(&old_rel)).ok()?;
         let mut file = crate::effort::EffortFile::parse(&text).ok()?;
-        let old_number = file.number().unwrap_or(0);
-        file.title = format!("{next:04} {}", file.name());
-        let (day, _) = local_day_time();
-        file.add_decision(&format!(
-            "{day}: renumbered from {old_number:04}; that number was taken by another machine's effort first"
-        ));
+        // A note whose header never closes is all header: it parses with no title or
+        // sections, and writing it back from that would drop them. It moves as it is, its
+        // number taken from its file name; its title keeps the old number and it gets no
+        // decision line, since either would mean rewriting it.
+        let unclosed = crate::effort::header_bounds(&text).is_some_and(|at| !at.closed());
+        let old_number = if unclosed {
+            let name = old_rel.rsplit('/').next().unwrap_or(&old_rel);
+            name.split('-').next().and_then(|n| n.parse().ok())
+        } else {
+            file.number()
+        }
+        .unwrap_or(0);
+        let rendered = if unclosed {
+            text
+        } else {
+            file.title = format!("{next:04} {}", file.name());
+            let (day, _) = local_day_time();
+            file.add_decision(&format!(
+                "{day}: renumbered from {old_number:04}; that number was taken by another machine's effort first"
+            ));
+            file.render()
+        };
         let key = format!("renumber-{old_number:04}-{next:04}");
-        let mut files = vec![(new_rel.clone(), file.render())];
+        let mut files = vec![(new_rel.clone(), rendered)];
         // The renumbered effort's own journal lines follow it: the ones written by the
         // machine that saved it, which the tail names. The other machine's lines for that
         // number belong to the effort that keeps it.
