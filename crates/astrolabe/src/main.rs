@@ -64,11 +64,29 @@ fn main() {
             }
         }
         ["efforts", rest @ ..] => {
-            let repo = rest
-                .iter()
-                .position(|a| *a == "--repo")
-                .and_then(|i| rest.get(i + 1).copied());
-            let all = rest.contains(&"--all");
+            // Each flag by name: one that's mistyped, or a --repo with no name, was once
+            // ignored and the whole list given as if it had been asked for.
+            let (mut repo, mut all) = (None, false);
+            let mut words = rest.iter();
+            while let Some(word) = words.next() {
+                match *word {
+                    "--all" => all = true,
+                    // The list is JSON with or without it.
+                    "--json" => {}
+                    "--repo" => {
+                        let name = words
+                            .next()
+                            .filter(|n| !n.is_empty() && !n.starts_with("--"));
+                        match name {
+                            Some(name) => repo = Some(*name),
+                            None => fail("--repo takes a repo's name"),
+                        }
+                    }
+                    other => fail(&format!(
+                        "efforts takes --repo <name>, --all and --json, not {other:?}"
+                    )),
+                }
+            }
             match astrolabe::record::list(repo, all) {
                 Ok(text) => println!("{text}"),
                 Err(why) => fail(&why),

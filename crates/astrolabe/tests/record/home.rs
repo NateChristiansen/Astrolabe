@@ -837,3 +837,40 @@ fn copy_program(from: &Path, to: &Path) {
         std::fs::copy(from, to).unwrap();
     }
 }
+
+/// The listing takes its three flags and nothing else: a mistyped one, or a `--repo` with
+/// no name, is refused rather than ignored and the whole list given.
+#[test]
+fn the_efforts_listing_refuses_what_it_doesnt_take() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    for args in [
+        &["efforts", "--json"][..],
+        &["efforts", "--all", "--json"],
+        &["efforts", "--repo", "demo", "--json"],
+        &["efforts", "--json", "--repo", "demo", "--all"],
+    ] {
+        let (out, ok) = mac.run(&mac.demo, args, "");
+        assert!(ok, "{args:?}: {out}");
+        let listed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(listed["efforts"].as_array().unwrap().len(), 1, "{args:?}");
+    }
+    for (args, why) in [
+        (&["efforts", "--bogus"][..], "not \"--bogus\""),
+        (&["efforts", "--repo"], "--repo takes a repo's name"),
+        (
+            &["efforts", "--repo", "--all"],
+            "--repo takes a repo's name",
+        ),
+        (&["efforts", "--jsno"], "not \"--jsno\""),
+        (&["efforts", "demo"], "not \"demo\""),
+    ] {
+        let (out, ok) = mac.run(&mac.demo, args, "");
+        assert!(!ok && out.contains(why), "{args:?}: {out}");
+        assert!(
+            !out.contains("\"efforts\""),
+            "{args:?} listed anyway: {out}"
+        );
+    }
+}
