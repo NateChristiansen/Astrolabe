@@ -403,6 +403,39 @@ fn a_write_that_finishes_just_after_the_backstop_answered_is_still_unanswered() 
     );
 }
 
+/// The hook was gone with its commit still running: git is never ended, and here the
+/// checkout's own commit hook keeps it going past the hook's exit. The retry sent straight
+/// away waits for that git, as it would for a writer holding the notes, and is answered
+/// from the write it finished. It isn't refused because git still holds the index.
+#[test]
+fn a_retry_sent_while_the_first_hooks_commit_is_still_running_waits_for_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    mac.notes_hook("pre-commit", "sleep 12\nexit 0");
+    // Answered at 8 s and gone by 9.25, with the commit running until about 12.
+    let short = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let denied = mac.call("s1", "call-1", FOUND, &short).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    assert_eq!(mac.log().matches("journal: demo").count(), 0, "git is done");
+    let retried = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(
+        retried.contains("nothing new went in the journal"),
+        "{retried}"
+    );
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        1,
+        "{journal}"
+    );
+    assert_eq!(
+        mac.log().matches("journal: demo").count(),
+        1,
+        "{}",
+        mac.log()
+    );
+}
+
 /// The session can be told of a write by the command itself, run bare, when the hook that
 /// made the write never answered: the bare command finds the record and prints its result.
 /// From then the session has been told, so the same command through the hook is a new

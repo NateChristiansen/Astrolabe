@@ -105,7 +105,7 @@ impl Machine {
 
     /// A hook of the notes checkout's own git, which git runs with its bundled shell on
     /// every platform: the way these tests make the real git slow partway through a step.
-    fn notes_hook(&self, name: &str, script: &str) {
+    pub(super) fn notes_hook(&self, name: &str, script: &str) {
         let hook = self.notes.join(".git/hooks").join(name);
         write(&hook, &format!("#!/bin/sh\n{script}\n"));
         #[cfg(unix)]
@@ -359,6 +359,103 @@ fn a_hook_that_dies_mid_write_leaves_a_write_the_next_hook_finishes() {
     );
 }
 
+impl Machine {
+    /// A marker held as git that a hook left running holds one (`worktree::marker`), for
+    /// as long as the file returned is kept.
+    fn held_marker(&self) -> std::fs::File {
+        let dir = self.state().join("git-output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut marker = std::fs::File::options();
+        marker.read(true).write(true).create(true).truncate(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            marker.share_mode(0);
+        }
+        let marker = marker.open(dir.join("stray.run")).unwrap();
+        #[cfg(unix)]
+        {
+            use fs4::fs_std::FileExt;
+            assert!(FileExt::try_lock_exclusive(&marker).unwrap());
+        }
+        marker
+    }
+}
+
+/// A marker that stays held with nothing in the checkout, as something git started and
+/// left with its input would hold it, costs a wait and no more: the hook's write goes
+/// ahead when its wait is up, and a command that isn't a hook doesn't wait for good.
+#[test]
+fn a_marker_nothing_frees_delays_a_write_and_never_stops_one() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let stray = mac.held_marker();
+    // The wait is the one a hook has for the notes lock, to 9 s of its 16. The hook's
+    // clock is moved on 6 s as it starts, so that's 3 real seconds, and what the hook
+    // keeps back for the write after a wait is all still there.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "read:+6000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(ok && text.starts_with("Saved effort 1"), "{text}");
+    assert!(mac.journal_today().contains("a line for the day"));
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(10),
+        "{took:?}"
+    );
+    // Outside a hook the wait is the longest a hook has, 9 s, and then it goes on.
+    let started = Instant::now();
+    let (out, ok) = mac.run(&mac.notes, &["notes", "sync"], "");
+    assert!(ok, "{out}");
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(8) && took < Duration::from_secs(17),
+        "{took:?}"
+    );
+    // Freed, nothing waits.
+    drop(stray);
+    let started = Instant::now();
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
+    assert!(ok, "{out}");
+    assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+/// Git that a hook left running and that still holds the index when the wait is up is a
+/// writer like any other: the save is refused with the reply for busy notes, and nothing
+/// is planned or written beside it.
+#[test]
+fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (before, log) = (mac.effort_text(1), mac.log());
+    let running = mac.held_marker();
+    let index = mac.notes.join(".git/index.lock");
+    write(&index, "");
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort NOT saved: the notes are busy: another session's write or a sync held them for the ")
+            && text.contains("so nothing was written. Run the same command again"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.log(), log);
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+    // That git ends, and the same command goes through.
+    std::fs::remove_file(index).unwrap();
+    drop(running);
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    assert!(mac.journal_today().contains("a line for the day"));
+}
+
 /// A pull whose rebase takes the hook's time isn't ended: it finishes, and the save that
 /// asked for it is refused before anything is planned or written, saying where the time
 /// went.
@@ -382,29 +479,29 @@ fn a_pull_that_takes_the_hooks_time_finishes_and_its_save_is_refused_naming_it()
         "OWNER-TEXT\nA HAND EDIT\n",
     )
     .unwrap();
-    // The real git, held up once in the middle of that rebase until 11 to 12 s after the
-    // hook starts: past the last moment a write may begin (10.5 s of the hook's 16), with
-    // 4 s left before the backstop for the rest of the pull and the reply. The wait is to a
-    // time on the clock, not a length, because how soon the rebase begins varies by machine.
-    let (once, begun) = (mac.dir.0.join("slow.once"), mac.dir.0.join("hook.began"));
-    let unix = |path: &Path| path.display().to_string().replace('\\', "/");
+    // The real git, held up once in the middle of that rebase for 2 s, with the hook's
+    // clock moved on 9 s as the rebase starts: on that clock the rebase is under way past
+    // the last moment a write may begin (10.5 s of the hook's 16), and has to finish. The
+    // backstop stays 16 real seconds off, so how long a slow machine takes over the rest
+    // of the pull and the reply doesn't decide who answers. Held to a time on the wall
+    // clock instead, this left about 4 real seconds for all of that, and a slow machine
+    // used them up.
+    let once = mac.dir.0.join("slow.once");
     mac.notes_hook(
         "reference-transaction",
         &format!(
-            "dir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  began=$(cat '{begun}')\n  while [ \"$(date +%s)\" -lt $((began + 12)) ]; do sleep 1; done\nfi\nexit 0",
-            once = unix(&once),
-            begun = unix(&begun)
+            "dir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  sleep 2\nfi\nexit 0",
+            once = once.display().to_string().replace('\\', "/")
         ),
     );
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-    write(&begun, &now.as_secs().to_string());
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "rebase:+9000")];
     let before = mac.effort_text(1);
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &[], Duration::from_secs(45));
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(45));
     assert!(once.exists(), "the rebase was never held up");
-    let Answer::Shown(text, ok) = answer else {
-        panic!("a reply through the ticket: the hook answers before its backstop");
+    let (text, ok) = match answer {
+        Answer::Shown(text, ok) => (text, ok),
+        Answer::Denied(why) => panic!("a reply through the ticket, not a denial: {why}"),
+        Answer::Silent => panic!("a reply through the ticket, not silence"),
     };
     assert!(
         !ok && text.starts_with("Effort NOT saved: this hook's pull of the notes took ")
@@ -413,7 +510,7 @@ fn a_pull_that_takes_the_hooks_time_finishes_and_its_save_is_refused_naming_it()
             ),
         "{text}"
     );
-    assert!(took >= Duration::from_millis(10500), "{took:?}");
+    assert!(took >= Duration::from_secs(2), "{took:?}");
     // The rebase ran to its end: the other machine's commit is in, this one's replayed on
     // it, the hand edit is back in the tree and nothing is left partway.
     assert_eq!(mac.log(), "0001: started\ntheirs\nseed\n");

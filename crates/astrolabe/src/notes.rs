@@ -179,15 +179,59 @@ impl Notes {
             .write(true)
             .open(&path)
             .map_err(|e| Locked::Failed(format!("{}: {e}", path.display())))?;
+        let started = std::time::Instant::now();
         match crate::deadline::lock(&file) {
-            Ok(crate::deadline::Wait::Held) => Ok(Held(file)),
+            Ok(crate::deadline::Wait::Held) => self.after_git_left_running(Held(file), started),
             Ok(crate::deadline::Wait::Busy(waited)) => Err(Locked::Busy(waited)),
             Err(e) => Err(Locked::Failed(format!("notes lock: {e}"))),
         }
     }
 
-    /// The writer lock if it's free now; None while a writer holds it, so a background
-    /// caller skips a turn instead of queueing behind a save.
+    /// The lock is this process's, but a hook that ran out of time may have left git
+    /// running in the checkout, and the lock went with the hook, not with its git. The
+    /// holder waits for that git as it waited for the lock, so a retry sent straight after
+    /// the hook's denial finds the write finished and not git's index held against it.
+    /// When the wait gives out: a hook that can see git still holds the index is told the
+    /// notes are busy, as it would be of any writer. Otherwise the holder goes on, since
+    /// what's left may only be something git started that kept its input, and git itself
+    /// refuses if it is still in the way. A process waits its time out once: until it
+    /// finds nothing held, its later locks go on at once, so a command that takes the lock
+    /// several times isn't held up each time by something that isn't ending.
+    fn after_git_left_running(
+        &self,
+        held: Held,
+        started: std::time::Instant,
+    ) -> Result<Held, Locked> {
+        static WAITED_OUT: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let waited_out = || WAITED_OUT.load(std::sync::atomic::Ordering::Relaxed);
+        let wait = match waited_out() {
+            true => std::time::Duration::ZERO,
+            false => crate::deadline::wait_for_git(),
+        };
+        let from = std::time::Instant::now();
+        let mut pause = std::time::Duration::from_millis(5);
+        while crate::worktree::left_running(&self.state) {
+            let waited = from.elapsed();
+            if waited >= wait {
+                WAITED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
+                let index_held = self.root.join(".git/index.lock").exists();
+                if crate::deadline::in_hook() && index_held {
+                    return Err(Locked::Busy(started.elapsed()));
+                }
+                return Ok(held);
+            }
+            std::thread::sleep(pause.min(wait - waited));
+            pause = (pause * 2).min(std::time::Duration::from_millis(50));
+        }
+        // Nothing is held now: the next git a hook leaves is waited for in full.
+        WAITED_OUT.store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(held)
+    }
+
+    /// The writer lock if it's free now; None while a writer holds it, or git that a hook
+    /// left running is still in the checkout, so a background caller skips a turn instead
+    /// of queueing behind a save.
     pub fn try_lock(&self) -> Option<Held> {
         std::fs::create_dir_all(&self.state).ok()?;
         let file = File::options()
@@ -196,9 +240,9 @@ impl Notes {
             .write(true)
             .open(self.state.join(LOCK))
             .ok()?;
-        FileExt::try_lock_exclusive(&file)
-            .ok()?
-            .then_some(Held(file))
+        let free =
+            FileExt::try_lock_exclusive(&file).ok()? && !crate::worktree::left_running(&self.state);
+        free.then_some(Held(file))
     }
 
     /// The folder git keeps for a rebase under way in the checkout, if there is one; an

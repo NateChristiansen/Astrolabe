@@ -88,10 +88,17 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Fail
 /// changing: a rebase prints as it finishes. Files stay, so git finishes; and with no pipe
 /// to wait on, something git started can't hold this call open after git is done.
 fn run_kept(command: &mut Command) -> std::io::Result<Ran> {
+    match kept_dir() {
+        Some(dir) => run_kept_in(command, &dir, crate::deadline::in_hook()),
+        None => run(command, None),
+    }
+}
+
+/// `run_kept` with its folder named. With `marked`, the child also holds a marker there
+/// until it ends (see `marker`), which is how a hook's git is known to be still running
+/// after the hook is gone.
+fn run_kept_in(command: &mut Command, dir: &Path, marked: bool) -> std::io::Result<Ran> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let Some(dir) = kept_dir() else {
-        return run(command, None);
-    };
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = |stream: &str| dir.join(format!("{}-{n}.{stream}", std::process::id()));
     let (out, err) = (name("out"), name("err"));
@@ -99,9 +106,20 @@ fn run_kept(command: &mut Command) -> std::io::Result<Ran> {
     else {
         return run(command, None);
     };
-    command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
+    // The marker is the child's input: empty, so it reads as the end of input, as before.
+    let running = name(MARKER);
+    let stdin = match marked.then(|| marker(&running)).flatten() {
+        Some(marker) => Stdio::from(marker),
+        None => Stdio::null(),
+    };
+    command.stdin(stdin).stdout(stdout).stderr(stderr);
     crate::notes::keep_stdio_here();
-    let status = command.spawn()?.wait()?;
+    let status = command.spawn().and_then(|mut child| child.wait());
+    // This process lets go of the marker, and it's removed: the child has ended, or never
+    // started.
+    command.stdin(Stdio::null());
+    let _ = std::fs::remove_file(running);
+    let status = status?;
     // Read back whole, or not at all: what git printed is an answer to its caller.
     let (stdout, stderr) = (std::fs::read(&out)?, std::fs::read(&err)?);
     let _ = std::fs::remove_file(out);
@@ -113,19 +131,95 @@ fn run_kept(command: &mut Command) -> std::io::Result<Ran> {
     }))
 }
 
+/// What a marker file's name ends in.
+const MARKER: &str = "run";
+
+/// A file that reads as held for as long as the child given it as its input is running,
+/// whether or not the process that started the child still is. A hook exits at its time
+/// and leaves a git that changes the notes checkout to finish, and the notes lock goes
+/// with the hook: the marker is what the next holder of that lock waits on, so it never
+/// works in the checkout beside that git. No process is named, so there is no process id
+/// to mistake for another's later. None if it couldn't be made, and the child runs
+/// unmarked, as every child did before there were markers.
+///
+/// On Unix the file is locked here and the child has the lock with the file, since a lock
+/// belongs to the open file and not to a process. It's let go when the last process with
+/// that input ends: git, and anything git started that kept git's input. Git gives its
+/// hooks no input of its own, and what it detaches (a background gc) closes its input
+/// first, so those don't keep it.
+#[cfg(unix)]
+fn marker(path: &Path) -> Option<std::fs::File> {
+    use fs4::fs_std::FileExt;
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .ok()?;
+    FileExt::try_lock_exclusive(&file).ok()?.then_some(file)
+}
+
+/// On Windows a lock belongs to the process that took it and would go with the hook, so
+/// the file is opened unshared instead: nothing else can open it while any process has it
+/// open, and the child has it open as its input until it ends.
+#[cfg(windows)]
+fn marker(path: &Path) -> Option<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    std::fs::File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .share_mode(0)
+        .open(path)
+        .ok()
+}
+
+/// Whether the child a marker was made for is still running. A marker left by a process
+/// that exited before removing it, with its child ended too, reads as free.
+#[cfg(unix)]
+fn held(marker: &Path) -> bool {
+    use fs4::fs_std::FileExt;
+    std::fs::File::open(marker)
+        .is_ok_and(|file| matches!(FileExt::try_lock_exclusive(&file), Ok(false)))
+}
+
+#[cfg(windows)]
+fn held(marker: &Path) -> bool {
+    // ERROR_SHARING_VIOLATION: another process has it open, unshared.
+    std::fs::File::open(marker).is_err_and(|error| error.raw_os_error() == Some(32))
+}
+
+/// Whether git that a hook started in the notes checkout is still running, the hook
+/// itself gone or not. `state` is the state folder of those notes, where hooks keep
+/// their git's output and markers.
+pub(crate) fn left_running(state: &Path) -> bool {
+    any_held(&state.join(KEPT))
+}
+
+fn any_held(dir: &Path) -> bool {
+    (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .map(|entry| entry.path())
+        .any(|path| path.extension().is_some_and(|x| x == MARKER) && held(&path))
+}
+
 /// Where a kept child's output goes: a folder of its own in the plugin's state folder,
 /// which is the user's. With no state folder there's nowhere of the user's own to put it,
 /// and the caller uses pipes: never a shared temp folder, where another user could have
 /// put a link under the name this would write to. Files a process left by exiting before
-/// its git did are cleared once they're a day old.
+/// its git did, its marker among them, are cleared once they're a day old.
 fn kept_dir() -> Option<std::path::PathBuf> {
     static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| kept_dir_in(crate::activate::state_dir()))
         .clone()
 }
 
+/// The folder, in the state folder, for kept output and markers.
+const KEPT: &str = "git-output";
+
 fn kept_dir_in(state: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
-    let dir = state?.join("git-output");
+    let dir = state?.join(KEPT);
     std::fs::create_dir_all(&dir).ok()?;
     let day = Duration::from_secs(24 * 60 * 60);
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -411,6 +505,114 @@ mod tests {
         };
         assert_eq!(done.stdout, b"said\n");
         assert!(started.elapsed() < Duration::from_secs(4));
+    }
+
+    /// A folder of this test's own for markers and kept output.
+    fn kept(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("astrolabe-marker-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Starts `command` with a marker as its input and lets go of it here, as a hook that
+    /// exited would have: only the child, and what it starts, has the marker from then.
+    fn left_by_a_hook(mut command: Command, dir: &Path) -> std::process::Child {
+        let marker = marker(&dir.join(format!("1.{MARKER}"))).expect("a marker");
+        command
+            .stdin(Stdio::from(marker))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command.spawn().unwrap()
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(started.elapsed() < Duration::from_secs(30), "never: {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The marker is held for as long as the child runs and no longer, and is gone once
+    /// the call returns.
+    #[test]
+    fn a_marked_childs_marker_is_held_while_it_runs_and_removed_after() {
+        let dir = kept("runs");
+        assert!(!any_held(&dir));
+        std::thread::scope(|scope| {
+            let call = scope.spawn(|| run_kept_in(&mut child("slow"), &dir, true));
+            wait_until("the marker is held", || any_held(&dir));
+            let Ran::Finished(done) = call.join().unwrap().unwrap() else {
+                panic!("it's never ended");
+            };
+            assert!(String::from_utf8_lossy(&done.stdout).contains("done at last"));
+        });
+        assert!(!any_held(&dir));
+        let left = std::fs::read_dir(&dir).unwrap().flatten();
+        let markers = left.filter(|entry| entry.path().extension().is_some_and(|x| x == MARKER));
+        assert_eq!(markers.count(), 0);
+        // An unmarked child, as outside a hook, makes no marker at all.
+        std::thread::scope(|scope| {
+            let call = scope.spawn(|| run_kept_in(&mut child("slow"), &dir, false));
+            std::thread::sleep(Duration::from_millis(400));
+            assert!(!any_held(&dir));
+            call.join().unwrap().unwrap();
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The case the marker is for: whoever started the child is gone, and the marker is
+    /// still held until the child ends. What's left then is a file nobody removed, which
+    /// reads as free.
+    #[test]
+    fn a_marker_outlives_whoever_started_the_child_and_a_leftover_one_is_free() {
+        let dir = kept("left");
+        let mut running = left_by_a_hook(child("slow"), &dir);
+        assert!(any_held(&dir), "held with only the child holding it");
+        running.wait().unwrap();
+        assert!(!any_held(&dir));
+        assert!(dir.join(format!("1.{MARKER}")).exists(), "left behind");
+        // One whose child never started, or that a crash left: free too.
+        drop(marker(&dir.join(format!("2.{MARKER}"))).unwrap());
+        std::fs::write(dir.join(format!("3.{MARKER}")), "").unwrap();
+        assert!(!any_held(&dir));
+        // A file that isn't a marker is never read as one.
+        let other = std::fs::File::create(dir.join("4.out")).unwrap();
+        assert!(!any_held(&dir));
+        drop(other);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What the child starts in the background doesn't keep the marker: a shell gives a
+    /// background command no input of the shell's, as git gives its hooks none. Only
+    /// something that takes the child's input on purpose and outlives it holds the marker
+    /// on, which is why the wait for one is bounded (`deadline::wait_for_git`).
+    #[cfg(unix)]
+    #[test]
+    fn only_what_keeps_the_childs_input_keeps_its_marker() {
+        let dir = kept("background");
+        let mut shell = Command::new("sh");
+        shell
+            .args(["-c", "sleep 3 & echo $! > pid"])
+            .current_dir(&dir);
+        left_by_a_hook(shell, &dir).wait().unwrap();
+        assert!(!any_held(&dir), "a background command has no input of ours");
+        let kill = |dir: &Path| {
+            let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+            let _ = Command::new("kill").arg(pid.trim()).status();
+        };
+        kill(&dir);
+        let mut shell = Command::new("sh");
+        shell
+            .args(["-c", "exec 3<&0; sleep 3 <&3 3<&- & echo $! > pid"])
+            .current_dir(&dir);
+        left_by_a_hook(shell, &dir).wait().unwrap();
+        assert!(any_held(&dir), "kept on purpose, it's held");
+        kill(&dir);
+        wait_until("it ends, and the marker is free", || !any_held(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -383,6 +383,25 @@ pub(crate) fn lock(file: &File) -> std::io::Result<Wait> {
     lock_within(file, clock.left(until))
 }
 
+/// Whether this process is a hook, which exits at its time whatever git it started is
+/// still running.
+pub(crate) fn in_hook() -> bool {
+    CLOCK.get().is_some()
+}
+
+/// How long the holder of the notes lock waits for git that an earlier hook left running
+/// in the checkout (see `worktree::left_running`). A hook has what is left of the time it
+/// had for the lock itself. Any other process has the most a hook ever has for that, and
+/// not as long as it takes: what it waits on here is not a writer but whatever still has
+/// git's input open, which could be something git started that never ends.
+pub(crate) fn wait_for_git() -> Duration {
+    let share = |clock: &Clock| clock.work().saturating_sub(clock.reserve());
+    match CLOCK.get() {
+        Some(clock) => clock.left(share(clock)),
+        None => share(&Clock::new(answer_by("pre-command"))),
+    }
+}
+
 /// The lock within `wait`. Neither `flock` nor `LockFileEx` as `fs4` calls it takes a
 /// timeout, so this asks without waiting and asks again, the same on every platform. A
 /// held lock is `Ok(false)` on all of them; any other failure is returned at once.
