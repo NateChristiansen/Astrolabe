@@ -4,6 +4,7 @@ use super::repos::{
     Repos, common_dir, folder_remotes, in_notes, normalize_remote, notes_and_repos, repo_names,
     session_repo,
 };
+use super::routing::after_first_paragraph;
 use super::{now_ms, state_dir};
 use crate::effort::frontmatter;
 use crate::effort::{AUTHORITIES, INVOLVEMENTS};
@@ -13,7 +14,8 @@ use crate::session::{Binding, Field, SessionState};
 use serde_json::Value;
 use std::path::Path;
 
-/// A hook's text is cut near 10,000 characters on both clients (see `voice`).
+/// A hook's text is cut at 10,000 characters by Claude Code and near 2,500 tokens by Codex
+/// (docs/hosts.md). This is under both, in the unit `counted` gives each.
 pub(super) const HOOK_LIMIT: usize = 9800;
 
 /// What each of `INVOLVEMENTS` asks of an agent, in that list's order.
@@ -367,28 +369,119 @@ impl Activation {
 
     /// Under a hook's cut: what fits inline, in order, and the files to read for the rest.
     pub fn fitted(&self) -> String {
-        let text = self.text();
-        if text.len() <= HOOK_LIMIT {
+        self.fitted_after(None)
+    }
+
+    /// `fitted`, with a notice after the opening paragraph counted in with the rest.
+    pub fn fitted_after(&self, notice: Option<&str>) -> String {
+        let provider = self.state.provider.as_deref().unwrap_or_default();
+        let size = |text: &str| counted(provider, text);
+        let lead = match notice {
+            Some(notice) => after_first_paragraph(&self.lead(), notice),
+            None => self.lead(),
+        };
+        let inline = |parts: &[Part]| -> String {
+            let piece = |p: &Part| format!("\n\n--- {}\n\n{}", p.title, p.body);
+            parts.iter().map(piece).collect()
+        };
+        let files = |parts: &[Part]| -> Vec<String> {
+            let files = parts.iter().flat_map(|p| &p.files);
+            files.map(|f| format!("\n- {f}")).collect()
+        };
+        let text = format!("{lead}{}", inline(&self.parts));
+        if size(&text) <= HOOK_LIMIT {
             return text;
         }
-        let (mut inline, mut later) = (self.lead(), Vec::new());
-        let note = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
-        let reserve = note.len()
-            + self
-                .parts
-                .iter()
-                .map(|p| p.files.len() * 200)
-                .sum::<usize>();
+        // The choice of what goes inline keeps its guess of 200 for each file to read, so a
+        // session gets the notes it got before wherever that held the limit.
+        let reserve = size(NOT_INLINE) + 200 * files(&self.parts).len();
+        let (mut used, mut kept) = (size(&lead), 0);
         for part in &self.parts {
-            let piece = format!("\n\n--- {}\n\n{}", part.title, part.body);
-            if later.is_empty() && inline.len() + piece.len() + reserve <= HOOK_LIMIT {
-                inline += &piece;
-            } else {
-                later.extend(part.files.iter().map(|f| format!("\n- {f}")));
+            used += size(&inline(std::slice::from_ref(part)));
+            if used + reserve > HOOK_LIMIT {
+                break;
             }
+            kept += 1;
         }
-        inline + note + &later.concat()
+        // Then the text as it will be sent: real paths can be longer than the guess, so notes
+        // move out, last first, until it fits.
+        loop {
+            let (now, later) = self.parts.split_at(kept);
+            let text = format!("{lead}{}{NOT_INLINE}{}", inline(now), files(later).concat());
+            if size(&text) <= HOOK_LIMIT {
+                return text;
+            }
+            if kept == 0 {
+                break;
+            }
+            kept -= 1;
+        }
+        // The head alone is too long, or its list of files is: the head is cut and says so.
+        // The first file is the effort's own, named unless its path would take the head's
+        // opening lines with it; the others follow while there's room.
+        let files = files(&self.parts);
+        let first = files.first().filter(|f| size(f) <= HOOK_LIMIT / 4);
+        let close = match first {
+            Some(first) => format!("\n\n{CUT}, and read now:{first}"),
+            None => format!("\n\n{CUT}."),
+        };
+        let mut text = cut(&lead, HOOK_LIMIT - size(&close), &size).to_owned() + &close;
+        for file in files.iter().skip(1).take_while(|_| first.is_some()) {
+            if size(&text) + size(file) > HOOK_LIMIT {
+                break;
+            }
+            text += file;
+        }
+        text
     }
+}
+
+/// Said before the files a session reads because their notes didn't fit inline.
+const NOT_INLINE: &str = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
+
+/// Said where a head too long for the hook was cut. Today the app cuts it without a word.
+const CUT: &str = "Astrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner";
+
+/// A hook's text as the app that called it counts it (docs/hosts.md). Claude Code caps it in
+/// characters, taken here as UTF-16 units, which are never fewer than the characters however
+/// it counts them. Codex limits it in approximate tokens, taken as four bytes each, so in
+/// bytes. An app that isn't known gets bytes, the larger count.
+fn counted(provider: &str, text: &str) -> usize {
+    match provider {
+        "claude" => text.encode_utf16().count(),
+        _ => text.len(),
+    }
+}
+
+/// The longest start of `text` that `room` holds, ending at a line's end where it has one,
+/// else between words, and never inside a character or a markdown link.
+fn cut<'a>(text: &'a str, room: usize, size: &dyn Fn(&str) -> usize) -> &'a str {
+    let (mut end, mut used) = (0, 0);
+    for (at, c) in text.char_indices() {
+        used += size(c.encode_utf8(&mut [0; 4]));
+        if used > room {
+            break;
+        }
+        end = at + c.len_utf8();
+    }
+    if end == text.len() {
+        return text;
+    }
+    let kept = &text[..end];
+    let between = kept.rfind('\n').or_else(|| kept.rfind(char::is_whitespace));
+    let mut end = between.unwrap_or(end);
+    // A link `[words](target)` the cut would fall inside goes whole.
+    for (close, _) in text.match_indices("](") {
+        let open = text[..close].rfind('[');
+        let shut = text[close..].find(')').map(|n| close + n + 1);
+        if let (Some(open), Some(shut)) = (open, shut)
+            && open < end
+            && end < shut
+        {
+            end = open;
+        }
+    }
+    text[..end].trim_end()
 }
 
 /// Everything checked, nothing written: the caller commits `state` once what it says is safe.
@@ -843,7 +936,7 @@ pub(super) fn refused(effort: &str, why: &str, previous: Option<&SessionState>) 
 
 /// A fresh session while the machine is on: the effort if its repo has exactly one active,
 /// else the owner and voice notes and the guard, and why there's no effort.
-pub(super) fn fresh(cwd: &Path) -> String {
+pub(super) fn fresh(cwd: &Path, provider: &str) -> String {
     let (registry, notes) = match notes_and_repos() {
         Ok(found) => found,
         Err(why) => {
@@ -934,7 +1027,11 @@ pub(super) fn fresh(cwd: &Path) -> String {
         }
     }
     Activation {
-        state: SessionState::default(),
+        // Only for the count: nothing is recorded for a session with no effort.
+        state: SessionState {
+            provider: provider.to_owned().into(),
+            ..Default::default()
+        },
         head,
         closing: "",
         parts,
@@ -1206,5 +1303,474 @@ mod tests {
         f.issues = "- issue line\n";
         let t = instructions(Role::Effort, &f);
         assert!(t.contains("the same way.\n- issue line\n- A narrower"));
+    }
+
+    /// A hook's text as the app that called it counts it (docs/hosts.md), written out here
+    /// apart from the code under test: Claude Code in characters, taken as UTF-16 units, and
+    /// Codex in approximate tokens, taken as bytes.
+    fn counted(provider: &str, text: &str) -> usize {
+        match provider {
+            "claude" => text.encode_utf16().count(),
+            _ => text.len(),
+        }
+    }
+
+    const APPS: [&str; 2] = ["claude", "codex"];
+
+    /// Every binding a session can start with; `None` is a session with no effort.
+    const ROLES: [Option<Role>; 4] = [
+        Some(Role::Effort),
+        Some(Role::Worker),
+        Some(Role::Initiative),
+        None,
+    ];
+
+    /// The start of a session's text, which it can't do without: what it's bound to, the
+    /// owner's settings, the guard's scope and how to prove it.
+    fn mandatory(role: Option<Role>) -> &'static [&'static str] {
+        match role {
+            Some(Role::Effort | Role::Worker) => &[
+                "Astrolabe is on in this session for effort 7, ",
+                "- involvement: check in at plan: ",
+                "- authority: edit: ",
+                "The guard is the plugin's pre-command hook.",
+                "PROOF",
+                "Report the effort and what the status says.",
+            ],
+            Some(Role::Initiative) => &[
+                "Astrolabe is on in this session for initiative 7, ",
+                "Settings set by the owner: involvement: check in at plan: ",
+                "The guard is the plugin's pre-command hook.",
+                "PROOF",
+                "Report the initiative and what the status says.",
+            ],
+            None => &[
+                "Astrolabe is on for this machine, so the guard runs in this session.",
+                "astrolabe effort new --title",
+                "The guard is the plugin's pre-command hook.",
+            ],
+        }
+    }
+
+    /// A session's text before its notes, as `switch_record` and `fresh` build it.
+    fn session(provider: &str, role: Option<Role>, f: &Facts, parts: Vec<Part>) -> Activation {
+        Activation {
+            state: SessionState {
+                provider: provider.to_owned().into(),
+                ..Default::default()
+            },
+            head: match role {
+                Some(role) => lead(role, f),
+                None => format!(
+                    "Astrolabe is on for this machine, so the guard runs in this session. No effort is loaded, so no effort's settings apply. {}\n\n{RECORD_RULE}\n\n{GUARD_SCOPE} Loading or creating an effort proves it for this session; until then, claim no protection.",
+                    f.freshness
+                ),
+            },
+            closing: role.map_or("", closing),
+            parts,
+            picked: String::new(),
+        }
+    }
+
+    fn part(title: &str, body: &str, file: &str) -> Part {
+        Part {
+            title: title.to_owned(),
+            body: body.to_owned(),
+            files: vec![file.to_owned()],
+        }
+    }
+
+    /// The notes an effort's session gets, each `size` long, in a notes folder named `notes`.
+    fn notes(notes: &str, size: usize) -> Vec<Part> {
+        let body = "word ".repeat(size / 5);
+        let file = |name: &str| format!("{notes}/{name}");
+        vec![
+            part(
+                "efforts/0007-sample.md, Current state",
+                &body,
+                &format!(
+                    "{}: only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans.",
+                    file("efforts/0007-sample.md")
+                ),
+            ),
+            part("knowledge/voice.md", &body, &file("knowledge/voice.md")),
+            part("knowledge/owner.md", &body, &file("knowledge/owner.md")),
+            part(
+                "knowledge/repos/demo.md",
+                &body,
+                &file("knowledge/repos/demo.md"),
+            ),
+            part(
+                "knowledge/machines.md",
+                &body,
+                &file("knowledge/machines.md"),
+            ),
+        ]
+    }
+
+    /// `fitted` as it was before it checked its own result, kept to show what it returned.
+    fn before(a: &Activation) -> String {
+        let text = a.text();
+        if text.len() <= HOOK_LIMIT {
+            return text;
+        }
+        let (mut inline, mut later) = (a.lead(), Vec::new());
+        let note = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:";
+        let reserve = note.len() + a.parts.iter().map(|p| p.files.len() * 200).sum::<usize>();
+        for part in &a.parts {
+            let piece = format!("\n\n--- {}\n\n{}", part.title, part.body);
+            if later.is_empty() && inline.len() + piece.len() + reserve <= HOOK_LIMIT {
+                inline += &piece;
+            } else {
+                later.extend(part.files.iter().map(|f| format!("\n- {f}")));
+            }
+        }
+        inline + note + &later.concat()
+    }
+
+    fn within(provider: &str, text: &str, what: &str) {
+        let size = counted(provider, text);
+        assert!(size <= HOOK_LIMIT, "{what}: {size} for {provider}");
+    }
+
+    #[test]
+    fn a_head_too_long_for_the_hook_is_cut_and_points_at_the_effort_file() {
+        // Warnings from the notes have no bound of their own, and they sit in the head.
+        let fresh = "A note write is unfinished. ".repeat(350);
+        for provider in APPS {
+            for role in ROLES {
+                let mut f = facts("check in at plan", "edit");
+                f.freshness = &fresh;
+                let a = session(provider, role, &f, notes("/home/sam/notes", 400));
+                let t = a.fitted();
+                within(provider, &t, &format!("{role:?}"));
+                // What grows without bound in a session with no effort is its opening paragraph,
+                // so only that much of its head is sure to stay.
+                let stays = if role.is_some() {
+                    mandatory(role).len()
+                } else {
+                    1
+                };
+                for line in &mandatory(role)[..stays] {
+                    assert!(t.contains(line), "{role:?} lacks {line:?}");
+                }
+                assert!(
+                    t.contains("\n\nAstrolabe cut this text here to stay under the app's limit for a hook, so rules or notes are missing: tell the owner, and read now:\n- /home/sam/notes/efforts/0007-sample.md: only its `## Current state` section"),
+                    "{role:?}: {t}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_head_of_any_length_and_no_line_ends_still_fits() {
+        // One line, so there's no line's end to cut at, in text that takes three bytes a
+        // character: a cut inside a character would panic.
+        let title = "題".repeat(20_000);
+        for provider in APPS {
+            let mut f = facts("check in at plan", "edit");
+            f.title = &title;
+            let a = session(provider, Some(Role::Effort), &f, Vec::new());
+            let t = a.fitted();
+            within(provider, &t, "a long title");
+            assert!(
+                t.ends_with("so rules or notes are missing: tell the owner."),
+                "{}",
+                &t[t.len() - 200..]
+            );
+        }
+    }
+
+    #[test]
+    fn file_paths_longer_than_the_guess_still_fit() {
+        // Each path is longer than the 200 the choice of what goes inline allows for.
+        let folder = format!("/home/sam/{}", "a-long-folder-name/".repeat(30));
+        for provider in APPS {
+            for role in ROLES {
+                let f = facts("check in at plan", "edit");
+                let a = session(provider, role, &f, notes(&folder, 3000));
+                let t = a.fitted();
+                within(provider, &t, &format!("{role:?}"));
+                for line in mandatory(role) {
+                    assert!(t.contains(line), "{role:?} lacks {line:?}");
+                }
+                assert!(
+                    t.contains("Read these now") || t.contains("read now:"),
+                    "{role:?}: {t}"
+                );
+                // The effort's own state is inline or its file is named, whatever else went.
+                assert!(
+                    t.contains("\n\n--- efforts/0007-sample.md, Current state\n\n")
+                        || t.contains(&format!("\n- {folder}/efforts/0007-sample.md: only its")),
+                    "{role:?}: {t}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn text_is_counted_as_the_calling_app_counts_it() {
+        // 4,000 characters that take three bytes each: under Claude Code's cap in characters,
+        // over Codex's in bytes.
+        let f = facts("check in at plan", "edit");
+        let body = "語".repeat(4000);
+        let parts = || {
+            vec![part(
+                "knowledge/owner.md",
+                &body,
+                "/home/sam/notes/knowledge/owner.md",
+            )]
+        };
+        let claude = session("claude", None, &f, parts());
+        assert_eq!(claude.fitted(), claude.text(), "whole for Claude Code");
+        let codex = session("codex", None, &f, parts());
+        let t = codex.fitted();
+        within("codex", &t, "three-byte text");
+        assert!(
+            !t.contains('語')
+                && t.ends_with(
+                    "Read these now, before anything else:\n- /home/sam/notes/knowledge/owner.md"
+                ),
+            "{t}"
+        );
+        // A character outside the first plane counts as two for Claude Code, so 4,000 of
+        // them don't fit beside the head.
+        let body = "🧭".repeat(4000);
+        let claude = session(
+            "claude",
+            None,
+            &f,
+            vec![part("knowledge/owner.md", &body, "/o.md")],
+        );
+        let t = claude.fitted();
+        within("claude", &t, "two-unit characters");
+        assert!(!t.contains('🧭'), "{t}");
+    }
+
+    #[test]
+    fn a_cut_never_falls_inside_a_markdown_link() {
+        let link = "[the plan for this effort](efforts/2026/11-November/0007-sample.md)";
+        for provider in APPS {
+            // Every length of text before the link, so the limit falls on each of its parts.
+            for lead in 0..link.len() + 40 {
+                let fresh = format!("{} {link} {}", "x".repeat(lead), "y".repeat(9000));
+                let mut f = facts("check in at plan", "edit");
+                f.freshness = &fresh;
+                let a = session(provider, None, &f, Vec::new());
+                let t = a.fitted();
+                within(provider, &t, "a link at the limit");
+                let cut = t.split("\n\nAstrolabe cut this text here").next().unwrap();
+                assert!(
+                    cut.contains(link) || !cut.contains("[the plan"),
+                    "{lead}: {}",
+                    &cut[cut.len() - 120..]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_notice_after_the_opening_is_fitted_with_the_rest() {
+        let note = "Notes not refreshed from origin (offline): this is the local copy.";
+        let f = facts("check in at plan", "edit");
+        for provider in APPS {
+            for role in ROLES {
+                let file = "/home/sam/notes/knowledge/owner.md";
+                let small = session(
+                    provider,
+                    role,
+                    &f,
+                    vec![part("knowledge/owner.md", "OWNER", file)],
+                );
+                assert_eq!(
+                    small.fitted_after(Some(note)),
+                    after_first_paragraph(&small.fitted(), note),
+                    "{role:?}: under the limit it's the text with the note added"
+                );
+                // Exactly at the limit without the note, so adding it afterwards went over.
+                let room = HOOK_LIMIT - counted(provider, &small.text()) + "OWNER".len();
+                let full = session(
+                    provider,
+                    role,
+                    &f,
+                    vec![part("knowledge/owner.md", &"x".repeat(room), file)],
+                );
+                assert_eq!(counted(provider, &full.fitted()), HOOK_LIMIT);
+                let t = full.fitted_after(Some(note));
+                within(provider, &t, &format!("{role:?} with a note"));
+                let opening = full.head.split("\n\n").next().unwrap();
+                assert!(
+                    t.starts_with(&format!("{opening}\n\n{note}\n\n"))
+                        && t.ends_with(&format!("Read these now, before anything else:\n- {file}")),
+                    "{role:?}: {t}"
+                );
+            }
+        }
+    }
+
+    /// A small repeatable source of sizes, so a failure names its case.
+    fn sizes(seed: u64) -> impl FnMut(usize) -> usize {
+        let mut state = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        move |most: usize| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as usize % (most + 1)
+        }
+    }
+
+    #[test]
+    fn every_role_fits_with_long_settings_proof_paths_notes_and_any_text() {
+        let texts = ["word ", "語の ", "né ", "🧭 "];
+        for seed in 0..400 {
+            let mut size = sizes(seed);
+            let fill = texts[size(3)];
+            let title = fill.repeat(size(60));
+            let proof = format!("PROOF {}\n", "touch '/tmp/probe' ".repeat(size(120)));
+            let fresh = fill.repeat(size(600));
+            let issues = format!("- issue: {}\n", "#12, ".repeat(size(40)));
+            let folder = format!("/home/{}", "フォルダ-folder/".repeat(size(40)));
+            let mut f = facts("check in at plan", "edit");
+            (f.title, f.proof, f.freshness, f.issues) = (&title, &proof, &fresh, &issues);
+            let mut parts = notes(&folder, size(4000));
+            for n in 0..size(12) {
+                let body = fill.repeat(size(800));
+                parts.push(part(
+                    &format!("note {n}"),
+                    &body,
+                    &format!("{folder}/{n}.md"),
+                ));
+            }
+            for provider in APPS {
+                for role in ROLES {
+                    let what = format!("seed {seed}, {role:?}, {provider}");
+                    let a = session(provider, role, &f, notes(&folder, 0));
+                    let mut a = Activation {
+                        parts: Vec::new(),
+                        ..a
+                    };
+                    a.parts = parts
+                        .iter()
+                        .map(|p| part(&p.title, &p.body, &p.files[0]))
+                        .collect();
+                    let t = a.fitted();
+                    within(provider, &t, &what);
+                    for line in mandatory(role) {
+                        assert!(t.contains(line), "{what} lacks {line:?}");
+                    }
+                    // Whole, or it says what to read or that it was cut.
+                    assert!(
+                        t == a.text()
+                            || t.contains("Read these now")
+                            || t.contains("cut this text here"),
+                        "{what}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_that_fitted_before_is_the_same_bytes() {
+        let mut cases = 0;
+        for seed in 0..300 {
+            let mut size = sizes(seed);
+            let fresh = "F".repeat(size(400));
+            let mut f = facts("check in at plan", "edit");
+            f.freshness = &fresh;
+            for role in ROLES {
+                let mut parts = notes("/home/sam/notes", 0);
+                for p in &mut parts {
+                    p.body = "word ".repeat(size(500));
+                }
+                for provider in APPS {
+                    let a = session(provider, role, &f, notes("/home/sam/notes", 0));
+                    let a = Activation {
+                        parts: parts
+                            .iter()
+                            .map(|p| part(&p.title, &p.body, &p.files[0]))
+                            .collect(),
+                        ..a
+                    };
+                    let was = before(&a);
+                    // Codex is counted in bytes, as before. Claude Code is counted in
+                    // characters now, so only text that went whole is sure to be the same:
+                    // a few characters either side of the limit, one more note fits.
+                    if was.len() <= HOOK_LIMIT && (provider == "codex" || was == a.text()) {
+                        assert_eq!(a.fitted(), was, "seed {seed}, {role:?}, {provider}");
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(cases > 1000, "only {cases} cases fitted before");
+    }
+
+    /// Facts as long as a real session's: a full session id, a dated effort path, proof
+    /// commands in a temp folder and a stamp from another machine.
+    fn real<'a>(proof: &'a str) -> Facts<'a> {
+        Facts {
+            number: "197",
+            title: "0197 Hold the context cap",
+            file: "efforts/2026/11-November/0197-hold-the-context-cap.md",
+            provider: "claude",
+            session: "0b6f1c7e-58a1-4c9e-9d55-3f2a7e1c4b90",
+            repo: "astrolabe",
+            involvement: "check in at plan",
+            authority: "edit",
+            issues: "",
+            proof,
+            freshness: "Last saved by workbench · codex at 2026-11-09T14:02-07:00, on main at 00a76cc. That was another machine: anything after that save there isn't visible from here. Here now: main at 13ee99e, moved since that save.",
+            status: "active",
+            waits_for: "none",
+        }
+    }
+
+    /// The sizes the report on this cap quotes; run with `--nocapture` to print them.
+    #[test]
+    fn every_roles_head_leaves_room_to_name_its_notes() {
+        let folder = "/var/folders/9h/45zln1jx7bs6wkl9b2l21m7w0000gn/T/astrolabe-probe-2691581b";
+        let token = "ddf10eeca5ad75677778f464f0e891ba";
+        let posix = format!(
+            "First an allowed control, which must run: touch '{folder}/{token}-control-posix'\nThen the probe, which the hook must deny: touch '{folder}/{token}'; pkill -0 astrolabe-guard-probe\n"
+        );
+        let one = format!(
+            "Prove the guard for this session, each command alone and exactly as written. {posix}Then run `astrolabe activate --status`."
+        );
+        // Claude Code on Windows is given both shells' steps.
+        let both = format!(
+            "Prove the guard for this session, each command alone and exactly as written. In the shell you use. For the POSIX shell (Bash, zsh):\n{posix}For PowerShell:\nFirst an allowed control, which must run: New-Item -ItemType File -Force '{folder}/{token}-control-powershell'\nThen the probe, which the hook must deny: New-Item -ItemType File -Force '{folder}/{token}'; Stop-Process -Name astrolabe-guard-probe\nThen run `astrolabe activate --status`."
+        );
+        let list = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:".len();
+        for (shells, proof) in [("one shell", &one), ("two shells", &both)] {
+            for role in ROLES {
+                let f = real(proof);
+                let mut parts = notes("/home/sam/workspace/notes", 0);
+                if role.is_some_and(|r| r != Role::Initiative) {
+                    parts.insert(1, part("efforts/2026/11-November/0197-hold-the-context-cap.md, Pieces", "", "/home/sam/workspace/notes/efforts/2026/11-November/0197-hold-the-context-cap.md: only its `## Pieces` section, up to the next `## ` heading."));
+                    parts.insert(2, part("Initiative", "", "/home/sam/workspace/notes/initiatives/audit-fixes.md: the initiative's title and path only."));
+                }
+                if role.is_none() {
+                    parts.truncate(3);
+                }
+                let a = session("claude", role, &f, parts);
+                let head = counted("claude", &a.lead());
+                let files: usize = a.parts.iter().map(|p| p.files[0].len() + 3).sum();
+                let guessed = list + 200 * a.parts.len();
+                eprintln!(
+                    "{role:?}, {shells}: head {head}, left {}, the list of {} files takes {} (guessed {guessed}), left for notes inline {}",
+                    HOOK_LIMIT - head,
+                    a.parts.len(),
+                    list + files,
+                    (HOOK_LIMIT - head).saturating_sub(guessed),
+                );
+                assert!(
+                    head + list + files <= HOOK_LIMIT,
+                    "{role:?}, {shells}: the head leaves no room to name its notes"
+                );
+            }
+        }
     }
 }
