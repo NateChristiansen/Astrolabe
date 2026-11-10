@@ -217,8 +217,9 @@ fn stop(child: &mut std::process::Child) {
 }
 
 /// Windows has no signal a console program cleans up on, and no process group to stop:
-/// only the child itself is ended, at once. What it started lives on, and a stopped
-/// `git commit` can leave `index.lock` behind.
+/// only the child itself is ended, at once, and what it started lives on. So a hook there
+/// gives no limit to a call that changes the checkout (see `deadline`); this is reached
+/// for fetches and reads, which leave nothing behind.
 #[cfg(not(unix))]
 fn stop(child: &mut std::process::Child) {
     let _ = STOP_GRACE;

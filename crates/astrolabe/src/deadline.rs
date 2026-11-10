@@ -367,11 +367,29 @@ pub(crate) fn git_limit(kind: Git) -> Option<Limit> {
             },
         });
     };
+    in_a_hook(clock, kind, !cfg!(windows))
+}
+
+/// The limit inside a hook. `stops_cleanly` is whether a git call that has started can be
+/// stopped without harm: on Unix it's asked first and removes its lock files; on Windows
+/// it can only be ended outright, which leaves `index.lock`, and every later save is then
+/// refused until someone removes the file by hand. So there a call that changes the
+/// checkout is still not started without time for it, but once started it's left to
+/// finish: the backstop answers on time, the process exits, git ends on its own, and the
+/// write's intent covers what's left. A fetch or a read changes nothing and is ended.
+fn in_a_hook(clock: &Clock, kind: Git, stops_cleanly: bool) -> Option<Limit> {
     let hook = |time: Duration| {
         (!time.is_zero()).then_some(Limit {
             time,
             cut: Cut::Hook,
         })
+    };
+    let changes = |time: Duration| match stops_cleanly {
+        true => hook(time),
+        false => (!time.is_zero()).then_some(Limit {
+            time: LOCAL,
+            cut: Cut::Local,
+        }),
     };
     match kind {
         Git::Network => {
@@ -386,9 +404,9 @@ pub(crate) fn git_limit(kind: Git) -> Option<Limit> {
                 false => hook(time),
             }
         }
-        Git::Notes => hook(clock.left(clock.work())),
+        Git::Notes => changes(clock.left(clock.work())),
         Git::Read => hook(clock.left(clock.read())),
-        Git::Cleanup => hook(clock.cleanup()),
+        Git::Cleanup => changes(clock.cleanup()),
     }
 }
 
@@ -470,6 +488,33 @@ mod tests {
                 assert!(worst + clock.write() <= clock.work(), "{event}: {worst:?}");
             }
         }
+    }
+
+    #[test]
+    fn where_git_cant_be_stopped_cleanly_a_started_change_is_left_to_finish() {
+        let pre_command = |spent: u64| Clock {
+            start: Instant::now() - Duration::from_secs(spent),
+            answer: answer_by("pre-command"),
+        };
+        let time = |clock: &Clock, kind, cleanly| in_a_hook(clock, kind, cleanly).map(|l| l.time);
+        let early = pre_command(1);
+        // Unix: every call ends with the hook's time for it.
+        assert!(time(&early, Git::Notes, true).unwrap() <= Duration::from_secs(11));
+        assert_eq!(time(&early, Git::Cleanup, true), Some(early.cleanup()));
+        // Windows: a call that changes the checkout runs to its own end once started.
+        assert_eq!(time(&early, Git::Notes, false), Some(LOCAL));
+        assert_eq!(time(&early, Git::Cleanup, false), Some(LOCAL));
+        // A fetch and a read change nothing, so they're still ended.
+        assert!(time(&early, Git::Network, false).unwrap() <= HOOK_NETWORK);
+        assert!(time(&early, Git::Read, false).unwrap() <= Duration::from_secs(13));
+        // And on both, past the mark for notes work, one isn't started at all.
+        let late = pre_command(13);
+        assert!(in_a_hook(&late, Git::Notes, true).is_none());
+        assert!(in_a_hook(&late, Git::Notes, false).is_none());
+        assert!(in_a_hook(&late, Git::Network, false).is_none());
+        // Putting the checkout back always has its time.
+        assert!(in_a_hook(&late, Git::Cleanup, true).is_some());
+        assert!(in_a_hook(&late, Git::Cleanup, false).is_some());
     }
 
     #[test]
