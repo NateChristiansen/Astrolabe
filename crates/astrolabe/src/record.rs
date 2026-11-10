@@ -1519,7 +1519,12 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
             && !wants_value;
         if a.contains('\n') || positional {
             body = Some((*a).to_owned());
-        } else if a.contains(' ') || a.is_empty() {
+        } else if a.is_empty()
+            || a.contains(|c: char| c.is_whitespace() || "\"'$`\\;|&<>()".contains(c))
+        {
+            // The shell's quoting is gone by here, so every argument a bare word can't
+            // hold is quoted again: an apostrophe with no space beside it too. One holding
+            // a character no quoted value may is refused below, as the hook refused it.
             words.push(format!("\"{a}\""));
         } else {
             words.push((*a).to_owned());

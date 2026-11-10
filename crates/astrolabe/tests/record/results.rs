@@ -195,3 +195,20 @@ fn a_command_retried_after_it_committed_gets_its_first_result_and_writes_nothing
     assert!(mac.call("s3", "call-5", chose, &[]).is_ok());
     assert_eq!(mac.effort_text(1).matches("chose a over b: c").count(), 2);
 }
+
+/// The command the app ran itself, with no hook, is given its arguments with the shell's
+/// quoting already gone. One with an apostrophe and no space is still the command the hook
+/// answered.
+#[test]
+fn the_command_run_with_no_hook_finds_the_result_of_one_with_an_apostrophe() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let inks = "astrolabe effort new --title \"Ink's\" <<'ASTROLABE'\nsmooth it\nASTROLABE\n";
+    assert!(mac.bash("s1", inks).1);
+    let (out, ok) = mac.plain(inks);
+    assert!(
+        ok && out.starts_with("Effort 1 created")
+            && out.contains("This is the result of a command with this exact text"),
+        "{out}"
+    );
+}
