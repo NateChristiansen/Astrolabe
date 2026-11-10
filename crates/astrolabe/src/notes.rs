@@ -336,6 +336,7 @@ impl Notes {
             file.number()
         }
         .unwrap_or(0);
+        let before = content_hash(&text);
         let rendered = if unclosed {
             text
         } else {
@@ -346,6 +347,7 @@ impl Notes {
             ));
             file.render()
         };
+        let renumbered = content_hash(&rendered);
         let key = format!("renumber-{old_number:04}-{next:04}");
         let mut files = vec![(new_rel.clone(), rendered)];
         // The renumbered effort's own journal lines follow it: the ones written by the
@@ -412,6 +414,17 @@ impl Notes {
                 }) = &mut state.binding
                 {
                     *key = next.to_string();
+                }
+                // A session that has the note exactly as it stands now, just before the
+                // renumber, has it as renumbered too: the renumber changes its number and
+                // adds the line saying so, nothing the session wrote. So its next save isn't
+                // refused as made over text it hasn't seen, whoever made the renumber: its
+                // own save's pull, a sync, another session. Never otherwise: a session
+                // behind the note stays behind it. The plan is always made from the note as
+                // it is, since one that never began is dropped and made again.
+                if state.delivered.as_deref() == Some(before.as_str()) {
+                    state.delivered.set(renumbered.clone());
+                    state.delivered_ms.set(now_ms());
                 }
                 op.states.push((path, state.to_value()));
             }

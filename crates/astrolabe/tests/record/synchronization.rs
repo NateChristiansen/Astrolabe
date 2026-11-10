@@ -767,3 +767,72 @@ fn a_renumber_left_unbegun_is_made_again_from_the_note_as_it_is_now() {
     assert!(!mac.notes.join(&old_rel).exists());
     assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
 }
+
+/// The usual two-machine case: the renumber is made by a sync, not by the session's own
+/// save. The session had the note as it stood, so its next save isn't refused as made over
+/// text it hasn't seen. One that hadn't is still refused.
+#[test]
+fn a_renumber_made_by_a_sync_leaves_the_sessions_next_save_unrefused() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        pc.bash(
+            "p1",
+            "astrolabe effort new --title \"Other\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+        )
+        .1
+    );
+    assert!(pc.sync().1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    assert!(
+        mac.log().contains("0001 renumbered to 0002"),
+        "{}",
+        mac.log()
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose a over b: c\"",
+    );
+    assert!(ok && out.starts_with("Saved effort 2"), "{out}");
+    assert!(mac.effort_text(2).contains("chose a over b: c"));
+}
+
+#[test]
+fn a_renumber_doesnt_carry_a_session_past_text_it_hadnt_seen() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    // The note changes behind the session, as a hand edit would change it.
+    let rel = shelf("0001-smooth-ink.md");
+    let edited = mac
+        .effort_text(1)
+        .replace("smooth the ink", "SMOOTH the ink");
+    write(&mac.notes.join(&rel), &edited);
+    git(&mac.notes, &["commit", "-qam", "hand edit"]);
+    assert!(
+        pc.bash(
+            "p1",
+            "astrolabe effort new --title \"Other\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+        )
+        .1
+    );
+    assert!(pc.sync().1);
+    assert!(mac.sync().1);
+    assert!(
+        mac.log().contains("0001 renumbered to 0002"),
+        "{}",
+        mac.log()
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose a over b: c\"",
+    );
+    assert!(
+        !ok && out.contains("effort 2 changed since it was delivered to this session"),
+        "{out}"
+    );
+}
