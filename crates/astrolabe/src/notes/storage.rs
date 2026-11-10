@@ -287,18 +287,19 @@ impl Notes {
         }
         self.ensure_attributes()?;
         // Only what changed: a first effort with no journal line yet has no journal folder,
-        // and a path git doesn't know would fail the commit. Hand edits under these paths
-        // ride along on purpose; anything else the owner staged stays staged and out. A
-        // `.tmp` is a write that died before its rename: never part of a commit. Lessons and
-        // drafts are written as plain files, so riding along is the only way one is ever
-        // committed and reaches another machine.
+        // and a path git doesn't know would fail the commit. Git decides, not the disk: a
+        // path it has never known reports nothing, while a folder removed outright still
+        // reports the files it tracked there, and those deletions are committed like any
+        // other change. Hand edits under these paths ride along on purpose; anything else
+        // the owner staged stays staged and out. A `.tmp` is a write that died before its
+        // rename: never part of a commit. Lessons and drafts are written as plain files, so
+        // riding along is the only way one is ever committed and reaches another machine.
         let mut changed = Vec::new();
         for path in COMMITTED {
-            if self.root.join(path).exists()
-                && !self
-                    .git(&["status", "--porcelain", "--", path, NOT_TEMP])?
-                    .trim()
-                    .is_empty()
+            if !self
+                .git(&["status", "--porcelain", "--", path, NOT_TEMP])?
+                .trim()
+                .is_empty()
             {
                 changed.push(path);
             }
