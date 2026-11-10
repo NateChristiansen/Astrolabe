@@ -16,12 +16,18 @@ use std::process::{Command, Stdio};
 /// Back off after a network timeout so later hooks do not pay the same delay repeatedly.
 const BACKOFF_MS: i64 = 5 * 60 * 1000;
 const INTENTS: &str = "ops";
+/// Finished writes whose result reached its ticket, kept a minute for a retry to find.
+const ANSWERED: &str = "answered";
 /// Touched when a detached sync is asked for; its mtime throttles the Stop hook's asks.
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
+/// What a write finished by a later run has for a result: the reply it would have had was
+/// never made.
+pub const RECOVERED: &str =
+    "Finished by a later run: this write landed; the reply for it was lost.";
 /// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
 pub const EOL_RULE: &str = "* text=auto eol=lf\n";
 
@@ -71,6 +77,10 @@ pub struct Op {
     /// The folder the command ran in, with the digest.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The session whose command this answers, so its retry is told from another
+    /// session's command with the same words.
+    #[serde(default)]
+    pub session: Option<String>,
     /// The notes checkout itself, when the command ran there: the states' nudge baseline is
     /// taken again as they're written, after the commit, since that commit is in the folder
     /// the fingerprint reads. Kept in the intent so a replay does the same.
@@ -361,6 +371,7 @@ impl Notes {
             digest: None,
             result: None,
             cwd: None,
+            session: None,
             rebaseline: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.

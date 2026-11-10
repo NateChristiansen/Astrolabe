@@ -413,6 +413,7 @@ impl Notes {
             digest: None,
             result: None,
             cwd: None,
+            session: None,
             rebaseline: None,
         };
         self.apply(&op)?;

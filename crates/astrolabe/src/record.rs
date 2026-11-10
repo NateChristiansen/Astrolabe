@@ -127,6 +127,34 @@ fn canonical_membership(root: &Path, name: &str) -> Result<String, String> {
     crate::effort::resolve_initiative(&pages, name).map(|page| page.slug.clone())
 }
 
+/// The key a command is written under: its own, or its first attempt's when it's a retry.
+enum Attempt {
+    /// A retry of a command whose first attempt left its reply: that reply.
+    Answered(String),
+    Key(String),
+}
+
+/// A retry is a new tool call, so it comes with a new key. It's the same request as this
+/// session's finished write of the same command in the same folder a moment ago (see
+/// `Notes::earlier_attempt`), and gets that attempt's reply. When that reply was never made,
+/// because a later run finished the write, the retry takes the first attempt's key and is
+/// told what a repeat of that call is told.
+fn attempt(notes: &Notes, cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Attempt {
+    // The same tool call again is known by its key, as it always was.
+    if notes.already_applied(key) {
+        return Attempt::Key(key.to_owned());
+    }
+    let first = notes.earlier_attempt(&cmd.digest(), &crate::hook::comparable(cwd), session);
+    match first {
+        Some(Op {
+            result: Some(reply),
+            ..
+        }) if reply != notes::RECOVERED => Attempt::Answered(reply),
+        Some(first) => Attempt::Key(first.key),
+        None => Attempt::Key(key.to_owned()),
+    }
+}
+
 /// `astrolabe effort new`, in the hook.
 pub fn new(
     cmd: &EffortCommand,
@@ -195,14 +223,20 @@ fn new_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         // Done before, by this call or its interrupted first run: the result it had, or the
-        // effort it bound.
+        // effort it bound. A write a later run finished has no result of its own to give.
         if let Some(result) = notes
             .intents()
             .into_iter()
             .find(|op| op.key == key)
             .and_then(|op| op.result)
+            .filter(|result| result != notes::RECOVERED)
         {
             return Ok(result);
         }
@@ -338,6 +372,7 @@ fn new_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -481,6 +516,7 @@ pub fn take_up(
         digest: None,
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: None,
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -605,6 +641,11 @@ fn initiative_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         let result = notes
             .intents()
@@ -746,6 +787,7 @@ fn initiative_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -810,6 +852,11 @@ fn save_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         return Ok(format!(
             "Already saved: this same tool call was done before (a retry), so nothing new was written to {record}."
@@ -924,6 +971,7 @@ fn save_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -1253,6 +1301,7 @@ fn save_target(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -1344,6 +1393,17 @@ pub fn forget(key: &str) {
     }
 }
 
+/// The ticket is written: the intent leaves the writes to recover and is kept a minute as
+/// answered, for a retry of its command.
+pub fn answered(key: &str) {
+    // Under the lock, as `forget` is.
+    if let Ok((_, notes)) = notes_here()
+        && let Ok(_held) = notes.lock()
+    {
+        notes.answered(key);
+    }
+}
+
 /// `astrolabe journal "…"`, in the hook: one line in today's day file for a finding with no
 /// effort, tagged with the repo. A session with an effort passes `--journal` on its save
 /// instead, so the line is the effort's.
@@ -1384,6 +1444,11 @@ fn journal_inner(
             leftovers.join("; ")
         ));
     }
+    let key = match attempt(&notes, cmd, key, session, cwd) {
+        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Key(key) => key,
+    };
+    let key = key.as_str();
     if notes.already_applied(key) {
         return Ok("Already written: this same tool call was done before (a retry), so nothing new went in the journal.".to_owned());
     }
@@ -1411,6 +1476,7 @@ fn journal_inner(
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
         rebaseline: None,
     };
     notes.apply(&op)?;

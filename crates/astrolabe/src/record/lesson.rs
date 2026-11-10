@@ -158,6 +158,7 @@ fn close_inner(
             digest: Some(digest.to_owned()),
             result: None,
             cwd: Some(crate::hook::comparable(cwd)),
+            session: None,
             rebaseline: None,
         };
         notes.apply(&op)?;

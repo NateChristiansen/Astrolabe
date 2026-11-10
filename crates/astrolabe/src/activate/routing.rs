@@ -515,10 +515,12 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref(), Some(&cwd)));
         return Some(match left {
             Ok(ticket) => {
-                // The ticket now holds the result, so the intent that held it can go. A
+                // The ticket now holds the result, so the intent that held it is no longer
+                // a write to recover. It's kept a minute as answered, so a retry of this
+                // command, a new tool call, is told the same instead of writing again. A
                 // failed one keeps its intent, which is its recovery plan.
                 if let (Some(op_key), true) = (op_key, ok) {
-                    crate::record::forget(&op_key);
+                    crate::record::answered(&op_key);
                 }
                 rewrite_to_show(tool_input, key, &ticket, powershell)
             }
