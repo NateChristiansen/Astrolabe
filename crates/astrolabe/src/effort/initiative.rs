@@ -530,6 +530,12 @@ mod property_tests {
                 "---\nstatus: active\ninitiative: new\n---",
             ),
             ("# 0001 One\n", "---\ninitiative: new\n---\n# 0001 One\n"),
+            // A header that never closes: a line already there is replaced, even as the last
+            // line with no line break, and none is added to one without it.
+            (
+                "---\nstatus: active\nInitiative: old",
+                "---\nstatus: active\ninitiative: new\n",
+            ),
             (
                 "\u{feff}# 0001 One\r\n",
                 "\u{feff}---\r\ninitiative: new\r\n---\r\n# 0001 One\r\n",
@@ -540,6 +546,19 @@ mod property_tests {
             assert_eq!(initiative_lines(&out), 1, "{out:?}");
             // Joining again changes nothing.
             assert_eq!(set_initiative_property(&out, "new"), out, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_header_that_never_closes_gains_no_membership_line() {
+        for text in [
+            "---",
+            "--- ",
+            "\u{feff}---",
+            "---\n",
+            "---\nstatus: active\n# 0001 One\n",
+        ] {
+            assert_eq!(set_initiative_property(text, "new"), text, "{text:?}");
         }
     }
 

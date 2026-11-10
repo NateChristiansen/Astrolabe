@@ -325,7 +325,7 @@ pub(super) fn with_remotes(text: &str, remotes: &[String]) -> String {
     let out = match crate::effort::header_bounds(&text) {
         None => format!("---\n{block}---\n\n{text}"),
         Some(at) => {
-            let mut lines: Vec<&str> = text[at.start..at.end].split_inclusive('\n').collect();
+            let lines: Vec<&str> = text[at.start..at.end].split_inclusive('\n').collect();
             let end = lines.len();
             let key = (0..end).find(|&i| {
                 let line = lines[i];
@@ -344,11 +344,11 @@ pub(super) fn with_remotes(text: &str, remotes: &[String]) -> String {
                 }
                 None => (end, end),
             };
-            // A header that never closes can end without a line break; the block needs one
-            // before it.
-            let gap = from > 0 && !lines[from - 1].ends_with('\n');
-            lines.splice(from..to, [if gap { "\n" } else { "" }, block.as_str()]);
-            [&text[..at.start], &lines.concat(), &text[at.end..]].concat()
+            // A header that never closes can end without a line break, as can an opening
+            // line that is the whole note; the block needs one before it.
+            let before = [&text[..at.start], &lines[..from].concat()].concat();
+            let gap = if before.ends_with('\n') { "" } else { "\n" };
+            [&before, gap, &block, &lines[to..].concat(), &text[at.end..]].concat()
         }
     };
     let out = if bom { format!("{BOM}{out}") } else { out };
@@ -531,6 +531,18 @@ mod remote_tests {
                 "---\nremote: old\n# Demo\n",
                 &one[..],
                 "---\nremote: git@example.com:a/b.git\n# Demo\n".to_owned(),
+            ),
+            // An opening line that is the whole note, with no line break after it.
+            (
+                "---",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\n".to_owned(),
+            ),
+            ("\u{feff}--- ", &two[..], format!("\u{feff}--- \n{list}")),
+            (
+                "---\r\nstatus: x",
+                &one[..],
+                "---\r\nstatus: x\r\nremote: git@example.com:a/b.git\r\n".to_owned(),
             ),
         ] {
             let written = with_remotes(text, remotes);

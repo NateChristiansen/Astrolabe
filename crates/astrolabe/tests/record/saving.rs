@@ -1524,3 +1524,36 @@ fn a_note_whose_header_never_closes_is_not_written_over() {
         "{text}"
     );
 }
+
+#[test]
+fn a_refused_save_keeps_the_sections_an_unclosed_header_swallowed() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nrun the ink work.\nASTROLABE\n"
+        )
+        .1
+    );
+    // No closing line at all: the sections below the properties read as header too, so a
+    // save built from the parsed note has no History to write back.
+    let text = "---\nstatus: active\nrepo: demo\n## History\nKeep this.\n";
+    for name in ["0001-smooth-ink.md", "0002-lead.md"] {
+        std::fs::write(mac.notes.join(shelf(name)), text).unwrap();
+    }
+    assert!(mac.bash("s1", "astrolabe effort read 1").1);
+    for cmd in [
+        "astrolabe effort save --status review <<'ASTROLABE'\nBuilt.\nASTROLABE\n",
+        "astrolabe effort save --status review <<'ASTROLABE'\nBuilt, again.\nASTROLABE\n",
+        "astrolabe effort save --effort 1 --status review <<'ASTROLABE'\nBuilt.\nASTROLABE\n",
+        "astrolabe effort save --effort 1 --status review <<'ASTROLABE'\nBuilt, again.\nASTROLABE\n",
+    ] {
+        let (out, ok) = mac.bash("s1", cmd);
+        assert!(!ok, "{cmd}: {out}");
+        for n in [1, 2] {
+            assert_eq!(mac.effort_text(n), text, "{cmd}: {out}");
+        }
+    }
+}
