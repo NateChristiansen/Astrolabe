@@ -163,8 +163,10 @@ fn record_denial(bytes: &[u8], reason: &str, data: &Path) {
     let Some(cwd) = cwd.or_else(|| std::env::current_dir().ok()) else {
         return;
     };
-    let tool_input = &input["tool_input"];
-    let command = tool_input["command"].as_str().unwrap_or_default();
+    // The field the guard judged, so a probe is proven wherever its command arrived.
+    let command = crate::guard::command_field(&input["tool_input"])
+        .map(crate::guard::command_text)
+        .unwrap_or_default();
     let line = json!({
         "at_ms": crate::notes::now_ms(),
         "session_id": session_id,

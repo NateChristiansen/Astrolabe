@@ -154,3 +154,23 @@ fn markers_live_where_a_sandboxed_shell_can_write_and_an_effort_load_names_its_s
         "{status}"
     );
 }
+
+#[test]
+fn a_probe_sent_in_the_other_command_field_proves() {
+    let f = Fixture::new();
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    let probe = f.probe(&text);
+    f.control(&text);
+    // The guard reads `cmd` when there is no `command`, so the log has to as well.
+    let input = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"cmd": probe}});
+    let answer = f.hook(input).unwrap();
+    assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+    let status = f.bash("s1", &f.demo, "astrolabe activate --status").0;
+    assert!(status.contains("Guard proven"), "{status}");
+    // A command given as a list is logged as the words the guard judged.
+    let list = json!({"session_id": "s1", "cwd": f.demo, "tool_name": "Bash", "tool_input": {"command": ["pkill", "node"]}});
+    assert!(f.hook(list).is_some());
+    let log = std::fs::read_to_string(f.state().join(astrolabe::hook::DENIAL_LOG)).unwrap();
+    let last: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(last["command"], "pkill node");
+}
