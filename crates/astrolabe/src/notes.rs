@@ -191,8 +191,9 @@ impl Notes {
     /// running in the checkout, and the lock went with the hook, not with its git. The
     /// holder waits for that git as it waited for the lock, so a retry sent straight after
     /// the hook's denial finds the write finished and not git's index held against it.
-    /// When the wait gives out: a hook that can see git still holds the index is told the
-    /// notes are busy, as it would be of any writer. Otherwise the holder goes on, since
+    /// When the wait gives out: a hook that can see git still at work there, by its lock
+    /// on the index or a rebase's folder, is told the notes are busy, as it would be of
+    /// any writer, and not to end a rebase that is finishing by itself. Otherwise the holder goes on, since
     /// what's left may only be something git started that kept its input, and git itself
     /// refuses if it is still in the way. A process waits its time out once: until it
     /// finds nothing held, its later locks go on at once, so a command that takes the lock
@@ -215,8 +216,7 @@ impl Notes {
             let waited = from.elapsed();
             if waited >= wait {
                 WAITED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
-                let index_held = self.root.join(".git/index.lock").exists();
-                if crate::deadline::in_hook() && index_held {
+                if crate::deadline::in_hook() && self.git_in_the_way() {
                     return Err(Locked::Busy(started.elapsed()));
                 }
                 return Ok(held);
@@ -227,6 +227,29 @@ impl Notes {
         // Nothing is held now: the next git a hook leaves is waited for in full.
         WAITED_OUT.store(false, std::sync::atomic::Ordering::Relaxed);
         Ok(held)
+    }
+
+    /// Whether git is at work in the checkout by what it leaves there while it is: its
+    /// lock on the index, or the folder of a rebase, which holds the index only while it
+    /// replays a commit. False when where git keeps those couldn't be found out.
+    pub(crate) fn git_in_the_way(&self) -> bool {
+        self.git_dir().is_ok_and(|dir| {
+            ["index.lock", "rebase-merge", "rebase-apply"]
+                .iter()
+                .any(|name| dir.join(name).exists())
+        })
+    }
+
+    /// Where git keeps this checkout's own state.
+    fn git_dir(&self) -> Result<PathBuf, String> {
+        let dot = self.root.join(".git");
+        match dot.is_dir() {
+            true => Ok(dot),
+            // A linked worktree keeps its own elsewhere.
+            false => Ok(PathBuf::from(
+                self.git(&["rev-parse", "--absolute-git-dir"])?.trim(),
+            )),
+        }
     }
 
     /// The writer lock if it's free now; None while a writer holds it, or git that a hook
@@ -248,12 +271,7 @@ impl Notes {
     /// The folder git keeps for a rebase under way in the checkout, if there is one; an
     /// error when that couldn't be found out.
     pub(crate) fn rebase_dir(&self) -> Result<Option<PathBuf>, String> {
-        let dot = self.root.join(".git");
-        let dir = match dot.is_dir() {
-            true => dot,
-            // A linked worktree keeps its own elsewhere.
-            false => PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?.trim()),
-        };
+        let dir = self.git_dir()?;
         Ok(["rebase-merge", "rebase-apply"]
             .map(|name| dir.join(name))
             .into_iter()

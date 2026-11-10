@@ -456,6 +456,44 @@ fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
     assert!(mac.journal_today().contains("a line for the day"));
 }
 
+/// The same for a rebase a hook's pull left running, which holds the index only while it
+/// replays a commit: with its git still running when the wait is up, the notes are busy.
+/// The save isn't told to finish or abort a rebase that is finishing by itself.
+#[test]
+fn a_rebase_left_running_past_the_wait_is_busy_notes_not_a_rebase_to_end() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (before, log) = (mac.effort_text(1), mac.log());
+    let running = mac.held_marker();
+    let rebase = mac.notes.join(".git/rebase-merge");
+    std::fs::create_dir(&rebase).unwrap();
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort NOT saved: the notes are busy: another session's write or a sync held them for the ")
+            && text.contains("so nothing was written. Run the same command again"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.log(), log);
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+    // With no git running, a rebase folder is one somebody has to end, as before.
+    drop(running);
+    let (text, ok) = mac.bash("s1", SAVE);
+    assert!(
+        !ok && text.contains("the notes checkout is in the middle of a rebase"),
+        "{text}"
+    );
+    std::fs::remove_dir(rebase).unwrap();
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+}
+
 /// A pull whose rebase takes the hook's time isn't ended: it finishes, and the save that
 /// asked for it is refused before anything is planned or written, saying where the time
 /// went.

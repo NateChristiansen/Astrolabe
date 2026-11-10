@@ -584,6 +584,47 @@ mod tests {
         dir
     }
 
+    /// What git holds while it works is looked for where this checkout keeps it: a linked
+    /// worktree's `.git` is a file, and its index lock and rebase folder are elsewhere.
+    #[test]
+    fn git_in_the_way_is_seen_in_a_checkout_and_in_a_linked_worktree() {
+        use std::path::{Path, PathBuf};
+        let dir = std::env::temp_dir().join(format!("astrolabe-in-the-way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (main, linked) = (dir.join("main"), dir.join("linked"));
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        git(&main, &["init", "--quiet"]);
+        git(&main, &["commit", "--quiet", "--allow-empty", "-m", "seed"]);
+        git(&main, &["worktree", "add", "--quiet", "../linked"]);
+        assert!(linked.join(".git").is_file());
+        for root in [&main, &linked] {
+            let notes = crate::notes::Notes::new(root.clone(), dir.join("state"));
+            let kept = PathBuf::from(git(root, &["rev-parse", "--absolute-git-dir"]));
+            assert!(!notes.git_in_the_way(), "{root:?}");
+            let lock = kept.join("index.lock");
+            std::fs::write(&lock, "").unwrap();
+            assert!(notes.git_in_the_way(), "the index lock in {root:?}");
+            std::fs::remove_file(lock).unwrap();
+            for name in ["rebase-merge", "rebase-apply"] {
+                std::fs::create_dir(kept.join(name)).unwrap();
+                assert!(notes.git_in_the_way(), "{name} in {root:?}");
+                std::fs::remove_dir(kept.join(name)).unwrap();
+            }
+            assert!(!notes.git_in_the_way(), "{root:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn only_a_rebase_this_call_began_is_its_to_abort() {
         let (here, upstream) = ("1111111111111111111111111111111111111111", "2222222222");
