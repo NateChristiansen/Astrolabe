@@ -100,9 +100,17 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
             let print = facts.as_ref().map(|f| f.fingerprint.as_str());
             let baseline = state.baseline.as_deref().map(str::to_owned);
             let acknowledged = state.acknowledged.as_deref().map(str::to_owned);
+            // A claim that the repo moved needs both ends known. No fingerprint stored (the
+            // repo couldn't be read whole when the session was bound or last saved) is no
+            // claim either way: this turn end says nothing of it and takes the repo as it
+            // is now for the next one to compare with.
             let moved = print.is_some_and(|p| {
-                baseline.as_deref() != Some(p) && acknowledged.as_deref() != Some(p)
+                baseline.as_deref().is_some_and(|b| b != p) && acknowledged.as_deref() != Some(p)
             });
+            if let (None, Some(p)) = (&baseline, print) {
+                state.baseline.set(p.to_owned());
+                let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
+            }
             let marked = state.mark.is_true();
             let record = state.record_label();
             if !moved && !marked {

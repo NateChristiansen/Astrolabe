@@ -420,6 +420,8 @@ fn activation_delivers_pieces_and_the_linked_initiative_title_beside_current_sta
 
 #[path = "activate/allow.rs"]
 mod allow;
+#[path = "activate/deadlines.rs"]
+mod deadlines;
 #[path = "activate/hooks.rs"]
 mod hooks;
 #[path = "activate/naming.rs"]
