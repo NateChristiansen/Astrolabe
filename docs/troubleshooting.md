@@ -34,6 +34,12 @@ If Git reports a missing name or email, configure your Git commit identity and r
 
 Run the installed program with `status` in your terminal. If it says off, complete [step 4](install.md#4-turn-it-on). Check that the plugin is installed and enabled in the app, review hook trust in Codex, and start a fresh session. Ask the agent to run `astrolabe activate --status`; machine status alone doesn't prove that the app runs the hooks.
 
+## The app stops running the hooks partway through a session
+
+The session loaded an effort and saved earlier, then its commands start printing "the plugin's hook didn't take this command": a save says **NOT recorded**, and `astrolabe activate --status` says **No effort loaded**. The effort is still bound in Astrolabe's local state; the app has stopped passing that session's commands to the plugin, so nothing is written and the guard isn't checking them either. This has been seen after a session was resumed with its earlier context summarized. The cause isn't known.
+
+Check that the command ran alone, exactly as written, and not from a subagent. Run the installed program with `status` in your terminal to confirm the machine switch is still on, and check that the plugin is still enabled and its hooks still trusted in the app. If those hold and `astrolabe activate --status` still isn't taken, retrying won't help: start a fresh session and load the effort again. Work left in the project folder is still there; anything the old session hadn't saved needs saving from the new one.
+
 ## The agent doesn't recognize my project
 
 [Register the project](usage.md#add-a-project) and start a fresh session there. Project repos without a remote need registration on each machine.
