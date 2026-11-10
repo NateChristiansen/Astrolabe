@@ -12,18 +12,16 @@ const STDIN_WAIT: Duration = Duration::from_secs(1);
 /// Input over this isn't read whole: far above any one tool call (a big Write or patch),
 /// and a bound on memory for a client that streams without end.
 pub(crate) const STDIN_LIMIT: usize = 64 << 20;
-/// The most a hook spends reading its input in all, so a client trickling bytes can't hold it:
-/// well under the apps' own hook timeouts (Claude's is 60 seconds), and far more than a pipe
-/// takes to carry 64 MiB. Input still incomplete then is read as it stands, so the plugin
-/// blocks it as unreadable.
-const STDIN_DEADLINE: Duration = Duration::from_secs(30);
-/// Tests set a shorter deadline, in milliseconds.
+/// Tests set the most a hook spends reading its input, in milliseconds.
 const STDIN_DEADLINE_VAR: &str = "ASTROLABE_HOOK_STDIN_DEADLINE_MS";
 
 /// What arrived, and whether it ran past `STDIN_LIMIT` and was cut there. Read until the
 /// JSON is whole, the client closes the pipe, nothing more comes for `STDIN_WAIT`, so a
-/// big input that's still arriving isn't cut, or `STDIN_DEADLINE` passes in all.
-pub(crate) fn read_stdin() -> (Vec<u8>, bool) {
+/// big input that's still arriving isn't cut, or `within` passes in all: the event's share
+/// of its own time (see `deadline`), so a client trickling bytes can't hold the hook past
+/// the app's timeout, and still far more than a pipe takes to carry 64 MiB. Input still
+/// incomplete then is read as it stands, so the plugin blocks it as unreadable.
+pub(crate) fn read_stdin(within: Duration) -> (Vec<u8>, bool) {
     const BOM: &[u8] = b"\xEF\xBB\xBF";
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -39,7 +37,7 @@ pub(crate) fn read_stdin() -> (Vec<u8>, bool) {
     let total = std::env::var(STDIN_DEADLINE_VAR)
         .ok()
         .and_then(|ms| ms.parse().ok());
-    let deadline = Instant::now() + total.map_or(STDIN_DEADLINE, Duration::from_millis);
+    let deadline = Instant::now() + total.map_or(within, Duration::from_millis);
     let mut input = Vec::new();
     let wait = || STDIN_WAIT.min(deadline.saturating_duration_since(Instant::now()));
     while let Ok(chunk) = receiver.recv_timeout(wait()) {
@@ -74,18 +72,32 @@ const LOGGED_COMMAND: usize = 2000;
 /// The guard's answer to one plugin hook input. Denials in the state folder prove
 /// that this session's hook intercepted the probe.
 pub(crate) fn guard(bytes: &[u8], data: Option<&Path>) {
+    if let Some(denial) = verdict(bytes, data) {
+        say(&denial);
+    }
+}
+
+/// The guard's verdict on one plugin hook input: its denial, or None to let the command
+/// run. Reached, it's what the hook answers even if its time runs out before it prints.
+pub(crate) fn verdict(bytes: &[u8], data: Option<&Path>) -> Option<Value> {
+    let verdict = decide(bytes, data);
+    crate::deadline::judged(verdict.clone());
+    crate::deadline::stall("verdict");
+    verdict
+}
+
+fn decide(bytes: &[u8], data: Option<&Path>) -> Option<Value> {
     let reason = std::panic::catch_unwind(|| judge(bytes)).unwrap_or_else(|_| {
         crate::guard::names_denied_program(&String::from_utf8_lossy(bytes))
             .then(|| "a command the guard could not read".to_owned())
-    });
-    let Some(reason) = reason else { return };
+    })?;
     if let Some(data) = data {
         let used = std::panic::catch_unwind(|| {
             let input: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
             crate::activate::allow::consume(data, &input, &reason)
         });
         if matches!(used, Ok(Ok(true))) {
-            return;
+            return None;
         }
         let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason, data));
     }
@@ -94,9 +106,9 @@ pub(crate) fn guard(bytes: &[u8], data: Option<&Path>) {
     } else {
         String::new()
     };
-    say(&deny(&format!(
+    Some(deny(&format!(
         "Astrolabe denied {reason}. Ask the owner if this is really needed.{hint}"
-    )));
+    )))
 }
 
 pub(crate) fn deny(reason: &str) -> Value {
@@ -107,8 +119,14 @@ pub(crate) fn deny(reason: &str) -> Value {
     }})
 }
 
-/// One answer on stdout. Never panics, as stdout may be closed.
+/// The hook's one answer on stdout, unless its time already ran out and the backstop
+/// answered for it.
 pub(crate) fn say(answer: &Value) {
+    crate::deadline::say(|| print(answer));
+}
+
+/// One line on stdout. Never panics, as stdout may be closed.
+pub(crate) fn print(answer: &Value) {
     let mut stdout = io::stdout();
     let _ = writeln!(stdout, "{answer}");
     let _ = stdout.flush();

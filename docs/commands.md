@@ -2,11 +2,14 @@
 
 Exact syntax and options for the installed program and agent-session commands. For everyday tasks, see [Using Astrolabe](usage.md); for setup, see [installation](install.md).
 
+- [Run the installed program](#run-the-installed-program)
 - [Machine and repo setup](#machine-and-repo-setup)
+- [App permission setup](#app-permission-setup)
 - [Install the program](#install-the-program)
 - [Update](#update)
 - [Board and notes](#board-and-notes)
 - [Load an effort](#load-an-effort)
+- [Allow one approved command](#allow-one-approved-command)
 - [Create an effort](#create-an-effort)
 - [Create an initiative](#create-an-initiative)
 - [Save an effort](#save-an-effort)
@@ -87,6 +90,7 @@ Write the standalone `home.html`, ensure the local board server is running, and 
 | --- | --- |
 | `--open` | Open the board in your browser. |
 | `--serve` | Run the server in the foreground. If one is already running, print its address and exit. |
+| `--preview` | Run a second, read-only server beside the machine's, for trying a build: print its address and serve until stopped. It takes a free port unless `--port` names one, and `--port`, `--theme` and `--palette` apply to that run only; nothing is saved, `home.html` isn't written and the notes aren't pulled. It can't be combined with `--serve`. |
 | `--port <number>` | Save the port for this machine; default `4747`. |
 | `--theme auto\|light\|dark` | Save the theme; default `auto` follows the system. |
 | `--palette iris\|ember\|slate\|moss\|graphite` | Save the palette; default `iris`. |
@@ -116,7 +120,7 @@ the page is showing older content until the next change or reconnect loads it.
 
 Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only.
 
-The output contains `efforts`, `today`, today's raw `journal` and parsed `journal_lines`, `notes` sync warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. Journal entries, warnings, lessons and drafts are not filtered by repo.
+The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
 
 ### `notes status` and `notes sync`
 

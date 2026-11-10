@@ -231,3 +231,57 @@ fn a_panic_inside_is_caught_and_follows_the_same_rule() {
     assert!(plain.status.success());
     assert!(plain.stdout.is_empty());
 }
+
+#[test]
+fn a_panic_that_escapes_the_hook_denies_a_command_and_is_silent_elsewhere() {
+    let data = temp("escaped-panic");
+    let run = |event: &str, input: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+            .args(["hook", event, "--if-active"])
+            .env(astrolabe::activate::STATE_VAR, &data)
+            .env("ASTROLABE_HOOK_TEST_PANIC", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    // Nothing was judged, so even a harmless command is blocked rather than run unguarded.
+    let input = json!({ "session_id": "s1", "cwd": data, "tool_name": "Bash", "tool_input": { "command": "ls" } }).to_string();
+    let command = run("pre-command", &input);
+    assert!(command.status.success());
+    assert!(command.stderr.is_empty());
+    let answer: serde_json::Value = serde_json::from_slice(&command.stdout).expect("a denial");
+    let inner = &answer["hookSpecificOutput"];
+    assert_eq!(inner["permissionDecision"], "deny", "{answer}");
+    assert!(
+        inner["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Astrolabe's hook failed before it finished with this command"),
+        "{answer}"
+    );
+    assert!(!data.join("guard-denials.log").exists());
+    for event in [
+        "stop",
+        "session-start",
+        "prompt",
+        "post-tool",
+        "session-end",
+    ] {
+        let other = run(
+            event,
+            &json!({ "session_id": "s1", "cwd": data }).to_string(),
+        );
+        assert!(other.status.success(), "{event}");
+        assert!(other.stdout.is_empty(), "{event}");
+        assert!(other.stderr.is_empty(), "{event}");
+    }
+}

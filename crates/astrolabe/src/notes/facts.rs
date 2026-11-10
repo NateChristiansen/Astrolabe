@@ -24,13 +24,23 @@ pub struct RepoFacts {
 }
 
 impl RepoFacts {
-    /// Facts of the repo at `cwd`, or None when it isn't a git checkout.
+    /// Facts of the repo at `cwd`, or None when it isn't a git checkout or couldn't be
+    /// read whole (a hook's time for reads ran out, or git failed partway). None is "not
+    /// known", which is not the same as nothing having changed: no fingerprint is stored
+    /// from it, and a session with none stored is told nothing about its repo moving.
     pub fn read(cwd: &Path) -> Option<Self> {
+        let args = ["rev-parse", "HEAD"].map(AsRef::as_ref);
+        let head = crate::worktree::git(cwd, &args).ok()?.trim().to_owned();
+        Self::read_from(cwd, head)
+    }
+
+    /// The rest, once HEAD is known. None when the status or the diff couldn't be read: an
+    /// empty one would hash as a clean tree, which this may not be.
+    fn read_from(cwd: &Path, head: String) -> Option<Self> {
         let git = |args: &[&str]| {
             let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
             crate::worktree::git(cwd, &args).ok()
         };
-        let head = git(&["rev-parse", "HEAD"])?.trim().to_owned();
         let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])
             .map(|b| b.trim().to_owned())
             .unwrap_or_default();
@@ -43,12 +53,11 @@ impl RepoFacts {
             let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
             crate::worktree::git_bytes(cwd, &args).ok()
         };
-        let status =
-            raw(&["status", "--porcelain", "-z", "--untracked-files=all"]).unwrap_or_default();
+        let status = raw(&["status", "--porcelain", "-z", "--untracked-files=all"])?;
         let top = raw(&["rev-parse", "--show-toplevel"])
             .map(|t| path_of(t.strip_suffix(b"\n").unwrap_or(&t)))
             .unwrap_or_else(|| cwd.to_owned());
-        let diff = git(&["diff", "HEAD"]).unwrap_or_default();
+        let diff = git(&["diff", "HEAD"])?;
         use sha2::{Digest, Sha256};
         let mut print = Sha256::new();
         if !crate::activate::in_notes(cwd) {

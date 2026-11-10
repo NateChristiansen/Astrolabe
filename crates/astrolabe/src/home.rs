@@ -1201,6 +1201,76 @@ mod tests {
     }
 
     #[test]
+    fn a_crumb_folder_link_is_encoded_and_decodes_to_the_folder() {
+        let page = note_page(
+            "# n\n",
+            "50% done/a#b/what?/n.md",
+            &json!({"efforts": []}),
+            Path::new("/n"),
+            NOW,
+            Look::default(),
+        );
+        for (link, folder, label) in [
+            ("50%25%20done", "50% done", "50% done"),
+            ("50%25%20done/a%23b", "50% done/a#b", "a#b"),
+            ("50%25%20done/a%23b/what%3F", "50% done/a#b/what?", "what?"),
+        ] {
+            assert!(
+                page.contains(&format!("<a href=\"/#notes/{link}\">{label}</a>")),
+                "{link}: {page}"
+            );
+            // What the page's script decodes it to is the folder's key in the tree.
+            assert_eq!(decode(link).as_deref(), Some(folder));
+        }
+    }
+
+    #[test]
+    fn a_link_written_encoded_resolves_to_the_note_it_names() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-encoded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes/knowledge")).unwrap();
+        for name in ["my note.md", "a#b.md", "100%.md", "a%20b.md"] {
+            std::fs::write(dir.join("notes/knowledge").join(name), "# n\n").unwrap();
+        }
+        std::fs::write(dir.join("secret.md"), "# s\n").unwrap();
+        let root = dir.join("notes");
+        let to = |dest: &str| markdown::resolve_link(&root, "knowledge/from.md", dest);
+        assert_eq!(
+            to("my%20note.md").as_deref(),
+            Some("/knowledge/my%20note.md")
+        );
+        assert_eq!(
+            to("knowledge/my%20note.md").as_deref(),
+            Some("/knowledge/my%20note.md"),
+            "from the root too"
+        );
+        assert_eq!(
+            to("a%23b.md#Top").as_deref(),
+            Some("/knowledge/a%23b.md#top")
+        );
+        // A name is tried as written first, so a real `%` in one still resolves.
+        assert_eq!(to("100%.md").as_deref(), Some("/knowledge/100%25.md"));
+        assert_eq!(to("100%25.md").as_deref(), Some("/knowledge/100%25.md"));
+        assert_eq!(to("a%20b.md").as_deref(), Some("/knowledge/a%2520b.md"));
+        // Decoding opens no way out of the checkout.
+        assert_eq!(to("%2E%2E/%2E%2E/secret.md"), None);
+        assert_eq!(to("..%2F..%2Fsecret.md"), None);
+        assert_eq!(to("..%5C..%5Csecret.md"), None);
+        // Nor does a decoded `:`, which the check on the link as written refuses: a drive
+        // or a scheme can't be spelled with an escape instead.
+        std::fs::write(dir.join("notes/knowledge/a:b.md"), "# n\n").unwrap_or_default();
+        assert_eq!(to("a%3Ab.md"), None);
+        let outside = dir.join("secret.md");
+        let drive = outside
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replacen(':', "%3A", 1);
+        assert_eq!(to(&drive), None);
+        assert_eq!(to("C%3A/Users/me/x.txt"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_note_is_served_only_from_inside_the_checkout() {
         let dir = std::env::temp_dir().join(format!("astrolabe-inside-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
