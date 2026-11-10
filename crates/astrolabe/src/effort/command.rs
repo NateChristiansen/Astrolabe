@@ -256,6 +256,14 @@ pub(crate) fn is_astrolabe(program: &str) -> bool {
     name == "astrolabe" || name == "astrolabe.exe"
 }
 
+/// What follows the program on a command line that starts with astrolabe, however it's
+/// called; None when the line starts with anything else.
+pub(crate) fn after_astrolabe(command: &str) -> Option<&str> {
+    let mut words = Words::new(command);
+    let program = words.program().ok()??;
+    is_astrolabe(&program).then_some(words.rest)
+}
+
 /// `NAME=value` before a program, as in `FOO=1 astrolabe effort save`.
 pub(crate) fn is_assignment(word: &str) -> bool {
     word.split_once('=').is_some_and(|(name, _)| {

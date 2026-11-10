@@ -412,13 +412,17 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
         "cmd"
     };
     let command = tool_input[key].as_str()?.trim();
-    let words: Vec<&str> = command.split_whitespace().collect();
-    if matches!(words.as_slice(), ["astrolabe", "on" | "off", ..]) {
+    // The words after the program, when it's astrolabe however it's called: by name, by
+    // its `.exe` name or by a path. The same check claims the effort and notes commands.
+    let words: Vec<&str> = crate::effort::command::after_astrolabe(command)
+        .map(|rest| rest.split_whitespace().collect())
+        .unwrap_or_default();
+    if matches!(words.as_slice(), ["on" | "off", ..]) {
         return Some(hook::deny(
             "The machine switch is the owner's: they run `astrolabe on` or `astrolabe off` in a terminal, because it changes every session. To drop this session's effort, run `astrolabe activate --off`.",
         ));
     }
-    if words.get(..2) == Some(&["astrolabe", "allow"]) {
+    if words.first() == Some(&"allow") {
         if child {
             return Some(hook::deny(
                 "A subagent can't record an owner approval; report to the parent session.",
@@ -537,11 +541,15 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             )),
         });
     }
-    if words.get(..2) != Some(&["astrolabe", "activate"]) {
+    if words.first() != Some(&"activate") {
         return None;
     }
     let mut parser = crate::effort::command::Words::new(command);
     let mut owned = Vec::new();
+    match parser.program() {
+        Ok(Some(program)) => owned.push(program),
+        _ => return None,
+    }
     loop {
         match parser.next_word() {
             Ok(Some(word)) => owned.push(word),
