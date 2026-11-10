@@ -206,7 +206,7 @@ fn nested_shells_are_refused_and_a_log_failure_does_not_allow_execution() {
 }
 
 #[test]
-fn allow_requires_the_hook_an_effort_and_one_supported_denied_command() {
+fn allow_requires_the_hook_and_one_supported_denied_command() {
     let f = Fixture::new();
     let (text, ok) = f.run(
         &f.demo,
@@ -216,12 +216,6 @@ fn allow_requires_the_hook_an_effort_and_one_supported_denied_command() {
     );
     assert!(!ok && text.contains("No approval recorded"), "{text}");
     assert!(!f.state().join("s1.json").exists());
-    let (text, ok) = f.bash(
-        "s1",
-        &f.demo,
-        "astrolabe allow --once 'git push --force' --said yes",
-    );
-    assert!(!ok && text.contains("load an effort"), "{text}");
     assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
     for (command, why) in [
         (
@@ -334,4 +328,129 @@ fn an_approved_github_write_runs_a_stub_once() {
         std::fs::read_to_string(f.demo.join("calls")).unwrap(),
         "issue create --title approved\n"
     );
+}
+
+#[test]
+fn an_approval_with_no_effort_loaded_runs_once_and_a_second_run_is_denied() {
+    let f = Fixture::new();
+    let command = "gh issue create --title approved";
+    assert!(f.denies("s1", command), "no approval");
+    allow(&f, "s1", command);
+    assert!(!f.state().join("s1.json").exists(), "no effort was loaded");
+    assert_eq!(f.hook(input(&f, command)), None);
+    assert!(f.denies("s1", command), "second use is denied");
+    let log = std::fs::read_to_string(f.state().join("guard-denials.log")).unwrap();
+    let events: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for event in ["lease-minted", "lease-used"] {
+        let records: Vec<_> = events.iter().filter(|e| e["event"] == event).collect();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["command"], command);
+        assert_eq!(records[0]["session_id"], "s1");
+    }
+}
+
+#[test]
+fn an_approval_with_no_effort_is_exact_and_bound_to_the_session_and_directory() {
+    let f = Fixture::new();
+    let command = "git push --force origin HEAD:main";
+    let mut mint = input(
+        &f,
+        &format!("astrolabe allow --once {} --said yes", quoted(command)),
+    );
+    mint["agent_id"] = json!("child");
+    assert!(
+        reason(&f.hook(mint).unwrap()).contains("A subagent can't record an owner approval"),
+        "a subagent can't record one"
+    );
+    assert!(!f.state().join("s1.allow.json").exists());
+    allow(&f, "s1", command);
+    assert!(f.denies("s2", command), "another session");
+    // A copied lease file can't transfer a lease to another session.
+    std::fs::copy(
+        f.state().join("s1.allow.json"),
+        f.state().join("s2.allow.json"),
+    )
+    .unwrap();
+    assert!(f.denies("s2", command));
+    assert!(
+        f.denies("s1", &format!("{command} ")),
+        "one extra character"
+    );
+    let mut other = input(&f, command);
+    other["tool_input"]["workdir"] = json!(f.other);
+    assert!(f.hook(other).is_some(), "tool's own directory counts");
+    let mut child = input(&f, command);
+    child["agent_id"] = json!("child");
+    assert!(f.hook(child).is_some(), "a subagent can't use one");
+    assert_eq!(f.hook(input(&f, command)), None, "it was still there");
+    assert!(f.denies("s1", command));
+}
+
+#[test]
+fn an_expired_or_corrupt_approval_with_no_effort_keeps_the_denial() {
+    let f = Fixture::new();
+    let command = "git push --force";
+    allow(&f, "s1", command);
+    let path = f.state().join("s1.allow.json");
+    let minted = std::fs::read(&path).unwrap();
+    let mut leases: Value = serde_json::from_slice(&minted).unwrap();
+    leases[0]["expires_ms"] = json!(0);
+    write(&path, &leases.to_string());
+    assert!(f.denies("s1", command), "expired");
+    write(&path, &json!({"command":command}).to_string());
+    assert!(f.denies("s1", command), "a corrupt lease file");
+    let mint = format!("astrolabe allow --once {} --said yes", quoted(command));
+    let (text, ok) = f.bash("s1", &f.demo, &mint);
+    assert!(!ok && text.contains("Approval refused"), "{text}");
+    // Session state that's there but unreadable isn't the same as no effort.
+    std::fs::write(&path, &minted).unwrap();
+    write(&f.state().join("s1.json"), "not a state file");
+    // The hook denies every command of a session whose state it can't read, before it looks
+    // for a lease, so the lease code's own read of that state is a second line never reached here.
+    let answer = f.hook(input(&f, command)).unwrap();
+    assert!(reason(&answer).contains("can't read its state"), "{answer}");
+    let (text, ok) = f.bash("s1", &f.demo, &mint);
+    assert!(
+        !ok && text.contains("isn't a state file this program wrote"),
+        "{text}"
+    );
+    std::fs::remove_file(f.state().join("s1.json")).unwrap();
+    assert_eq!(f.hook(input(&f, command)), None, "the lease was intact");
+}
+
+#[test]
+fn with_no_effort_nested_shells_are_refused_and_a_log_failure_does_not_allow_execution() {
+    let f = Fixture::new();
+    let nested = "sh -c 'git push --force; pkill node'";
+    let (text, ok) = f.bash(
+        "s1",
+        &f.demo,
+        &format!("astrolabe allow --once {} --said yes", quoted(nested)),
+    );
+    assert!(!ok && text.contains("without a wrapper"), "{text}");
+    let command = "git push --force";
+    allow(&f, "s1", command);
+    let path = f.state().join("guard-denials.log");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(
+        f.denies("s1", command),
+        "failure to record consumption stays denied"
+    );
+    std::fs::remove_dir(&path).unwrap();
+    assert!(f.denies("s1", command), "the lease was already consumed");
+}
+
+#[test]
+fn dropping_the_effort_cancels_an_approval_that_was_waiting() {
+    let f = loaded();
+    let command = "git push --force";
+    allow(&f, "s1", command);
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --off");
+    assert!(ok, "{text}");
+    assert!(!f.state().join("s1.allow.json").exists());
+    assert!(f.denies("s1", command), "the approval went with the effort");
 }

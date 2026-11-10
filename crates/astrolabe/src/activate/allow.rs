@@ -92,6 +92,15 @@ fn log(dir: &Path, event: &str, lease: &Lease) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Dropping the session's effort cancels the approvals it was waiting to use, as it always has.
+pub(super) fn cancel(dir: &Path, session: &str) -> Result<(), String> {
+    let _held = lock(dir, session)?;
+    match std::fs::remove_file(lease_path(dir, session)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
 pub(super) fn mint(
     dir: &Path,
     input: &Value,
@@ -144,7 +153,8 @@ pub(super) fn mint(
         );
     }
     let _held = lock(dir, session)?;
-    read_state(dir, session)?.ok_or("load an effort before recording an approval")?;
+    // No effort is fine; a state file this program can't read is not.
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let at = now_ms();
     let lease = Lease {
@@ -175,9 +185,8 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
         return Ok(false);
     };
     let _held = lock(dir, session)?;
-    let Some(_) = read_state(dir, session)? else {
-        return Ok(false);
-    };
+    // The hook already denies a session whose state it can't read; this holds if that changes.
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let now = now_ms();
     let Some(index) = leases.iter().position(|lease| {
