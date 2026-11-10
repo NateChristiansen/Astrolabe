@@ -545,3 +545,119 @@ fn a_save_still_succeeds_when_background_sync_cannot_start() {
     assert!(mac.effort_text(1).contains("status: ready"));
     assert!(git(&mac.notes, &["status", "--porcelain"]).is_empty());
 }
+
+#[test]
+fn a_renumbered_note_whose_header_never_closes_keeps_every_byte() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.sync().1);
+    assert!(pc.sync().1);
+    // Both go offline and create: both take 2.
+    for m in [&mac, &pc] {
+        git(
+            &m.notes,
+            &["remote", "set-url", "origin", "/nonexistent/notes.git"],
+        );
+    }
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Mac two\" <<'ASTROLABE'\nmac goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 2 created"), "{out}");
+    let (out, ok) = pc.bash(
+        "p2",
+        "astrolabe effort new --title \"PC two\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("Effort 2 created"), "{out}");
+    assert!(
+        pc.bash("p2", "astrolabe effort save --journal \"PC two's line\"")
+            .1
+    );
+    // A hand edit on the PC breaks the closing line and adds sections of the owner's own:
+    // all of the note reads as header now.
+    let path = pc.notes.join(shelf("0002-pc-two.md"));
+    let broken = std::fs::read_to_string(&path)
+        .unwrap()
+        .replacen("\n---\n", "\n--- x\n", 1)
+        + "\n## History\n  Keep  these spaces.  \n\n## Links\nKeep: this too.\n";
+    std::fs::write(&path, &broken).unwrap();
+    git(&pc.notes, &["add", "efforts"]);
+    git(&pc.notes, &["commit", "-qm", "hand edit"]);
+    let origin = world.origin.0.join("notes.git");
+    for m in [&mac, &pc] {
+        git(
+            &m.notes,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+    }
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    // The PC's pull finds two files numbered 2; its own, the newer, moves to 3.
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    assert!(!pc.notes.join(shelf("0002-pc-two.md")).exists());
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join(shelf("0003-pc-two.md"))).unwrap(),
+        broken
+    );
+    // What doesn't need the note rewritten still follows: its journal line and its session.
+    let journal = pc.journal_today();
+    assert!(journal.contains("PC two's line <!-- 0003 pc "), "{journal}");
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(pc.state().join("p2.json")).unwrap()).unwrap();
+    assert_eq!(state["effort"], "3");
+    assert!(pc.log().contains("0002 renumbered to 0003"), "{}", pc.log());
+    // The other machine receives the same bytes.
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join(shelf("0003-pc-two.md"))).unwrap(),
+        broken
+    );
+    assert!(mac.effort_text(2).contains("# 0002 Mac two"));
+}
+
+/// A page a session wrote as a plain file on the Mac, then any save there and a sync each way.
+fn a_file_written_by_hand_reaches_the_pc(rel: &str) {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    write(
+        &mac.notes.join(rel),
+        "# Written by hand\n\nIt cost a turn.\n",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --decision \"kept going\"");
+    assert!(ok, "{out}");
+    // It rides along in the save's own commit, under the save's own subject.
+    let files = git(&mac.notes, &["show", "--name-only", "--format=", "HEAD"]);
+    assert!(files.lines().any(|f| f == rel), "{files}");
+    let subject = git(&mac.notes, &["log", "-1", "--format=%s"]);
+    assert_eq!(subject.trim(), "0001: checkpoint");
+    assert!(
+        git(&mac.notes, &["status", "--porcelain"])
+            .trim()
+            .is_empty()
+    );
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join(rel)).ok().as_deref(),
+        Some("# Written by hand\n\nIt cost a turn.\n"),
+        "the other machine has it after its own sync"
+    );
+}
+
+#[test]
+fn a_lesson_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() {
+    a_file_written_by_hand_reaches_the_pc("lessons/2026-11-09-friction.md");
+}
+
+#[test]
+fn a_draft_written_as_a_file_reaches_the_other_machine_after_a_save_and_sync() {
+    a_file_written_by_hand_reaches_the_pc("drafts/2026-11-09-reply.md");
+}

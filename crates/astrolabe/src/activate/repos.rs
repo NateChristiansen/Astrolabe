@@ -322,16 +322,13 @@ pub(super) fn with_remotes(text: &str, remotes: &[String]) -> String {
                 .collect::<String>()
         ),
     };
-    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
-    let end = (lines.first().map(|l| l.trim_end()) == Some("---"))
-        .then(|| lines.iter().skip(1).position(|l| l.trim_end() == "---"))
-        .flatten()
-        .map(|i| i + 1);
-    let out = match end {
+    let out = match crate::effort::header_bounds(&text) {
         None => format!("---\n{block}---\n\n{text}"),
-        Some(end) => {
-            let key = (1..end).find(|&i| {
-                let line = &lines[i];
+        Some(at) => {
+            let lines: Vec<&str> = text[at.start..at.end].split_inclusive('\n').collect();
+            let end = lines.len();
+            let key = (0..end).find(|&i| {
+                let line = lines[i];
                 !line.starts_with(' ')
                     && line
                         .split_once(':')
@@ -347,8 +344,11 @@ pub(super) fn with_remotes(text: &str, remotes: &[String]) -> String {
                 }
                 None => (end, end),
             };
-            lines.splice(from..to, [block]);
-            lines.concat()
+            // A header that never closes can end without a line break, as can an opening
+            // line that is the whole note; the block needs one before it.
+            let before = [&text[..at.start], &lines[..from].concat()].concat();
+            let gap = if before.ends_with('\n') { "" } else { "\n" };
+            [&before, gap, &block, &lines[to..].concat(), &text[at.end..]].concat()
         }
     };
     let out = if bom { format!("{BOM}{out}") } else { out };
@@ -463,4 +463,91 @@ pub(crate) fn in_notes(cwd: &Path) -> bool {
     notes
         .and_then(|notes| common_dir(&notes))
         .is_some_and(|notes| notes == here)
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::with_remotes;
+    use crate::effort::frontmatter;
+
+    fn listed(text: &str) -> Option<String> {
+        frontmatter(text)
+            .into_iter()
+            .find(|(k, _)| k == "remote")
+            .map(|(_, v)| v)
+    }
+
+    #[test]
+    fn remotes_are_written_inside_the_header_every_reader_sees() {
+        let one = ["git@example.com:a/b.git".to_owned()];
+        let two = [one[0].clone(), "https://example.com/c/d".to_owned()];
+        let list = "remote:\n  - git@example.com:a/b.git\n  - https://example.com/c/d\n";
+        for (text, remotes, out) in [
+            // Well formed: added before the closing line, or put in place of the old value.
+            (
+                "---\nstatus: x\n---\n\n# Demo\n",
+                &one[..],
+                "---\nstatus: x\nremote: git@example.com:a/b.git\n---\n\n# Demo\n".to_owned(),
+            ),
+            (
+                "---\nRemote: old\nstatus: x\n---\n# Demo\n",
+                &two[..],
+                format!("---\n{list}status: x\n---\n# Demo\n"),
+            ),
+            (
+                "---\nremote:\n  - old\n  - older\nstatus: x\n---\n# Demo\n",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\nstatus: x\n---\n# Demo\n".to_owned(),
+            ),
+            (
+                "# Demo\n",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\n---\n\n# Demo\n".to_owned(),
+            ),
+            (
+                "\u{feff}---\r\nstatus: x\r\n---\r\n# Demo\r\n",
+                &one[..],
+                "\u{feff}---\r\nstatus: x\r\nremote: git@example.com:a/b.git\r\n---\r\n# Demo\r\n"
+                    .to_owned(),
+            ),
+            // Spaces on either `---` line, and an empty header.
+            (
+                "---  \nstatus: x\n--- \n# Demo\n",
+                &one[..],
+                "---  \nstatus: x\nremote: git@example.com:a/b.git\n--- \n# Demo\n".to_owned(),
+            ),
+            (
+                "---\n---\n# Demo\n",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\n---\n# Demo\n".to_owned(),
+            ),
+            // A header that never closes is all header: no second one goes in front of it.
+            (
+                "---\nstatus: x\n# Demo",
+                &one[..],
+                "---\nstatus: x\n# Demo\nremote: git@example.com:a/b.git\n".to_owned(),
+            ),
+            (
+                "---\nremote: old\n# Demo\n",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\n# Demo\n".to_owned(),
+            ),
+            // An opening line that is the whole note, with no line break after it.
+            (
+                "---",
+                &one[..],
+                "---\nremote: git@example.com:a/b.git\n".to_owned(),
+            ),
+            ("\u{feff}--- ", &two[..], format!("\u{feff}--- \n{list}")),
+            (
+                "---\r\nstatus: x",
+                &one[..],
+                "---\r\nstatus: x\r\nremote: git@example.com:a/b.git\r\n".to_owned(),
+            ),
+        ] {
+            let written = with_remotes(text, remotes);
+            assert_eq!(written, out, "{text:?}");
+            assert_eq!(listed(&written), Some(remotes.join(", ")), "{written:?}");
+        }
+    }
 }

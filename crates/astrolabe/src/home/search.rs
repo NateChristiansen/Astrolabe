@@ -63,7 +63,8 @@ fn note_files(root: &Path) -> Vec<String> {
 
 /// The snippet when every word is in the note's path or text, else None.
 pub(super) fn matches(rel: &str, text: &str, words: &[String]) -> Option<String> {
-    let body = without_front_matter(text);
+    // The header ends where the board and a note's page end it.
+    let (_, body) = crate::effort::split_frontmatter(text);
     let lower = body.to_lowercase();
     let path = rel.to_lowercase();
     if !words
@@ -80,25 +81,6 @@ pub(super) fn matches(rel: &str, text: &str, words: &[String]) -> Option<String>
     let source = if same { body } else { &lower };
     let at = words.iter().filter_map(|w| lower.find(w.as_str())).min();
     Some(at.map_or_else(String::new, |at| snippet(source, at)))
-}
-
-/// The text after a `---` block at the very top, closed by a line of just `---`, if there is
-/// one.
-fn without_front_matter(text: &str) -> &str {
-    let Some(rest) = text
-        .strip_prefix("---\n")
-        .or_else(|| text.strip_prefix("---\r\n"))
-    else {
-        return text;
-    };
-    let mut at = 0;
-    for line in rest.split_inclusive('\n') {
-        at += line.len();
-        if line.trim_end() == "---" {
-            return &rest[at..];
-        }
-    }
-    text
 }
 
 /// A line of text around byte `at`, cut on character boundaries, with markdown marks and
@@ -208,12 +190,33 @@ mod tests {
             Some("Title Body words.")
         );
         // An empty block, and a `---foo` line that doesn't close one.
-        assert_eq!(without_front_matter("---\n---\nafter\n"), "after\n");
-        assert_eq!(without_front_matter("---\na: 1\n---foo\n---\nbody"), "body");
+        let found = |text: &str, word: &str| matches("a.md", text, &words(word));
         assert_eq!(
-            without_front_matter("---\nnever closed\n"),
-            "---\nnever closed\n"
+            found("---\n---\nafter\n", "after").as_deref(),
+            Some("after")
         );
+        let odd = "---\na: 1\n---foo\n---\nbody";
+        assert_eq!(found(odd, "body").as_deref(), Some("body"));
+        assert!(found(odd, "foo").is_none());
+        // The header ends where every other reader of a note ends it: after a byte-order
+        // mark, Windows line endings or spaces on either `---` line.
+        for text in [
+            "\u{feff}---\nstatus: active\n---\nBody words.\n",
+            "---\r\nstatus: active\r\n---\r\nBody words.\r\n",
+            "---  \nstatus: active\n---\nBody words.\n",
+            "---\nstatus: active\n--- \nBody words.\n",
+            "\u{feff}--- \r\nstatus: active\r\n---\t\r\nBody words.",
+        ] {
+            assert!(found(text, "active").is_none(), "{text:?}");
+            assert_eq!(
+                found(text, "body").as_deref(),
+                Some("Body words."),
+                "{text:?}"
+            );
+        }
+        // One that never closes is all header, so none of it is searched.
+        assert!(found("---\nnever closed\n", "never").is_none());
+        assert!(found("# No header\n---\nnot: one\n---\n", "one").is_some());
     }
 
     #[test]
