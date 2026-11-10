@@ -390,16 +390,24 @@ fn a_pull_that_takes_the_hooks_time_finishes_and_its_save_is_refused_naming_it()
         "OWNER-TEXT\nA HAND EDIT\n",
     )
     .unwrap();
-    // The real git, held up once in the middle of that rebase until past the time a write
-    // may start (12 s of the hook's 16).
-    let once = mac.dir.0.join("slow.once");
+    // The real git, held up once in the middle of that rebase until 11 to 12 s after the
+    // hook starts: past the last moment a write may begin (10.5 s of the hook's 16), with
+    // 4 s left before the backstop for the rest of the pull and the reply. The wait is to a
+    // time on the clock, not a length, because how soon the rebase begins varies by machine.
+    let (once, begun) = (mac.dir.0.join("slow.once"), mac.dir.0.join("hook.began"));
+    let unix = |path: &Path| path.display().to_string().replace('\\', "/");
     mac.notes_hook(
         "reference-transaction",
         &format!(
-            "dir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  sleep 13\nfi\nexit 0",
-            once = once.display().to_string().replace('\\', "/")
+            "dir=$(git rev-parse --git-dir)\nif [ -d \"$dir/rebase-merge\" ] && [ ! -e '{once}' ]; then\n  : > '{once}'\n  began=$(cat '{begun}')\n  while [ \"$(date +%s)\" -lt $((began + 12)) ]; do sleep 1; done\nfi\nexit 0",
+            once = unix(&once),
+            begun = unix(&begun)
         ),
     );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    write(&begun, &now.as_secs().to_string());
     let before = mac.effort_text(1);
     let (answer, took) = mac.timed("s1", "call-2", SAVE, &[], Duration::from_secs(45));
     assert!(once.exists(), "the rebase was never held up");
@@ -413,7 +421,7 @@ fn a_pull_that_takes_the_hooks_time_finishes_and_its_save_is_refused_naming_it()
             ),
         "{text}"
     );
-    assert!(took >= Duration::from_secs(12), "{took:?}");
+    assert!(took >= Duration::from_millis(10500), "{took:?}");
     // The rebase ran to its end: the other machine's commit is in, this one's replayed on
     // it, the hand edit is back in the tree and nothing is left partway.
     assert_eq!(mac.log(), "0001: started\ntheirs\nseed\n");
