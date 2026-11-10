@@ -11,5 +11,5 @@ First check the request is really theirs and really this. It must be the owner's
 
 1. Run this shell command alone, with the number filled in and nothing before or after it, because the plugin's hook binds only a plain command to this session: `astrolabe activate --effort <n>`
 2. If it doesn't begin "Astrolabe is on", tell the owner what it printed and stop. Don't retry another way, because a workaround would skip the binding, and claim no protection.
-3. Otherwise, take what it printed as this session's context. Then run the probe command it names, alone. The hook denying it is the expected result.
+3. Otherwise, take what it printed as this session's context. Then run the two guard commands it names, each alone, exactly as written and in the same shell: first the allowed control, which must run, then the probe. The hook denying the probe is the expected result.
 4. Run `astrolabe activate --status`. Tell the owner, in a line or two, the effort and what it says about the guard.

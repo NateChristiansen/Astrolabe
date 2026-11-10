@@ -240,6 +240,10 @@ fn the_plugin_folder_calls_this_program_and_names_one_plugin() {
     ] {
         assert!(skill.contains(wanted), "{wanted}");
     }
+    // The guard's proof needs both commands, in the order the activation output gives them.
+    let control = skill.find("the allowed control, which must run");
+    let probe = skill.find("then the probe");
+    assert!(control.is_some() && control < probe, "{skill}");
     assert!(!skill.contains("disable-model-invocation"));
     let codex =
         std::fs::read_to_string(root.join("astrolabe/skills/effort/agents/openai.yaml")).unwrap();
