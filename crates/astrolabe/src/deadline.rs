@@ -14,6 +14,7 @@
 //! calls are limited.
 use serde_json::{Value, json};
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -204,10 +205,12 @@ pub(crate) fn start(event: &str) {
             // The answer is on time whatever git is doing. From here the hook's own thread
             // prints nothing: `said` is set, so there is one answer.
             let mut state = answer();
-            if !state.said
-                && let Some(fallback) = state.fallback.take()
-            {
-                crate::hook::print(&fallback);
+            if !state.said {
+                if let Some(fallback) = state.fallback.take() {
+                    crate::hook::print(&fallback);
+                }
+                // The hook's own answer will never go out now.
+                untold_from_here();
             }
             state.said = true;
         }
@@ -266,6 +269,44 @@ pub(crate) fn failed() {
     if let Some(last) = last {
         crate::hook::print(&last);
     }
+    untold_from_here();
+}
+
+/// The marks to make for the notes writes this hook has finished, if its session turns out
+/// never to be told of them, and whether that has already turned out.
+static UNTOLD: Mutex<(bool, Vec<PathBuf>)> = Mutex::new((false, Vec::new()));
+
+fn untold() -> MutexGuard<'static, (bool, Vec<PathBuf>)> {
+    UNTOLD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A notes write finished in this process. If its hook's own answer never goes out,
+/// because the backstop answered in its place or the hook failed, `mark` is created: the
+/// only evidence, for a later run, that the session was not told of a write that landed.
+/// Created at once when that has happened already.
+pub(crate) fn finished(mark: PathBuf) {
+    let mut untold = untold();
+    match untold.0 {
+        true => make(&mark),
+        false => untold.1.push(mark),
+    }
+}
+
+/// The backstop or a failure answered for the hook: every write it has finished, and any
+/// it finishes in the time it has left, is one its session wasn't told of.
+fn untold_from_here() {
+    let mut untold = untold();
+    untold.0 = true;
+    for mark in untold.1.drain(..) {
+        make(&mark);
+    }
+}
+
+/// An empty file, whole or not at all.
+fn make(mark: &Path) {
+    let _ = File::options().write(true).create_new(true).open(mark);
 }
 
 /// The hook is returning: whatever it decided stands, and the backstop adds nothing.

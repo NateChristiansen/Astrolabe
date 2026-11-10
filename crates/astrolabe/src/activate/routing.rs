@@ -240,11 +240,12 @@ fn answer(event: &str) {
             }
             let answer = std::panic::catch_unwind(|| switch_command(&input, session, child));
             if let Ok(Some(answer)) = answer {
-                // A write is answered when this hook's own answer goes out with its result,
-                // and only then is its intent removed. If the backstop answered first, the
-                // session was denied: the intent stays with its reply, and the session's
-                // retry is given that reply instead of writing again.
-                if hook::said(&answer) {
+                // A write is answered when this hook's own answer goes out with its result:
+                // it's marked so as the answer is printed, and its intent removed after. If
+                // the backstop answered first, the session was denied: the backstop marked
+                // the intent unanswered, it stays with its reply, and the session's retry
+                // is given that reply instead of writing again.
+                if hook::said(&answer, crate::record::mark_answered) {
                     crate::record::answered();
                 }
                 return;

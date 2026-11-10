@@ -136,10 +136,10 @@ enum Attempt {
 
 /// A retry is a new tool call, so it comes with a new key. It's the same request as a write
 /// this session attempted with the same command, in the same folder and on the same record,
-/// whose own hook never answered (see `Notes::earlier_attempt`). If that attempt got as far
-/// as its reply, the retry gets that reply. If a later run finished the write, no reply was
-/// ever made: the retry takes the first attempt's key and is told what a repeat of that
-/// call is told.
+/// that its session is known never to have been told of (see `Notes::earlier_attempt`). If
+/// that attempt got as far as its reply, the retry gets that reply. If a later run finished
+/// the write, no reply was ever made: the retry takes the first attempt's key and is told
+/// what a repeat of that call is told.
 fn attempt(notes: &Notes, cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Attempt {
     // The same tool call again is known by its key, as it always was.
     if notes.already_applied(key) {
@@ -190,13 +190,30 @@ pub(crate) fn answers(key: &str) {
     }
 }
 
-/// The hook's own answer went out, so the session has been told: the intents of the
-/// writes it was told about go, and the same words after this are a new request. Not
-/// called when the backstop answered first; those intents stay for the session's retry.
+/// The hook's own answer is going out, so the session is told: each write it's told about
+/// is marked answered, and the same words after this are a new request. Done as the answer
+/// is printed and without the notes lock, which a sync the write started may hold by now.
+/// Not called when the backstop answered first; those intents stay for the session's retry.
+pub(crate) fn mark_answered() {
+    if let Some(dir) = state_dir() {
+        let notes = Notes::new(PathBuf::new(), dir);
+        for key in &told().writes {
+            notes.mark_answered(key);
+        }
+    }
+}
+
+/// After the answer: the marked intents go now if the notes lock is free, and otherwise
+/// when a later write or sync holds it. Nothing waits here.
 pub(crate) fn answered() {
     let writes = std::mem::take(&mut told().writes);
-    for key in writes {
-        forget(&key);
+    if !writes.is_empty()
+        && let Ok((_, notes)) = notes_here()
+        && let Some(_held) = notes.try_lock()
+    {
+        for key in writes {
+            notes.forget(&key);
+        }
     }
 }
 

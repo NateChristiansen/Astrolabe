@@ -273,3 +273,132 @@ fn the_command_run_with_no_hook_finds_the_result_of_one_with_an_apostrophe() {
         "{out}"
     );
 }
+
+/// Waits for `done`, failing the test if it doesn't come true.
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed() < Duration::from_secs(60), "never: {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Held after its write, with the notes lock let go, for long enough that another process
+/// takes the lock before the hook answers: what the sync a write starts does every time.
+const ANSWERS_LATE: [(&str, &str); 1] = [("ASTROLABE_HOOK_TEST_STALL", "ticket:4000")];
+
+/// That a session was answered is recorded without the notes lock, which a sync started by
+/// the write itself is usually holding by then. Were it to need the lock, the write would
+/// stay on record as never answered and swallow the session's next identical command.
+#[test]
+fn an_answer_given_while_another_process_holds_the_notes_still_counts() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    let held = std::thread::scope(|scope| {
+        let hook = scope.spawn(|| mac.call("s1", "call-1", FOUND, &ANSWERS_LATE));
+        wait_for("the line is committed", || {
+            mac.log().contains("journal: demo")
+        });
+        let held = notes.lock().unwrap();
+        let first = hook.join().unwrap().unwrap();
+        assert!(first.starts_with("Journal line written for"), "{first}");
+        held
+    });
+    drop(held);
+    let again = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(again.starts_with("Journal line written for"), "{again}");
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        2,
+        "{journal}"
+    );
+}
+
+/// The same for a retry: once it's answered, the attempt it was answered from is answered
+/// too, whoever holds the notes at that moment.
+#[test]
+fn a_retry_answered_while_another_process_holds_the_notes_settles_its_first_attempt() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let denied = mac.call("s1", "call-1", FOUND, &HELD_UP).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    let held = std::thread::scope(|scope| {
+        let hook = scope.spawn(|| mac.call("s1", "call-2", FOUND, &ANSWERS_LATE));
+        wait_for("recovery commits the line", || {
+            mac.log().contains("journal: demo")
+        });
+        let held = notes.lock().unwrap();
+        let retried = hook.join().unwrap().unwrap();
+        assert!(
+            retried.contains("nothing new went in the journal"),
+            "{retried}"
+        );
+        held
+    });
+    drop(held);
+    let lines = || mac.journal_today().matches("Found the Deck preset").count();
+    assert_eq!(lines(), 1);
+    // The retry was answered, so the same words now are a new request.
+    let again = mac.call("s1", "call-3", FOUND, &[]).unwrap();
+    assert!(again.starts_with("Journal line written for"), "{again}");
+    assert_eq!(lines(), 2);
+}
+
+/// A write that has finished but whose hook hasn't answered yet is not an unanswered
+/// attempt: nothing says its session won't be told. The same command arriving in that
+/// moment, as a second tool call sent alongside the first, is its own request and writes.
+#[test]
+fn the_same_command_arriving_before_the_first_is_answered_writes_too() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| mac.call("s1", "call-1", FOUND, &ANSWERS_LATE));
+        wait_for("the first line is committed", || {
+            mac.log().contains("journal: demo")
+        });
+        let second = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+        assert!(second.starts_with("Journal line written for"), "{second}");
+        let first = first.join().unwrap().unwrap();
+        assert!(first.starts_with("Journal line written for"), "{first}");
+    });
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        2,
+        "{journal}"
+    );
+}
+
+/// The backstop answered, and the write the hook was in the middle of finished a moment
+/// later, before the hook was gone. The session was denied all the same, so its retry is
+/// answered from that write and nothing is written twice. Whether the write finishes in
+/// that moment or is left for recovery depends on the machine; either way it's one line.
+#[test]
+fn a_write_that_finishes_just_after_the_backstop_answered_is_still_unanswered() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let just_late = [
+        ("ASTROLABE_HOOK_TEST_STALL", "commit:8200"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
+    ];
+    let denied = mac.call("s1", "call-1", FOUND, &just_late).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    // The hook is gone once nothing of it holds the notes.
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    drop(notes.lock().unwrap());
+    let retried = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(
+        retried.starts_with("Journal line written for")
+            || retried.contains("nothing new went in the journal"),
+        "{retried}"
+    );
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        1,
+        "{journal}"
+    );
+}

@@ -169,13 +169,19 @@ impl Notes {
             .map(|b| format!("{b} (kept for repair)"))
             .collect();
         for op in self.intents() {
+            // Finished and its session told: nothing waits on it.
+            if op.result.is_some() && self.is_answered(&op.key) {
+                self.forget(&op.key);
+                continue;
+            }
             if op.result.is_some() {
                 let age = std::fs::metadata(self.intent_path(&op.key))
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|m| m.elapsed().ok());
                 // One whose session was never answered waits for that session's retry.
-                let awaited = op.at_ms.is_some_and(|at| now_ms() - at <= RETRY_MS);
+                let awaited =
+                    self.untold(&op) && op.at_ms.is_some_and(|at| now_ms() - at <= RETRY_MS);
                 if !awaited && age.is_some_and(|a| a.as_millis() as i64 > RECENT_MS) {
                     let _ = std::fs::remove_file(self.intent_path(&op.key));
                 }
@@ -205,6 +211,17 @@ impl Notes {
                 Err(why) => failed.push(format!("{}: {why}", op.key)),
             }
         }
+        // A mark whose intent is gone marks nothing.
+        let marks = std::fs::read_dir(self.state.join(INTENTS));
+        for mark in marks.into_iter().flatten().flatten().map(|m| m.path()) {
+            if mark
+                .extension()
+                .is_some_and(|x| x == "answered" || x == "unanswered")
+                && !mark.with_extension("json").exists()
+            {
+                let _ = std::fs::remove_file(mark);
+            }
+        }
         failed
     }
 
@@ -217,12 +234,52 @@ impl Notes {
         {
             op.result = Some(result.to_owned());
             let _ = write_text(&path, &serde_json::to_string(&op).unwrap_or_default());
+            // Marked unanswered if this hook's own answer never goes out.
+            crate::deadline::finished(self.unanswered_mark(key));
         }
         self.changed();
     }
 
     pub fn forget(&self, key: &str) {
         let _ = std::fs::remove_file(self.intent_path(key));
+        let _ = std::fs::remove_file(self.answered_mark(key));
+        let _ = std::fs::remove_file(self.unanswered_mark(key));
+    }
+
+    /// The mark beside a finished intent that says its session was not told: the backstop
+    /// answered in its hook's place, or the hook failed. Made by `deadline`.
+    fn unanswered_mark(&self, key: &str) -> PathBuf {
+        self.state.join(INTENTS).join(format!("{key}.unanswered"))
+    }
+
+    /// Whether there is evidence this finished write's session was never told of it: a
+    /// later run finished it, so no reply was ever made, or its hook's answer was the
+    /// backstop's. A finished write with neither is taken as answered or about to be: its
+    /// hook may be printing this moment, and the same command beside it is its own request.
+    fn untold(&self, op: &Op) -> bool {
+        op.result.as_deref() == Some(RECOVERED) || self.unanswered_mark(&op.key).exists()
+    }
+
+    /// The mark beside an intent that says its session was answered. Not `.json`, so no
+    /// scan of the intents reads it.
+    fn answered_mark(&self, key: &str) -> PathBuf {
+        self.state.join(INTENTS).join(format!("{key}.answered"))
+    }
+
+    /// Records that the session was told about this write, at once and without the notes
+    /// lock: one empty file, created whole or not at all. The hook does this as it answers,
+    /// when a sync the write started is often holding the lock already; waiting for the
+    /// lock there left the intent looking unanswered whenever the wait gave out. The intent
+    /// itself is removed by whoever next holds the lock.
+    pub fn mark_answered(&self, key: &str) {
+        if self.intent_path(key).exists() {
+            let mut mark = std::fs::File::options();
+            let _ = (mark.write(true).create_new(true)).open(self.answered_mark(key));
+        }
+    }
+
+    pub fn is_answered(&self, key: &str) -> bool {
+        self.answered_mark(key).exists()
     }
 
     /// A recent op for this command in this folder: finished (its result) or still going.
@@ -239,11 +296,11 @@ impl Notes {
 
     /// The write a retry of this command repeats: one this session attempted with this exact
     /// command, in this folder, for the record it is on now, within `RETRY_MS`, that is
-    /// finished and still on record. An intent is removed once its own hook has answered
-    /// the session, so what's left with a result is a write whose session was never told:
-    /// its hook ran out of time, died, or a later run finished it. Only that is a retry's
-    /// first attempt; the same words after an answer are a new request. Every file the
-    /// write left must still read as it left it, since a save since then makes the words new.
+    /// finished, that its session is known not to have been told of (`untold`), and that no
+    /// retry has been answered from since (`is_answered`). Anything else is a new request
+    /// and writes: the same words after an answer, or beside a write still being answered.
+    /// Every file the write left must still read as it left it, since a save since then
+    /// makes the words new.
     pub fn earlier_attempt(
         &self,
         digest: &str,
@@ -255,7 +312,8 @@ impl Notes {
             let unchanged = op.files.iter().all(|(rel, text)| {
                 std::fs::read_to_string(self.root.join(rel)).ok().as_deref() == Some(text.as_str())
             });
-            op.result.is_some()
+            self.untold(op)
+                && !self.is_answered(&op.key)
                 && op.at_ms.is_some_and(|at| now_ms() - at <= RETRY_MS)
                 && op.digest.as_deref() == Some(digest)
                 && op.cwd.as_deref() == Some(cwd)
