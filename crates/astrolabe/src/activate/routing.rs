@@ -240,7 +240,14 @@ fn answer(event: &str) {
             }
             let answer = std::panic::catch_unwind(|| switch_command(&input, session, child));
             if let Ok(Some(answer)) = answer {
-                return hook::say(&answer);
+                // A write is answered when this hook's own answer goes out with its result,
+                // and only then is its intent removed. If the backstop answered first, the
+                // session was denied: the intent stays with its reply, and the session's
+                // retry is given that reply instead of writing again.
+                if hook::said(&answer) {
+                    crate::record::answered();
+                }
+                return;
             }
             // A commit is work the save should cover; a child's counts for its parent.
             if let (Some(session), Some(command)) =
@@ -511,17 +518,17 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 None,
             ),
         };
+        crate::deadline::stall("ticket");
         let left = state_dir()
             .ok_or_else(|| "no home folder".to_owned())
             .and_then(|dir| leave_with(&dir, &text, ok, digest.as_deref(), Some(&cwd)));
         return Some(match left {
             Ok(ticket) => {
-                // The ticket now holds the result, so the intent that held it is no longer
-                // a write to recover. It's kept a minute as answered, so a retry of this
-                // command, a new tool call, is told the same instead of writing again. A
+                // The ticket holds the result, but the session has it only once this hook's
+                // answer goes out, so the intent that held it goes then (see `answer`). A
                 // failed one keeps its intent, which is its recovery plan.
                 if let (Some(op_key), true) = (op_key, ok) {
-                    crate::record::answered(&op_key);
+                    crate::record::answers(&op_key);
                 }
                 rewrite_to_show(tool_input, key, &ticket, powershell)
             }

@@ -414,6 +414,8 @@ impl Notes {
             result: None,
             cwd: None,
             session: None,
+            bound: None,
+            at_ms: None,
             rebaseline: None,
         };
         self.apply(&op)?;

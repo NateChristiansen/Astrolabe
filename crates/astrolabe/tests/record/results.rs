@@ -97,16 +97,12 @@ impl Machine {
         Ok(std::fs::read_to_string(path).unwrap())
     }
 
-    /// The recovery records of finished writes, as if they had finished `ago` earlier.
-    fn age_finished_writes(&self, ago: Duration) {
-        let folders = ["ops", "answered"].map(|name| std::fs::read_dir(self.state().join(name)));
-        for entry in folders.into_iter().flatten().flatten().flatten() {
-            let file = std::fs::File::options()
-                .write(true)
-                .open(entry.path())
-                .unwrap();
-            file.set_modified(SystemTime::now() - ago).unwrap();
-        }
+    /// The writes still on record as never answered or never finished.
+    fn unanswered(&self) -> Vec<PathBuf> {
+        let left = std::fs::read_dir(self.state().join("ops"));
+        (left.into_iter().flatten().flatten())
+            .map(|entry| entry.path())
+            .collect()
     }
 }
 
@@ -164,36 +160,101 @@ fn a_new_effort_retried_after_the_out_of_time_denial_is_created_once() {
     assert!(ok && out.starts_with("Saved effort 1"), "{out}");
 }
 
-/// The first attempt finished and its result was left, but the session ran the command
-/// again anyway: it gets that result, and nothing is written twice.
+/// A session that got its answer and runs the same command again means it again: a second
+/// journal line after rerunning the tests, a decision recorded twice. Only an attempt whose
+/// own hook never answered is waited on by a retry.
 #[test]
-fn a_command_retried_after_it_committed_gets_its_first_result_and_writes_nothing() {
+fn a_command_run_again_after_its_answer_is_a_new_request() {
     let world = World::new();
     let mac = world.machine("mac");
     let first = mac.call("s1", "call-1", FOUND, &[]).unwrap();
     assert!(first.starts_with("Journal line written for"), "{first}");
-    assert_eq!(mac.call("s1", "call-2", FOUND, &[]).unwrap(), first);
-    let lines = || mac.journal_today().matches("Found the Deck preset").count();
-    assert_eq!(lines(), 1);
-    // Another session saying the same is its own request, and so is this one in another
-    // folder or after the first attempt is no longer recent.
-    assert!(mac.call("s2", "call-1", FOUND, &[]).is_ok());
-    assert_eq!(lines(), 2);
-    mac.age_finished_writes(Duration::from_secs(2 * 60));
-    assert!(mac.call("s1", "call-3", FOUND, &[]).is_ok());
-    assert_eq!(lines(), 3);
-    // A save too: the same decision isn't recorded twice.
+    let again = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(again.starts_with("Journal line written for"), "{again}");
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        2,
+        "{journal}"
+    );
+    assert_eq!(mac.log().matches("journal: demo").count(), 2);
     assert!(mac.bash("s3", NEW).1);
     let chose = "astrolabe effort save --decision \"chose a over b: c\"";
-    let saved = mac.call("s3", "call-2", chose, &[]).unwrap();
-    assert!(saved.starts_with("Saved effort 1"), "{saved}");
-    assert_eq!(mac.call("s3", "call-3", chose, &[]).unwrap(), saved);
-    assert_eq!(mac.effort_text(1).matches("chose a over b: c").count(), 1);
-    // Once the effort has been saved again, the same words are a new request.
-    let other = "astrolabe effort save --decision \"chose d over e: f\"";
-    assert!(mac.call("s3", "call-4", other, &[]).is_ok());
-    assert!(mac.call("s3", "call-5", chose, &[]).is_ok());
+    assert!(mac.call("s3", "call-2", chose, &[]).is_ok());
+    assert!(mac.call("s3", "call-3", chose, &[]).is_ok());
     assert_eq!(mac.effort_text(1).matches("chose a over b: c").count(), 2);
+    // An answered write leaves nothing behind for a later command to be matched against.
+    assert_eq!(mac.unanswered().len(), 0);
+}
+
+/// The write committed and its reply was made, but the hook's time ran out before the
+/// reply was left for the session, so the session was denied. Its retry gets that reply.
+#[test]
+fn a_retry_of_a_write_that_committed_but_was_never_answered_gets_its_reply() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let unanswered = [
+        ("ASTROLABE_HOOK_TEST_STALL", "ticket:60000"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
+    ];
+    let denied = mac.call("s1", "call-1", FOUND, &unanswered).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    assert_eq!(mac.log().matches("journal: demo").count(), 1);
+    let retried = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(retried.starts_with("Journal line written for"), "{retried}");
+    let lines = || mac.journal_today().matches("Found the Deck preset").count();
+    assert_eq!(lines(), 1);
+    // The retry was answered, so the same words after it are a new request.
+    assert!(mac.call("s1", "call-3", FOUND, &[]).is_ok());
+    assert_eq!(lines(), 2);
+}
+
+/// A write is matched by when it was first attempted, not by when a later run finished it:
+/// a line whose hook died long ago, finished by today's identical command, is not that
+/// command's first attempt.
+#[test]
+fn a_write_recovered_long_after_its_attempt_isnt_taken_for_a_new_commands_first_try() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let denied = mac.call("s1", "call-1", FOUND, &HELD_UP).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    // As if that had been yesterday.
+    let left = std::fs::read_dir(mac.state().join("ops")).unwrap();
+    let left: Vec<PathBuf> = left.flatten().map(|entry| entry.path()).collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    let mut op: Value = serde_json::from_slice(&std::fs::read(&left[0]).unwrap()).unwrap();
+    op["at_ms"] = (Machine::now_ms() - 24 * 3_600_000).into();
+    std::fs::write(&left[0], op.to_string()).unwrap();
+    let today = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(today.starts_with("Journal line written for"), "{today}");
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        2,
+        "yesterday's line recovered, and today's written: {journal}"
+    );
+}
+
+/// The retry is for the record the session was on. A session that moved to another effort
+/// before saying the same words is saving that other effort.
+#[test]
+fn the_same_save_after_the_session_moved_to_another_effort_is_written_there() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let other = "astrolabe effort new --title \"Other\" <<'ASTROLABE'\nanother goal\nASTROLABE\n";
+    assert!(mac.bash("s2", other).1);
+    let chose = "astrolabe effort save --decision \"chose a over b: c\"";
+    let denied = mac.call("s1", "call-2", chose, &HELD_UP).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    // Loading the other effort finishes the write left for the first.
+    let loaded = mac.call("s1", "call-3", "astrolabe activate --effort 2", &[]);
+    assert!(loaded.is_ok(), "{loaded:?}");
+    assert_eq!(mac.effort_text(1).matches("chose a over b: c").count(), 1);
+    let saved = mac.call("s1", "call-4", chose, &[]).unwrap();
+    assert!(saved.starts_with("Saved effort 2"), "{saved}");
+    assert_eq!(mac.effort_text(2).matches("chose a over b: c").count(), 1);
+    assert_eq!(mac.effort_text(1).matches("chose a over b: c").count(), 1);
 }
 
 /// The command the app ran itself, with no hook, is given its arguments with the shell's

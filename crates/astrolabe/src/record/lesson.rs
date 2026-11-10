@@ -156,6 +156,8 @@ fn close_inner(
             result: None,
             cwd: Some(crate::hook::comparable(cwd)),
             session: None,
+            bound: None,
+            at_ms: None,
             rebaseline: None,
         };
         notes.apply(&op)?;

@@ -36,7 +36,8 @@ const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
 /// and `<point>:+<milliseconds>` moves the hook's clock on by that much without waiting,
 /// so a test can put a hook late in its time with the backstop still far off. The points
 /// are `read` (input read, nothing judged), `verdict` (the guard's verdict reached, not
-/// yet printed) and a git verb (before that git call starts).
+/// yet printed), `ticket` (an effort command done, its result not yet left) and a git verb
+/// (before that git call starts).
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
 
 /// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
@@ -227,11 +228,18 @@ pub(crate) fn start(event: &str) {
 
 /// The hook's own answer, printed unless the backstop got there first.
 pub(crate) fn say(print: impl FnOnce()) {
+    said(print);
+}
+
+/// The same, and whether it was this answer that went out.
+pub(crate) fn said(print: impl FnOnce()) -> bool {
     let mut state = answer();
-    if !state.said {
+    let first = !state.said;
+    if first {
         state.said = true;
         print();
     }
+    first
 }
 
 /// The guard reached its verdict: from here a hook that runs out of time, or fails, gives

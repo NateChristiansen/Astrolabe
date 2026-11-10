@@ -16,14 +16,16 @@ use std::process::{Command, Stdio};
 /// Back off after a network timeout so later hooks do not pay the same delay repeatedly.
 const BACKOFF_MS: i64 = 5 * 60 * 1000;
 const INTENTS: &str = "ops";
-/// Finished writes whose result reached its ticket, kept a minute for a retry to find.
-const ANSWERED: &str = "answered";
 /// Touched when a detached sync is asked for; its mtime throttles the Stop hook's asks.
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
+/// How long after a write was first attempted the same command is taken for its retry, when
+/// the attempt's own hook never answered: time for a session to read the denial, look at
+/// `notes status` and run the command again.
+pub const RETRY_MS: i64 = 5 * 60_000;
 /// What a write finished by a later run has for a result: the reply it would have had was
 /// never made.
 pub const RECOVERED: &str =
@@ -81,6 +83,15 @@ pub struct Op {
     /// session's command with the same words.
     #[serde(default)]
     pub session: Option<String>,
+    /// The record that session is on once this write lands, as `SessionState::record_label`
+    /// names it; None for a session on none. The same words after the session moved to
+    /// another record are a request about that one.
+    #[serde(default)]
+    pub bound: Option<String>,
+    /// When the command was first attempted. A retry is matched on this, never on the
+    /// intent file's time, which moves whenever a later run finishes the write.
+    #[serde(default)]
+    pub at_ms: Option<i64>,
     /// The notes checkout itself, when the command ran there: the states' nudge baseline is
     /// taken again as they're written, after the commit, since that commit is in the folder
     /// the fingerprint reads. Kept in the intent so a replay does the same.
@@ -374,6 +385,8 @@ impl Notes {
             result: None,
             cwd: None,
             session: None,
+            bound: None,
+            at_ms: None,
             rebaseline: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.

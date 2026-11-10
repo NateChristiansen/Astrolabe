@@ -1,6 +1,6 @@
 //! Recoverable note writes and their commit scope. Callers hold the notes lock.
 use super::{
-    ANSWERED, EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RepoFacts, journal_file,
+    EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RETRY_MS, RepoFacts, journal_file, now_ms,
     tidy_journal, write_text,
 };
 use std::path::PathBuf;
@@ -17,15 +17,6 @@ const COMMITTED: [&str; 6] = [
     "drafts",
     ".gitattributes",
 ];
-
-/// Whether a finished write's record was last written within `RECENT_MS`.
-fn recent(path: &std::path::Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|m| m.elapsed().ok())
-        .is_some_and(|age| age.as_millis() as i64 <= RECENT_MS)
-}
 
 impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
@@ -183,7 +174,9 @@ impl Notes {
                     .and_then(|m| m.modified())
                     .ok()
                     .and_then(|m| m.elapsed().ok());
-                if age.is_some_and(|a| a.as_millis() as i64 > RECENT_MS) {
+                // One whose session was never answered waits for that session's retry.
+                let awaited = op.at_ms.is_some_and(|at| now_ms() - at <= RETRY_MS);
+                if !awaited && age.is_some_and(|a| a.as_millis() as i64 > RECENT_MS) {
                     let _ = std::fs::remove_file(self.intent_path(&op.key));
                 }
                 continue;
@@ -203,8 +196,8 @@ impl Notes {
         failed
     }
 
-    /// Records what the hook showed for this op; the caller moves the intent to the answered
-    /// ones once the ticket exists.
+    /// Records what the hook showed for this op; the caller removes the intent once the
+    /// session has its answer.
     pub fn finish(&self, key: &str, result: &str) {
         let path = self.intent_path(key);
         if let Ok(bytes) = std::fs::read(&path)
@@ -232,57 +225,32 @@ impl Notes {
         })
     }
 
-    /// The op's ticket exists, so it's no longer a write to recover: it moves to the answered
-    /// ones, where a retry of its command finds it for a minute. Older ones go as this one
-    /// comes, so the folder holds the last minute's and whatever was last.
-    pub fn answered(&self, key: &str) {
-        let dir = self.state.join(ANSWERED);
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            if !recent(&entry.path()) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-        let from = self.intent_path(key);
-        let moved = std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::rename(&from, dir.join(format!("{key}.json"))));
-        if moved.is_err() {
-            let _ = std::fs::remove_file(from);
-        }
-    }
-
-    /// The finished write a retry of this command repeats: this session's, for this exact
-    /// command in this folder, finished within the last minute, with every file it wrote
-    /// still reading as it left it. A retry is a new tool call with a new key, so the key
-    /// can't tell it from a new request; these do. A file saved since means the same words
-    /// are a new request, and so do another session or folder, or a minute gone by. It's
-    /// looked for among the answered writes and the ones a later run finished, which never
-    /// had a ticket.
-    pub fn earlier_attempt(&self, digest: &str, cwd: &str, session: &str) -> Option<Op> {
-        let answered = std::fs::read_dir(self.state.join(ANSWERED));
-        let answered = answered
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| {
-                let op = serde_json::from_slice::<Op>(&std::fs::read(entry.path()).ok()?).ok()?;
-                Some((entry.path(), op))
+    /// The write a retry of this command repeats: one this session attempted with this exact
+    /// command, in this folder, for the record it is on now, within `RETRY_MS`, that is
+    /// finished and still on record. An intent is removed once its own hook has answered
+    /// the session, so what's left with a result is a write whose session was never told:
+    /// its hook ran out of time, died, or a later run finished it. Only that is a retry's
+    /// first attempt; the same words after an answer are a new request. Every file the
+    /// write left must still read as it left it, since a save since then makes the words new.
+    pub fn earlier_attempt(
+        &self,
+        digest: &str,
+        cwd: &str,
+        session: &str,
+        bound: Option<&str>,
+    ) -> Option<Op> {
+        self.intents().into_iter().find(|op| {
+            let unchanged = op.files.iter().all(|(rel, text)| {
+                std::fs::read_to_string(self.root.join(rel)).ok().as_deref() == Some(text.as_str())
             });
-        let recovered = (self.intents().into_iter()).map(|op| (self.intent_path(&op.key), op));
-        answered
-            .chain(recovered)
-            .find(|(path, op)| {
-                let unchanged = op.files.iter().all(|(rel, text)| {
-                    std::fs::read_to_string(self.root.join(rel)).ok().as_deref()
-                        == Some(text.as_str())
-                });
-                recent(path)
-                    && op.result.is_some()
-                    && op.digest.as_deref() == Some(digest)
-                    && op.cwd.as_deref() == Some(cwd)
-                    && op.session.as_deref() == Some(session)
-                    && unchanged
-            })
-            .map(|(_, op)| op)
+            op.result.is_some()
+                && op.at_ms.is_some_and(|at| now_ms() - at <= RETRY_MS)
+                && op.digest.as_deref() == Some(digest)
+                && op.cwd.as_deref() == Some(cwd)
+                && op.session.as_deref() == Some(session)
+                && op.bound.as_deref() == bound
+                && unchanged
+        })
     }
 
     /// Writes, journals, commits and records the session state, each step skipped when it's

@@ -125,6 +125,11 @@ pub(crate) fn say(answer: &Value) {
     crate::deadline::say(|| print(answer));
 }
 
+/// The same, and whether this answer went out rather than the backstop's before it.
+pub(crate) fn said(answer: &Value) -> bool {
+    crate::deadline::said(|| print(answer))
+}
+
 /// One line on stdout. Never panics, as stdout may be closed.
 pub(crate) fn print(answer: &Value) {
     let mut stdout = io::stdout();

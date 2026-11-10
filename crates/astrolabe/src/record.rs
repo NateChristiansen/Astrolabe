@@ -134,25 +134,77 @@ enum Attempt {
     Key(String),
 }
 
-/// A retry is a new tool call, so it comes with a new key. It's the same request as this
-/// session's finished write of the same command in the same folder a moment ago (see
-/// `Notes::earlier_attempt`), and gets that attempt's reply. When that reply was never made,
-/// because a later run finished the write, the retry takes the first attempt's key and is
-/// told what a repeat of that call is told.
+/// A retry is a new tool call, so it comes with a new key. It's the same request as a write
+/// this session attempted with the same command, in the same folder and on the same record,
+/// whose own hook never answered (see `Notes::earlier_attempt`). If that attempt got as far
+/// as its reply, the retry gets that reply. If a later run finished the write, no reply was
+/// ever made: the retry takes the first attempt's key and is told what a repeat of that
+/// call is told.
 fn attempt(notes: &Notes, cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Attempt {
     // The same tool call again is known by its key, as it always was.
     if notes.already_applied(key) {
         return Attempt::Key(key.to_owned());
     }
-    let first = notes.earlier_attempt(&cmd.digest(), &crate::hook::comparable(cwd), session);
-    match first {
-        Some(Op {
-            result: Some(reply),
-            ..
-        }) if reply != notes::RECOVERED => Attempt::Answered(reply),
-        Some(first) => Attempt::Key(first.key),
-        None => Attempt::Key(key.to_owned()),
+    let bound = bound_label(&notes.state, session);
+    let first = notes.earlier_attempt(
+        &cmd.digest(),
+        &crate::hook::comparable(cwd),
+        session,
+        bound.as_deref(),
+    );
+    let Some(first) = first else {
+        return Attempt::Key(key.to_owned());
+    };
+    // The retry's answer, if it works and goes out, is the first attempt's too.
+    told().earlier = Some(first.key.clone());
+    match first.result {
+        Some(reply) if reply != notes::RECOVERED => Attempt::Answered(reply),
+        _ => Attempt::Key(first.key),
     }
+}
+
+/// The writes this hook's answer tells the session about once it goes out, and before that
+/// the earlier attempt a retry in this hook was matched to.
+#[derive(Default)]
+struct Told {
+    writes: Vec<String>,
+    earlier: Option<String>,
+}
+
+fn told() -> std::sync::MutexGuard<'static, Told> {
+    static TOLD: std::sync::Mutex<Told> = std::sync::Mutex::new(Told {
+        writes: Vec::new(),
+        earlier: None,
+    });
+    TOLD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// This hook's command worked and its result is left for the session: its answer, once it
+/// goes out, tells the session about the write with this key, and about the earlier
+/// attempt it was a retry of. A command that failed tells the session of neither.
+pub(crate) fn answers(key: &str) {
+    let mut told = told();
+    told.writes.push(key.to_owned());
+    if let Some(earlier) = told.earlier.take() {
+        told.writes.push(earlier);
+    }
+}
+
+/// The hook's own answer went out, so the session has been told: the intents of the
+/// writes it was told about go, and the same words after this are a new request. Not
+/// called when the backstop answered first; those intents stay for the session's retry.
+pub(crate) fn answered() {
+    let writes = std::mem::take(&mut told().writes);
+    for key in writes {
+        forget(&key);
+    }
+}
+
+/// The record a session is on, as an op names it; None for a session on none.
+fn bound_label(dir: &Path, session: &str) -> Option<String> {
+    (read_state(dir, session).ok().flatten())
+        .filter(|state| state.bound_key().is_some())
+        .map(|state| state.record_label())
 }
 
 /// `astrolabe effort new`, in the hook.
@@ -373,6 +425,8 @@ fn new_inner(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
+        bound: Some(format!("effort {number}")),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -517,6 +571,8 @@ pub fn take_up(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: None,
+        bound: None,
+        at_ms: None,
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -788,6 +844,8 @@ fn initiative_inner(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
+        bound: bound_label(&notes.state, session),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -985,6 +1043,8 @@ fn save_inner(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
+        bound: Some(state.record_label()),
+        at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
@@ -1315,6 +1375,8 @@ fn save_target(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
+        bound: Some(state.record_label()),
+        at_ms: Some(notes::now_ms()),
         rebaseline: None,
     };
     notes.apply(&op)?;
@@ -1406,17 +1468,6 @@ pub fn forget(key: &str) {
     }
 }
 
-/// The ticket is written: the intent leaves the writes to recover and is kept a minute as
-/// answered, for a retry of its command.
-pub fn answered(key: &str) {
-    // Under the lock, as `forget` is.
-    if let Ok((_, notes)) = notes_here()
-        && let Ok(_held) = notes.lock()
-    {
-        notes.answered(key);
-    }
-}
-
 /// `astrolabe journal "…"`, in the hook: one line in today's day file for a finding with no
 /// effort, tagged with the repo. A session with an effort passes `--journal` on its save
 /// instead, so the line is the effort's.
@@ -1490,6 +1541,8 @@ fn journal_inner(
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
+        bound: None,
+        at_ms: Some(notes::now_ms()),
         rebaseline: None,
     };
     notes.apply(&op)?;
