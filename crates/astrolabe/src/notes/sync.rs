@@ -402,6 +402,7 @@ impl Notes {
         let op = Op {
             reply_after_ms: None,
             lesson_close: None,
+            lesson_closes: Vec::new(),
             key: key.clone(),
             files,
             renames: Vec::new(),

@@ -49,6 +49,10 @@ pub struct Op {
     /// Two ordered lesson commits, recovered through the same intent as a save.
     #[serde(default)]
     pub lesson_close: Option<LessonClose>,
+    /// Lessons a done save closes after its own commit, each in the same two commits
+    /// `lesson close` makes, keyed by its place in this list.
+    #[serde(default)]
+    pub lesson_closes: Vec<LessonClose>,
     /// A reply only advances the matching delivery checkpoint, preserving intervening
     /// session edits. Persist the expected time so recovery follows the same rule.
     #[serde(default)]
@@ -435,6 +439,7 @@ impl Notes {
         let mut op = Op {
             reply_after_ms: None,
             lesson_close: None,
+            lesson_closes: Vec::new(),
             key: key.clone(),
             files,
             renames: vec![(old_rel.clone(), new_rel.clone())],

@@ -61,6 +61,153 @@ fn validate_path(rel: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `--lesson lessons/a.md --lesson lessons/b.md`: each path checked as `lesson close` checks
+/// it, with no comma, since the effort keeps them as one comma list. Repeats collapse.
+pub(crate) fn named(values: &[&str]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let rel = value.trim();
+        validate_path(rel).map_err(|why| format!("--lesson {rel:?}: {why}"))?;
+        if rel.contains(',') {
+            return Err(format!(
+                "--lesson {rel:?}: a lesson path can't hold a comma"
+            ));
+        }
+        if !out.iter().any(|have| have == rel) {
+            out.push(rel.to_owned());
+        }
+    }
+    Ok(out)
+}
+
+/// The lessons an effort names, from its `lessons` property.
+pub(crate) fn of(file: &crate::effort::EffortFile) -> Vec<String> {
+    file.prop("lessons")
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Adds lessons to the effort's list, keeping the ones it has first. Only the newly named
+/// ones are returned, since only those need to exist now: one named earlier may have closed.
+pub(crate) fn add_to(file: &mut crate::effort::EffortFile, add: &[String]) -> Vec<String> {
+    let mut list = of(file);
+    let mut added = Vec::new();
+    for rel in add {
+        if !list.contains(rel) {
+            list.push(rel.clone());
+            added.push(rel.clone());
+        }
+    }
+    if !added.is_empty() {
+        file.set("lessons", &list.join(", "));
+    }
+    added
+}
+
+/// Refuses a lesson that isn't in the notes, read after the pull: a mistyped name would
+/// otherwise sit on the effort and never close.
+pub(crate) fn require_open(notes: &Notes, named: &[String]) -> Result<(), String> {
+    let missing: Vec<&str> = named
+        .iter()
+        .filter(|rel| {
+            safe_path(notes, rel)
+                .ok()
+                .is_none_or(|path| !path.is_file())
+        })
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let open: Vec<String> = crate::board::lessons_in(&notes.root)
+        .into_iter()
+        .map(|l| format!("- {}", l.file))
+        .collect();
+    let open = match open.is_empty() {
+        true => "There are no open lessons.".to_owned(),
+        false => format!("Open lessons:\n{}", open.join("\n")),
+    };
+    Err(format!(
+        "--lesson names {}, which isn't in the notes. Nothing was written. {open}",
+        missing.join(", ")
+    ))
+}
+
+/// What a done save closes: each named lesson still in the notes, with the disposition naming
+/// the effort, and the lines its reply gives, including the ones already gone and any other
+/// open effort that names the same lesson.
+pub(crate) fn closes(
+    notes: &Notes,
+    file: &crate::effort::EffortFile,
+    number: u32,
+    day: &str,
+) -> (Vec<LessonClose>, Vec<String>) {
+    let (mut closes, mut lines) = (Vec::new(), Vec::new());
+    let named = of(file);
+    if named.is_empty() {
+        return (closes, lines);
+    }
+    let disposition = format!("Fixed by effort {number}, {}, done {day}.", file.name());
+    let others = others_naming(notes, number);
+    for rel in named {
+        let name = rel.strip_prefix("lessons/").unwrap_or(&rel).to_owned();
+        let original = safe_path(notes, &rel)
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        let Some(original) = original else {
+            lines.push(format!(
+                "Lesson {name} was already gone, so nothing was closed for it."
+            ));
+            continue;
+        };
+        let mut disposed = original.clone();
+        if !disposed.is_empty() && !disposed.ends_with('\n') {
+            disposed.push('\n');
+        }
+        disposed.push_str(&disposition);
+        disposed.push('\n');
+        closes.push(LessonClose {
+            path: rel.clone(),
+            original,
+            disposed,
+        });
+        lines.push(format!(
+            "Closed lesson {name}: \"{disposition}\" committed, file removed."
+        ));
+        for (n, title, status) in others
+            .iter()
+            .filter(|(_, _, _, l)| l.contains(&rel))
+            .map(|(n, t, s, _)| (n, t, s))
+        {
+            lines.push(format!(
+                "Effort {n}, {title}, also names lesson {name} and is {status}: the lesson is closed now, so check whether that effort still has work of its own."
+            ));
+        }
+    }
+    (closes, lines)
+}
+
+/// Efforts other than this one, not done or abandoned, with the lessons each names.
+fn others_naming(notes: &Notes, number: u32) -> Vec<(u32, String, String, Vec<String>)> {
+    notes
+        .numbers()
+        .into_iter()
+        .filter(|(n, _)| *n != number)
+        .filter_map(|(n, rel)| {
+            let text = std::fs::read_to_string(notes.root.join(rel)).ok()?;
+            let file = crate::effort::EffortFile::parse(&text).ok()?;
+            let status = file.prop("status").unwrap_or("proposed").to_owned();
+            let lessons = of(&file);
+            (!lessons.is_empty() && !matches!(status.as_str(), "done" | "abandoned"))
+                .then(|| (n, file.name().to_owned(), status, lessons))
+        })
+        .collect()
+}
+
 /// Rechecked during replay too: a symlink introduced since the intent must not escape.
 pub(crate) fn safe_path(notes: &Notes, rel: &str) -> Result<std::path::PathBuf, String> {
     validate_path(rel)?;
@@ -140,6 +287,7 @@ fn close_inner(
         let op = Op {
             reply_after_ms: None,
             key: key.to_owned(),
+            lesson_closes: Vec::new(),
             lesson_close: Some(LessonClose {
                 path: rel.to_owned(),
                 original,

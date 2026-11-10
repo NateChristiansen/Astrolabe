@@ -328,8 +328,17 @@ fn inbox_section(at: At, class: &str, title: &str, pages: &[Lesson], empty: &str
         } else {
             ""
         };
+        // Answered work apart from a lesson nobody's on: marking that effort done closes it.
+        let answer = page.answered_by.as_ref().map_or_else(String::new, |a| {
+            format!(
+                " <a class=\"pill answered\" href=\"{}\" title=\"Marking this effort done closes the lesson\">answered by {}, {}</a>",
+                esc(&at.links.href(at.root, &a.file)),
+                esc(&format!("{} {}", a.number, a.title)),
+                esc(&a.status)
+            )
+        });
         lines += &format!(
-            "<li><a href=\"{}\">{}</a>{mark}</li>\n",
+            "<li><a href=\"{}\">{}</a>{mark}{answer}</li>\n",
             esc(&at.links.href(at.root, page.file.as_str())),
             esc(page.title.as_str())
         );

@@ -22,13 +22,32 @@ impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
     /// markers too, covering a crash after git commits but before the intent is updated.
     fn apply_lesson(&self, op: &Op, lesson: &super::LessonClose) -> Result<(), String> {
-        if self.already_applied(&op.key) {
+        self.close_lesson(lesson, &format!("disposition-{}", op.key), &op.key)
+    }
+
+    /// The lessons a done save closes, after its own commit. Each has its own two keys, never
+    /// starting with the save's: a key is found by a fixed-string search of `Op-Key: <key>`.
+    fn apply_closes(&self, op: &Op) -> Result<(), String> {
+        for (i, lesson) in op.lesson_closes.iter().enumerate() {
+            let first = format!("lesson-disposition-{i}-{}", op.key);
+            let second = format!("lesson-remove-{i}-{}", op.key);
+            self.close_lesson(lesson, &first, &second)?;
+        }
+        Ok(())
+    }
+
+    fn close_lesson(
+        &self,
+        lesson: &super::LessonClose,
+        first_key: &str,
+        key: &str,
+    ) -> Result<(), String> {
+        if self.already_applied(key) {
             return Ok(());
         }
         let path = crate::record::lesson::safe_path(self, &lesson.path)?;
         let literal = format!(":(literal){}", lesson.path);
-        let first_key = format!("disposition-{}", op.key);
-        let first = self.applied_commit(&first_key);
+        let first = self.applied_commit(first_key);
         let have = std::fs::read_to_string(&path).ok();
         if first.is_none() {
             if have.as_deref() != Some(&lesson.original)
@@ -64,7 +83,7 @@ impl Notes {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.to_string()),
         }
-        let message = format!("Remove closed lesson {}\n\nOp-Key: {}", lesson.path, op.key);
+        let message = format!("Remove closed lesson {}\n\nOp-Key: {key}", lesson.path);
         self.git(&[
             "-c",
             "user.useConfigOnly=false",
@@ -352,6 +371,7 @@ impl Notes {
         }
         self.save_intent(&op)?;
         if op.committed {
+            self.apply_closes(&op)?;
             return self.write_states(&op);
         }
         if let Some(lesson) = &op.lesson_close {
@@ -446,6 +466,7 @@ impl Notes {
         for (rel, _) in &op.files {
             self.clear_stale(rel);
         }
+        self.apply_closes(&op)?;
         self.write_states(&op)
     }
 

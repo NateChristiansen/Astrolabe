@@ -41,6 +41,9 @@ pub struct EffortRow {
     pub next: Option<String>,
     pub needs_owner: bool,
     pub pieces: Option<Pieces>,
+    /// The lessons this effort answers, which marking it done closes. Left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lessons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +60,19 @@ pub struct Lesson {
     /// the JSON when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub uncommitted: bool,
+    /// The effort that names this lesson, so the owner tells answered work from a lesson
+    /// nobody's on. Left out of the JSON when none does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_by: Option<Answer>,
+}
+
+/// An effort that answers a lesson, as the board shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Answer {
+    pub number: u64,
+    pub title: String,
+    pub status: String,
+    pub file: String,
 }
 
 /// A page and progress derived from its members, independent of board filters.
@@ -128,6 +144,8 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         Default::default();
     let mut page_progress: std::collections::BTreeMap<String, InitiativeProgress> =
         Default::default();
+    // Every effort that names a lesson, whatever filter the rows have: lessons aren't filtered.
+    let mut answers: Vec<(Vec<String>, Answer)> = Vec::new();
     for (_, rel) in notes.numbers() {
         let path = notes.root.join(&rel);
         let text = match std::fs::read_to_string(&path) {
@@ -146,6 +164,18 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         };
         let status = file.prop("status").unwrap_or("");
         let needs_owner = waits_on_owner(&file);
+        let lessons = crate::record::lesson::of(&file);
+        if let (false, Some(number)) = (lessons.is_empty(), file.number()) {
+            answers.push((
+                lessons.clone(),
+                Answer {
+                    number: u64::from(number),
+                    title: file.name().to_owned(),
+                    status: status.to_owned(),
+                    file: rel.clone(),
+                },
+            ));
+        }
         let membership = file.prop("initiative").filter(|name| !name.is_empty());
         let page = membership.and_then(|name| crate::effort::resolve_initiative(&pages, name).ok());
         if let Some(page) = page {
@@ -197,6 +227,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             branch: file.prop("branch").map(str::to_owned),
             unpushed: file.prop("unpushed").map(str::to_owned),
             dirty: file.prop("dirty").map(str::to_owned),
+            lessons,
         });
     }
     let mut initiative_attention = Vec::new();
@@ -264,7 +295,10 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         journal_lines: notes::parse_journal(&journal),
         journal,
         notes: warnings,
-        lessons: mark_uncommitted(lessons_in(&notes.root), &uncommitted),
+        lessons: answered(
+            mark_uncommitted(lessons_in(&notes.root), &uncommitted),
+            &answers,
+        ),
         drafts: mark_uncommitted(drafts_in(&notes.root), &uncommitted),
     }
 }
@@ -325,6 +359,19 @@ pub fn drafts_in(root: &Path) -> Vec<Lesson> {
 }
 
 /// Every `<folder>/*.md`, by name, titled by its first heading, else its file name.
+/// Each lesson with the effort that answers it: one still open over a finished one, since an
+/// open one is the work in flight, then the newest.
+fn answered(mut lessons: Vec<Lesson>, answers: &[(Vec<String>, Answer)]) -> Vec<Lesson> {
+    for lesson in &mut lessons {
+        lesson.answered_by = (answers.iter())
+            .filter(|(names, _)| names.contains(&lesson.file))
+            .map(|(_, answer)| answer)
+            .max_by_key(|a| (!matches!(a.status.as_str(), "done" | "abandoned"), a.number))
+            .cloned();
+    }
+    lessons
+}
+
 fn pages_in(root: &Path, folder: &str) -> Vec<Lesson> {
     let dir = root.join(folder);
     let mut names: Vec<String> = std::fs::read_dir(&dir)
@@ -349,6 +396,7 @@ fn pages_in(root: &Path, folder: &str) -> Vec<Lesson> {
                 file: format!("{folder}/{name}"),
                 title,
                 uncommitted: false,
+                answered_by: None,
             }
         })
         .collect()

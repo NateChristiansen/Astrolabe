@@ -194,11 +194,12 @@ fn body_spans(text: &str) -> (usize, Vec<(usize, usize, String)>) {
 }
 
 /// The order properties are written in; unknown ones follow, as read.
-pub(super) const PROP_ORDER: [&str; 16] = [
+pub(super) const PROP_ORDER: [&str; 17] = [
     "status",
     "repo",
     "initiative",
     "issue",
+    "lessons",
     "priority",
     "involvement",
     "authority",

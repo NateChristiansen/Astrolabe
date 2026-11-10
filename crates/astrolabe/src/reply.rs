@@ -84,6 +84,7 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         base: Some(base),
         states: vec![(state_path(&notes.state, session), state.to_value())],
         lesson_close: None,
+        lesson_closes: Vec::new(),
         renames: Vec::new(),
         journal: Vec::new(),
         committed: false,

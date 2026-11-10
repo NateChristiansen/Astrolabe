@@ -1147,6 +1147,13 @@ h1, h2, h3, p {
   white-space: nowrap;
 }
 
+/* A lesson an effort answers: marking that effort done closes it. */
+.lessons .answered {
+  margin-left: 8px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
 .col.done {
   margin-top: 20px;
 }

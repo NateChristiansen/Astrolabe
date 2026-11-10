@@ -475,3 +475,271 @@ fn housekeeping_names_in_text_pass_through_and_chained_sync_is_refused() {
     assert!(!ok && out.contains("refused"), "{out}");
     assert_eq!(mac.log(), before);
 }
+
+fn seed_lessons(mac: &Machine, names: &[&str]) {
+    for name in names {
+        write(
+            &mac.notes.join(format!("lessons/{name}.md")),
+            &format!("# {name}\n\nIt cost a turn.\n"),
+        );
+    }
+    git(&mac.notes, &["add", "lessons"]);
+    git(&mac.notes, &["commit", "-qm", "Add lessons"]);
+}
+
+const DONE: &str = "astrolabe effort save --status done <<'ASTROLABE'\nDone.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n";
+
+fn new_with(lessons: &str) -> String {
+    format!(
+        "astrolabe effort new --title \"Smooth ink\" {lessons} <<'ASTROLABE'\nsmooth the ink across frames\nASTROLABE\n"
+    )
+}
+
+fn disposition_of(mac: &Machine, rel: &str) -> String {
+    let sha = git(
+        &mac.notes,
+        &["log", "-1", "--format=%H", "--diff-filter=M", "--", rel],
+    );
+    git(&mac.notes, &["show", &format!("{}:{rel}", sha.trim())])
+}
+
+#[test]
+fn an_effort_names_its_lessons_and_marking_it_done_closes_each_one() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction", "second"]);
+    // A lesson that isn't there is refused with the open ones listed, and writes nothing.
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s1", &new_with("--lesson lessons/nope.md"));
+    assert!(
+        !ok && out.contains("lessons/nope.md, which isn't in the notes")
+            && out.contains("Open lessons:\n- lessons/friction.md\n- lessons/second.md"),
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before);
+    let (out, ok) = mac.bash("s1", &new_with("--lesson lessons/x.txt"));
+    assert!(!ok && out.contains("Markdown"), "{out}");
+    let (out, ok) = mac.bash("s1", &new_with("--lesson lessons/friction.md"));
+    assert!(ok, "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("\nlessons: lessons/friction.md\n")
+    );
+    // A later save adds to the list; one named again isn't doubled.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --lesson lessons/second.md --lesson lessons/friction.md",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --lesson lessons/gone.md");
+    assert!(!ok && out.contains("isn't in the notes"), "{out}");
+    assert!(
+        mac.effort_text(1)
+            .contains("\nlessons: lessons/friction.md, lessons/second.md\n")
+    );
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s1", DONE);
+    let line = format!("Fixed by effort 1, Smooth ink, done {}.", today());
+    assert!(
+        ok && out.contains(&format!(
+            "Closed lesson friction.md: \"{line}\" committed, file removed."
+        )) && out.contains("Closed lesson second.md"),
+        "{out}"
+    );
+    // The save's commit, then two per lesson, as `lesson close` makes them.
+    assert_eq!(mac.log().lines().count(), before + 5);
+    for rel in ["lessons/friction.md", "lessons/second.md"] {
+        assert!(!mac.notes.join(rel).exists());
+        let disposed = disposition_of(&mac, rel);
+        assert_eq!(disposed.lines().last(), Some(line.as_str()), "{disposed}");
+        assert_eq!(disposed.matches("Fixed by").count(), 1);
+    }
+    let trail = git(&mac.notes, &["log", "--format=%s", "--", "lessons/"]);
+    assert!(
+        trail.starts_with("Remove closed lesson lessons/second.md\nRecord disposition for lesson lessons/second.md\nRemove closed lesson lessons/friction.md\nRecord disposition for lesson lessons/friction.md\n"),
+        "{trail}"
+    );
+    for (revision, rel) in [
+        ("HEAD", "lessons/second.md"),
+        ("HEAD~", "lessons/second.md"),
+        ("HEAD~2", "lessons/friction.md"),
+        ("HEAD~3", "lessons/friction.md"),
+    ] {
+        let files = git(&mac.notes, &["show", "--name-only", "--format=", revision]);
+        assert_eq!(files.trim(), rel, "{revision}");
+    }
+    // The list stays as the record of what the effort closed; done again closes nothing.
+    assert!(
+        mac.effort_text(1)
+            .contains("\nlessons: lessons/friction.md, lessons/second.md\n")
+    );
+    let count = mac.log().lines().count();
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone, still.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n",
+    );
+    assert!(ok && !out.contains("lesson"), "{out}");
+    assert_eq!(mac.log().lines().count(), count + 1);
+}
+
+#[test]
+fn a_dispatcher_marking_done_by_number_closes_it_and_names_other_open_efforts() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction"]);
+    assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+    // A worker may name lessons on its own save.
+    assert!(mac.bash("w1", "astrolabe activate --effort 1 --worker").1);
+    seed_lessons(&mac, &["worker"]);
+    let (out, ok) = mac.bash("w1", "astrolabe effort save --lesson lessons/worker.md");
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Other ink\" --lesson lessons/friction.md <<'ASTROLABE'\nanother take on it\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.bash("s2", "astrolabe effort read 1").1);
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort save --effort 1 --status done <<'ASTROLABE'\nDone and landed.\n\nNothing chosen.\n\nNothing left.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Closed lesson friction.md")
+            && out.contains("Closed lesson worker.md")
+            && out.contains("Effort 2, Other ink, also names lesson friction.md and is active"),
+        "{out}"
+    );
+    assert!(!mac.notes.join("lessons/friction.md").exists());
+    assert!(!mac.notes.join("lessons/worker.md").exists());
+    assert!(
+        disposition_of(&mac, "lessons/worker.md").ends_with(&format!(
+            "Fixed by effort 1, Smooth ink, done {}.\n",
+            today()
+        ))
+    );
+}
+
+#[test]
+fn a_gone_lesson_is_skipped_abandoned_closes_nothing_and_no_lessons_saves_as_before() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction", "kept"]);
+    assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+    git(&mac.notes, &["rm", "-q", "lessons/friction.md"]);
+    git(&mac.notes, &["commit", "-qm", "Closed by hand"]);
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s1", DONE);
+    assert!(
+        ok && out.contains("Lesson friction.md was already gone, so nothing was closed for it."),
+        "{out}"
+    );
+    assert_eq!(mac.log().lines().count(), before + 1);
+    // Abandoned closes nothing.
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Kept ink\" --lesson lessons/kept.md <<'ASTROLABE'\nkeep it\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort save --status abandoned --reason \"not needed\" <<'ASTROLABE'\nAbandoned.\n\nNot needed.\n\nNothing left.\nASTROLABE\n",
+    );
+    assert!(ok && !out.contains("lesson"), "{out}");
+    assert!(mac.notes.join("lessons/kept.md").exists());
+    // No lessons: one commit, and the file has no lessons line.
+    assert!(
+        mac.bash(
+            "s3",
+            "astrolabe effort new --title \"Plain ink\" <<'ASTROLABE'\nplain\nASTROLABE\n"
+        )
+        .1
+    );
+    let before = mac.log().lines().count();
+    let (out, ok) = mac.bash("s3", DONE);
+    assert!(ok && !out.contains("lesson"), "{out}");
+    assert_eq!(mac.log().lines().count(), before + 1);
+    assert!(!mac.effort_text(3).contains("lessons:"));
+}
+
+#[test]
+fn an_interrupted_done_save_finishes_its_closes_without_repeating_a_disposition() {
+    for file_still_present in [false, true] {
+        let world = World::new();
+        let mac = world.machine("mac");
+        seed_lessons(&mac, &["friction"]);
+        assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+        let before = mac.log().lines().count();
+        // Git refuses the removal commit, after the save and the disposition committed.
+        let hook = mac.notes.join(".git/hooks/pre-commit");
+        write(&hook, "#!/bin/sh\ntest -f lessons/friction.md\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let (out, ok) = mac.bash("s1", DONE);
+        assert!(
+            !ok && out.starts_with("Saved effort 1, but closing its lessons stopped: git refused a commit. Don't save it again"),
+            "{out}"
+        );
+        assert_eq!(mac.log().lines().count(), before + 2);
+        let disposed = git(&mac.notes, &["show", "HEAD:lessons/friction.md"]);
+        assert_eq!(disposed.matches("Fixed by effort 1").count(), 1);
+        std::fs::remove_file(hook).unwrap();
+        if file_still_present {
+            write(&mac.notes.join("lessons/friction.md"), &disposed);
+        }
+        assert!(mac.sync().1, "the next notes write finishes it");
+        assert_eq!(mac.log().lines().count(), before + 3);
+        assert!(!mac.notes.join("lessons/friction.md").exists());
+        assert_eq!(disposition_of(&mac, "lessons/friction.md"), disposed);
+        assert!(mac.effort_text(1).contains("status: done"));
+        assert!(mac.sync().1);
+        assert_eq!(mac.log().lines().count(), before + 3);
+    }
+}
+
+#[test]
+fn the_board_and_efforts_json_say_which_effort_answers_each_lesson() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    seed_lessons(&mac, &["friction", "nobody"]);
+    assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
+    let (out, ok) = mac.run(&mac.demo, &["efforts"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["efforts"][0]["lessons"], json!(["lessons/friction.md"]));
+    let lessons = v["lessons"].as_array().unwrap();
+    let answer = &lessons[0]["answered_by"];
+    assert_eq!(lessons[0]["file"], "lessons/friction.md");
+    assert_eq!(answer["number"], 1);
+    assert_eq!(answer["title"], "Smooth ink");
+    assert_eq!(answer["status"], "active");
+    assert!(
+        answer["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("0001-smooth-ink.md")
+    );
+    assert!(lessons[1].get("answered_by").is_none(), "{}", lessons[1]);
+    assert!(
+        mac.bash(
+            "s2",
+            "astrolabe effort new --title \"Plain ink\" <<'ASTROLABE'\nplain\nASTROLABE\n"
+        )
+        .1
+    );
+    let (out, _) = mac.run(&mac.demo, &["efforts"], "");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v["efforts"][1].get("lessons").is_none(),
+        "{}",
+        v["efforts"][1]
+    );
+    let page = std::fs::read_to_string(mac.notes.join("home.html")).unwrap();
+    assert!(
+        page.contains(">answered by 1 Smooth ink, active</a>")
+            && page.contains("class=\"pill answered\""),
+        "{page}"
+    );
+}

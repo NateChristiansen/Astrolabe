@@ -1,7 +1,7 @@
 //! Shell command grammar; parsing performs no filesystem writes or subprocess work.
 
 /// The flags each verb takes; any other is refused, so a mistyped one can't be ignored.
-pub const NEW_FLAGS: [&str; 8] = [
+pub const NEW_FLAGS: [&str; 9] = [
     "title",
     "repo",
     "status",
@@ -10,8 +10,9 @@ pub const NEW_FLAGS: [&str; 8] = [
     "initiative",
     "priority",
     "issue",
+    "lesson",
 ];
-pub const SAVE_FLAGS: [&str; 11] = [
+pub const SAVE_FLAGS: [&str; 12] = [
     "status",
     "decision",
     "waits-for",
@@ -23,6 +24,7 @@ pub const SAVE_FLAGS: [&str; 11] = [
     "pieces-file",
     "initiative",
     "effort",
+    "lesson",
 ];
 /// `initiative new` files a page, optionally creating proposed efforts or joining existing
 /// ones; involvement and authority set defaults for the page and new efforts.
@@ -229,11 +231,11 @@ pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
 The approved plan, on a save:  --plan-file <path> (the app's plan file), or in the body below the paragraphs after a line `## Plan`.\n\
-Read another effort:\n  astrolabe effort read <n>\nThen astrolabe effort save --effort <n> [--status <state>] [--tick \"<piece>\"] [--untick \"<piece>\"] [--pieces-file <path>] with a Current state body as above. Reading delivers the note for a checked write. --journal and --plan-file stay unavailable with --effort. Statuses: proposed, ready, active, review, blocked, done, abandoned.\n\
+Read another effort:\n  astrolabe effort read <n>\nThen astrolabe effort save --effort <n> [--status <state>] [--tick \"<piece>\"] [--untick \"<piece>\"] [--pieces-file <path>] [--lesson lessons/<name>.md] with a Current state body as above. Reading delivers the note for a checked write. --journal and --plan-file stay unavailable with --effort. Statuses: proposed, ready, active, review, blocked, done, abandoned.\n\
 An initiative page alone, or with efforts filed as proposed in one step, the body being its page:\n  astrolabe initiative new --title \"<name>\" <<'ASTROLABE'\n  <purpose>\n\n  ## Efforts\n  <first effort's title>\n  <its goal>\n\n  <next title>\n  <its goal>\n  ASTROLABE\n\
 Omit the Efforts section for a page only; to join existing efforts, use one paragraph beginning `effort <n>` per member, without mixing new titles. Bind with `astrolabe activate --initiative <slug>` (a quoted title also works); `effort save` then writes the initiative. Save the bound initiative:\n  astrolabe effort save [--status <state>] [--decision \"chose X over Y: reason\"] [--waits-for \"owner: …\"] [--journal \"…\"] <<'ASTROLABE'\n  <the same three paragraphs>\n  ASTROLABE\nInitiatives have no review status; done needs an acceptance statement and no open members. Pieces, ticks, plans and membership are unavailable there. Status changes to active, review, blocked, done or abandoned require a Current state body, including by number.\n\
 A journal line with no effort:  astrolabe journal \"Found the Deck preset in the video settings: everything Low, render scale 0.75.\"\n\
-Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. --decision, --tick and --untick repeat: each one given is recorded, in order. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
+Flags take a bare word or a double-quoted value with no $, backtick or inner double quote. --decision, --tick, --untick and --lesson repeat: each one given is recorded, in order. --lesson, on effort new or save, names a lesson the effort fixes; marking the effort done closes it. For --tick, an unambiguous prefix of the piece is accepted, for example --tick \"First repo note\" for a piece containing inline code. The body is plain paragraphs, no **Label:** lines; it needs no quoting.";
 
 /// The words after `astrolabe` (bare or a path) when it's the program a simple command runs,
 /// past assignments and the words that only introduce a command; `None` when another

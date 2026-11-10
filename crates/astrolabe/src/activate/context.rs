@@ -35,7 +35,7 @@ const AUTHORITY_MEANINGS: [&str; 3] = [
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
 /// What every session needs: when work gets an effort, and how to start one.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, in a session of your own, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes. An orchestrator binds with `astrolabe activate --initiative <slug>` and starts each worker as its own session, never a subagent, because a subagent can't bind.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. Add --lesson lessons/<name>.md when it fixes a lesson, so marking the effort done closes the lesson. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it. If another agent dispatched you to an effort, in a session of your own, run `astrolabe activate --effort <n> --worker` first, with that effort's number: you save its state and decisions, and the dispatcher files, journals and closes. An orchestrator binds with `astrolabe activate --initiative <slug>` and starts each worker as its own session, never a subagent, because a subagent can't bind.";
 
 /// How and when to save, for every effort binding; `{journal}` holds the journal flag where
 /// the role may write one.
@@ -45,7 +45,8 @@ const SAVE_FORM: &str = "Save before waiting on the owner, before a long run, an
 /// Its example must pass the Current state validator, so it never teaches a refused shape.
 pub(crate) const SHAPE: &str = "Current state is three short paragraphs in the owner's voice, under 150 words, no **Label:** lines, no ids, at most one path for something the owner must open. The first sentence says the state; the second paragraph gives choices and reasons; the last says what's next and unchecked. Numbers are results (\"200 ms instead of 310\"), never evidence trails (p50s, run counts or commit lists). Like this, at done:\n  Done and merged. The export now takes 4 seconds instead of 30, because rows are written in one batch.\n\n  I kept the old file format: the importer reads it as is.\n\n  Not checked on files over a gigabyte.";
 
-const LESSON: &str = "Use `astrolabe lesson close` for a lesson's disposition.";
+const LESSON: &str =
+    "Name a lesson an effort fixes with --lesson, closed at done; else `astrolabe lesson close`.";
 
 const DECISIONS: &str = "A choice leaving Current state goes to Decisions first: --decision \"chose X over Y: reason\", written as a record, never to the owner. Other shapes are refused with accepted forms. Plan mode doesn't block these commands, which write only notes.";
 
@@ -1482,6 +1483,7 @@ mod tests {
                 "--plan-file",
                 "unless it stays blocked or in review",
                 "astrolabe lesson close",
+                "Name a lesson an effort fixes with --lesson, closed at done",
                 "astrolabe initiative new",
                 "A planning-only spike closes without --initiative",
                 "Progress comes from member statuses",
@@ -1515,6 +1517,7 @@ mod tests {
                 "--journal",
                 "astrolabe initiative new",
                 "astrolabe lesson close",
+                "closed at done",
                 "astrolabe activate --initiative",
                 "astrolabe effort read",
                 "Under autonomous, mark done",
@@ -1536,6 +1539,7 @@ mod tests {
                 "an initiative has no review",
                 "one line a day for this initiative, on its page",
                 "astrolabe lesson close",
+                "with --lesson, closed at done",
                 "own separate session, never a subagent",
                 "`astrolabe activate --effort <n> --worker` alone first",
                 "Give each one a start folder in its effort's repo, never just your own folder",
@@ -2273,20 +2277,20 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7456,
-                "eb19099c333c99d3a1b0f0fa0216486020ba7fb87e0d4feb230a9ed7ddc411cc",
+                7491,
+                "6a7dfdc6f7b9f38feff540e58a560446342f2c738f87296f4655017dc0fd55dc",
             ),
             (
                 Role::Effort,
                 "edit",
-                7459,
-                "2b3eba969113406a2cb38c09d86f1c29450728decc6c772b998be1501416306c",
+                7494,
+                "a3fc46a0a34fae8f01f6138e82a312852ab62ba79f0da6f50217a4c6d6a26413",
             ),
             (
                 Role::Effort,
                 "push",
-                7476,
-                "1dc85344d405666116a355469aa4b5dbb259b2004d06e75ce030f80ff3ae9e7a",
+                7511,
+                "286ec67035167721f869ff109eeb84a59df043d1a3e402476bcc4fba5e7eafdd",
             ),
             (
                 Role::Worker,

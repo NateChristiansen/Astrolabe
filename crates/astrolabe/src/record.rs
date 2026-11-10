@@ -280,6 +280,7 @@ fn new_inner(
         &AUTHORITIES,
     )?;
     let issue = cmd.flag("issue").map(issues).transpose()?;
+    let lessons = lesson::named(&cmd.flags_all("lesson"))?;
     let (registry, notes) = notes_here()?;
     let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let dir = notes.state.clone();
@@ -325,6 +326,7 @@ fn new_inner(
         };
     }
     let pulled = crate::application::pull(&notes);
+    lesson::require_open(&notes, &lessons)?;
     let initiative = canonical_membership(&notes.root, cmd.flag("initiative").unwrap_or(""))?;
     // Work on an initiative's member, filed as a new untagged effort, leaves the member
     // proposed and the board's count wrong. A title naming the initiative is that, nearly
@@ -372,6 +374,7 @@ fn new_inner(
     if let Some(issue) = &issue {
         file.set("issue", issue);
     }
+    lesson::add_to(&mut file, &lessons);
     stamp(
         &mut file,
         session,
@@ -428,6 +431,7 @@ fn new_inner(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes: Vec::new(),
         key: key.to_owned(),
         files: vec![(file_name.clone(), text)],
         renames: Vec::new(),
@@ -582,6 +586,7 @@ pub fn take_up(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes: Vec::new(),
         key: format!("{key}-take-up"),
         files: vec![(rel.clone(), text)],
         renames: Vec::new(),
@@ -852,6 +857,7 @@ fn initiative_inner(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes: Vec::new(),
         key: key.to_owned(),
         files,
         renames: Vec::new(),
@@ -904,6 +910,10 @@ fn initiative_inner(
 pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: &Path) -> Done {
     match save_inner(cmd, key, session, provider, cwd) {
         Ok(text) => Done { text, ok: true },
+        Err(why) if why.contains(LESSONS_UNFINISHED) => Done {
+            text: why,
+            ok: false,
+        },
         Err(why) => Done {
             text: format!("Effort NOT saved: {why}"),
             ok: false,
@@ -1019,10 +1029,20 @@ fn save_inner(
         );
     }
     let waited = file.prop("waits_for").unwrap_or_default().to_owned();
+    lesson::require_open(&notes, &newly_named(&file, &req))?;
     let before = edit_bound(&mut file, &req, initiative, &day)?;
     if let Some(wait) = newly_needs_owner(&file, &before, &waited) {
         notes_lines.push(validation::needs_you_note(record, wait));
     }
+    let lesson_closes = match !req.page_binding && marks_done(status, &before) {
+        true => {
+            let number = req.number.parse().unwrap_or(0);
+            let (closes, lines) = lesson::closes(&notes, &file, number, &day);
+            notes_lines.extend(lines);
+            closes
+        }
+        false => Vec::new(),
+    };
     let machine = notes::machine_name();
     let journal = req
         .journal_line(key, &machine, notes::now_ms(), &day)
@@ -1058,6 +1078,7 @@ fn save_inner(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes,
         key: key.to_owned(),
         files: vec![(rel.clone(), text)],
         renames: Vec::new(),
@@ -1074,7 +1095,7 @@ fn save_inner(
         at_ms: Some(notes::now_ms()),
         rebaseline: rebaseline(cwd),
     };
-    notes.apply(&op)?;
+    apply_save(&notes, &op, record)?;
     // Every save, so the other machine's board follows it: a checkpoint held for a batching
     // window sat unpushed for as long as its session stayed quiet.
     let sync_started = notes.spawn_sync();
@@ -1129,6 +1150,42 @@ fn save_inner(
     }
     crate::application::finish(&notes, key, &head);
     Ok(head)
+}
+
+/// How a done save's reply starts when its own commit landed and a lesson close after it
+/// didn't: the effort is saved, so saving it again would only add a commit.
+const LESSONS_UNFINISHED: &str = ", but closing its lessons stopped: ";
+
+/// The write, and when only its lesson closes failed, a reply that says the save landed: the
+/// intent stays without a result, so the next notes write finishes the closes.
+fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<(), String> {
+    match notes.apply(op) {
+        Ok(()) => Ok(()),
+        Err(why) if !op.lesson_closes.is_empty() && notes.already_applied(&op.key) => {
+            let why = match why.trim() {
+                "" => "git refused a commit".to_owned(),
+                why => why.trim_end_matches('.').to_owned(),
+            };
+            Err(format!(
+                "Saved {record}{LESSONS_UNFINISHED}{why}. Don't save it again: the next notes write, or `astrolabe notes sync`, finishes the close without repeating a disposition."
+            ))
+        }
+        Err(why) => Err(why),
+    }
+}
+
+/// A save that moves the effort to done from any other status: the one that closes its lessons.
+fn marks_done(status: Option<&str>, before: &str) -> bool {
+    status == Some("done") && before != "done"
+}
+
+/// The lessons a save names that the effort doesn't yet: only those must exist now.
+fn newly_named(file: &EffortFile, req: &SaveRequest) -> Vec<String> {
+    let have = lesson::of(file);
+    (req.lessons.iter())
+        .filter(|l| !have.contains(l))
+        .cloned()
+        .collect()
 }
 
 fn apply_ticks(
@@ -1381,11 +1438,20 @@ fn save_target(
     require_transition_body(&file, status, current)?;
     let (day, _) = notes::local_day_time();
     let waited = file.prop("waits_for").unwrap_or_default().to_owned();
+    lesson::require_open(notes, &newly_named(&file, req))?;
     let before = edit_bound(&mut file, req, initiative, &day)?;
-    let needs_you: Vec<String> = newly_needs_owner(&file, &before, &waited)
+    let mut needs_you: Vec<String> = newly_needs_owner(&file, &before, &waited)
         .map(|wait| validation::needs_you_note(&format!("effort {target}"), wait))
         .into_iter()
         .collect();
+    let lesson_closes = match marks_done(status, &before) {
+        true => {
+            let (closes, lines) = lesson::closes(notes, &file, target, &day);
+            needs_you.extend(lines);
+            closes
+        }
+        false => Vec::new(),
+    };
     let now = notes::local_stamp();
     let machine = notes::machine_name();
     stamp_saver(
@@ -1406,6 +1472,7 @@ fn save_target(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes,
         key: key.to_owned(),
         files: vec![(rel, text)],
         renames: Vec::new(),
@@ -1423,7 +1490,7 @@ fn save_target(
         at_ms: Some(notes::now_ms()),
         rebaseline: None,
     };
-    notes.apply(&op)?;
+    apply_save(notes, &op, &format!("effort {target}"))?;
     let sync_started = notes.spawn_sync();
     let head = saved_reply(&Reply {
         record: &format!("effort {target}"),
@@ -1565,6 +1632,7 @@ fn journal_inner(
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
+        lesson_closes: Vec::new(),
         key: key.to_owned(),
         files: Vec::new(),
         renames: Vec::new(),

@@ -36,6 +36,9 @@ pub(super) struct SaveRequest<'a> {
     pub pieces: Option<String>,
     /// The body's Current state as stored.
     pub current: Option<String>,
+    /// Lessons this save adds to the effort's list, checked for shape; whether each exists is
+    /// read after the pull.
+    pub lessons: Vec<String>,
 }
 
 impl<'a> SaveRequest<'a> {
@@ -71,6 +74,7 @@ impl<'a> SaveRequest<'a> {
         let pieces_file = cmd.flag("pieces-file");
         // An empty value clears the grouping, so an effort can leave an initiative.
         let initiative = cmd.flag("initiative");
+        let lessons = super::lesson::named(&cmd.flags_all("lesson"))?;
         let target = cmd
             .flag("effort")
             .map(|n| {
@@ -101,9 +105,10 @@ impl<'a> SaveRequest<'a> {
                 || !unticks.is_empty()
                 || plan_file.is_some()
                 || body_marked
-                || initiative.is_some())
+                || initiative.is_some()
+                || !lessons.is_empty())
         {
-            return Err("an initiative has no pieces, ticks, plan replacement or initiative membership; save its Current state, Decisions, status, wait and journal only. Nothing was written".into());
+            return Err("an initiative has no pieces, ticks, plan replacement, lessons or initiative membership; save its Current state, Decisions, status, wait and journal only. Nothing was written".into());
         }
         if page_binding && status.as_deref() == Some("review") {
             return Err("an initiative has no review status. Nothing was written".into());
@@ -125,6 +130,7 @@ impl<'a> SaveRequest<'a> {
             && unticks.is_empty()
             && pieces_file.is_none()
             && initiative.is_none()
+            && lessons.is_empty()
         {
             return Err(format!(
                 "nothing to save: give a Current state body, or a flag.\n{FORMS}"
@@ -219,6 +225,7 @@ impl<'a> SaveRequest<'a> {
             plan_shifted,
             pieces,
             current,
+            lessons,
         })
     }
 }
@@ -287,6 +294,7 @@ pub(super) fn edit_bound(
         file.set_pieces(p);
     }
     apply_ticks(file, &req.ticks, &req.unticks, day)?;
+    super::lesson::add_to(file, &req.lessons);
     req.change(initiative).apply(file, day)
 }
 

@@ -120,7 +120,7 @@ the page is showing older content until the next change or reconnect loads it.
 
 Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only. `--json` is accepted and changes nothing, as the output is JSON either way. Any other argument, or a `--repo` with no name, is refused.
 
-The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
+The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. A lesson an effort names carries `answered_by` with that effort's `number`, `title`, `status` and `file`, preferring one that isn't done or abandoned, then the newest; an effort row that names lessons carries them as `lessons`. Both are absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
 
 ### `notes status` and `notes sync`
 
@@ -174,6 +174,7 @@ ASTROLABE
 | `--initiative "<name>"` | Optional grouping; default empty. Existing page titles and aliases are stored as their canonical slug. A name without a page is refused; file it with `astrolabe initiative new` first. |
 | `--priority <label>` | Default `none`. The board recognizes `low`, `high` and `urgent` (`top` also sorts as urgent); other labels sort normally. |
 | `--issue <n>` | The GitHub issue the work answers, or a list such as `"5, 7"`; default none. The session context then says to end the landing commit with `Fixes #<n>`, because the landing script pushes straight to main with no pull request, and GitHub closes an issue only when a closing keyword in a commit reaches the default branch. |
+| `--lesson lessons/<name>.md` | A lesson in the notes that the work fixes; repeat for several. Stored as the effort's `lessons` property, and marking the effort done closes each one (see [closing lessons at done](#closing-lessons-at-done)). The path is checked as `lesson close` checks it, and a lesson that isn't in the notes is refused with the open ones listed. |
 
 Involvement and authority follow the owner's instructions; see [choosing how the agent works](usage.md#choose-how-the-agent-works).
 
@@ -244,9 +245,16 @@ Write Current state as three short paragraphs: where it stands, choices and reas
 | `--tick "<piece>"` | Check a piece, ignoring case and inline-code backticks, and stamp today's date after it, as `(2026-11-08)`; a piece already checked keeps its date. An exact label wins; otherwise the prefix must match exactly one unfinished piece. Ambiguous prefixes are refused with the matching labels; missing prefixes list the available pieces. Repeat to check several. |
 | `--untick "<piece>"` | Uncheck a piece by its label or a unique prefix, ignoring case. The value must uniquely match across both checked and unchecked pieces, including longer labels. Repeat as needed. |
 | `--initiative "<name>"` | Set the effort's `initiative` property; an empty value clears it. Existing page names resolve to their slug; unknown names are refused with a pointer to `astrolabe initiative new`. Omitting this option leaves membership untouched. |
+| `--lesson lessons/<name>.md` | Add a lesson the effort fixes to its `lessons` property; repeat for several. One already on the list isn't doubled, and a newly named one that isn't in the notes is refused with the open ones listed. Available with `--effort <number>` and to a worker on its own effort. |
 | `--effort <number>` | Save another effort. After `effort read <number>` in this session, a body replaces its Current state, `--pieces-file` replaces its pieces and `--tick` / `--untick` change them. Status, wait, reason, decision and initiative flags remain available. Journal and plan replacement are refused. The target must share the session's repo or an existing initiative with the bound record, or belong to the bound initiative page; the notes checkout can reach any repo. The bound record is untouched. |
 
 A done save lists any unticked pieces in its reply without refusing the save. Keep a dated explanation of deferred or dropped pieces in the note.
+
+### Closing lessons at done
+
+A save that moves an effort to done from any other status closes each lesson its `lessons` property names, on the bound save and on `--effort <number>`, which is how a dispatcher marks a member done. After the save's own commit, each lesson gets the same two commits `lesson close` makes: its last line becomes `Fixed by effort <n>, <title>, done <date>.`, then the file is removed. The reply lists each lesson closed. A lesson that's already gone is skipped and the reply says so; it never fails the save. When another effort that isn't done or abandoned names the same lesson, the reply names that effort. Abandoned closes nothing, nor does a done save of an effort that was already done. The `lessons` property stays as the record of what the effort closed.
+
+The closes ride in the save's own recoverable write. If one stops after the save committed, the reply starts `Saved effort <n>, but closing its lessons stopped` and the next notes write, or `astrolabe notes sync`, finishes them without repeating a disposition; saving again isn't needed.
 
 When `--status done` marks an effort with an issue done, the result says whether a commit on this checkout's `origin/main` (as last fetched) closes each issue. It names any issue no commit closes, so the issue doesn't stay open after the work lands. It doesn't contact GitHub.
 
