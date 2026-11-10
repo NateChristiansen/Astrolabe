@@ -402,3 +402,37 @@ fn a_write_that_finishes_just_after_the_backstop_answered_is_still_unanswered() 
         "{journal}"
     );
 }
+
+/// The session can be told of a write by the command itself, run bare, when the hook that
+/// made the write never answered: the bare command finds the record and prints its result.
+/// From then the session has been told, so the same command through the hook is a new
+/// request and writes.
+#[test]
+fn a_result_shown_by_the_bare_command_counts_as_the_sessions_answer() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let unanswered = [
+        ("ASTROLABE_HOOK_TEST_STALL", "ticket:60000"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
+    ];
+    let denied = mac.call("s1", "call-1", FOUND, &unanswered).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    // What that leaves: the write's record with its result, marked as never answered.
+    let left = mac.unanswered();
+    let marked = |ext: &str| left.iter().any(|p| p.extension().is_some_and(|x| x == ext));
+    assert!(marked("json") && marked("unanswered"), "{left:?}");
+    let (out, ok) = mac.plain(FOUND);
+    assert!(
+        ok && out.starts_with("Journal line written for")
+            && out.contains("Recovered from the hook's record of this command"),
+        "{out}"
+    );
+    let again = mac.call("s1", "call-2", FOUND, &[]).unwrap();
+    assert!(again.starts_with("Journal line written for"), "{again}");
+    let journal = mac.journal_today();
+    assert_eq!(
+        journal.matches("Found the Deck preset").count(),
+        2,
+        "{journal}"
+    );
+}

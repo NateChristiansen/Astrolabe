@@ -1646,7 +1646,10 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     let here = std::env::current_dir()
         .map(|c| crate::hook::comparable(&c))
         .unwrap_or_default();
+    let notes = Notes::new(std::path::PathBuf::new(), dir.clone());
     if let Some((text, ok, age_ms)) = activate::shown_for(&dir, &digest, &here, RECENT_MS) {
+        // Shown here, the session has its answer, whatever its hook managed to say.
+        notes.mark_shown(&digest, &here);
         return (
             format!(
                 "{text}\n\n(This is the result of a command with this exact text, run in this folder {} s ago through the hook. If that was another session, this one's command wasn't taken by the hook and recorded nothing.)",
@@ -1655,13 +1658,15 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
             ok,
         );
     }
-    let notes = Notes::new(std::path::PathBuf::new(), dir);
     if let Some(op) = notes.intent_for(&digest, &here) {
         return match op.result {
-            Some(result) => (
+            Some(result) => {
+                notes.mark_shown(&digest, &here);
+                (
                 format!("{result}\n\n(Recovered from the hook's record of this command: its reply was lost on the way.)"),
                 true,
-            ),
+            )
+            }
             None => ("This write may still be finishing in the hook; run `astrolabe notes status` in a moment to see.".to_owned(), false),
         };
     }

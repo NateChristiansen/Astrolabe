@@ -278,6 +278,21 @@ impl Notes {
         }
     }
 
+    /// The bare command just printed the recorded result for this command in this folder,
+    /// so whoever ran it has been told: every finished write it could have been showing is
+    /// marked answered. Which session ran it isn't known here; marking errs toward a later
+    /// identical command writing, never toward it being swallowed.
+    pub fn mark_shown(&self, digest: &str, cwd: &str) {
+        for op in self.intents() {
+            if op.result.is_some()
+                && op.digest.as_deref() == Some(digest)
+                && op.cwd.as_deref() == Some(cwd)
+            {
+                self.mark_answered(&op.key);
+            }
+        }
+    }
+
     pub fn is_answered(&self, key: &str) -> bool {
         self.answered_mark(key).exists()
     }
