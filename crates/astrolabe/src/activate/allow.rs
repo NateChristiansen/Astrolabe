@@ -144,7 +144,8 @@ pub(super) fn mint(
         );
     }
     let _held = lock(dir, session)?;
-    read_state(dir, session)?.ok_or("load an effort before recording an approval")?;
+    // No effort is fine; a state file this program can't read is not.
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let at = now_ms();
     let lease = Lease {
@@ -175,9 +176,7 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
         return Ok(false);
     };
     let _held = lock(dir, session)?;
-    let Some(_) = read_state(dir, session)? else {
-        return Ok(false);
-    };
+    read_state(dir, session)?;
     let mut leases = read_leases(dir, session)?;
     let now = now_ms();
     let Some(index) = leases.iter().position(|lease| {

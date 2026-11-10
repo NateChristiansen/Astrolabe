@@ -150,7 +150,7 @@ Run each command alone. The notes checkout can load any effort or initiative; a 
 
 ## Allow one approved command
 
-Run `astrolabe allow --once "<exact command>" --said "<the owner's words>"` alone through the plugin's hook with an effort loaded. Use literal quoting for your shell. It records a five-minute lease for one force push or GitHub write that the guard would otherwise deny. Use a direct `git` or `gh` invocation; chained commands, shell wrappers, expansion and other guard reasons are refused. Running the executable outside the hook records nothing.
+Run `astrolabe allow --once "<exact command>" --said "<the owner's words>"` alone through the plugin's hook, with or without an effort loaded. Use literal quoting for your shell. It records a five-minute lease for one force push or GitHub write that the guard would otherwise deny. Use a direct `git` or `gh` invocation; chained commands, shell wrappers, expansion and other guard reasons are refused. Running the executable outside the hook records nothing.
 
 Run the approved command byte for byte in the same session and working directory. The hook consumes the lease before letting it through, even if execution then fails. Minting and using a lease each append a line with the command and quote to the existing denial log. The hook can't read chat: the quote records the agent's claim of the owner's words.
 
