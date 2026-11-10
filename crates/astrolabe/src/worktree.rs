@@ -23,20 +23,40 @@ type Output = std::result::Result<String, String>;
 /// A git call of one kind, which decides how long it may run (see `deadline`): a fetch or
 /// push, work in the notes checkout, a read, or putting a checkout back.
 pub(crate) fn git_as(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Output {
-    run_git(kind, Command::new("git").args(args), cwd)
+    git_started(kind, cwd, args, &mut |_| {})
+}
+
+/// The same, telling `started` the id of the git process once it's running, for a caller
+/// that leaves word of what it began.
+pub(crate) fn git_started(
+    kind: Git,
+    cwd: &Path,
+    args: &[&std::ffi::OsStr],
+    started: &mut dyn FnMut(u32),
+) -> Output {
+    run_git_started(kind, Command::new("git").args(args), cwd, started)
         .map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, String> {
+    run_git_started(kind, command, cwd, &mut |_| {})
+}
+
+fn run_git_started(
+    kind: Git,
+    command: &mut Command,
+    cwd: &Path,
+    started: &mut dyn FnMut(u32),
+) -> Result<Vec<u8>, String> {
     let verb = verb(command);
+    crate::deadline::stall(&verb);
     // A hook with no time left for this call doesn't start it: started, it would be
     // stopped at once, partway through whatever it changes.
     let Some(limit) = crate::deadline::git_limit(kind) else {
         return Err(crate::deadline::not_started(&verb));
     };
-    crate::deadline::stall(&verb);
     command.current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0");
-    match run(command, limit.time) {
+    match run_started(command, limit.time, started) {
         Err(error) => Err(format!("git could not start: {error}")),
         Ok(Ran::Stopped) => Err(limit.stopped(&verb)),
         Ok(Ran::CutOff) => Err(format!(
@@ -88,7 +108,16 @@ enum Ran {
 /// Runs a child to its end or to `limit`, whichever is first. Both of its streams are read
 /// while it runs, so one that prints more than a pipe holds isn't stalled by it and then
 /// taken for a hang. Its output counts only once both streams reached their end.
+#[cfg(test)]
 fn run(command: &mut Command, limit: Duration) -> std::io::Result<Ran> {
+    run_started(command, limit, &mut |_| {})
+}
+
+fn run_started(
+    command: &mut Command,
+    limit: Duration,
+    started: &mut dyn FnMut(u32),
+) -> std::io::Result<Ran> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -96,6 +125,7 @@ fn run(command: &mut Command, limit: Duration) -> std::io::Result<Ran> {
     own_group(command);
     let mut child = command.spawn()?;
     let _running = Running::new(&child);
+    started(child.id());
     let (closed, closing) = mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
     let stderr = drain(child.stderr.take(), closed);
@@ -184,6 +214,35 @@ pub(crate) fn stop_running() {
 #[cfg(not(unix))]
 pub(crate) fn stop_running() {
     let _ = RUNNING.load(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Whether a process with this id is running now.
+#[cfg(unix)]
+pub(crate) fn alive(id: u32) -> bool {
+    let Ok(id) = libc::pid_t::try_from(id) else {
+        return false;
+    };
+    // Safety: `kill` takes no pointers, and signal 0 sends nothing: it only asks.
+    id > 0 && unsafe { libc::kill(id, 0) } == 0
+}
+
+#[cfg(windows)]
+pub(crate) fn alive(id: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    // Safety: the handle is checked before use and closed here; nothing outlives the call.
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, id);
+        if process.is_null() {
+            return false;
+        }
+        // A process still running doesn't signal its handle, so a wait of no time runs out.
+        let running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+        CloseHandle(process);
+        running
+    }
 }
 
 /// A process group of the child's own, so stopping it reaches what it started (a commit
@@ -394,6 +453,16 @@ mod tests {
         let ran = run(&mut command, Duration::from_millis(300)).unwrap();
         assert!(matches!(ran, Ran::Stopped));
         assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_process_is_alive_until_it_ends() {
+        assert!(super::alive(std::process::id()));
+        let mut hung = child("hang").stdout(Stdio::null()).spawn().unwrap();
+        assert!(super::alive(hung.id()));
+        hung.kill().unwrap();
+        hung.wait().unwrap();
+        assert!(!super::alive(hung.id()));
     }
 
     #[test]

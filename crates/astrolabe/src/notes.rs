@@ -20,9 +20,28 @@ const INTENTS: &str = "ops";
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
-/// There while this program rebases the notes checkout. Left behind, it says a rebase
-/// found in the checkout is this program's own, cut short, and not the owner's by hand.
+/// Word left while this program rebases the notes checkout: which checkout, the commit the
+/// rebase started from, the git process doing it, and when. Left behind, it says a rebase
+/// found in the checkout that matches all of that is this program's own, cut short, and
+/// not the owner's by hand.
 const REBASING: &str = "rebase-started";
+/// How long after word was left its rebase's own record may be dated and still be that
+/// rebase: git writes it within moments of starting.
+const REBASE_BEGINS_MS: i64 = 60_000;
+/// How long the git process named in the word is waited for before its rebase counts as
+/// cut short anyway: far past any rebase of notes, and a bound on an id the system has
+/// since given to another process.
+const REBASE_RUNS_MS: i64 = 10 * 60_000;
+
+/// What `REBASING` holds.
+#[derive(Serialize, Deserialize)]
+struct Rebasing {
+    root: String,
+    orig: String,
+    #[serde(default)]
+    pid: Option<u32>,
+    at_ms: i64,
+}
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
 /// Text checks out with LF everywhere, whatever the machine's `core.autocrlf` says.
@@ -103,6 +122,23 @@ mod sync;
 pub use facts::RepoFacts;
 pub use journal::{JournalEntry, JournalLine, parse_journal, tidy_journal};
 
+impl Rebasing {
+    /// Whether the rebase in `dir` is the one this word was left for: begun from the same
+    /// commit, and at about the time the word was left.
+    fn began(&self, dir: &Path) -> bool {
+        let record = dir.join("orig-head");
+        let from = std::fs::read_to_string(&record).unwrap_or_default();
+        let at_ms = std::fs::metadata(&record)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|at| at.as_millis() as i64);
+        from.trim() == self.orig
+            && !self.orig.is_empty()
+            && at_ms.is_some_and(|at| (-5_000..REBASE_BEGINS_MS).contains(&(at - self.at_ms)))
+    }
+}
+
 impl Notes {
     pub fn new(root: PathBuf, state: PathBuf) -> Self {
         Self {
@@ -167,18 +203,64 @@ impl Notes {
 
     /// Under the lock, before anything else: a rebase this program began and never ended
     /// (its process was killed, or the machine went down) is put back, hand edits and
-    /// all, so no one works on a checkout left partway. A rebase with no word from this
-    /// program is the owner's and is left alone; writes refuse until it's ended.
+    /// all, so no one works on a checkout left partway. Only a rebase the word left
+    /// matches is this program's; any other is the owner's and is left alone, and writes
+    /// refuse until it's ended. One whose git is still running is left to finish.
     fn settle(&self) {
         let marker = self.state.join(REBASING);
-        if !marker.exists() {
+        let Ok(bytes) = std::fs::read(&marker) else {
+            return;
+        };
+        let forget = || {
+            let _ = std::fs::remove_file(&marker);
+        };
+        // Word in a shape this build doesn't write, or for another checkout, says nothing
+        // about a rebase here.
+        let Ok(word) = serde_json::from_slice::<Rebasing>(&bytes) else {
+            return forget();
+        };
+        if word.root != crate::hook::comparable(&self.root) {
+            return forget();
+        }
+        let dir = match self.rebase_dir() {
+            Ok(Some(dir)) => dir,
+            // The rebase ended, or never began.
+            Ok(None) => return forget(),
+            // Not known: the word stays for the next look.
+            Err(_) => return,
+        };
+        if !word.began(&dir) {
+            return forget();
+        }
+        let age = now_ms() - word.at_ms;
+        if (0..REBASE_RUNS_MS).contains(&age) && word.pid.is_some_and(crate::worktree::alive) {
             return;
         }
-        if self.mid_rebase() {
-            let _ = self.git_cleanup(&["rebase", "--abort"]);
+        let _ = self.git_cleanup(&["rebase", "--abort"]);
+        if matches!(self.rebase_dir(), Ok(None)) {
+            forget();
         }
-        if !self.mid_rebase() {
-            let _ = std::fs::remove_file(marker);
+    }
+
+    /// Leaves word that this program is about to rebase from `orig`, and by which git
+    /// process once that's known.
+    pub(super) fn rebasing(&self, orig: &str, pid: Option<u32>) {
+        let word = Rebasing {
+            root: crate::hook::comparable(&self.root),
+            orig: orig.to_owned(),
+            pid,
+            at_ms: now_ms(),
+        };
+        if let Ok(text) = serde_json::to_string(&word) {
+            let _ = write_text(&self.state.join(REBASING), &text);
+        }
+    }
+
+    /// The rebase this program ran is over, or never began: its word goes, unless the
+    /// checkout is still partway through it.
+    pub(super) fn rebased(&self) {
+        if matches!(self.rebase_dir(), Ok(None)) {
+            let _ = std::fs::remove_file(self.state.join(REBASING));
         }
     }
 
@@ -191,18 +273,19 @@ impl Notes {
         }
     }
 
-    /// Whether a rebase is under way in the checkout, by the folders git keeps for one.
-    pub(crate) fn mid_rebase(&self) -> bool {
+    /// The folder git keeps for a rebase under way in the checkout, if there is one; an
+    /// error when that couldn't be found out.
+    pub(crate) fn rebase_dir(&self) -> Result<Option<PathBuf>, String> {
         let dot = self.root.join(".git");
         let dir = match dot.is_dir() {
             true => dot,
             // A linked worktree keeps its own elsewhere.
-            false => match self.git(&["rev-parse", "--absolute-git-dir"]) {
-                Ok(dir) => PathBuf::from(dir.trim()),
-                Err(_) => return false,
-            },
+            false => PathBuf::from(self.git(&["rev-parse", "--absolute-git-dir"])?.trim()),
         };
-        dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists()
+        Ok(["rebase-merge", "rebase-apply"]
+            .map(|name| dir.join(name))
+            .into_iter()
+            .find(|folder| folder.exists()))
     }
 
     /// A git call in the notes checkout, as part of a pull or a write.
@@ -229,17 +312,26 @@ impl Notes {
                 crate::deadline::seconds(left)
             ));
         }
-        if self.mid_rebase() {
+        // A check that couldn't be run refuses too: nothing is written on a guess.
+        let unchecked = |why: String| {
+            format!(
+                "the notes checkout couldn't be checked before writing ({why}). Nothing was written"
+            )
+        };
+        if self.rebase_dir().map_err(unchecked)?.is_some() {
             return Err("the notes checkout is in the middle of a rebase; finish it there, or end it with `git rebase --abort`, first. Nothing was written".to_owned());
         }
-        if let Err(why) = self.git(&["symbolic-ref", "--quiet", "HEAD"])
-            && why.is_empty()
-        {
-            return Err("the notes checkout isn't on a branch (its HEAD is detached); check its branch out there first. Nothing was written".to_owned());
+        match self.git(&["symbolic-ref", "--quiet", "HEAD"]) {
+            Ok(_) => {}
+            // Git says a detached HEAD by failing with nothing to say.
+            Err(why) if why.is_empty() => {
+                return Err("the notes checkout isn't on a branch (its HEAD is detached); check its branch out there first. Nothing was written".to_owned());
+            }
+            Err(why) => return Err(unchecked(why)),
         }
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
-            .unwrap_or_default();
+            .map_err(unchecked)?;
         if unmerged.trim().is_empty() {
             return Ok(());
         }

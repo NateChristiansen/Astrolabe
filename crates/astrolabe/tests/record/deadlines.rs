@@ -69,6 +69,21 @@ impl Machine {
         (String::from_utf8(output.stdout).unwrap(), took)
     }
 
+    /// The session's next save, after a hook's recovery finished a write an earlier hook
+    /// left. If that write changed the effort file (its stamp is to the minute, so only
+    /// when the minute turned in between), the save is refused once, as any save over
+    /// text the session hasn't seen is, and goes through when made again.
+    fn saves_after_a_recovered_write(&self) {
+        let save = "astrolabe effort save --journal \"the next line\"";
+        let (out, ok) = self.bash("s1", save);
+        if !ok && out.contains("changed since it was delivered to this session") {
+            let (out, ok) = self.bash("s1", save);
+            assert!(ok, "{out}");
+        } else {
+            assert!(ok, "{out}");
+        }
+    }
+
     fn unfinished(&self) -> Vec<Value> {
         std::fs::read_dir(self.state().join("ops"))
             .into_iter()
@@ -176,8 +191,7 @@ fn a_hanging_git_refuses_a_save_inside_the_budget() {
     // The write is planned and unfinished: the next hook that writes finishes it.
     let left = mac.unfinished();
     assert!(left.len() == 1 && left[0]["committed"] != true, "{left:?}");
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
-    assert!(ok, "{out}");
+    mac.saves_after_a_recovered_write();
     // Both landed, each once: the day keeps an effort's latest line, history has both.
     let history = git(&mac.notes, &["log", "-p", "--format=%s"]);
     assert_eq!(
@@ -236,8 +250,7 @@ fn a_commit_stopped_at_its_limit_leaves_no_index_lock_and_no_children() {
         "the commit hook's process is still running"
     );
     std::fs::remove_file(&hook).unwrap();
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
-    assert!(ok, "{out}");
+    mac.saves_after_a_recovered_write();
     let history = git(&mac.notes, &["log", "-p", "--format=%s"]);
     assert_eq!(
         history.matches("+- a line for the day").count(),
@@ -278,8 +291,7 @@ fn a_hook_that_dies_mid_write_leaves_a_write_the_next_hook_finishes() {
         status.contains("1 notes write(s) left unfinished"),
         "{status}"
     );
-    let (out, ok) = mac.bash("s1", "astrolabe effort save --journal \"the next line\"");
-    assert!(ok, "{out}");
+    mac.saves_after_a_recovered_write();
     // Both landed, each once: the day keeps an effort's latest line, history has both.
     let history = git(&mac.notes, &["log", "-p", "--format=%s"]);
     assert_eq!(
@@ -521,4 +533,168 @@ fn a_write_against_a_checkout_mid_rebase_is_refused_and_loses_nothing() {
     assert!(log.contains("0001: checkpoint"), "{out}\n{log}");
     assert!(mac.effort_text(1).contains("CRASHED smooth the ink"));
     assert!(mac.unfinished().iter().all(|op| op["result"].is_string()));
+}
+
+/// Leaves `mac`'s notes checkout partway through a rebase, HEAD detached and nothing
+/// unmerged, as a rebase by hand that stopped on a conflict the owner then resolved.
+/// Returns the commit the rebase started from, as git recorded it.
+fn stop_mid_rebase(world: &World, mac: &Machine) -> String {
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    git(&mac.notes, &["fetch", "-q"]);
+    let rebase = Command::new("git")
+        .args(["rebase", "origin/main"])
+        .current_dir(&mac.notes)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!rebase.status.success(), "the fixture should conflict");
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "BOTH").unwrap();
+    git(&mac.notes, &["add", "knowledge/owner.md"]);
+    std::fs::read_to_string(mac.notes.join(".git/rebase-merge/orig-head"))
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+impl Machine {
+    /// The word Astrolabe leaves while it rebases the notes checkout, as if it had: which
+    /// checkout, the commit it started from, the git process doing it, and when.
+    fn left_word_of_a_rebase(&self, root: &Path, orig: &str, pid: u32) {
+        let root = std::fs::canonicalize(root).unwrap();
+        // Left as the rebase began, which is when git dated its own record of it.
+        let began = std::fs::metadata(self.notes.join(".git/rebase-merge/orig-head"))
+            .and_then(|meta| meta.modified())
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let word =
+            json!({"root": root.to_string_lossy(), "orig": orig, "pid": pid, "at_ms": began});
+        write(&self.state().join("rebase-started"), &word.to_string());
+    }
+
+    fn mid_rebase(&self) -> bool {
+        self.notes.join(".git/rebase-merge").exists()
+    }
+}
+
+/// The id of a process that has ended.
+fn a_process_thats_gone() -> u32 {
+    let mut child = Command::new("git")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let id = child.id();
+    child.wait().unwrap();
+    id
+}
+
+const MID_REBASE: &str = "the notes checkout is in the middle of a rebase";
+
+#[test]
+fn word_of_another_rebase_doesnt_end_the_owners() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let orig = stop_mid_rebase(&world, &mac);
+    let gone = a_process_thats_gone();
+    // Astrolabe died after leaving word and before its rebase began, from another commit;
+    // the rebase in the checkout now is one the owner started by hand since.
+    mac.left_word_of_a_rebase(&mac.notes, "0000000000000000000000000000000000000000", gone);
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(!ok && out.contains(MID_REBASE), "{out}");
+    assert!(mac.mid_rebase(), "the owner's rebase was ended");
+    assert!(
+        !mac.state().join("rebase-started").exists(),
+        "word of a rebase that isn't there stays"
+    );
+    // Word left for a different notes checkout says nothing about this one.
+    mac.left_word_of_a_rebase(&mac.demo, &orig, gone);
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(!ok && out.contains(MID_REBASE), "{out}");
+    assert!(mac.mid_rebase(), "the owner's rebase was ended");
+    assert!(!mac.state().join("rebase-started").exists());
+    // Word in a shape this build doesn't write is no word at all.
+    write(&mac.state().join("rebase-started"), "");
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(!ok && out.contains(MID_REBASE), "{out}");
+    assert!(mac.mid_rebase(), "the owner's rebase was ended");
+    assert!(!mac.state().join("rebase-started").exists());
+}
+
+#[test]
+fn a_rebase_whose_git_is_still_running_is_left_until_its_gone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let orig = stop_mid_rebase(&world, &mac);
+    // Astrolabe's own rebase, its hook gone and its git still at work: this test's own
+    // process stands in for that git.
+    mac.left_word_of_a_rebase(&mac.notes, &orig, std::process::id());
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(!ok && out.contains(MID_REBASE), "{out}");
+    assert!(
+        mac.mid_rebase(),
+        "a rebase still running was ended under it"
+    );
+    assert!(mac.state().join("rebase-started").exists());
+    // Once that git is gone and the rebase is still there, it was cut short: put back.
+    mac.left_word_of_a_rebase(&mac.notes, &orig, a_process_thats_gone());
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    assert!(!mac.mid_rebase());
+    assert!(!mac.state().join("rebase-started").exists());
+    assert_eq!(
+        git(&mac.notes, &["symbolic-ref", "HEAD"]).trim(),
+        "refs/heads/main"
+    );
+}
+
+#[test]
+fn a_check_that_couldnt_run_refuses_the_write_before_anything_is_written() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let before = mac.effort_text(1);
+    // Held up in the check of the checkout's branch until the hook's time for notes work
+    // is gone, so that check and the ones after it can't be run.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "symbolic-ref:12500")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(40));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort NOT saved: the notes checkout couldn't be checked before writing (git symbolic-ref wasn't started, because this hook's time had run out). Nothing was written"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(16), "{took:?}");
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
+    assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_whose_pull_hangs_in_its_rebase_still_goes_through() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    a_rebase_that_hangs(&world, &mac);
+    // The hook's real time: the pull is stopped at 6 s of its 16 and put back, which
+    // leaves the save that asked for it the time it needs.
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &[], Duration::from_secs(40));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(ok, "{text}");
+    assert!(took < Duration::from_secs(12), "{took:?}");
+    assert!(mac.journal_today().contains("a line for the day"));
+    assert_settled(&mac);
+    assert_eq!(mac.log().lines().next(), Some("0001: checkpoint"));
 }

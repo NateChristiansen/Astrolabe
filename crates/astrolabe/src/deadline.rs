@@ -308,8 +308,10 @@ pub(crate) fn short_of(step: Step) -> Option<Duration> {
 pub(crate) enum Git {
     /// A fetch or push.
     Network,
-    /// Work in the notes checkout: a write's steps, a rebase.
+    /// Work in the notes checkout: a write's steps.
     Notes,
+    /// The rebase half of a pull, which ends with the pull's time and not the write's.
+    Rebase,
     /// A read of some repo, for what a session is told.
     Read,
     /// Putting the checkout back after a step was stopped: `rebase --abort`, a reset.
@@ -405,6 +407,7 @@ fn in_a_hook(clock: &Clock, kind: Git, stops_cleanly: bool) -> Option<Limit> {
             }
         }
         Git::Notes => changes(clock.left(clock.work())),
+        Git::Rebase => changes(clock.left(clock.pull())),
         Git::Read => hook(clock.left(clock.read())),
         Git::Cleanup => changes(clock.cleanup()),
     }
@@ -507,6 +510,13 @@ mod tests {
         // A fetch and a read change nothing, so they're still ended.
         assert!(time(&early, Git::Network, false).unwrap() <= HOOK_NETWORK);
         assert!(time(&early, Git::Read, false).unwrap() <= Duration::from_secs(13));
+        // A rebase ends with the pull, so the write after it has its time.
+        assert!(time(&early, Git::Rebase, true).unwrap() <= Duration::from_secs(5));
+        assert_eq!(time(&early, Git::Rebase, false), Some(LOCAL));
+        let mid = pre_command(7);
+        assert!(in_a_hook(&mid, Git::Rebase, true).is_none());
+        assert!(in_a_hook(&mid, Git::Rebase, false).is_none());
+        assert!(in_a_hook(&mid, Git::Notes, true).is_some());
         // And on both, past the mark for notes work, one isn't started at all.
         let late = pre_command(13);
         assert!(in_a_hook(&late, Git::Notes, true).is_none());
@@ -573,7 +583,7 @@ mod tests {
         // No test here starts a clock, so this is a process that isn't a hook.
         let network = git_limit(Git::Network).unwrap();
         assert_eq!(network.stopped("fetch"), "git fetch took over 15 s");
-        for kind in [Git::Notes, Git::Read, Git::Cleanup] {
+        for kind in [Git::Notes, Git::Rebase, Git::Read, Git::Cleanup] {
             let local = git_limit(kind).unwrap();
             assert_eq!(
                 local.stopped("rebase"),

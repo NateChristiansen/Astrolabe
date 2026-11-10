@@ -1,7 +1,7 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, Notes, Op, Pull, REBASING, SYNC, content_hash, hash, md_files, now_ms,
-    tidy_journal, write_text,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, content_hash, hash, md_files, now_ms, tidy_journal,
+    write_text,
 };
 use crate::deadline::Step;
 use serde_json::{Value, json};
@@ -78,20 +78,41 @@ impl Notes {
                 "fetched, but this hook had no time left to rebase onto it".to_owned(),
             );
         }
+        // A rebase already under way here isn't this pull's: it's the owner's by hand, or
+        // one whose git is still running. Starting another would fail, and ending that
+        // failure with an abort would end theirs.
+        match self.rebase_dir() {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Pull::Offline(
+                    "fetched, but a rebase is already under way in the notes checkout".to_owned(),
+                );
+            }
+            Err(why) => return Pull::Offline(why),
+        }
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let stashes_before = self.stashes();
-        // Noted before it starts, so a process that dies partway leaves word that the
-        // rebase in the checkout is this program's to put back (see `Notes::settle`).
-        let _ = write_text(&self.state.join(REBASING), "");
-        let rebased = self.git(&["rebase", "--quiet", "--autostash", "@{upstream}"]);
+        // Word left before it starts, and again with the git process once that's known, so
+        // a process that dies partway leaves it said that the rebase in the checkout is
+        // this program's to put back (see `Notes::settle`). It goes on every path where
+        // the rebase ended or never began.
+        let from = before.trim().to_owned();
+        self.rebasing(&from, None);
+        let args = ["rebase", "--quiet", "--autostash", "@{upstream}"].map(AsRef::as_ref);
+        // On the pull's time, not the write's: a rebase that hangs must leave the save
+        // that asked for the pull the time it needs.
+        let rebased = crate::worktree::git_started(
+            crate::deadline::Git::Rebase,
+            &self.root,
+            &args,
+            &mut |pid| self.rebasing(&from, Some(pid)),
+        );
         if rebased.is_err() {
             // Its own time, not what's left of the hook's: a rebase is stopped exactly
             // when nothing is left, and the checkout must not stay partway.
             let _ = self.git_cleanup(&["rebase", "--abort"]);
         }
-        if !self.mid_rebase() {
-            let _ = std::fs::remove_file(self.state.join(REBASING));
-        }
+        self.rebased();
         match rebased {
             Ok(_) => {
                 self.clear_sync("diverged");
