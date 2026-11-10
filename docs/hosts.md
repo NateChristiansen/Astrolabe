@@ -64,6 +64,41 @@ Per the docs, `plugin marketplace remove` without `--scope` removes the declarat
 
 So in both apps a ref change means remove, then add. A same-ref refresh never needs a removal.
 
+### Replacing an installed copy at the same version
+
+**Claude Code** (probe, 2.1.316). With the plugin installed and its cached copy made to differ from the marketplace's at the same version, and the install record's commit changed to an older one:
+
+- `plugin update astrolabe@astrolabe` prints that it is already at the latest version, exits 0 and leaves the copy as it was
+- `plugin install astrolabe@astrolabe` prints that it is already installed, exits 0 and leaves the copy as it was
+- `plugin uninstall` then `plugin install` replaces the copy
+
+**Codex** (probe, 0.166.0). `plugin add astrolabe@astrolabe` over an installed copy that differs replaces it and exits 0, with no removal first.
+
+So a stale copy at the same version needs an uninstall first in Claude Code only.
+
+### What a removal keeps
+
+**Claude Code** (probe, 2.1.316).
+
+- `plugin uninstall --keep-data` leaves the plugin's folder under `plugins/data/`, clears its `enabledPlugins` entry and keeps the marketplace; a later `plugin install` at user scope sets it enabled again
+- `plugin marketplace remove astrolabe --scope user` with the plugin still installed also uninstalls the plugin and deletes its data folder
+- the same removal after `plugin uninstall --keep-data` leaves the data folder in place
+- removing a marketplace that isn't registered exits 1
+- `plugin marketplace list --json` gives a Git source as `url` and `ref`, a GitHub shorthand as `repo`, and a folder as `path`
+- a `file://` URL is refused as a marketplace source
+
+**Codex** (probe, 0.166.0).
+
+- `plugin marketplace remove` leaves the installed copy under `plugins/cache` as well as the `[plugins."astrolabe@astrolabe"]` entry with its `enabled` value; adding the marketplace at another ref and `plugin add` then works without `plugin remove`
+- adding at a ref that doesn't exist fails with Git's checkout error and leaves no marketplace entry
+- a folder source is recorded as `source_type = "local"` with the folder as `source`
+
+Not checked: whether Codex still runs the plugin's hooks from the installed copy while its marketplace is removed, and Claude Code's removal when the marketplace is declared in project or local scope.
+
+### Sign-in
+
+Plugin and marketplace commands ran in a fresh `CLAUDE_CONFIG_DIR` that was not signed in (probe, 2.1.316), and in a `CODEX_HOME` with no `auth.json` (probe, 0.166.0).
+
 ## A disposable config folder
 
 **Codex** (probe). `CODEX_HOME` points the CLI at another folder. With only a copy of `auth.json` in it, `codex exec` ran a session and wrote its state there; the real `config.toml` was unchanged, by hash, and gained no entry for the probe folder. Plugin and marketplace commands wrote only to that folder. A `hooks.json` placed there did not run until it was trusted: an unattended run skips untrusted hooks without saying so. Trusting it once in an interactive session with `/hooks` recorded a hash per hook entry in that folder's `config.toml`, and unattended runs then ran it. The hash covers the entry in `hooks.json`, not the script it names: changing the script kept the trust. The CLI also has a flag that runs hooks without recorded trust for one invocation; it was not used.

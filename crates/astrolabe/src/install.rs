@@ -228,6 +228,82 @@ pub(crate) fn installed_program(directory: &Path) -> Result<Option<PathBuf>, Str
     ))
 }
 
+/// The installed program's hash, taken before an update so a failure can be compared.
+pub(crate) fn program_digest(directory: &Path) -> Option<String> {
+    digest(&directory.join(names()[0])).ok()
+}
+
+/// What a failed installer run left in `directory`, where the program hashed to `before`.
+pub(crate) fn left_after_failure(directory: &Path, before: Option<&str>) -> String {
+    let pending = directory.join(PENDING);
+    let waiting = fs::symlink_metadata(&pending).is_ok();
+    let now = program_digest(directory);
+    if now.is_some() && now.as_deref() == before {
+        return if waiting {
+            format!(
+                "the program file is unchanged, but the attempt was not fully undone; recover as {} says before retrying",
+                pending.display()
+            )
+        } else {
+            "the previous program is still in place".into()
+        };
+    }
+    if waiting {
+        let receipted = read_receipt(directory).ok().flatten().map(|r| r.sha256);
+        return if now.is_some() && now == receipted {
+            format!(
+                "the new program is in place, but {} couldn't be removed; remove that file, then run `astrolabe update` again for the plugin",
+                pending.display()
+            )
+        } else {
+            format!(
+                "the previous program was not restored; recover it as {} says before retrying",
+                pending.display()
+            )
+        };
+    }
+    match now {
+        Some(_) => format!(
+            "the program in {} is not the one that was there before; check `astrolabe --version` before retrying",
+            directory.display()
+        ),
+        None => format!(
+            "there is no program in {} now; run the installer from the install guide again",
+            directory.display()
+        ),
+    }
+}
+
+/// Remove this installer's backup folders other than `keep`, the newest, so one rollback
+/// copy stays. Nothing goes while a marker says a recovery is pending, since it names a
+/// backup to restore from. Returns how many were removed.
+fn prune(directory: &Path, keep: &Path) -> usize {
+    if fs::symlink_metadata(directory.join(PENDING)).is_ok() {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            // Only a name this installer gives: the prefix, then its twelve random bytes
+            // in hex. A folder someone else put under the prefix is theirs.
+            let ours = entry
+                .file_name()
+                .to_string_lossy()
+                .strip_prefix(".astrolabe-backup-")
+                .is_some_and(|id| {
+                    id.len() == 24 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                });
+            ours && entry.path() != keep
+                // A real folder only: this doesn't follow a link, which is never removed.
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .filter(|entry| fs::remove_dir_all(entry.path()).is_ok())
+        .count()
+}
+
 /// Only files owned by this installer are replaced; anything else is left for the user to
 /// move aside.
 pub fn install(source: &Path, directory: &Path) -> Result<String, String> {
@@ -317,8 +393,13 @@ pub fn install(source: &Path, directory: &Path) -> Result<String, String> {
             fs::remove_file(&pending).map_err(|e| {
                 format!("installed, but could not remove {}: {e}", pending.display())
             })?;
+            let pruned = match prune(&directory, &backup) {
+                0 => String::new(),
+                1 => "\nRemoved 1 older backup folder.".into(),
+                n => format!("\nRemoved {n} older backup folders."),
+            };
             Ok(format!(
-                "Installed Astrolabe {VERSION} in {}.\nPrevious files: {}{}{kept}\nNext: install or refresh the matching plugin, review its hooks, and start a fresh session. Notes and app settings were not changed.",
+                "Installed Astrolabe {VERSION} in {}.\nPrevious files: {}{}{pruned}{kept}\nNext: install or refresh the matching plugin, review its hooks, and start a fresh session. Notes and app settings were not changed.",
                 directory.display(),
                 backup.display(),
                 if retire {
@@ -412,6 +493,173 @@ mod tests {
                 format!("old {name}")
             );
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("astrolabe-install-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Install again into a folder an earlier install used. A process another test is
+    /// starting holds a copy of that install's lock handle for a moment, so wait it out.
+    fn reinstall(build: &Path, directory: &Path) -> String {
+        for _ in 0..200 {
+            match install(build, directory) {
+                Err(why) if why.contains("another Astrolabe installer") => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => return result.unwrap(),
+            }
+        }
+        panic!("the install lock was never released");
+    }
+
+    fn backups(directory: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = fs::read_dir(directory)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(".astrolabe-backup-"))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn an_install_keeps_only_the_newest_backup() {
+        let root = fs::canonicalize(scratch("prune")).unwrap();
+        let directory = root.join("bin");
+        let build = root.join("build");
+        let mut last = String::new();
+        for round in 1..=3 {
+            fs::write(&build, format!("build {round}")).unwrap();
+            last = reinstall(&build, &directory);
+        }
+        let kept = backups(&directory);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        // The one kept holds the build the last install replaced, and the output names it.
+        assert_eq!(
+            fs::read_to_string(kept[0].join(names()[0])).unwrap(),
+            "build 2"
+        );
+        assert!(
+            last.contains(&format!("Previous files: {}", kept[0].display())),
+            "{last}"
+        );
+        assert!(last.contains("Removed 1 older backup folder."), "{last}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_prune_leaves_everything_while_recovery_is_pending_and_other_files_always() {
+        let root = scratch("prune-pending");
+        // The shape this installer gives a backup: twelve random bytes in hex.
+        let old = root.join(".astrolabe-backup-0123456789abcdef01234567");
+        let named = root.join(".astrolabe-backup-89abcdef0123456789abcdef");
+        let newest = root.join(".astrolabe-backup-fedcba9876543210fedcba98");
+        for folder in [&old, &named, &newest] {
+            fs::create_dir(folder).unwrap();
+            fs::write(folder.join(names()[0]), "a program").unwrap();
+        }
+        // Not this installer's: a file under the backup prefix, another folder, and
+        // folders someone made under the prefix with names the installer never gives.
+        fs::write(root.join(".astrolabe-backup-file"), "kept").unwrap();
+        fs::create_dir(root.join("unrelated")).unwrap();
+        let manual = root.join(".astrolabe-backup-manual");
+        let longer = root.join(".astrolabe-backup-0123456789abcdef01234567-mine");
+        let upper = root.join(".astrolabe-backup-0123456789ABCDEF0123456Z");
+        for folder in [&manual, &longer, &upper] {
+            fs::create_dir(folder).unwrap();
+            fs::write(folder.join("precious"), "kept").unwrap();
+        }
+        // A link under an installer-shaped name is never followed or removed.
+        #[cfg(unix)]
+        let link = root.join(".astrolabe-backup-00112233445566778899aabb");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&manual, &link).unwrap();
+        fs::write(root.join(PENDING), format!("Backup: {}\n", named.display())).unwrap();
+        assert_eq!(prune(&root, &newest), 0);
+        assert!(
+            old.is_dir() && named.is_dir() && newest.is_dir(),
+            "nothing goes while a marker exists"
+        );
+
+        fs::remove_file(root.join(PENDING)).unwrap();
+        assert_eq!(prune(&root, &newest), 2);
+        assert!(newest.is_dir() && !old.exists() && !named.exists());
+        assert!(root.join(".astrolabe-backup-file").is_file());
+        assert!(root.join("unrelated").is_dir());
+        for folder in [&manual, &longer, &upper] {
+            assert_eq!(
+                fs::read_to_string(folder.join("precious")).unwrap(),
+                "kept",
+                "{}",
+                folder.display()
+            );
+        }
+        #[cfg(unix)]
+        assert!(fs::symlink_metadata(&link).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_install_is_described_by_what_it_left() {
+        let root = scratch("left");
+        let directory = root.join("bin");
+        let build = root.join("build");
+        fs::write(&build, "build 1").unwrap();
+        install(&build, &directory).unwrap();
+        let before = program_digest(&directory);
+        let before = before.as_deref();
+        let program = directory.join(names()[0]);
+        let pending = directory.join(PENDING);
+
+        assert_eq!(
+            left_after_failure(&directory, before),
+            "the previous program is still in place"
+        );
+
+        // A rollback that stopped partway: the marker stays even though the program does.
+        fs::write(&pending, "Backup: somewhere\n").unwrap();
+        let left = left_after_failure(&directory, before);
+        assert!(
+            left.contains("not fully undone") && left.contains(&pending.display().to_string()),
+            "{left}"
+        );
+        assert!(!left.contains("still in place"), "{left}");
+
+        // A rollback that failed: something else sits where the program was.
+        fs::write(&program, "half an install").unwrap();
+        let left = left_after_failure(&directory, before);
+        assert!(
+            left.contains("was not restored") && left.contains(&pending.display().to_string()),
+            "{left}"
+        );
+        fs::write(&program, "build 1").unwrap();
+
+        // The new program went in and only the marker's removal failed.
+        fs::remove_file(&pending).unwrap();
+        fs::write(&build, "build 2").unwrap();
+        reinstall(&build, &directory);
+        fs::write(&pending, "Backup: somewhere\n").unwrap();
+        let left = left_after_failure(&directory, before);
+        assert!(
+            left.contains("the new program is in place") && left.contains("remove that file"),
+            "{left}"
+        );
+
+        // Nothing where the program was.
+        fs::remove_file(&pending).unwrap();
+        fs::remove_file(&program).unwrap();
+        let left = left_after_failure(&directory, before);
+        assert!(left.contains("no program"), "{left}");
         fs::remove_dir_all(root).unwrap();
     }
 }

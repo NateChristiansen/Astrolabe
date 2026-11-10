@@ -68,7 +68,7 @@ pub(super) fn reissue(dir: &Path, ticket: &str, text: &str) -> Result<(), String
 
 /// A path as one single-quoted word for the shell the app runs: nothing inside single
 /// quotes is expanded, and a quote in the path is spelled the way that shell wants.
-pub(super) fn quoted(path: &str, powershell: bool) -> String {
+pub(crate) fn quoted(path: &str, powershell: bool) -> String {
     if powershell {
         format!("'{}'", path.replace('\'', "''"))
     } else {
