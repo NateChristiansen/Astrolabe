@@ -208,28 +208,3 @@ pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
         proof(session, token, since, powershell)
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::super::routing::in_powershell;
-    use super::*;
-    use serde_json::json;
-
-    /// For every input shape `docs/hosts.md` records, and Claude's PowerShell tool, the one
-    /// rule answers as the routing rule it replaces did, so no session is told anything new.
-    #[test]
-    fn the_one_dialect_rule_agrees_with_the_old_one_on_recorded_shapes() {
-        for tool in ["Bash", "PowerShell", "shell_command"] {
-            for input in [
-                json!({"tool_name": tool, "tool_input": {"command": "ls"}}),
-                json!({"tool_name": tool, "turn_id": "t", "tool_input": {"command": "ls"}}),
-                json!({"tool_name": tool, "transcript_path": "/x/rollout-1.jsonl"}),
-            ] {
-                let old = in_powershell(provider(&input), &input["tool_name"]);
-                assert_eq!(powershell_input(&input), old, "{input}");
-            }
-        }
-        let codex = json!({"turn_id": "t"});
-        assert_eq!(session_shells("codex"), [powershell_input(&codex)]);
-    }
-}

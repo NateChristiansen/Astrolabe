@@ -295,11 +295,30 @@ struct Context {
     windows: bool,
 }
 
-/// The field a shell tool's command is in, as the guard reads it: `command` if the input
-/// has one at all, else `cmd` (Codex). One function, so a check that the command can be read
-/// looks at the same field the guard judges.
+/// The name of the field a shell tool's command is in: `command` if the input has one at
+/// all, else `cmd`. Both apps send `command`; `cmd`, a command given as a list and a folder
+/// inside the tool's input are shapes no app is recorded sending (`docs/hosts.md`), kept
+/// because they cost little and deny safely.
+pub fn command_key(input: &Value) -> &'static str {
+    if input.get("command").is_some() {
+        "command"
+    } else {
+        "cmd"
+    }
+}
+
+/// A shell tool's command, as the guard reads it. The one reader, so whatever checks,
+/// rewrites, records or approves a command looks at the field the guard judges.
 pub fn command_field(input: &Value) -> Option<&Value> {
-    input.get("command").or_else(|| input.get("cmd"))
+    input.get(command_key(input))
+}
+
+/// The folder a tool's own input names for its command, if it names one. The one reader:
+/// the guard resolves it against the hook's `cwd`, as `hook::folder` does for the rest.
+pub fn tool_folder(input: &Value) -> Option<&str> {
+    ["workdir", "cwd", "working_directory"]
+        .iter()
+        .find_map(|key| input.get(*key)?.as_str())
 }
 
 /// Whether the guard can judge this command: text, or a list of words that are all text.
@@ -356,10 +375,7 @@ pub fn decide_in(powershell: bool, tool: &str, input: &Value, scope: &Scope) -> 
         windows,
     };
     // A tool's own working directory, which the hook's `cwd` doesn't reflect.
-    if let Some(workdir) = ["workdir", "cwd", "working_directory"]
-        .iter()
-        .find_map(|key| input.get(*key)?.as_str())
-    {
+    if let Some(workdir) = tool_folder(input) {
         context.cwd = resolve(workdir, &context);
     }
     let dialect = if powershell { Dialect::Ps } else { Dialect::Sh };

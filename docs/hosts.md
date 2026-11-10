@@ -39,7 +39,7 @@ Both apps document the command as the string `tool_input.command` and the sessio
 
 **Codex** (probe). A captured `PreToolUse` input for a shell command carried `tool_name` "Bash", `tool_input` holding only the string `command`, and top-level `session_id`, `turn_id`, `transcript_path`, `cwd`, `hook_event_name`, `model`, `permission_mode` and `tool_use_id`. When the model set the shell tool's own working folder, that folder arrived as the top-level `cwd`; `tool_input` still held only `command`.
 
-Local evidence: of 226 denials in one Mac's guard log, the 214 that record a tool all came from a tool named `Bash` with a readable command. The `cmd`, `exec_command` and `workdir` shapes the tests model were not observed there or in the probe.
+Local evidence: of 226 denials in one Mac's guard log, the 214 that record a tool all came from a tool named `Bash` with a readable command. The `cmd`, `exec_command` and `workdir` shapes the tests model were not observed there or in the probe. The program still reads them: a command in `cmd` or given as a list, and a folder inside `tool_input` as the command's own, taken from `cwd` when it's relative. They are unobserved, cost little, and a guard that reads them denies safely.
 
 Not checked: the PowerShell tool's input on Windows, and Codex's desktop app.
 

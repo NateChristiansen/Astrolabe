@@ -26,14 +26,6 @@ pub(crate) fn covered(reason: &str) -> bool {
     )
 }
 
-pub(crate) fn cwd(input: &Value) -> Option<PathBuf> {
-    let base = PathBuf::from(input["cwd"].as_str()?);
-    let workdir = ["workdir", "cwd", "working_directory"]
-        .iter()
-        .find_map(|key| input["tool_input"][key].as_str());
-    Some(workdir.map_or_else(|| base.clone(), |p| base.join(p)))
-}
-
 fn lock(dir: &Path, session: &str) -> Result<std::fs::File, String> {
     let file = std::fs::File::options()
         .create(true)
@@ -126,7 +118,7 @@ pub(super) fn mint(
         return Err("use --once and a nonempty --said quote, run alone".into());
     }
     let target = guard::literal_words(exact, dialect)?;
-    let cwd = cwd(input).ok_or("the hook didn't name a working directory")?;
+    let cwd = hook::folder(input).ok_or("the hook didn't name a working directory")?;
     let scope = guard::Scope {
         root: None,
         cwd: Some(hook::comparable(&cwd)),
@@ -181,7 +173,7 @@ pub(crate) fn consume(dir: &Path, input: &Value, reason: &str) -> Result<bool, S
     let Some(command) = guard::command_field(&input["tool_input"]).and_then(Value::as_str) else {
         return Ok(false);
     };
-    let Some(cwd) = cwd(input) else {
+    let Some(cwd) = hook::folder(input) else {
         return Ok(false);
     };
     let _held = lock(dir, session)?;

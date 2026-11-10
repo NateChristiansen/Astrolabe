@@ -8,11 +8,6 @@ use crate::session::SessionState;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-/// Codex on Windows runs its shell commands in PowerShell, as Claude's PowerShell tool does.
-pub(super) fn in_powershell(provider: &str, tool: &Value) -> bool {
-    tool == "PowerShell" || (cfg!(windows) && provider == "codex")
-}
-
 /// What a switch changes, done only after its result is ready to show.
 pub(super) enum Change {
     Keep,
@@ -420,11 +415,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
         return Some(answer);
     }
     let tool_input = &input["tool_input"];
-    let key = if tool_input.get("command").is_some() {
-        "command"
-    } else {
-        "cmd"
-    };
+    let key = crate::guard::command_key(tool_input);
     let command = tool_input[key].as_str()?.trim();
     // What each simple command of the line that runs astrolabe is given, read the way the
     // effort and notes commands are found: wherever it sits in a chain, behind an
@@ -451,7 +442,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 "No approval recorded: the hook didn't name a session.",
             ));
         };
-        let powershell = in_powershell(provider(input), &input["tool_name"]);
+        let powershell = super::proof::powershell_input(input);
         let result = state_dir()
             .ok_or_else(|| "no state folder".to_owned())
             .and_then(|dir| {
@@ -491,11 +482,8 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             .and_then(|dir| read_state(&dir, session).ok().flatten())
             .filter(|state| state.worker.is_true())
             .map(|state| state.effort.as_deref().unwrap_or_default().to_owned());
-        let powershell = in_powershell(provider(input), &input["tool_name"]);
-        let cwd = input["cwd"]
-            .as_str()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| ".".into());
+        let powershell = super::proof::powershell_input(input);
+        let cwd = hook::folder(input).unwrap_or_else(|| ".".into());
         let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
             Ok(parsed)
                 if worker.is_some()
@@ -589,11 +577,8 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
         ));
     }
     let session = session?;
-    let cwd = input["cwd"]
-        .as_str()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ".".into());
-    let powershell = in_powershell(provider(input), &input["tool_name"]);
+    let cwd = hook::folder(input).unwrap_or_else(|| ".".into());
+    let powershell = super::proof::powershell_input(input);
     let left = state_dir()
         .ok_or_else(|| "no home folder".to_owned())
         .and_then(|dir| {

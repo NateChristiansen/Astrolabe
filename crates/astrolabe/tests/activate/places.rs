@@ -292,3 +292,24 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         .collect();
     assert_eq!(got, want);
 }
+
+#[test]
+fn a_command_run_from_a_tools_own_folder_is_read_there() {
+    let f = Fixture::new();
+    // The shapes no app is recorded sending, kept: the command in `cmd`, the tool's own
+    // folder beside it. Effort 72 is for the other repo, and the session sits in demo.
+    let run = |session: &str, tool_input: Value| {
+        let input = json!({"session_id": session, "cwd": f.demo, "tool_name": "Bash", "tool_input": tool_input});
+        let answer = f.hook(input).unwrap();
+        let command = answer["hookSpecificOutput"]["updatedInput"]["cmd"].as_str();
+        let command = command.unwrap_or_else(|| panic!("{answer}")).to_owned();
+        f.run(&f.demo, &rewritten(&command), "", &[]).0
+    };
+    let here = run("s1", json!({"cmd": "astrolabe activate --effort 72"}));
+    let there = run(
+        "s2",
+        json!({"cmd": "astrolabe activate --effort 72", "workdir": f.other}),
+    );
+    assert!(here.contains("Effort 72 NOT loaded"), "{here}");
+    assert!(there.contains("EFFORT-72"), "{there}");
+}

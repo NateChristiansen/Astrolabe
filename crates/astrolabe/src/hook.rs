@@ -65,6 +65,18 @@ pub fn comparable(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// The folder a hook input's command runs in, by the guard's rule: the tool's own folder
+/// when its input names one, taken from the session's `cwd` if it's relative, else that
+/// `cwd`. The one reader for everything the hook does with a command.
+pub(crate) fn folder(input: &Value) -> Option<PathBuf> {
+    let base = input["cwd"].as_str().map(PathBuf::from);
+    match crate::guard::tool_folder(&input["tool_input"]) {
+        Some(own) if Path::new(own).is_absolute() => Some(own.into()),
+        Some(own) => Some(base?.join(own)),
+        None => base,
+    }
+}
+
 /// One JSON line per denial, in the plugin state folder.
 pub const DENIAL_LOG: &str = "guard-denials.log";
 const LOGGED_COMMAND: usize = 2000;
@@ -170,8 +182,7 @@ fn worktree_root(cwd: Option<&Path>) -> Option<String> {
 fn record_denial(bytes: &[u8], reason: &str, data: &Path) {
     let input: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
     let session_id = input["session_id"].as_str();
-    let cwd = input["cwd"].as_str().map(PathBuf::from);
-    let Some(cwd) = cwd.or_else(|| std::env::current_dir().ok()) else {
+    let Some(cwd) = folder(&input).or_else(|| std::env::current_dir().ok()) else {
         return;
     };
     // The field the guard judged, so a probe is proven wherever its command arrived.
@@ -195,5 +206,37 @@ fn record_denial(bytes: &[u8], reason: &str, data: &Path) {
         .open(data.join(DENIAL_LOG));
     if let Ok(mut log) = log {
         let _ = log.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folder;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_commands_folder_is_the_tools_own_when_it_names_one() {
+        let base = std::env::temp_dir();
+        let own = base.join("own");
+        for (tool_input, expected) in [
+            (json!({"command": "ls"}), Some(base.clone())),
+            (
+                json!({"command": "ls", "workdir": "sub"}),
+                Some(base.join("sub")),
+            ),
+            (json!({"cmd": "ls", "cwd": own}), Some(own.clone())),
+            (
+                json!({"cmd": "ls", "working_directory": own}),
+                Some(own.clone()),
+            ),
+        ] {
+            let input = json!({"cwd": base, "tool_input": tool_input});
+            assert_eq!(folder(&input), expected, "{input}");
+        }
+        assert_eq!(folder(&json!({"tool_input": {"workdir": own}})), Some(own));
+        let relative = json!({"tool_input": {"workdir": "sub"}});
+        assert_eq!(folder(&relative), None::<PathBuf>);
+        assert_eq!(folder(&json!({"tool_input": {"command": "ls"}})), None);
     }
 }

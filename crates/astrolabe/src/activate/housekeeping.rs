@@ -2,15 +2,10 @@
 use super::{routing, state_dir, tickets};
 use crate::record::lesson;
 use serde_json::Value;
-use std::path::PathBuf;
 
 pub(super) fn command(input: &Value, session: Option<&str>, child: bool) -> Option<Value> {
     let tool_input = &input["tool_input"];
-    let key = if tool_input.get("command").is_some() {
-        "command"
-    } else {
-        "cmd"
-    };
+    let key = crate::guard::command_key(tool_input);
     let command = tool_input[key].as_str()?;
     if !lesson::claims(command) {
         return None;
@@ -28,11 +23,8 @@ pub(super) fn command(input: &Value, session: Option<&str>, child: bool) -> Opti
             "A worker leaves notes housekeeping to its dispatcher.",
         ));
     }
-    let cwd = input["cwd"]
-        .as_str()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ".".into());
-    let powershell = routing::in_powershell(routing::provider(input), &input["tool_name"]);
+    let cwd = crate::hook::folder(input).unwrap_or_else(|| ".".into());
+    let powershell = super::proof::powershell_input(input);
     let mut op_key = None;
     let mut digest = None;
     let (text, ok) = match parsed {
