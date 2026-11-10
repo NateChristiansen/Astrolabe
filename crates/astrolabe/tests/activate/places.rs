@@ -157,3 +157,137 @@ fn a_git_read_the_hook_has_no_time_for_leaves_the_notice_out() {
     );
     quiet(&resumed, "a session whose folder couldn't be read in time");
 }
+
+#[test]
+fn the_notes_under_another_name_are_still_the_notes() {
+    let f = Fixture::new();
+    let notes = f.notes();
+    // The owner's notes are also registered as `notes`, and an effort and an initiative
+    // name them that way: their work is in the notes, so the notes are the right folder.
+    let (out, ok) = f.run(
+        &notes,
+        &["repo", "add", "notes", notes.to_str().unwrap()],
+        "",
+        &[],
+    );
+    assert!(ok, "{out}");
+    write(&notes.join("knowledge/repos/notes.md"), "REPO-NOTES-TEXT");
+    write(
+        &notes.join("efforts/0078-tidy.md"),
+        "---\nstatus: active\nrepo: notes\ninvolvement: autonomous\nauthority: edit\n---\n# 0078 Tidy\n\n## Current state\n\nEFFORT-78\n",
+    );
+    write(
+        &notes.join("initiatives/tidy-notes.md"),
+        "---\nstatus: active\nrepo: notes\n---\n# Tidy notes\n\n## Current state\n\nPAGE\n",
+    );
+    git(&notes, &["add", "-A"]);
+    git(&notes, &["commit", "-q", "-m", "notes"]);
+    let (text, ok) = f.bash("w1", &notes, "astrolabe activate --effort 78 --worker");
+    assert!(ok && text.contains("repo notes"), "{text}");
+    quiet(
+        &text,
+        "a worker on the notes' own effort, by their other name",
+    );
+    let (text, ok) = f.bash("o1", &notes, "astrolabe activate --initiative tidy-notes");
+    assert!(ok, "{text}");
+    quiet(&text, "an orchestrator for the notes, by their other name");
+}
+
+#[test]
+fn a_worktree_whose_folder_is_gone_is_no_one_elses_work() {
+    let f = Fixture::new();
+    // Locked, then its folder deleted: git keeps the entry and never calls it prunable.
+    let tree = worktree(&f.demo, "gone");
+    git(&f.demo, &["worktree", "lock", tree.to_str().unwrap()]);
+    std::fs::remove_dir_all(&tree).unwrap();
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
+    quiet(&text, "a main checkout whose only other worktree is gone");
+    // One that is there still counts.
+    worktree(&f.demo, "lane");
+    let (text, ok) = f.bash("s2", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok && text.contains(SHARED), "{text}");
+}
+
+/// A session's text with what differs between any two runs taken out: the fixture's folder
+/// and the lines of the guard's probe.
+#[cfg(unix)]
+fn masked(f: &Fixture, text: &str) -> String {
+    let real = std::fs::canonicalize(&f.dir.0).unwrap();
+    let text = text.replace(real.to_str().unwrap(), "<dir>");
+    let text = text.replace(f.dir.0.to_str().unwrap(), "<dir>");
+    let lines = text.lines().filter(|l| !l.contains("astrolabe-probe"));
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+/// What a real binding sends where no notice fires, by length and SHA-256, as main sent it
+/// before any binding was told about its folder (8766a3e): the whole reply and the whole
+/// resumed text, through the hook, not only the rules. Not on Windows, where the text has
+/// both shells' proof steps and its own path separators.
+#[cfg(unix)]
+#[test]
+fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let notes = f.notes();
+    git(&notes, &["add", "-A"]);
+    git(&notes, &["commit", "-q", "-m", "notes"]);
+    let load = "astrolabe activate --effort 70";
+    let mut got = Vec::new();
+    let mut keep = |what: &str, text: String| {
+        quiet(&text, what);
+        let text = masked(&f, &text);
+        let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        got.push((what.to_owned(), text.len(), hash));
+    };
+    // A main checkout with no other worktree: an owner's effort, its resume, and a worker.
+    let (text, ok) = f.bash("s1", &f.demo, load);
+    assert!(ok, "{text}");
+    keep("an owner's effort in a lone checkout", text);
+    keep(
+        "that effort resumed",
+        f.session_start("s1", &f.demo, &[]).unwrap(),
+    );
+    let (text, ok) = f.bash("w1", &f.demo, &format!("{load} --worker"));
+    assert!(ok, "{text}");
+    keep("a worker in a lone checkout", text);
+    // The owner's seat, and a worktree of its own beside a shared main checkout.
+    let (text, ok) = f.bash("s2", &notes, load);
+    assert!(ok, "{text}");
+    keep("an owner's effort in the notes", text);
+    let tree = worktree(&f.demo, "lane");
+    let (text, ok) = f.bash("s3", &tree, load);
+    assert!(ok, "{text}");
+    keep("an owner's effort in a worktree", text);
+    let want = [
+        (
+            "an owner's effort in a lone checkout",
+            7341,
+            "959164794f380bd6e86e72c1317c54c75bf6d7c7cf99cbde2e37d73aedb55491",
+        ),
+        (
+            "that effort resumed",
+            7873,
+            "1697985666140f4ba4735c5e1a766924dbef731f5a1586a22c5b16ea22d9d4ef",
+        ),
+        (
+            "a worker in a lone checkout",
+            5740,
+            "fa362caad05bb88e77e92ba4ff48bda3a1e14e8e3484e305098a50dc6cdf37ad",
+        ),
+        (
+            "an owner's effort in the notes",
+            7341,
+            "89f4ced0b23ace7b0bcdeca5fdd5defb55035f1bb166d36f92d05966954c2fe5",
+        ),
+        (
+            "an owner's effort in a worktree",
+            7341,
+            "5a34069337fecbf5e6e0eb85834535919d1ce2bc85ef05ea38574e4544f9504f",
+        ),
+    ];
+    let got: Vec<(&str, usize, &str)> = (got.iter())
+        .map(|(what, len, hash)| (what.as_str(), *len, hash.as_str()))
+        .collect();
+    assert_eq!(got, want);
+}

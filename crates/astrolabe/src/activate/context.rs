@@ -820,9 +820,20 @@ fn switch_record(
             .unwrap_or("none"),
         handoffs: &handoffs,
     };
+    let seat = seat(cwd);
+    // The names the notes checkout goes by, on this machine or by its remote, so an effort
+    // that names the notes another way isn't taken for another repo's. Not readable is
+    // nothing to say.
+    let home = match seat {
+        Seat::Notes => {
+            common_dir(&notes).and_then(|here| repo_names(&notes, &registry, &notes, &here).ok())
+        }
+        Seat::Shared | Seat::Apart => Some(Vec::new()),
+    };
+    let notice = home.and_then(|home| placed(role, &seat, &facts, &effort.repos, &home));
     // After the opening, ahead of the settings it qualifies, and where a head cut for the
     // hook's limit keeps it: a cut takes its room from the end of the rules.
-    let head = match placed(role, &seat(cwd), &facts, &effort.repos) {
+    let head = match notice {
         Some(notice) => after_first_paragraph(&lead(role, &facts), &notice),
         None => lead(role, &facts),
     };
@@ -907,9 +918,11 @@ pub(super) fn seat(cwd: &Path) -> Seat {
     let main = dir("--git-dir").is_some_and(|own| Some(own) == dir("--git-common-dir"));
     let args = ["worktree", "list", "--porcelain"].map(AsRef::as_ref);
     let list = crate::worktree::git(cwd, &args).unwrap_or_default();
-    // One whose folder is gone is no one's to work in.
+    // One whose folder is gone is no one's to work in. Git's own mark for that isn't on a
+    // locked entry or in an older git, so the folder is looked for.
     let live = (list.replace("\r\n", "\n").split("\n\n"))
-        .filter(|entry| entry.starts_with("worktree ") && !entry.contains("\nprunable"))
+        .filter_map(|entry| entry.lines().next()?.strip_prefix("worktree "))
+        .filter(|folder| Path::new(folder).is_dir())
         .count();
     match main && live > 1 {
         true => Seat::Shared,
@@ -920,9 +933,16 @@ pub(super) fn seat(cwd: &Path) -> Seat {
 /// What a binding is told about the folder it was made in, when that folder is the wrong
 /// place for its work. A check the program runs, so it's said only where it's true, and a
 /// session anywhere else gets the text it always got.
-pub(super) fn placed(role: Role, seat: &Seat, f: &Facts, repos: &[String]) -> Option<String> {
+pub(super) fn placed(
+    role: Role,
+    seat: &Seat,
+    f: &Facts,
+    repos: &[String],
+    home: &[String],
+) -> Option<String> {
     let (n, repo) = (f.number, f.repo);
-    let elsewhere = !repo.is_empty() && !repos.iter().any(|r| r == AGENT);
+    // `home` is every name the notes checkout goes by: work in any of them is at home there.
+    let elsewhere = !repo.is_empty() && !repos.iter().any(|r| home.contains(r));
     match (role, seat) {
         (Role::Worker, Seat::Notes) if elsewhere => Some(format!(
             "This session started in the notes checkout, but effort {n}'s work is in {repo}. A session takes its repo's rules from the folder it starts in, so this one has the notes' rules and not {repo}'s. Change no file in {repo} from here. Tell your dispatcher now that this worker has to be started again in a folder of {repo}, and stop until it answers."
@@ -2051,7 +2071,7 @@ mod tests {
                 let repos = ["astrolabe".to_owned()];
                 let told = [Seat::Notes, Seat::Shared]
                     .iter()
-                    .filter_map(|seat| placed(role?, seat, &f, &repos))
+                    .filter_map(|seat| placed(role?, seat, &f, &repos, &[AGENT.to_owned()]))
                     .map(|notice| counted("claude", &notice) + 2)
                     .max()
                     .unwrap_or(0);
@@ -2071,13 +2091,15 @@ mod tests {
 
     #[test]
     fn a_binding_in_the_wrong_folder_is_told_and_any_other_is_told_nothing() {
-        let (demo, both, notes) = (
+        let (demo, both, notes, named) = (
             vec!["demo".to_owned()],
             vec!["demo".to_owned(), "other".to_owned()],
             vec!["demo".to_owned(), AGENT.to_owned()],
+            vec!["notes".to_owned()],
         );
         let f = facts("check in at plan", "edit");
-        let told = |role, seat, repos: &[String]| placed(role, &seat, &f, repos);
+        let home = [AGENT.to_owned(), "notes".to_owned()];
+        let told = |role, seat, repos: &[String]| placed(role, &seat, &f, repos, &home);
         let said = |role, seat, repos: &[String], opening: &str| {
             let notice = told(role, seat, repos).unwrap_or_default();
             assert!(notice.starts_with(opening), "{role:?} {seat:?}: {notice:?}");
@@ -2107,6 +2129,8 @@ mod tests {
         for (role, seat, repos) in [
             (Role::Effort, Seat::Notes, &demo),
             (Role::Worker, Seat::Notes, &notes),
+            (Role::Worker, Seat::Notes, &named),
+            (Role::Initiative, Seat::Notes, &named),
             (Role::Initiative, Seat::Notes, &both),
             (Role::Initiative, Seat::Notes, &notes),
             (Role::Initiative, Seat::Shared, &demo),
@@ -2119,14 +2143,20 @@ mod tests {
         // Read authority changes no file, so a shared checkout costs it nothing.
         let read = facts("check in at plan", "read");
         for role in [Role::Effort, Role::Worker] {
-            assert_eq!(placed(role, &Seat::Shared, &read, &demo), None, "{role:?}");
+            assert_eq!(
+                placed(role, &Seat::Shared, &read, &demo, &home),
+                None,
+                "{role:?}"
+            );
         }
         let push = facts("autonomous", "push");
-        assert!(placed(Role::Effort, &Seat::Shared, &push, &demo).is_some());
+        assert!(placed(Role::Effort, &Seat::Shared, &push, &demo, &home).is_some());
     }
 
-    /// An effort's and a worker's text as main had it before any binding was told where it
-    /// is (fbc24b4), by length and SHA-256: a session no notice fires for gets these bytes.
+    /// An effort's and a worker's rules as main had them before any binding was told where
+    /// it is (fbc24b4), by length and SHA-256. Only the rules: that a real binding adds
+    /// nothing to them where no notice fires is pinned through the hook, in the
+    /// activation tests.
     #[test]
     fn an_effort_and_a_worker_with_no_notice_get_the_text_they_always_got() {
         use sha2::{Digest, Sha256};
@@ -2192,7 +2222,7 @@ mod tests {
             ] {
                 let mut f = facts("check in at plan", "edit");
                 f.freshness = &fresh;
-                let notice = placed(role, &seat, &f, &repos).unwrap();
+                let notice = placed(role, &seat, &f, &repos, &[AGENT.to_owned()]).unwrap();
                 let mut a = session(provider, Some(role), &f, notes(&folder, 400));
                 for n in 0..30 {
                     let file = format!("{folder}/knowledge/{n}.md");
