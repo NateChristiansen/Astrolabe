@@ -292,8 +292,6 @@ struct Context {
     windows: bool,
 }
 
-/// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
-/// would remove the client's approval prompt.
 /// The field a shell tool's command is in, as the guard reads it: `command` if the input
 /// has one at all, else `cmd` (Codex). One function, so a check that the command can be read
 /// looks at the same field the guard judges.
@@ -329,6 +327,8 @@ pub fn not_a_shell(tool: &str) -> bool {
     tool.starts_with("mcp__") || tool == "apply_patch"
 }
 
+/// The reason to deny, or None to stay out of the way. Never an allow: a hook's allow
+/// would remove the client's approval prompt.
 pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
     if not_a_shell(tool) {
         return None;
