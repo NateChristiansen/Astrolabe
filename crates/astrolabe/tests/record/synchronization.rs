@@ -707,3 +707,63 @@ fn a_save_whose_own_pull_renumbers_its_effort_still_lands() {
     assert!(mac.effort_text(2).contains("chose a over b: c"));
     assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
 }
+
+/// A renumber was planned and then stopped before its rename (a file lock, a hook that
+/// died), and the session saved at the old path meanwhile. The next hook must not replay
+/// the plan's text from before that save over it: it renumbers the note as it is now.
+#[test]
+fn a_renumber_left_unbegun_is_made_again_from_the_note_as_it_is_now() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    let old_rel = shelf("0001-smooth-ink.md");
+    let new_rel = shelf("0002-smooth-ink.md");
+    let planned_from = mac.effort_text(1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose a over b: c\"",
+    );
+    assert!(ok, "{out}");
+    // The other machine's effort 1 arrives, as a pull's rebase brings it.
+    assert!(
+        pc.bash(
+            "p1",
+            "astrolabe effort new --title \"Other\" <<'ASTROLABE'\npc goal\nASTROLABE\n",
+        )
+        .1
+    );
+    assert!(pc.sync().1);
+    git(&mac.notes, &["pull", "-q", "--rebase", "origin", "main"]);
+    // The plan as it was saved before the save above, with the session following the file.
+    let planned = planned_from.replace("# 0001 Smooth ink", "# 0002 Smooth ink");
+    let session = mac.state().join("s1.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&session).unwrap()).unwrap();
+    state["file"] = new_rel.clone().into();
+    state["effort"] = "2".into();
+    state["binding"]["key"] = "2".into();
+    state["delivered"] = astrolabe::notes::content_hash(&planned).into();
+    let plan = json!({
+        "key": "renumber-0001-0002", "files": [[new_rel, planned]], "renames": [[old_rel, new_rel]],
+        "journal": [], "message": "0001 renumbered to 0002", "base": null,
+        "states": [[session, state]], "committed": false, "digest": null, "result": null, "cwd": null
+    });
+    write(
+        &mac.state().join("ops/renumber-0001-0002.json"),
+        &plan.to_string(),
+    );
+    // The next hook finishes the renumber and saves.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose d over e: f\"",
+    );
+    assert!(ok && out.starts_with("Saved effort 2"), "{out}");
+    let note = mac.effort_text(2);
+    assert!(
+        note.contains("chose a over b: c") && note.contains("chose d over e: f"),
+        "the save made before the renumber is still in the note: {note}"
+    );
+    assert!(note.contains("# 0002 Smooth ink") && note.contains("renumbered from 0001"));
+    assert!(!mac.notes.join(&old_rel).exists());
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
+}

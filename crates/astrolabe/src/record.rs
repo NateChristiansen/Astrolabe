@@ -902,6 +902,10 @@ fn save_inner(
     )?;
     let mut req = SaveRequest::parse(cmd, &state, cwd)?;
     let _held = notes.lock()?;
+    // The note as it stands before this save recovers or pulls anything, to tell below
+    // whether the session had it as it was when a renumber moved it.
+    let held_before = (std::fs::read_to_string(notes.root.join(&req.rel)).ok())
+        .map(|text| notes::content_hash(&text));
     let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
         return Err(format!(
@@ -921,14 +925,21 @@ fn save_inner(
         ));
     }
     let pulled = crate::application::pull(&notes);
-    // The pull can renumber this session's effort, when another machine's effort had the
-    // number first. The session's state follows the file, so the request is read again
-    // from where the effort is now, not from the path it had before the pull.
+    // The pull, or the recovery before it, can renumber this session's effort, when another
+    // machine's effort had the number first. The session's state follows the file, so the
+    // request is read again from where the effort is now, not from the path it had.
     let mut notes_lines = Vec::new();
     if let Some(moved) = read_state(&dir, session)?.filter(|now| now.file != state.file) {
         let was = state.bound_key().unwrap_or_default().to_owned();
+        // A session that had the note as it stood has it still: the renumber this save
+        // just watched changed its number and added the line saying so, nothing the
+        // session wrote. Judged here, from the files as they are, never by a replayed plan.
+        let had_it = held_before.is_some() && state.delivered.as_deref() == held_before.as_deref();
         state = moved;
         req = SaveRequest::parse(cmd, &state, cwd)?;
+        if had_it && let Ok(text) = std::fs::read_to_string(notes.root.join(&req.rel)) {
+            state.delivered.set(notes::content_hash(&text));
+        }
         let now = state.bound_key().unwrap_or_default();
         notes_lines.push(format!(
             "This save's pull renumbered the effort from {was} to {now}, because another machine's effort had {was} first; it's effort {now} from here on."

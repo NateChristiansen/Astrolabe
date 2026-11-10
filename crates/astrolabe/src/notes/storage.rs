@@ -181,6 +181,18 @@ impl Notes {
                 }
                 continue;
             }
+            // A renumber planned but not begun, its file still where it was: the note may
+            // have been saved since, at that path, and replaying the plan would write the
+            // text from before that save over it. The plan goes, and the renumber is made
+            // again from the note as it is now.
+            let begun = |(from, to): &(String, String)| {
+                !self.root.join(from).exists() || self.root.join(to).exists()
+            };
+            if !op.committed && !op.renames.is_empty() && !op.renames.iter().any(begun) {
+                let _ = std::fs::remove_file(self.intent_path(&op.key));
+                self.fix_duplicate();
+                continue;
+            }
             // A crash after the commit but before the intent recorded it leaves the commit as
             // the only proof: its key says this write landed, so its files aren't written
             // again over whatever was saved since.
