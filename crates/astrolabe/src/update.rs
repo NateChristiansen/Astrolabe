@@ -1109,12 +1109,20 @@ mod tests {
             .unwrap();
             cli
         } else {
+            // The script is written under another name and copied into place by `cp`. If this
+            // process wrote the file it runs, another test thread could fork while it was
+            // open for writing, and Linux refuses to run a file a child still holds open
+            // that way ("text file busy", rust-lang/rust#114554). `cp` has exited before the
+            // run, so nothing holds it.
             let cli = dir.join("app");
+            let source = dir.join("app.source");
             std::fs::write(
-                &cli,
+                &source,
                 "#!/bin/sh\ndir=$(dirname \"$0\")\necho \"$*\" >> \"$dir/calls.txt\"\nif [ -f \"$dir/fail.txt\" ] && grep -qxF -- \"$*\" \"$dir/fail.txt\"; then\n  echo boom >&2\n  exit 1\nfi\n",
             )
             .unwrap();
+            let copied = Command::new("cp").arg(&source).arg(&cli).status().unwrap();
+            assert!(copied.success(), "cp {source:?} {cli:?}: {copied}");
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
