@@ -408,7 +408,10 @@ fn an_expired_or_corrupt_approval_with_no_effort_keeps_the_denial() {
     // Session state that's there but unreadable isn't the same as no effort.
     std::fs::write(&path, &minted).unwrap();
     write(&f.state().join("s1.json"), "not a state file");
-    assert!(f.denies("s1", command), "unreadable session state");
+    // The hook denies every command of a session whose state it can't read, before it looks
+    // for a lease, so the lease code's own read of that state is a second line never reached here.
+    let answer = f.hook(input(&f, command)).unwrap();
+    assert!(reason(&answer).contains("can't read its state"), "{answer}");
     let (text, ok) = f.bash("s1", &f.demo, &mint);
     assert!(
         !ok && text.contains("isn't a state file this program wrote"),
@@ -439,4 +442,15 @@ fn with_no_effort_nested_shells_are_refused_and_a_log_failure_does_not_allow_exe
     );
     std::fs::remove_dir(&path).unwrap();
     assert!(f.denies("s1", command), "the lease was already consumed");
+}
+
+#[test]
+fn dropping_the_effort_cancels_an_approval_that_was_waiting() {
+    let f = loaded();
+    let command = "git push --force";
+    allow(&f, "s1", command);
+    let (text, ok) = f.bash("s1", &f.demo, "astrolabe activate --off");
+    assert!(ok, "{text}");
+    assert!(!f.state().join("s1.allow.json").exists());
+    assert!(f.denies("s1", command), "the approval went with the effort");
 }
