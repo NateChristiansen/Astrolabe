@@ -245,7 +245,7 @@ pub(super) fn note_page(
     for (i, part) in parts[..parts.len() - 1].iter().enumerate() {
         crumb += &format!(
             "<span>›</span><a href=\"/#notes/{}\">{}</a>",
-            esc(&parts[..=i].join("/")),
+            esc(&percent(&parts[..=i].join("/"))),
             esc(label_of(part))
         );
     }
@@ -514,7 +514,16 @@ pub(super) fn resolve_link(root: &Path, from: &str, dest: &str) -> Option<String
     }
     let (path, fragment) = dest.split_once('#').unwrap_or((dest, ""));
     let dir = from.rsplit_once('/').map_or("", |(d, _)| d);
-    let mut candidates = vec![normalize(&format!("{dir}/{path}")), normalize(path)];
+    // The name as written first, then with its escapes read: a name holding a space or a
+    // `#` can only be linked encoded. A decoded `\` is refused, since Windows reads it as
+    // a separator the checks below don't, and a decoded `:`, since the check above refuses
+    // one as written: an escape must not spell a drive or a scheme.
+    let decoded = super::server::decode(path).filter(|d| d != path && !d.contains(['\\', ':']));
+    let mut candidates = Vec::new();
+    for path in std::iter::once(path).chain(decoded.as_deref()) {
+        candidates.push(normalize(&format!("{dir}/{path}")));
+        candidates.push(normalize(path));
+    }
     candidates.dedup();
     for c in candidates {
         if c.is_empty()

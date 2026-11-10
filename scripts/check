@@ -7,6 +7,6 @@ cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 node --check crates/astrolabe/src/home/script.js
-node --test scripts/land.test.mjs
+node --test scripts/land.test.mjs scripts/home_refresh.test.mjs
 python3 -m unittest discover -s scripts -p '*_test.py'
 echo "check: clean"

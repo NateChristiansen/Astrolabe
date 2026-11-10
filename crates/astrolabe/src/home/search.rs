@@ -22,13 +22,21 @@ pub(super) fn answer(root: &Path, query: &str) -> String {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut hits = serde_json::Map::new();
     let mut more = false;
-    if !words.is_empty() {
+    // The boundary a note's page is served inside: a file that resolves outside the
+    // checkout once links are followed is neither read nor named.
+    if let (false, Ok(real_root)) = (words.is_empty(), root.canonicalize()) {
         for rel in note_files(root) {
             if hits.len() >= MAX_HITS {
                 more = true;
                 break;
             }
-            let Ok(text) = std::fs::read_to_string(root.join(&rel)) else {
+            let Ok(real) = root.join(&rel).canonicalize() else {
+                continue;
+            };
+            if !real.starts_with(&real_root) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&real) else {
                 continue;
             };
             if let Some(snippet) = matches(&rel, &text, &words) {
@@ -279,5 +287,47 @@ mod tests {
         let none: serde_json::Value = serde_json::from_str(&answer(&dir, "   ")).unwrap();
         assert!(none["hits"].as_object().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same boundary as serving a note: a folder or file linked in from outside the
+    /// checkout is neither named nor quoted.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_notes_yields_no_hit_and_no_snippet() {
+        let base =
+            std::env::temp_dir().join(format!("astrolabe-search-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, outside) = (base.join("notes"), base.join("outside"));
+        for (path, text) in [
+            (
+                dir.join("knowledge/owner.md"),
+                "# Owner\n\nKeeps a secret.\n",
+            ),
+            (
+                outside.join("private/diary.md"),
+                "# Diary\n\nThe secret itself.\n",
+            ),
+            (outside.join("loose.md"), "# Loose\n\nAnother secret.\n"),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        std::os::unix::fs::symlink(outside.join("private"), dir.join("linked")).unwrap();
+        std::os::unix::fs::symlink(outside.join("private"), dir.join("knowledge/deep")).unwrap();
+        std::os::unix::fs::symlink(outside.join("loose.md"), dir.join("loose.md")).unwrap();
+        let out = answer(&dir, "secret");
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let names: Vec<&str> = parsed["hits"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(names, ["knowledge/owner.md"]);
+        assert!(!out.contains("itself") && !out.contains("Another"), "{out}");
+        // A linked folder's name can't match as a path either.
+        let by_path: serde_json::Value = serde_json::from_str(&answer(&dir, "diary")).unwrap();
+        assert!(by_path["hits"].as_object().unwrap().is_empty(), "{by_path}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

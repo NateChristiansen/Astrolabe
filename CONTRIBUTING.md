@@ -9,7 +9,7 @@ scripts/check
 cargo build --release --locked -p astrolabe
 ```
 
-Run `scripts/check` before each commit. It runs formatting checks, clippy with warnings denied, all Rust tests, the Git landing tests, and release packaging checks. CI runs the same checks on macOS, Windows, and Linux.
+Run `scripts/check` before each commit. It runs formatting checks, clippy with warnings denied, all Rust tests, the Git landing tests, the home page's refresh test, and release packaging checks. CI runs the same checks on macOS, Windows, and Linux.
 
 Building alone does not install the plugin. Follow the [installation guide](docs/install.md) to try your build in an agent app. After changing the program, rebuild and run the new executable with `install`; after changing the plugin, refresh the app's installed copy and start a fresh session.
 

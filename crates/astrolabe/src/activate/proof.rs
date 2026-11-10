@@ -96,7 +96,6 @@ pub(super) fn probe(token: &str, powershell: bool) -> String {
     }
 }
 
-/// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
 /// A session with no effort still has a probe: named for the session, proven from the
 /// machine switch's time.
 pub(crate) fn session_token(session: &str) -> String {
@@ -159,6 +158,7 @@ pub(super) fn proof(session: &str, token: &str, since_ms: i64, powershell: bool)
     )
 }
 
+/// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
 pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
     // Proof counts only from the latest switch-on: off and on again starts it over.
     let on = std::fs::read(dir.join(SWITCH)).ok();
