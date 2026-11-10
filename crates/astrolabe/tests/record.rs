@@ -445,6 +445,8 @@ mod initiatives;
 mod lessons;
 #[path = "record/recovery.rs"]
 mod recovery;
+#[path = "record/results.rs"]
+mod results;
 #[path = "record/saving.rs"]
 mod saving;
 #[path = "record/sessions.rs"]
