@@ -97,52 +97,79 @@ impl App {
         }
     }
 
-    /// Replace the installed copy with the marketplace's. Both apps cache the plugin by
-    /// its version, which stays the same across nightlies, so their own update commands
-    /// call a changed nightly current. The removal may fail when nothing is installed.
-    pub fn reinstall(self) -> Vec<(Vec<String>, bool)> {
+    /// Add the marketplace from `source`, at `git_ref` when it has one.
+    fn register(self, source: &str, git_ref: Option<&str>) -> Vec<String> {
+        let mut words = owned(&["plugin", "marketplace", "add"]);
+        match (self, git_ref) {
+            (App::Claude, Some(git_ref)) => words.push(format!("{source}#{git_ref}")),
+            (App::Codex, Some(git_ref)) => words.extend(owned(&[source, "--ref", git_ref])),
+            (_, None) => words.push(source.to_owned()),
+        }
+        words
+    }
+
+    /// Install the plugin from the registered marketplace.
+    fn install(self) -> Vec<String> {
         match self {
-            App::Claude => vec![
-                (owned(&["plugin", "uninstall", PLUGIN]), false),
-                (owned(&["plugin", "install", PLUGIN]), true),
-            ],
-            App::Codex => vec![
-                (owned(&["plugin", "remove", PLUGIN]), false),
-                (owned(&["plugin", "add", PLUGIN]), true),
-            ],
+            App::Claude => owned(&["plugin", "install", PLUGIN]),
+            App::Codex => owned(&["plugin", "add", PLUGIN]),
         }
     }
 
-    /// The commands that swap the registration for one at `git_ref`, as the install
-    /// guide gives them. The removals may fail when nothing is registered.
-    pub fn steps(self, git_ref: &str) -> Vec<(Vec<String>, bool)> {
-        let url = format!("{REPO}.git");
+    /// Replace the installed copy with the marketplace's. Both apps cache the plugin by
+    /// its version, which stays the same across nightlies, so their own update commands
+    /// call a changed nightly current. Codex's add replaces an installed copy. Claude
+    /// Code's install and update both call one current, so its copy is uninstalled first,
+    /// keeping its saved data; that removal may fail when nothing is installed.
+    pub fn reinstall(self) -> Vec<(Vec<String>, bool)> {
         match self {
             App::Claude => vec![
-                (owned(&["plugin", "uninstall", PLUGIN]), false),
                 (
-                    owned(&["plugin", "marketplace", "remove", MARKETPLACE]),
+                    owned(&["plugin", "uninstall", PLUGIN, "--keep-data"]),
                     false,
                 ),
-                (
-                    owned(&["plugin", "marketplace", "add", &format!("{url}#{git_ref}")]),
-                    true,
-                ),
-                (owned(&["plugin", "install", PLUGIN]), true),
+                (self.install(), true),
             ],
-            App::Codex => vec![
-                (owned(&["plugin", "remove", PLUGIN]), false),
-                (
-                    owned(&["plugin", "marketplace", "remove", MARKETPLACE]),
-                    false,
-                ),
-                (
-                    owned(&["plugin", "marketplace", "add", &url, "--ref", git_ref]),
-                    true,
-                ),
-                (owned(&["plugin", "add", PLUGIN]), true),
-            ],
+            App::Codex => vec![(self.install(), true)],
         }
+    }
+
+    /// What has to go before a marketplace can be added at another ref, kept as narrow
+    /// as each app allows. Claude Code's marketplace removal uninstalls the plugin and
+    /// deletes its saved data, and without a scope it does so in every scope: the plugin
+    /// goes first with its data kept, then only the user declaration. Codex keeps the
+    /// plugin's entry and installed copy when its marketplace goes. Each may fail when
+    /// there is nothing to remove.
+    fn removals(self) -> Vec<Vec<String>> {
+        match self {
+            App::Claude => vec![
+                owned(&["plugin", "uninstall", PLUGIN, "--keep-data"]),
+                owned(&[
+                    "plugin",
+                    "marketplace",
+                    "remove",
+                    MARKETPLACE,
+                    "--scope",
+                    "user",
+                ]),
+            ],
+            App::Codex => vec![owned(&["plugin", "marketplace", "remove", MARKETPLACE])],
+        }
+    }
+
+    /// The commands that swap the registration for one from `source`, both of which
+    /// must succeed after the removals.
+    fn swap(self, source: &str, git_ref: Option<&str>) -> Vec<(Vec<String>, bool)> {
+        let removals = self.removals().into_iter().map(|words| (words, false));
+        let adds = [self.register(source, git_ref), self.install()];
+        removals
+            .chain(adds.into_iter().map(|words| (words, true)))
+            .collect()
+    }
+
+    /// The commands that swap the registration for the hosted one at `git_ref`.
+    pub fn steps(self, git_ref: &str) -> Vec<(Vec<String>, bool)> {
+        self.swap(&format!("{REPO}.git"), Some(git_ref))
     }
 }
 
@@ -151,20 +178,62 @@ fn owned(words: &[&str]) -> Vec<String> {
 }
 
 /// Where an app's Astrolabe marketplace points now: None when it has none registered,
-/// Some(None) when it follows the default branch or a folder.
-fn registered(app: App, cli: &Path) -> Option<Option<String>> {
+/// Some(None) when it follows the default branch or a folder. With it, what the
+/// marketplace was added from, when the app's records show it.
+type Registration = Option<(Option<String>, Option<String>)>;
+
+/// An app's registration, or why its own record of it can't be read.
+fn registered(app: App, cli: &Path) -> Result<Registration, String> {
     match app {
-        App::Claude => {
+        App::Claude => Ok((|| {
             let out = Command::new(cli)
                 .args(["plugin", "marketplace", "list", "--json"])
                 .output()
                 .ok()?;
             let list: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
             let entry = list.as_array()?.iter().find(|m| m["name"] == MARKETPLACE)?;
-            Some(entry["ref"].as_str().map(str::to_owned))
+            // A Git URL, a GitHub `owner/repo` or a folder, as `marketplace add` takes them.
+            let source = ["url", "repo", "path"]
+                .iter()
+                .find_map(|key| entry[*key].as_str());
+            Some((
+                entry["ref"].as_str().map(str::to_owned),
+                source.map(str::to_owned),
+            ))
+        })()),
+        App::Codex => {
+            let Some(path) = codex_home().map(|home| home.join("config.toml")) else {
+                return Ok(None);
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(config) => codex_registration(&config, &path),
+                // Codex with no config has nothing registered.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(unread(&path, &e.to_string())),
+            }
         }
-        App::Codex => codex_ref(&std::fs::read_to_string(codex_home()?.join("config.toml")).ok()?),
     }
+}
+
+/// Codex's registration from its config at `path`, or why that file can't be trusted. A
+/// config that isn't TOML is not an empty one: swapping a registration nobody could
+/// read would remove it with nothing to put back.
+fn codex_registration(config: &str, path: &Path) -> Result<Registration, String> {
+    if let Err(e) = config.parse::<toml_edit::DocumentMut>() {
+        let why = e.to_string();
+        return Err(unread(
+            path,
+            why.lines().next().unwrap_or("it is not valid TOML"),
+        ));
+    }
+    Ok(codex_ref(config).map(|git_ref| (git_ref, codex_source(config))))
+}
+
+fn unread(path: &Path, why: &str) -> String {
+    format!(
+        "{} couldn't be read ({why}), so its plugin wasn't touched. Fix that file, then run `astrolabe update` again.",
+        path.display()
+    )
 }
 
 fn codex_home() -> Option<PathBuf> {
@@ -241,23 +310,24 @@ fn files(root: &Path) -> Option<BTreeMap<PathBuf, Vec<u8>>> {
     Some(found)
 }
 
-/// The `ref` of `[marketplaces.astrolabe]` in Codex's config, read by line: the table is
-/// flat and written by Codex itself.
+/// The `ref` of `[marketplaces.astrolabe]` in Codex's config: None when the table isn't
+/// there or the file isn't TOML, Some(None) when the table has no ref.
 pub fn codex_ref(config: &str) -> Option<Option<String>> {
-    let mut lines = config.lines().map(str::trim);
-    lines.find(|l| *l == "[marketplaces.astrolabe]")?;
-    for line in lines {
-        if line.starts_with('[') {
-            break;
-        }
-        if let Some(value) = line
-            .strip_prefix("ref")
-            .and_then(|rest| rest.trim_start().strip_prefix('='))
-        {
-            return Some(Some(value.trim().trim_matches('"').to_owned()));
-        }
-    }
-    Some(None)
+    codex_marketplace(config, "ref")
+}
+
+/// The `source` of that table: a URL or a folder, as `marketplace add` takes it.
+fn codex_source(config: &str) -> Option<String> {
+    codex_marketplace(config, "source")?
+}
+
+/// One string of `[marketplaces.astrolabe]`, read as TOML: a person may have edited the
+/// file, so a comment, a quoted name or either kind of string has to read correctly.
+fn codex_marketplace(config: &str, key: &str) -> Option<Option<String>> {
+    let config = config.parse::<toml_edit::DocumentMut>().ok()?;
+    let table = config.get("marketplaces")?.get(MARKETPLACE)?;
+    table.as_table_like()?;
+    Some(table.get(key).and_then(|v| v.as_str()).map(str::to_owned))
 }
 
 fn home() -> Option<PathBuf> {
@@ -402,6 +472,7 @@ fn install(git_ref: &str, scratch: &Path, folder: &Path) -> Result<(), String> {
         &script,
     )
     .map_err(|why| format!("couldn't download the installer: {why}"))?;
+    let before = crate::install::program_digest(folder);
     let status = if cfg!(windows) {
         // Bypass applies to this one run of the downloaded installer, not to the machine.
         Command::new("powershell")
@@ -427,11 +498,46 @@ fn install(git_ref: &str, scratch: &Path, folder: &Path) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err("the installer stopped; its message is above, and the previous program is still in place".into())
+        Err(format!(
+            "the installer stopped; its message is above, and {}",
+            crate::install::left_after_failure(folder, before.as_deref())
+        ))
     }
 }
 
+/// Whether the plugin's repository answers and has `git_ref`, asked before a registration
+/// is removed to make room for one at that ref.
+fn reachable(git_ref: &str) -> Result<(), String> {
+    let out = Command::new("git")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["ls-remote", "--exit-code", &format!("{REPO}.git"), git_ref])
+        .output()
+        .map_err(|e| format!("couldn't run git: {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(()),
+        Some(2) => Err(format!("{REPO} has no {git_ref}")),
+        _ => Err(last_line(&out.stderr)),
+    }
+}
+
+/// A command as a person would paste it, into PowerShell on Windows and a POSIX shell
+/// elsewhere, as the install guide has them. A word the shell would split or expand,
+/// such as a folder with a space, is quoted; the rest print bare.
 fn shown(cli: &str, words: &[String]) -> String {
+    let powershell = cfg!(windows);
+    let bare = |word: &str| {
+        let plain = |c: char| {
+            c.is_ascii_alphanumeric() || "_@+=:./#-".contains(c) || (powershell && c == '\\')
+        };
+        !word.is_empty() && !word.starts_with(['#', '@']) && word.chars().all(plain)
+    };
+    let words: Vec<String> = words
+        .iter()
+        .map(|word| match bare(word) {
+            true => word.clone(),
+            false => crate::activate::quoted(word, powershell),
+        })
+        .collect();
     format!("{cli} {}", words.join(" "))
 }
 
@@ -505,8 +611,19 @@ pub fn command(args: &[&str]) -> Result<String, String> {
         .iter()
         .map(|&app| {
             let cli = on_path(app.cli());
-            let follows = cli.as_deref().and_then(|c| registered(app, c));
-            Seen { app, cli, follows }
+            let (registration, unreadable) = match cli.as_deref().map(|c| registered(app, c)) {
+                Some(Ok(registration)) => (registration, None),
+                Some(Err(why)) => (None, Some(why)),
+                None => (None, None),
+            };
+            let (follows, source) = registration.unzip();
+            Seen {
+                app,
+                cli,
+                follows,
+                source: source.flatten(),
+                unreadable,
+            }
         })
         .collect();
     let channel = chosen.unwrap_or_else(|| match seen.iter().find_map(|s| s.follows.clone()) {
@@ -520,8 +637,11 @@ pub fn command(args: &[&str]) -> Result<String, String> {
     let id: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let scratch = std::env::temp_dir().join(format!("astrolabe-update-{id}"));
     std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
-    let result = target(channel, &scratch)
-        .and_then(|target| run(channel, &target, &seen, &copies, &scratch, dry_run, force));
+    let result = target(channel, &scratch).and_then(|target| {
+        run(
+            channel, &target, &seen, &copies, &reachable, &scratch, dry_run, force,
+        )
+    });
     let _ = std::fs::remove_dir_all(&scratch);
     result
 }
@@ -532,7 +652,20 @@ struct Seen {
     app: App,
     cli: Option<PathBuf>,
     follows: Option<Option<String>>,
+    /// What that marketplace was added from (a URL, `owner/repo` or a folder), when the
+    /// app's records show it: what a failed ref change adds back.
+    source: Option<String>,
+    /// Why the app's own record of its marketplace couldn't be read, when it couldn't:
+    /// its plugin is left alone, since nothing says what is there to put back.
+    unreadable: Option<String>,
 }
+
+/// Said with recovery commands that start with removals whose outcome isn't known.
+const UNSURE: &str =
+    "A removal at the start may report that there is nothing to remove; carry on if it does.";
+
+/// An app's commands in order, each with whether it must succeed.
+type Steps = Vec<(Vec<String>, bool)>;
 
 /// What an app's plugin needs.
 enum Plugin {
@@ -542,8 +675,10 @@ enum Plugin {
     Current,
     /// It follows the target, but the installed copy is behind the marketplace's.
     Reinstall,
-    /// It follows another ref, or none: register it again at the target.
-    Reregister,
+    /// It follows another ref, or none: register it again at the target. With it, the
+    /// commands that put back the registration it has now, when the app's records give
+    /// its source, and how that registration reads.
+    Reregister(Option<(Steps, String)>),
     Failed(String),
 }
 
@@ -565,11 +700,13 @@ fn perform(app: App, cli: &Path, steps: &[(Vec<String>, bool)]) -> Result<(), St
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     channel: Channel,
     target: &Target,
     seen: &[Seen],
     copies: &dyn Fn(App) -> Option<(PathBuf, PathBuf)>,
+    preflight: &dyn Fn(&str) -> Result<(), String>,
     scratch: &Path,
     dry_run: bool,
     force: bool,
@@ -596,6 +733,9 @@ fn run(
             let Some(cli) = s.cli.as_ref() else {
                 return (s.app, None, Plugin::Missing);
             };
+            if let Some(why) = &s.unreadable {
+                return (s.app, Some(cli), Plugin::Failed(why.clone()));
+            }
             let follows = s
                 .follows
                 .as_ref()
@@ -604,11 +744,18 @@ fn run(
                 true => Ok(()),
                 false => perform(s.app, cli, &[(s.app.refresh(), true)]),
             };
-            let plan = if force || !follows {
-                Plugin::Reregister
+            let plan = if !follows {
+                let old = s.follows.as_ref().zip(s.source.as_ref());
+                Plugin::Reregister(old.map(|(git_ref, source)| {
+                    (
+                        s.app.swap(source, git_ref.as_deref()),
+                        git_ref.as_ref().unwrap_or(source).clone(),
+                    )
+                }))
             } else if let Err(why) = refreshed() {
                 Plugin::Failed(why)
-            } else if copies(s.app).is_some_and(|(installed, source)| !differs(&installed, &source))
+            } else if !force
+                && copies(s.app).is_some_and(|(installed, source)| !differs(&installed, &source))
             {
                 Plugin::Current
             } else {
@@ -640,6 +787,7 @@ fn run(
         report.push(format!("Program: installed {}.", target.label));
     }
 
+    let mut checked = None;
     for (app, cli, plan) in &plans {
         let (label, git_ref) = (app.label(), &target.git_ref);
         let refresh = shown(app.cli(), &app.refresh());
@@ -664,7 +812,7 @@ fn run(
                 continue;
             }
             Plugin::Reinstall => (app.reinstall(), "reinstalled from"),
-            Plugin::Reregister => (app.steps(git_ref), "now follows"),
+            Plugin::Reregister(_) => (app.steps(git_ref), "now follows"),
         };
         if dry_run {
             // A real run refreshes the marketplace before this step; a dry run hasn't.
@@ -676,13 +824,82 @@ fn run(
             report.push(format!("{label}: would run {}.", commands.join("; ")));
             continue;
         }
-        match cli.map_or(Ok(()), |cli| perform(*app, cli, &steps)) {
-            Ok(()) => report.push(format!("{label}: plugin {done} {git_ref}.")),
-            Err(why) => {
-                failed = true;
-                report.push(format!("{label}: {why}"));
-            }
+        let Some(cli) = cli else { continue };
+        // Nothing is removed for a ref that can't be fetched. Asked once for both apps.
+        if matches!(plan, Plugin::Reregister(_))
+            && let Err(why) = checked.get_or_insert_with(|| preflight(git_ref))
+        {
+            failed = true;
+            report.push(format!(
+                "{label}: nothing was changed, because {git_ref} couldn't be confirmed before removing the current registration: {why}. Run `astrolabe update` again once it can be fetched."
+            ));
+            continue;
         }
+        let commands = |steps: &[(Vec<String>, bool)], all: bool| {
+            let shown: Vec<String> = steps
+                .iter()
+                .filter(|(_, required)| all || *required)
+                .map(|(words, _)| format!("`{}`", shown(app.cli(), words)))
+                .collect();
+            shown.join(", then ")
+        };
+        let Err(why) = perform(*app, cli, &steps) else {
+            // An app can report success for a copy it left alone, so look again.
+            let stale = matches!(plan, Plugin::Reinstall)
+                && !copies(*app).is_some_and(|(installed, source)| !differs(&installed, &source));
+            if stale {
+                failed = true;
+                report.push(format!(
+                    "{label}: the reinstall ran, but the installed copy still doesn't match its marketplace's copy, so it was left as it was. To finish, run {} and read what they print.",
+                    commands(&steps, true)
+                ));
+            } else {
+                report.push(format!("{label}: plugin {done} {git_ref}."));
+            }
+            continue;
+        };
+        failed = true;
+        let retry = commands(&steps, false);
+        report.push(match plan {
+            Plugin::Reregister(Some((back, old))) => {
+                // The old marketplace first, then its plugin, so a failure shows which
+                // registration the app is left with.
+                let (marketplace, plugin) = back.split_at(back.len() - 1);
+                let registered = perform(*app, cli, marketplace);
+                match registered.clone().and_then(|()| perform(*app, cli, plugin)) {
+                    Ok(()) => format!(
+                        "{label}: {why}. The previous registration was put back, so the plugin is still installed from {old}. To move it to {git_ref} yourself, run {}.",
+                        commands(&steps, true)
+                    ),
+                    // Neither app adds another ref over a registration, so with the old
+                    // marketplace back the way to the target starts with the removals.
+                    Err(again) if registered.is_ok() => format!(
+                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {}. For {old}, run {}.",
+                        commands(&steps, true),
+                        commands(plugin, true)
+                    ),
+                    // The old marketplace wasn't added, which a removal that didn't take
+                    // would also cause. What is registered is in doubt, so each way starts
+                    // with the removals.
+                    Err(again) => format!(
+                        "{label}: {why}. The previous registration couldn't be put back ({again}), so {label} may have no Astrolabe plugin, hooks or guard until one of these succeeds. For {git_ref}, run {}. For {old}, run {}. {UNSURE}",
+                        commands(&steps, true),
+                        commands(back, true)
+                    ),
+                }
+            }
+            Plugin::Reregister(None) => format!(
+                "{label}: {why}. {label} may have no Astrolabe plugin, hooks or guard until this succeeds: run {}. {UNSURE}",
+                commands(&steps, true)
+            ),
+            // Only Claude Code's reinstall removes the installed copy first.
+            _ if steps.len() > 1 => format!(
+                "{label}: {why}. Its copy was uninstalled first, so {label} has no Astrolabe hooks or guard until this succeeds: run {retry}."
+            ),
+            _ => format!(
+                "{label}: {why}. The installed copy was left as it was; run {retry} to try again."
+            ),
+        });
     }
     if plans.iter().all(|(_, _, p)| matches!(p, Plugin::Missing)) {
         report.push("Neither app's command was found, so only the program was updated. Install the plugin as the install guide shows once you have one.".into());
@@ -715,13 +932,37 @@ mod tests {
 
     #[test]
     fn codex_config_gives_the_marketplace_ref() {
-        let config = "[x]\nref = \"no\"\n[marketplaces.astrolabe]\nsource_type = \"git\"\nref = \"main\"\n[plugins.y]\n";
+        let config = "[x]\nref = \"no\"\n[marketplaces.astrolabe]\nsource_type = \"git\"\nsource = \"https://example.invalid/a.git\"\nref = \"main\"\n[plugins.y]\n";
         assert_eq!(codex_ref(config), Some(Some("main".into())));
         assert_eq!(
             codex_ref("[marketplaces.astrolabe]\nsource = \"C:/x\"\n[next]\nref = \"v1.0.0\"\n"),
             Some(None)
         );
         assert_eq!(codex_ref("[marketplaces.other]\nref = \"main\"\n"), None);
+        assert_eq!(
+            codex_source(config).as_deref(),
+            Some("https://example.invalid/a.git")
+        );
+        assert_eq!(
+            codex_source("[marketplaces.astrolabe]\nsource = \"C:\\\\x\\\\plugin\"\n").as_deref(),
+            Some("C:\\x\\plugin")
+        );
+        assert_eq!(
+            codex_source("[marketplaces.astrolabe]\nsource = 'C:\\x'\n[next]\n").as_deref(),
+            Some("C:\\x")
+        );
+        assert_eq!(
+            codex_source("[marketplaces.astrolabe]\n[next]\nsource = \"x\"\n"),
+            None
+        );
+
+        // A config edited by hand: comments after the values, and a quoted table name.
+        let edited = "[marketplaces.\"astrolabe\"]\nsource = 'C:\\repos\\Astrolabe' # local checkout\nref = \"v1\" # pinned\n";
+        assert_eq!(
+            codex_source(edited).as_deref(),
+            Some("C:\\repos\\Astrolabe")
+        );
+        assert_eq!(codex_ref(edited), Some(Some("v1".into())));
     }
 
     #[test]
@@ -856,17 +1097,22 @@ mod tests {
     const OLD_HOOKS: &str = r#"{"hooks":{"PreToolUse":[]}}"#;
     const NEW_HOOKS: &str = r#"{"hooks":{"PreToolUse":[],"UserPromptSubmit":[]}}"#;
 
-    /// A stand-in for an app's command that only writes down each call.
+    /// A stand-in for an app's command that writes down each call, and fails the calls
+    /// listed in `fail.txt` beside it, one per line.
     fn fake_cli(dir: &Path) -> PathBuf {
         if cfg!(windows) {
             let cli = dir.join("app.cmd");
-            std::fs::write(&cli, "@echo off\r\necho %*>>\"%~dp0calls.txt\"\r\n").unwrap();
+            std::fs::write(
+                &cli,
+                "@echo off\r\necho %*>>\"%~dp0calls.txt\"\r\nif not exist \"%~dp0fail.txt\" exit /b 0\r\nfindstr /x /l /c:\"%*\" \"%~dp0fail.txt\" >nul\r\nif errorlevel 1 exit /b 0\r\necho boom 1>&2\r\nexit /b 1\r\n",
+            )
+            .unwrap();
             cli
         } else {
             let cli = dir.join("app");
             std::fs::write(
                 &cli,
-                "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/calls.txt\"\n",
+                "#!/bin/sh\ndir=$(dirname \"$0\")\necho \"$*\" >> \"$dir/calls.txt\"\nif [ -f \"$dir/fail.txt\" ] && grep -qxF -- \"$*\" \"$dir/fail.txt\"; then\n  echo boom >&2\n  exit 1\nfi\n",
             )
             .unwrap();
             #[cfg(unix)]
@@ -875,6 +1121,15 @@ mod tests {
                 std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
             cli
+        }
+    }
+
+    /// The installed copy as a real app would leave it: `current` once the app's install
+    /// command has been called, `stale` until then.
+    fn installed(dir: &Path, app: App, stale: &Path, current: &Path) -> PathBuf {
+        match calls(dir).contains(&app.install().join(" ")) {
+            true => current.to_path_buf(),
+            false => stale.to_path_buf(),
         }
     }
 
@@ -891,6 +1146,8 @@ mod tests {
             app,
             cli: cli.clone(),
             follows: Some(Some(git_ref.into())),
+            source: Some(format!("{REPO}.git")),
+            unreadable: None,
         })
     }
 
@@ -925,6 +1182,7 @@ mod tests {
             &nightly(false),
             &seen,
             &|_| None,
+            &|_| Ok(()),
             &scratch,
             true,
             false,
@@ -964,6 +1222,7 @@ mod tests {
             &nightly(true),
             &seen,
             &copies,
+            &|_| Ok(()),
             &dir.0,
             true,
             false,
@@ -975,7 +1234,7 @@ mod tests {
             "{report}"
         );
         assert!(
-            report.contains("Codex: would run codex plugin remove"),
+            report.contains("Codex: would run codex plugin marketplace remove astrolabe; codex plugin marketplace add"),
             "{report}"
         );
         assert!(report.contains("--ref nightly"), "{report}");
@@ -993,13 +1252,14 @@ mod tests {
             &nightly(true),
             &seen,
             &copies,
+            &|_| Ok(()),
             &dir.0,
             true,
             false,
         )
         .unwrap();
         assert!(
-            report.contains("Claude Code: would run claude plugin marketplace update astrolabe; claude plugin uninstall astrolabe@astrolabe; claude plugin install astrolabe@astrolabe."),
+            report.contains("Claude Code: would run claude plugin marketplace update astrolabe; claude plugin uninstall astrolabe@astrolabe --keep-data; claude plugin install astrolabe@astrolabe."),
             "{report}"
         );
         assert!(!report.contains("Already up to date"), "{report}");
@@ -1018,7 +1278,10 @@ mod tests {
         // copy predates a new hook: the case the version-keyed caches miss.
         let copies = |app| {
             Some((
-                if app == App::Claude { &stale } else { &current }.clone(),
+                match app {
+                    App::Claude => installed(&dir.0, app, &stale, &current),
+                    App::Codex => current.clone(),
+                },
                 source.clone(),
             ))
         };
@@ -1027,6 +1290,7 @@ mod tests {
             &nightly(true),
             &seen,
             &copies,
+            &|_| Ok(()),
             &dir.0,
             false,
             false,
@@ -1045,7 +1309,7 @@ mod tests {
             [
                 "plugin marketplace update astrolabe",
                 "plugin marketplace upgrade astrolabe",
-                "plugin uninstall astrolabe@astrolabe",
+                "plugin uninstall astrolabe@astrolabe --keep-data",
                 "plugin install astrolabe@astrolabe",
             ]
         );
@@ -1057,6 +1321,7 @@ mod tests {
             &nightly(true),
             &seen,
             &|_| Some((current.clone(), source.clone())),
+            &|_| Ok(()),
             &dir.0,
             false,
             false,
@@ -1069,6 +1334,129 @@ mod tests {
                 "plugin marketplace update astrolabe",
                 "plugin marketplace upgrade astrolabe",
             ]
+        );
+    }
+
+    #[test]
+    fn a_codex_config_that_cannot_be_read_is_an_error_not_an_empty_registration() {
+        let path = Path::new("/somewhere/.codex/config.toml");
+        let config = "[marketplaces.astrolabe]\nsource = \"https://example.invalid/a.git\"\nref = \"main\"\n";
+        assert_eq!(
+            codex_registration(config, path),
+            Ok(Some((
+                Some("main".into()),
+                Some("https://example.invalid/a.git".into())
+            )))
+        );
+        assert_eq!(codex_registration("[plugins.other]\n", path), Ok(None));
+        let why =
+            codex_registration("[marketplaces.astrolabe\nref = \"main\"\n", path).unwrap_err();
+        assert!(why.contains(&path.display().to_string()), "{why}");
+        assert!(
+            why.contains("couldn't be read") && why.contains("its plugin wasn't touched"),
+            "{why}"
+        );
+        assert!(!why.contains('\n'), "one line: {why}");
+    }
+
+    #[test]
+    fn an_app_whose_registration_cannot_be_read_is_left_alone() {
+        let claude = Scratch::new("unreadable-claude");
+        let codex = Scratch::new("unreadable-codex");
+        let source = plugin(&claude.0.join("source"), NEW_HOOKS);
+        let current = plugin(&claude.0.join("current"), NEW_HOOKS);
+        let why = "/somewhere/config.toml couldn't be read, so its plugin wasn't touched.";
+        let seen = [
+            Seen {
+                app: App::Claude,
+                cli: Some(fake_cli(&claude.0)),
+                follows: Some(Some("nightly".into())),
+                source: Some(format!("{REPO}.git")),
+                unreadable: None,
+            },
+            Seen {
+                app: App::Codex,
+                cli: Some(fake_cli(&codex.0)),
+                follows: None,
+                source: None,
+                unreadable: Some(why.into()),
+            },
+        ];
+        let copies = |_| Some((current.clone(), source.clone()));
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &copies,
+            &|_| Ok(()),
+            &claude.0,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(report.contains(&format!("Codex: {why}")), "{report}");
+        assert_eq!(calls(&codex.0), [""; 0], "no Codex command runs");
+        // The other app is handled as usual.
+        assert_eq!(calls(&claude.0), ["plugin marketplace update astrolabe"]);
+        assert!(
+            report.contains("Claude Code: plugin already matches nightly."),
+            "{report}"
+        );
+
+        // The program still moves: a dry run, since a real one would install it.
+        let report = run(
+            Channel::Nightly,
+            &nightly(false),
+            &seen,
+            &copies,
+            &|_| Ok(()),
+            &claude.0,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            report.contains("Program: would run the 0.5.0 nightly 1a2b3c4 installer"),
+            "{report}"
+        );
+        assert!(report.contains(&format!("Codex: {why}")), "{report}");
+        assert!(!report.contains("Codex: would run"), "{report}");
+        assert_eq!(calls(&codex.0), [""; 0]);
+    }
+
+    #[test]
+    fn a_printed_command_quotes_an_argument_the_shell_would_split() {
+        let folder = "/Users/me/Plugin Sources/Astrolabe";
+        for app in App::ALL {
+            assert_eq!(
+                shown(app.cli(), &app.register(folder, None)),
+                format!(
+                    "{} plugin marketplace add '/Users/me/Plugin Sources/Astrolabe'",
+                    app.cli()
+                )
+            );
+        }
+        // The quote inside a quoted word is spelled for the shell the command is pasted into.
+        let quote = if cfg!(windows) { "''" } else { "'\\''" };
+        assert_eq!(
+            shown("codex", &App::Codex.register("/Users/O'Brien/x y", None)),
+            format!("codex plugin marketplace add '/Users/O{quote}Brien/x y'")
+        );
+        // Words that need no quoting print as they always did.
+        assert_eq!(
+            shown("claude", &App::Claude.steps("nightly")[2].0),
+            "claude plugin marketplace add https://github.com/NateChristiansen/Astrolabe.git#nightly"
+        );
+        assert_eq!(
+            shown(
+                "codex",
+                &App::Codex.register("C:\\repos\\Astrolabe", Some("v0.6.0"))
+            ),
+            if cfg!(windows) {
+                "codex plugin marketplace add C:\\repos\\Astrolabe --ref v0.6.0"
+            } else {
+                "codex plugin marketplace add 'C:\\repos\\Astrolabe' --ref v0.6.0"
+            }
         );
     }
 
@@ -1087,11 +1475,299 @@ mod tests {
             !claude[0].1 && !claude[1].1,
             "removals may find nothing to remove"
         );
+        // The narrowest removal: the plugin's data and other scopes' declarations stay.
+        assert_eq!(claude[0].0.last().unwrap(), "--keep-data");
+        assert_eq!(claude[1].0[claude[1].0.len() - 2..], ["--scope", "user"]);
         let codex = App::Codex.steps("v0.6.0");
+        assert_eq!(codex[0].0, ["plugin", "marketplace", "remove", MARKETPLACE]);
+        assert!(!codex[0].1, "the removal may find nothing to remove");
         assert_eq!(
-            codex[2].0[codex[2].0.len() - 2..],
+            codex[1].0[codex[1].0.len() - 2..],
             ["--ref".to_owned(), "v0.6.0".to_owned()]
         );
-        assert_eq!(codex[3].0, ["plugin", "add", PLUGIN]);
+        assert_eq!(codex[2].0, ["plugin", "add", PLUGIN]);
+    }
+
+    /// One app found, registered from the hosted repository at `git_ref`.
+    fn only(app: App, cli: PathBuf, git_ref: &str) -> [Seen; 1] {
+        [Seen {
+            app,
+            cli: Some(cli),
+            follows: Some(Some(git_ref.into())),
+            source: Some(format!("{REPO}.git")),
+            unreadable: None,
+        }]
+    }
+
+    fn fail(dir: &Path, calls: &[&[String]]) {
+        // Windows' findstr matches a whole line only when it ends as Windows' lines do.
+        let end = if cfg!(windows) { "\r\n" } else { "\n" };
+        let lines: Vec<String> = calls.iter().map(|words| words.join(" ") + end).collect();
+        std::fs::write(dir.join("fail.txt"), lines.concat()).unwrap();
+    }
+
+    #[test]
+    fn a_same_ref_update_removes_no_registration_even_when_forced() {
+        let dir = Scratch::new("same-ref");
+        let cli = fake_cli(&dir.0);
+        let source = plugin(&dir.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&dir.0.join("stale"), OLD_HOOKS);
+        let current = plugin(&dir.0.join("current"), NEW_HOOKS);
+        let seen = following("nightly", Some(cli));
+        let unasked = |_: &str| Err("the same ref needs no check".to_owned());
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &|app| Some((installed(&dir.0, app, &stale, &current), source.clone())),
+            &unasked,
+            &dir.0,
+            false,
+            false,
+        )
+        .unwrap();
+        // Codex replaces a stale copy on add, so nothing of its is removed at all.
+        assert_eq!(
+            calls(&dir.0),
+            [
+                "plugin marketplace update astrolabe",
+                "plugin marketplace upgrade astrolabe",
+                "plugin uninstall astrolabe@astrolabe --keep-data",
+                "plugin install astrolabe@astrolabe",
+                "plugin add astrolabe@astrolabe",
+            ]
+        );
+        assert!(
+            report.contains("Codex: plugin reinstalled from nightly."),
+            "{report}"
+        );
+
+        // Forced, with every copy current: a dry run, since a forced run also installs
+        // the program.
+        let report = run(
+            Channel::Nightly,
+            &nightly(true),
+            &seen,
+            &|_| Some((current.clone(), source.clone())),
+            &unasked,
+            &dir.0,
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(!report.contains("marketplace remove"), "{report}");
+        assert!(!report.contains("codex plugin remove"), "{report}");
+        assert!(
+            report.contains("Claude Code: would run claude plugin marketplace update astrolabe; claude plugin uninstall astrolabe@astrolabe --keep-data; claude plugin install astrolabe@astrolabe."),
+            "{report}"
+        );
+        assert!(
+            report.contains("Codex: would run codex plugin marketplace upgrade astrolabe; codex plugin add astrolabe@astrolabe."),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn a_ref_change_checks_the_target_before_removing_anything() {
+        for app in App::ALL {
+            let dir = Scratch::new(&format!("preflight-{}", app.cli()));
+            let seen = only(app, fake_cli(&dir.0), "main");
+            let report = run(
+                Channel::Nightly,
+                &nightly(true),
+                &seen,
+                &|_| None,
+                &|_| Err("could not resolve host".into()),
+                &dir.0,
+                false,
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(calls(&dir.0), [""; 0], "{report}");
+            assert!(report.contains("nothing was changed"), "{report}");
+            assert!(report.contains("could not resolve host"), "{report}");
+        }
+    }
+
+    #[test]
+    fn a_failure_at_any_step_of_a_ref_change_leaves_a_registration_or_recovery_steps() {
+        for app in App::ALL {
+            let steps = app.steps("nightly");
+            let old = app.register(&format!("{REPO}.git"), Some("main"));
+            for (at, (words, required)) in steps.iter().enumerate() {
+                let dir = Scratch::new(&format!("inject-{}-{at}", app.cli()));
+                let seen = only(app, fake_cli(&dir.0), "main");
+                fail(&dir.0, &[words]);
+                let result = run(
+                    Channel::Nightly,
+                    &nightly(true),
+                    &seen,
+                    &|_| None,
+                    &|_| Ok(()),
+                    &dir.0,
+                    false,
+                    false,
+                );
+                let calls = calls(&dir.0);
+                if !required {
+                    // A removal that finds nothing to remove doesn't stop the move.
+                    let report = result.unwrap();
+                    assert!(report.contains("plugin now follows nightly."), "{report}");
+                    continue;
+                }
+                let report = result.unwrap_err();
+                assert!(
+                    calls.contains(&old.join(" ")),
+                    "the old registration is added back: {calls:?}"
+                );
+                // The exact commands for the target are printed either way.
+                for (words, required) in &steps {
+                    if *required {
+                        assert!(report.contains(&shown(app.cli(), words)), "{report}");
+                    }
+                }
+                if *words == app.install() {
+                    // The same command installs from the old registration, so it fails too,
+                    // after the old marketplace went back in. Neither app adds another ref
+                    // over a registration, so the way to the target starts with the removal.
+                    assert!(report.contains("couldn't be put back"), "{report}");
+                    assert!(
+                        report.contains("may have no Astrolabe plugin, hooks or guard"),
+                        "{report}"
+                    );
+                    let all: Vec<String> = steps
+                        .iter()
+                        .map(|(words, _)| format!("`{}`", shown(app.cli(), words)))
+                        .collect();
+                    assert!(
+                        report.contains(&format!("For nightly, run {}.", all.join(", then "))),
+                        "{report}"
+                    );
+                    assert!(
+                        report.contains(&format!(
+                            "For main, run `{}`.",
+                            shown(app.cli(), &app.install())
+                        )),
+                        "{report}"
+                    );
+                } else {
+                    assert!(
+                        report.contains("The previous registration was put back"),
+                        "{report}"
+                    );
+                    assert_eq!(calls.last().unwrap(), &app.install().join(" "));
+                }
+            }
+
+            // The old marketplace can't be added back, in two ways: the target's add
+            // failed, or the target went in, its install failed, and the removal that
+            // should have cleared it for the old one failed too. What is registered is in
+            // doubt either way, so both sets of commands start with the removal.
+            let add = &steps[steps.len() - 2].0;
+            let removal = &steps[steps.len() - 3].0;
+            let install = app.install();
+            let back = app.swap(&format!("{REPO}.git"), Some("main"));
+            let all = |steps: &[(Vec<String>, bool)]| {
+                let shown: Vec<String> = steps
+                    .iter()
+                    .map(|(words, _)| format!("`{}`", shown(app.cli(), words)))
+                    .collect();
+                shown.join(", then ")
+            };
+            let cases: [(&str, Vec<&[String]>); 2] = [
+                ("add", vec![add, &old]),
+                ("removal", vec![&install, removal, &old]),
+            ];
+            for (name, failing) in cases {
+                let dir = Scratch::new(&format!("inject-{}-{name}", app.cli()));
+                let seen = only(app, fake_cli(&dir.0), "main");
+                fail(&dir.0, &failing);
+                let report = run(
+                    Channel::Nightly,
+                    &nightly(true),
+                    &seen,
+                    &|_| None,
+                    &|_| Ok(()),
+                    &dir.0,
+                    false,
+                    false,
+                )
+                .unwrap_err();
+                assert!(report.contains("couldn't be put back"), "{name}: {report}");
+                assert!(
+                    report.contains(&format!("For nightly, run {}.", all(&steps))),
+                    "{name}: {report}"
+                );
+                assert!(
+                    report.contains(&format!("For main, run {}.", all(&back))),
+                    "{name}: {report}"
+                );
+                assert!(
+                    report.contains("may report that there is nothing to remove"),
+                    "{name}: {report}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_reinstall_that_leaves_the_copy_stale_fails_and_says_how_to_finish() {
+        let source = Scratch::new("unchanged-source");
+        let new = plugin(&source.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&source.0.join("stale"), OLD_HOOKS);
+        for app in App::ALL {
+            let dir = Scratch::new(&format!("unchanged-{}", app.cli()));
+            let seen = only(app, fake_cli(&dir.0), "nightly");
+            // Every command succeeds, as when an app calls a stale copy already installed.
+            let report = run(
+                Channel::Nightly,
+                &nightly(true),
+                &seen,
+                &|_| Some((stale.clone(), new.clone())),
+                &|_| Ok(()),
+                &dir.0,
+                false,
+                false,
+            )
+            .unwrap_err();
+            assert!(!report.contains("plugin reinstalled from"), "{report}");
+            assert!(
+                report.contains("still doesn't match its marketplace's copy"),
+                "{report}"
+            );
+            for (words, _) in app.reinstall() {
+                assert!(report.contains(&shown(app.cli(), &words)), "{report}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_reinstall_says_what_is_left_and_how_to_finish() {
+        let source = Scratch::new("reinstall-source");
+        let new = plugin(&source.0.join("source"), NEW_HOOKS);
+        let stale = plugin(&source.0.join("stale"), OLD_HOOKS);
+        for app in App::ALL {
+            let dir = Scratch::new(&format!("reinstall-{}", app.cli()));
+            let seen = only(app, fake_cli(&dir.0), "nightly");
+            fail(&dir.0, &[&app.install()]);
+            let report = run(
+                Channel::Nightly,
+                &nightly(true),
+                &seen,
+                &|_| Some((stale.clone(), new.clone())),
+                &|_| Ok(()),
+                &dir.0,
+                false,
+                false,
+            )
+            .unwrap_err();
+            let retry = format!("run `{}`", shown(app.cli(), &app.install()));
+            assert!(report.contains(&retry), "{report}");
+            let left = match app {
+                App::Claude => "has no Astrolabe hooks or guard until",
+                App::Codex => "The installed copy was left as it was",
+            };
+            assert!(report.contains(left), "{report}");
+        }
     }
 }
