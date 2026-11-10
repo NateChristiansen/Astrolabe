@@ -617,6 +617,80 @@ mod tests {
     }
 
     #[test]
+    fn a_later_member_is_described_by_its_goal_when_its_note_keeps_one() {
+        let notes = crate::board::initiative_fixture();
+        // Member 9 is done, so its Current state reads like an acceptance, not a purpose.
+        std::fs::write(
+            notes.root.join("efforts/0009-member.md"),
+            "---\nstatus: done\nrepo: demo\ninitiative: shared-work\ncreated: 2026-11-09\n---\n# 0009 Member\n\nMake the ink <smooth> at speed.\n\n## Current state\nDone: I looked at it in game and accepted it.\n",
+        )
+        .unwrap();
+        let (_, prose) = shared_work_page(
+            &notes,
+            "## Efforts\n\n1. [Seventh](../efforts/0007-member.md). Starts it.\n",
+        );
+        assert!(
+            prose.contains("<span class=\"stat added\">added Nov 9</span></span>Make the ink &lt;smooth&gt; at speed.</li>"),
+            "{prose}"
+        );
+        assert!(!prose.contains("accepted it"), "{prose}");
+        // One whose note keeps no goal still reads its Current state's first sentence.
+        assert!(prose.contains(">5 Member</a>"), "{prose}");
+        assert!(
+            prose.matches("</span>Working.</li>").count() >= 1,
+            "{prose}"
+        );
+    }
+
+    #[test]
+    fn an_effort_page_folds_its_plan_and_shows_one_checklist() {
+        let notes = crate::board::initiative_fixture();
+        let rel = "efforts/0021-planned.md";
+        let text = "---\nstatus: active\nrepo: demo\n---\n# 0021 Planned\n\nCap the tether.\n\n## Current state\nGoing.\n\n## Decisions\n- 2026-11-08: a over b: why.\n\n## Plan\n1. Cap it.\n2. Land it.\n\n### Pieces\n- [ ] Cap\n\n### Risks\nNone.\n\n## Pieces\n- [x] Cap (2026-11-09)\n- [ ] Land it (added 2026-11-10)\n- [x] Later one (added 2026-11-10) (2026-11-11)\n";
+        std::fs::write(notes.root.join(rel), text).unwrap();
+        let rows = crate::board::rows_in(&notes, None, true);
+        let page = super::markdown::note_page(text, rel, &rows, &notes.root, NOW, Look::default());
+        let start = page.find("<div class=\"prose\">").unwrap();
+        let prose = &page[start..start + page[start..].find("<aside").unwrap()];
+        // The goal reads under the title, before Current state.
+        assert!(
+            prose.find("Cap the tether.").unwrap() < prose.find("Current state</h2>").unwrap(),
+            "{prose}"
+        );
+        // The plan is closed, steps and its own list inside it; the live list follows.
+        let fold = prose
+            .find("<details class=\"plan-record\" id=\"plan\"><summary>Plan, as approved</summary>")
+            .unwrap_or_else(|| panic!("{prose}"));
+        let closed = prose.find("</details>").unwrap();
+        assert!(
+            fold < prose.find("Cap it.").unwrap() && prose.find("Risks").unwrap() < closed,
+            "{prose}"
+        );
+        assert!(!prose.contains("<h2 id=\"plan\">"), "{prose}");
+        assert!(prose.contains("<h3 id=\"plan-pieces\">"), "{prose}");
+        assert_eq!(prose.matches("id=\"pieces\"").count(), 1, "{prose}");
+        let pieces = prose.find("<h2 id=\"pieces\">").unwrap();
+        assert!(closed < pieces, "{prose}");
+        // A later piece carries the quiet tag, before its tick day.
+        assert!(
+            prose.contains("Land it<span class=\"stat added\">added Nov 10</span>"),
+            "{prose}"
+        );
+        assert!(
+            prose.contains("Later one<span class=\"stat added\">added Nov 10</span> (2026-11-11)"),
+            "{prose}"
+        );
+        // The outline keeps the plan's own entry and none of its inner headings.
+        let rail = &page[page.find("<nav class=\"outline\"").unwrap()..];
+        let rail = &rail[..rail.find("</nav>").unwrap()];
+        assert!(
+            rail.contains("href=\"#plan\"") && !rail.contains("Risks"),
+            "{rail}"
+        );
+        assert!(rail.contains("href=\"#pieces\""), "{rail}");
+    }
+
+    #[test]
     fn an_effort_page_shows_its_pieces_under_its_title() {
         let notes = crate::board::initiative_fixture();
         let rel = "efforts/0020-pieces.md";

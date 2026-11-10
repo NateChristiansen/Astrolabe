@@ -105,6 +105,8 @@ pub(super) fn note_page(
     // Headings get ids, and the second and third levels make the outline.
     let mut outline = Vec::new();
     let mut trimmed = false;
+    // An effort's plan is drawn folded, so the headings inside it stay out of the outline.
+    let mut in_plan = false;
     let mut i = 0;
     while i < events.len() {
         if let Event::Start(Tag::Heading { level, .. }) = &events[i] {
@@ -119,13 +121,21 @@ pub(super) fn note_page(
                 }
                 j += 1;
             }
-            let id = heading_id(&heading);
+            if level <= HeadingLevel::H2 {
+                in_plan = effort && level == HeadingLevel::H2 && heading.trim() == "Plan";
+            }
+            // A heading inside the folded plan, such as an old plan's own Pieces, can't
+            // take the id of the live section it repeats.
+            let id = match heading_id(&heading) {
+                id if in_plan && level > HeadingLevel::H2 => format!("plan-{id}"),
+                id => id,
+            };
             if let Event::Start(Tag::Heading { id: slot, .. }) = &mut events[i] {
                 *slot = Some(id.clone().into());
             }
             match level {
                 HeadingLevel::H2 => outline.push((2, heading, id)),
-                HeadingLevel::H3 => outline.push((3, heading, id)),
+                HeadingLevel::H3 if !in_plan => outline.push((3, heading, id)),
                 // The id above keeps the padded number, so links to it still land.
                 HeadingLevel::H1 if effort && !trimmed => {
                     trimmed = true;
@@ -182,6 +192,11 @@ pub(super) fn note_page(
     });
     let members = initiative_members(rel, rows, root);
     let events = with_effort_status(events.collect(), rows, members.as_deref(), root);
+    let events = if effort {
+        plan_folded(with_added_tags(events))
+    } else {
+        events
+    };
     let mut rendered = String::new();
     html::push_html(&mut rendered, events.into_iter());
     // The rail beside the text holds the outline, when there are sections to jump
@@ -268,6 +283,95 @@ pub(super) fn note_page(
         None,
         Links::Served,
     )
+}
+
+/// An effort's `## Plan` section drawn closed, as the record of what was approved: the
+/// Pieces list is the live one, and the plan's steps would read as a second copy of it. The
+/// note keeps the whole plan for the next session.
+fn plan_folded(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark::Event<'_>> {
+    use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+    let mut out = Vec::with_capacity(events.len() + 2);
+    let mut open = false;
+    let mut i = 0;
+    while i < events.len() {
+        if let Event::Start(Tag::Heading { level, id, .. }) = &events[i]
+            && *level <= HeadingLevel::H2
+        {
+            if open {
+                out.push(Event::Html("</div></details>\n".into()));
+                open = false;
+            }
+            let end = (i..events.len())
+                .find(|k| matches!(events[*k], Event::End(TagEnd::Heading(_))))
+                .unwrap_or(events.len() - 1);
+            let text: String = events[i..end]
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Text(t) => Some(t.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            if *level == HeadingLevel::H2 && text.trim() == "Plan" {
+                let id = id.as_deref().unwrap_or("plan");
+                out.push(Event::Html(
+                    format!(
+                        "<details class=\"plan-record\" id=\"{}\"><summary>Plan, as approved</summary><div class=\"plan-body\">\n",
+                        esc(id)
+                    )
+                    .into(),
+                ));
+                open = true;
+                i = end + 1;
+                continue;
+            }
+        }
+        out.push(events[i].clone());
+        i += 1;
+    }
+    if open {
+        out.push(Event::Html("</div></details>\n".into()));
+    }
+    out
+}
+
+/// A piece's ` (added YYYY-MM-DD)`, which a save writes on a piece that came after the plan,
+/// drawn as the quiet tag an initiative's later member gets.
+fn with_added_tags(events: Vec<pulldown_cmark::Event<'_>>) -> Vec<pulldown_cmark::Event<'_>> {
+    use pulldown_cmark::Event;
+    let mut out = Vec::with_capacity(events.len());
+    for event in events {
+        let Event::Text(text) = &event else {
+            out.push(event);
+            continue;
+        };
+        let Some(at) = text.find(" (added ") else {
+            out.push(event);
+            continue;
+        };
+        let rest = &text[at + " (added ".len()..];
+        let day = rest
+            .get(..10)
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+            .filter(|_| rest[10..].starts_with(')'));
+        let Some(day) = day else {
+            out.push(event);
+            continue;
+        };
+        let before = text[..at].to_owned();
+        let after = rest[11..].to_owned();
+        out.push(Event::Text(before.into()));
+        out.push(Event::Html(
+            format!(
+                "<span class=\"stat added\">added {}</span>",
+                day.format("%b %-d")
+            )
+            .into(),
+        ));
+        if !after.is_empty() {
+            out.push(Event::Text(after.into()));
+        }
+    }
+    out
 }
 
 /// The members of the initiative whose page is at `rel`, in number order, or None for any
@@ -499,8 +603,9 @@ fn with_effort_status<'a>(
 }
 
 /// A member the prose doesn't link, drawn the way a title line in an initiative's list
-/// is: its number and title as the link, its status, then the first sentence of its
-/// Current state, or its goal where an older note keeps one, as the description. With the
+/// is: its number and title as the link, its status, then the goal it was filed with as the
+/// description, or the first sentence of its Current state where the note keeps no goal
+/// (or an older labelled block's goal). With the
 /// notes' `root`, it joined after the prose was written, and a quiet tag after its status
 /// says when, from the day its note was created.
 fn member_line(member: &crate::board::EffortRow, root: Option<&Path>) -> String {
@@ -519,12 +624,15 @@ fn member_line(member: &crate::board::EffortRow, root: Option<&Path>) -> String 
             )
         })
         .unwrap_or_default();
-    let description = member
-        .state
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| esc(&super::render::first_sentence(s)))
-        .unwrap_or_default();
+    let description = match member.goal.as_deref().filter(|g| !g.trim().is_empty()) {
+        Some(goal) => esc(goal.trim()),
+        None => member
+            .state
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| esc(&super::render::first_sentence(s)))
+            .unwrap_or_default(),
+    };
     format!(
         "<span class=\"etitle\"><a href=\"/{}\">{}{}</a>{}{added}</span>{description}",
         esc(&percent(member.file.as_deref().unwrap_or_default())),

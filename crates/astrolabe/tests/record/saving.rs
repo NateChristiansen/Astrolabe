@@ -1557,3 +1557,83 @@ fn a_refused_save_keeps_the_sections_an_unclosed_header_swallowed() {
         }
     }
 }
+
+#[test]
+fn an_effort_keeps_its_goal_and_tags_pieces_that_come_after_its_plan() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let goal =
+        "# 0001 Smooth ink\n\nsmooth the ink across frames, with café in it\n\n## Current state\n";
+    assert!(mac.effort_text(1).contains(goal), "{}", mac.effort_text(1));
+    // A plan file with its own Pieces list: the list is lifted out as the effort's Pieces,
+    // so the note keeps one, and nothing in a plan's own save is tagged as added.
+    write(
+        &mac.demo.join("plan.md"),
+        "# Plan\n\n## Steps\n1. Cap the tether.\n2. Goo at speed.\n\n## Pieces\n- [ ] Tether cap\n- [ ] Goo at speed\n\n## Risks\nNone.\n",
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --plan-file plan.md <<'ASTROLABE'\nPlanned.\n\nThe tether first.\n\nNext the goo.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains(goal),
+        "the goal stays once Current state is rewritten: {text}"
+    );
+    assert!(
+        text.contains("## Pieces\n- [ ] Tether cap\n- [ ] Goo at speed\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("Tether cap").count(), 1, "{text}");
+    assert!(
+        text.contains("### Steps") && text.contains("### Risks\nNone."),
+        "{text}"
+    );
+    assert!(!text.contains("added"), "{text}");
+    // A later save that adds a piece tags it with the day; one that rewords keeps none.
+    write(
+        &mac.demo.join("pieces.md"),
+        "- [ ] Tether cap\n- [ ] Goo at any speed\n- [ ] Landed on main\n",
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort save --pieces-file pieces.md");
+    assert!(ok, "{out}");
+    let day = today();
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains(&format!(
+            "- [ ] Tether cap\n- [ ] Goo at any speed\n- [ ] Landed on main (added {day})\n"
+        )),
+        "{text}"
+    );
+    assert!(mac.bash("s1", "astrolabe effort save --tick Landed").1);
+    assert!(
+        mac.effort_text(1)
+            .contains(&format!("- [x] Landed on main (added {day}) ({day})")),
+        "{}",
+        mac.effort_text(1)
+    );
+    // A plan saved with a list that carries its own Pieces keeps the given list.
+    write(
+        &mac.demo.join("plan.md"),
+        "# Plan\n\n## Pieces\n- [ ] Something else\n",
+    );
+    write(
+        &mac.demo.join("pieces.md"),
+        &format!(
+            "- [ ] Tether cap\n- [ ] Goo at any speed\n- [x] Landed on main (added {day}) ({day})\n- [ ] Replanned\n"
+        ),
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --plan-file plan.md --pieces-file pieces.md",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(!text.contains("Something else"), "{text}");
+    assert!(
+        text.contains("- [ ] Replanned\n"),
+        "a re-plan tags nothing: {text}"
+    );
+}

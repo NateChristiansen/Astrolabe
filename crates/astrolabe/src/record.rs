@@ -633,8 +633,11 @@ fn effort_note(
     settings: &Settings<'_>,
     day: &str,
 ) -> EffortFile {
+    // The goal is the first Current state, and stays as the lead under the title once
+    // Current state is rewritten.
     let mut file = EffortFile {
         title: format!("{number:04} {title}"),
+        lead: current.clone(),
         current,
         ..Default::default()
     };

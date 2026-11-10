@@ -205,6 +205,14 @@ impl<'a> SaveRequest<'a> {
             Some((p, shifted)) => (Some(p), shifted),
             None => (None, false),
         };
+        // A plan file often carries its own Pieces checklist. The effort keeps one list, so
+        // the plan's is lifted out: it's the list when the save gives none, and a copy when
+        // it does.
+        let (plan, lifted) = match plan.map(|p| lift_plan_pieces(&p)) {
+            Some((p, lifted)) => (Some(p), lifted),
+            None => (None, None),
+        };
+        let pieces = pieces.or(lifted);
         // Checked before the lock and the hash: a refused body writes nothing either way.
         let current = body.as_deref().map(as_current).transpose()?;
         Ok(Self {
@@ -291,11 +299,54 @@ pub(super) fn edit_bound(
     }
     if let Some(p) = &req.pieces {
         keeps_ticked(file, p)?;
-        file.set_pieces(p);
+        // A piece that comes after the plan says so. A save that carries a plan is the plan,
+        // and a first list is the one the work starts from, so neither tags anything.
+        let p = if file.pieces().is_some() && req.plan.is_none() {
+            file.with_added_tags(p, day)
+        } else {
+            p.clone()
+        };
+        file.set_pieces(&p);
     }
     apply_ticks(file, &req.ticks, &req.unticks, day)?;
     super::lesson::add_to(file, &req.lessons);
     req.change(initiative).apply(file, day)
+}
+
+/// The plan without its own Pieces section, and that section's checklist when it has one: a
+/// heading named Pieces at any level, up to the next heading at its level or above. A
+/// section with no checklist item stays in the plan, since it isn't a list of pieces.
+fn lift_plan_pieces(plan: &str) -> (String, Option<String>) {
+    let lines: Vec<&str> = plan.split('\n').collect();
+    let fenced = crate::effort::fence_mask(lines.iter().copied());
+    fn level(l: &str) -> Option<(usize, &str)> {
+        let n = l.bytes().take_while(|b| *b == b'#').count();
+        (n > 0 && l[n..].starts_with(' ')).then(|| (n, l[n..].trim()))
+    }
+    let heads: Vec<Option<(usize, &str)>> = lines
+        .iter()
+        .zip(&fenced)
+        .map(|(l, f)| if *f { None } else { level(l) })
+        .collect();
+    let Some((at, n)) = heads.iter().enumerate().find_map(|(i, h)| {
+        h.filter(|(_, t)| t.eq_ignore_ascii_case("pieces"))
+            .map(|(n, _)| (i, n))
+    }) else {
+        return (plan.to_owned(), None);
+    };
+    let end = (at + 1..lines.len())
+        .find(|i| heads[*i].is_some_and(|(m, _)| m <= n))
+        .unwrap_or(lines.len());
+    let section = lines[at + 1..end].join("\n");
+    let checklist = section.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("- [ ] ") || l.starts_with("- [x] ") || l.starts_with("- [X] ")
+    });
+    if !checklist {
+        return (plan.to_owned(), None);
+    }
+    let rest = [&lines[..at], &lines[end..]].concat().join("\n");
+    (rest.trim().to_owned(), Some(section.trim().to_owned()))
 }
 
 fn without_pieces_heading(text: &str) -> String {

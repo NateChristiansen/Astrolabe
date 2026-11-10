@@ -120,7 +120,7 @@ the page is showing older content until the next change or reconnect loads it.
 
 Print board data as JSON. By default, effort rows exclude `done` and `abandoned`; `--all` includes them. `--repo` filters effort rows only. `--json` is accepted and changes nothing, as the output is JSON either way. Any other argument, or a `--repo` with no name, is refused.
 
-The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. A lesson an effort names carries `answered_by` with that effort's `number`, `title`, `status` and `file`, preferring one that isn't done or abandoned, then the newest; an effort row that names lessons carries them as `lessons`. Both are absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
+The output contains `efforts`, `initiatives` (each page with progress counted from its members), `initiative_attention` (the pages waiting on the owner), `initiative_titles` by slug, `legacy_initiatives` (unfinished groups whose efforts name an initiative with no page), `today`, today's raw `journal` and parsed `journal_lines`, `notes` warnings, `lessons` and `drafts`. A lesson or draft that isn't committed in the notes yet carries `"uncommitted": true`; the field is absent otherwise. A lesson an effort names carries `answered_by` with that effort's `number`, `title`, `status` and `file`, preferring one that isn't done or abandoned, then the newest; an effort row that names lessons carries them as `lessons`, and one whose note keeps a goal carries it as `goal`. Both are absent otherwise. `--repo` also filters initiative pages by their own repo, and legacy groups to that repo's efforts; a page's progress still counts every member. Initiative titles, journal entries, warnings, lessons and drafts are not filtered by repo.
 
 ### `notes status` and `notes sync`
 
@@ -163,6 +163,8 @@ astrolabe effort new --title "Fix failed uploads" <<'ASTROLABE'
 Let people retry failed uploads without losing their selection.
 ASTROLABE
 ```
+
+The goal is the note's first Current state, and it's also kept under the title, where later saves leave it, so the effort still says what it was for once its state is rewritten. Efforts filed by `initiative new` keep theirs the same way. An initiative's page describes a member that joined after its list was written by that goal, or by the first sentence of its Current state when an older note keeps none.
 
 | Option | Values and default |
 | --- | --- |
@@ -276,7 +278,7 @@ Active again after the upload check.
 ASTROLABE
 ```
 
-Pieces are a living list of landable outcomes, one independently checkable outcome per line. The agent writes them when the work starts, as its best current guess from the plan or brief, and revises them on any save. A one-step fix or spike needs none. Unticked lines can be added, reworded or dropped; a dropped line stays struck with its date and reason, as `- ~~Check slow connections~~ dropped 2026-11-08: covered by the retry work`, which the piece count skips. A tick means its outcome is met, which can be on a branch, and stamps the day; if landing is a deliverable, record it as a piece. File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
+Pieces are a living list of landable outcomes, one independently checkable outcome per line. The agent writes them when the work starts, as its best current guess from the plan or brief, and revises them on any save. A one-step fix or spike needs none. Unticked lines can be added, reworded or dropped; a dropped line stays struck with its date and reason, as `- ~~Check slow connections~~ dropped 2026-11-08: covered by the retry work`, which the piece count skips. A line a save adds to an existing list, when that save doesn't also carry a plan, is tagged with the day it came, as `- [ ] Check slow connections (added 2026-11-09)`, so the up-front list still reads apart from what came later; the effort's page draws it as an "added" tag. A line whose words match one already there keeps that line's tag or its lack of one, and a new line in place of an unticked one that's gone counts as a rewording, in order, so only the lines left over are tagged. Ticking, unticking and matching ignore the tag. A tick means its outcome is met, which can be on a branch, and stamps the day; if landing is a deliverable, record it as a piece. File paths are relative to the session's working directory unless absolute. A pieces file uses Markdown checkboxes:
 
 ```markdown
 - [x] Keep the upload selection (2026-11-08)
@@ -289,7 +291,7 @@ Flag values refuse `$`, backticks and inner double quotes. For a piece such as `
 astrolabe effort save --tick "First repo note"
 ```
 
-Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note.
+Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note. A plan with its own Pieces checklist, at any heading level, has it lifted out: it becomes the effort's Pieces when the save gives no `--pieces-file`, and is dropped as a copy when it does. The effort's page draws the plan folded, as the record of what was approved, beside the live Pieces list; the note keeps it whole.
 
 `save` has no flags for changing the title, repo, involvement, authority, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.
 

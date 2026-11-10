@@ -1745,6 +1745,51 @@ html[data-view=notes] .main {
   border-style: dashed;
 }
 
+/* An effort's plan, folded: the record of what was approved, apart from the live Pieces. It
+   heads like a section, and the chevron says which way it stands. */
+.prose .plan-record {
+  margin: 32px 0 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.prose .plan-record>summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font: 600 19px/1.3 -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+.prose .plan-record>summary::-webkit-details-marker {
+  display: none;
+}
+
+.prose .plan-record>summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 2px 0 3px;
+  border-right: 1.8px solid var(--mute);
+  border-bottom: 1.8px solid var(--mute);
+  transform: rotate(-45deg);
+  transition: transform .15s;
+}
+
+.prose .plan-record[open]>summary::before {
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.prose .plan-record>summary:hover::before {
+  border-color: var(--ink);
+}
+
+.prose .plan-record>.plan-body {
+  margin-top: 10px;
+}
+
 /* The members an initiative's prose doesn't name, listed after its own list. */
 .prose .members-label {
   margin: 18px 0 4px;

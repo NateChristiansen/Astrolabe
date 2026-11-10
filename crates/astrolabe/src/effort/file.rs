@@ -143,6 +143,10 @@ pub struct EffortFile {
     /// Original bytes and parsed values, so unmanaged text survives edits.
     pub original: Option<Box<OriginalFile>>,
     pub title: String,
+    /// An effort's goal: the text between its title and its first section, given when it was
+    /// filed and kept through every save, so the effort still says what it was for once
+    /// Current state is rewritten. An initiative's text there is its purpose, written apart.
+    pub lead: String,
     pub current: String,
     pub plan: Option<String>,
     /// Kept verbatim; a save only appends a line, because a rebuilt list drops nested text.
@@ -241,6 +245,7 @@ impl EffortFile {
         let mut seen = std::collections::HashSet::new();
         let mut heading: Option<String> = None;
         let mut buf = String::new();
+        let mut lead = String::new();
         // A `## ` line inside a code fence (a plan's shell sample, say) is text, not a
         // section, or a fenced "## Current state" would replace the real one on reread.
         let fenced = fence_mask(body.lines());
@@ -257,10 +262,14 @@ impl EffortFile {
         };
         for (line, in_fence) in body.lines().zip(fenced) {
             if in_fence {
-                // Before any section, a fenced line is dropped like any other text there.
+                // Before any section, a fenced line is dropped like any other text there,
+                // apart from the lead under the title.
                 if heading.is_some() {
                     buf.push_str(line);
                     buf.push('\n');
+                } else if !file.title.is_empty() {
+                    lead.push_str(line);
+                    lead.push('\n');
                 }
             } else if let Some(t) = line
                 .strip_prefix("# ")
@@ -278,9 +287,13 @@ impl EffortFile {
             } else if heading.is_some() {
                 buf.push_str(line);
                 buf.push('\n');
+            } else if !file.title.is_empty() {
+                lead.push_str(line);
+                lead.push('\n');
             }
         }
         flush(&heading, &mut buf, &mut file);
+        file.lead = lead.trim().to_owned();
         file.original = Some(Box::new(OriginalFile {
             text: original_text,
             parsed: file.clone(),
@@ -330,6 +343,12 @@ impl EffortFile {
     /// and suggestions. An older labelled block gives its `**Goal:**` line.
     pub fn first_paragraph(&self) -> Option<&str> {
         self.field("Goal").or_else(|| self.paragraphs().next())
+    }
+
+    /// The goal the effort was filed with, on one line, when its note keeps one.
+    pub fn goal(&self) -> Option<String> {
+        let goal = self.lead.split_whitespace().collect::<Vec<_>>().join(" ");
+        (!goal.is_empty()).then_some(goal)
     }
 
     /// Initiative purpose from its parsed section or original, fence-aware preamble.
@@ -488,12 +507,63 @@ impl EffortFile {
             .lines()
             .enumerate()
             .map(|(i, l)| match (i == at, done, piece_box(l)) {
-                (true, true, Some(false)) => format!("- [x] {} ({day})", piece_label(l)),
-                (true, false, _) => format!("- [ ] {}", piece_label(l)),
+                (true, true, Some(false)) => {
+                    format!("- [x] {}{} ({day})", piece_label(l), added_suffix(l))
+                }
+                (true, false, _) => format!("- [ ] {}{}", piece_label(l), added_suffix(l)),
                 _ => l.to_owned(),
             })
             .collect();
         self.set_pieces(&lines.join("\n"));
+    }
+
+    /// A list that replaces this one, with each piece that came after the plan tagged
+    /// ` (added <day>)`. A piece whose words match one already here keeps that one's tag, or
+    /// its lack of one, so a list copied back without its tags loses none. A new line in
+    /// place of a piece that's gone is a rewording, paired in order, and keeps the gone
+    /// one's tag the same way; a dropped line, struck through, still names its piece. Only
+    /// the new lines left over are tagged.
+    pub fn with_added_tags(&self, new: &str, day: &str) -> String {
+        let old: Vec<(String, String, bool)> = self
+            .pieces()
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| match piece_box(l) {
+                Some(done) => Some((match_key(piece_label(l)), added_suffix(l), done)),
+                None => struck_label(l).map(|s| (match_key(s), String::new(), true)),
+            })
+            .collect();
+        let key_of = |l: &str| match piece_box(l) {
+            Some(_) => Some(match_key(piece_label(l))),
+            None => struck_label(l).map(match_key),
+        };
+        let new_keys: Vec<String> = new.lines().filter_map(key_of).collect();
+        let mut gone = old
+            .iter()
+            .filter(|(key, _, done)| !done && !new_keys.contains(key))
+            .map(|(_, suffix, _)| suffix.clone());
+        let lines: Vec<String> = new
+            .lines()
+            .map(|line| {
+                let Some(key) = key_of(line) else {
+                    return line.to_owned();
+                };
+                let known = old.iter().find(|(k, _, _)| *k == key);
+                if piece_box(line).is_none() {
+                    // A struck line for a piece this list never had stands for a gone one.
+                    if known.is_none() {
+                        gone.next();
+                    }
+                    return line.to_owned();
+                }
+                let suffix = match known {
+                    Some((_, suffix, _)) => suffix.clone(),
+                    None => gone.next().unwrap_or_else(|| format!(" (added {day})")),
+                };
+                with_added_suffix(line, &suffix)
+            })
+            .collect();
+        lines.join("\n")
     }
 
     /// The labels of ticked items, without their day stamps.
@@ -531,15 +601,23 @@ impl EffortFile {
         let mut managed = self.clone();
         managed.original = None;
         managed.other.clear();
+        // The lead is written from the original's own bytes below, unless a save changed it.
+        managed.lead.clear();
         let mut out = managed.render_fresh(initiative);
         let (body, spans) = body_spans(&original.text);
         let first = spans.first().map_or(original.text.len(), |s| s.0);
         let has_purpose = spans.iter().any(|(_, _, h)| h == "Purpose");
         let mut preamble = original.text[body..first].to_owned();
-        for (start, end, h) in &spans {
-            if h.is_empty() {
-                preamble.push_str(&original.text[*start..*end]);
+        if initiative || self.lead == original.parsed.lead {
+            for (start, end, h) in &spans {
+                if h.is_empty() {
+                    preamble.push_str(&original.text[*start..*end]);
+                }
             }
+        } else if self.lead.trim().is_empty() {
+            preamble.push('\n');
+        } else {
+            preamble += &format!("\n{}\n\n", self.lead.trim());
         }
         if !initiative {
             let at = out
@@ -616,11 +694,12 @@ impl EffortFile {
             }
         }
         out += "---\n";
-        out += &format!(
-            "# {}\n\n## Current state\n{}\n",
-            self.title,
-            self.current.trim()
-        );
+        out += &format!("# {}\n\n", self.title);
+        // An initiative's lead is its purpose, which its own writer places.
+        if !initiative && !self.lead.trim().is_empty() {
+            out += &format!("{}\n\n", self.lead.trim());
+        }
+        out += &format!("## Current state\n{}\n", self.current.trim());
         if initiative || !self.decisions.trim().is_empty() {
             out += &format!("\n## Decisions\n{}\n", self.decisions.trim());
         }
@@ -660,13 +739,75 @@ pub(super) fn piece_text(line: &str) -> &str {
 /// stamp: an unticked item's trailing date is its own, such as a deadline.
 pub(super) fn piece_label(line: &str) -> &str {
     let text = piece_text(line);
-    if piece_box(line) != Some(true) {
-        return text;
-    }
+    let text = if piece_box(line) == Some(true) {
+        text.strip_suffix(')')
+            .and_then(|t| t.rsplit_once(" ("))
+            .filter(|(_, d)| is_day(d))
+            .map_or(text, |(label, _)| label.trim_end())
+    } else {
+        text
+    };
+    split_added(text).0
+}
+
+/// A piece's words apart from the ` (added YYYY-MM-DD)` a save writes on a piece that came
+/// after the plan, and that day.
+pub(crate) fn split_added(text: &str) -> (&str, Option<&str>) {
     text.strip_suffix(')')
-        .and_then(|t| t.rsplit_once(" ("))
+        .and_then(|t| t.rsplit_once(" (added "))
         .filter(|(_, d)| is_day(d))
-        .map_or(text, |(label, _)| label.trim_end())
+        .map_or((text, None), |(label, day)| (label.trim_end(), Some(day)))
+}
+
+/// The ` (added YYYY-MM-DD)` a piece line carries, or nothing.
+fn added_suffix(line: &str) -> String {
+    let text = piece_text(line);
+    let text = match piece_box(line) {
+        Some(true) => text
+            .strip_suffix(')')
+            .and_then(|t| t.rsplit_once(" ("))
+            .filter(|(_, d)| is_day(d))
+            .map_or(text, |(label, _)| label.trim_end()),
+        _ => text,
+    };
+    split_added(text)
+        .1
+        .map(|day| format!(" (added {day})"))
+        .unwrap_or_default()
+}
+
+/// A piece line carrying `suffix` (an added tag, or nothing) after its words and before any
+/// tick stamp. A line that already carries a tag keeps its own.
+fn with_added_suffix(line: &str, suffix: &str) -> String {
+    if suffix.is_empty() || !added_suffix(line).is_empty() {
+        return line.to_owned();
+    }
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let label = piece_label(line);
+    match piece_box(line) {
+        Some(true) => {
+            let text = piece_text(line);
+            let stamp = text
+                .strip_suffix(')')
+                .and_then(|t| t.rsplit_once(" ("))
+                .filter(|(_, d)| is_day(d))
+                .map(|(_, d)| format!(" ({d})"))
+                .unwrap_or_default();
+            format!("{indent}- [x] {label}{suffix}{stamp}")
+        }
+        _ => format!("{indent}- [ ] {label}{suffix}"),
+    }
+}
+
+/// The outcome a dropped line names: `- ~~<outcome>~~ dropped <date>: <why>`.
+fn struck_label(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("- ")?;
+    let rest = rest
+        .strip_prefix("[ ] ")
+        .or_else(|| rest.strip_prefix("[x] "))
+        .unwrap_or(rest);
+    let (label, _) = rest.strip_prefix("~~")?.split_once("~~")?;
+    Some(label.trim())
 }
 
 /// How a tick's value is compared with a label: case and inline-code backticks ignored,
@@ -702,6 +843,136 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    #[test]
+    fn a_goal_under_the_title_survives_a_rewritten_current_state() {
+        let mut f = EffortFile {
+            title: "0012 Smooth ink".to_owned(),
+            lead: "Make the ink line smooth: no gaps, \"even\" at speed.".to_owned(),
+            current: "Make the ink line smooth.".to_owned(),
+            ..Default::default()
+        };
+        let text = f.render();
+        assert!(
+            text.contains("# 0012 Smooth ink\n\nMake the ink line smooth: no gaps, \"even\" at speed.\n\n## Current state\n"),
+            "{text}"
+        );
+        let mut read = EffortFile::parse(&text).unwrap();
+        assert_eq!(
+            read.goal().as_deref(),
+            Some("Make the ink line smooth: no gaps, \"even\" at speed.")
+        );
+        read.current = "Done and merged.".to_owned();
+        let saved = read.render();
+        assert_eq!(saved.matches("no gaps").count(), 1, "{saved}");
+        let again = EffortFile::parse(&saved).unwrap();
+        assert_eq!(again.goal(), read.goal());
+        assert_eq!(again.current, "Done and merged.");
+        // A note with nothing under its title has no goal, and a save adds none.
+        f.lead.clear();
+        let bare = EffortFile::parse(&f.render()).unwrap();
+        assert_eq!(bare.goal(), None);
+        assert!(
+            bare.render()
+                .contains("# 0012 Smooth ink\n\n## Current state\n")
+        );
+    }
+
+    #[test]
+    fn a_changed_goal_replaces_the_lead_and_keeps_the_rest() {
+        let text = "---\nstatus: active\n---\n# 0012 Smooth ink\n\nOld goal.\n\n## Current state\nGoing.\n\n## Notes\n  kept  as is.  \n";
+        let mut f = EffortFile::parse(text).unwrap();
+        f.lead = "New goal.".to_owned();
+        let out = f.render();
+        assert!(
+            out.contains("# 0012 Smooth ink\n\nNew goal.\n\n## Current state\nGoing.\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Old goal"), "{out}");
+        assert!(out.contains("  kept  as is.  "), "{out}");
+    }
+
+    #[test]
+    fn an_initiative_page_keeps_its_purpose_where_it_was() {
+        let text = "---\nstatus: active\n---\n# Page\n\nA legacy purpose.\n\n## Current state\nGoing.\n\n## Decisions\n";
+        let mut f = EffortFile::parse(text).unwrap();
+        f.current = "Still going.".to_owned();
+        let out = f.render_initiative();
+        assert_eq!(out.matches("A legacy purpose.").count(), 1, "{out}");
+    }
+
+    fn with_pieces(list: &str) -> EffortFile {
+        let mut f = EffortFile::default();
+        f.set_pieces(list);
+        f
+    }
+
+    #[test]
+    fn a_piece_that_comes_after_the_list_is_tagged_with_the_day() {
+        let f = with_pieces("- [x] one (2026-11-08)\n- [ ] two");
+        let out = f.with_added_tags(
+            "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three",
+            "2026-11-10",
+        );
+        assert_eq!(
+            out,
+            "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three (added 2026-11-10)"
+        );
+        // Copied back without its tag, a later piece keeps the day it came.
+        let f = with_pieces(&out);
+        let again = f.with_added_tags(
+            "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three\n- [ ] four",
+            "2026-11-12",
+        );
+        assert_eq!(
+            again,
+            "- [x] one (2026-11-08)\n- [ ] two\n- [ ] three (added 2026-11-10)\n- [ ] four (added 2026-11-12)"
+        );
+    }
+
+    #[test]
+    fn a_reworded_piece_keeps_its_tag_or_its_lack_of_one() {
+        let f = with_pieces("- [ ] one\n- [ ] two (added 2026-11-09)\n- [ ] three");
+        let out = f.with_added_tags(
+            "- [ ] one, said better\n- [ ] two, said better\n- [ ] three\n- [ ] four",
+            "2026-11-10",
+        );
+        assert_eq!(
+            out,
+            "- [ ] one, said better\n- [ ] two, said better (added 2026-11-09)\n- [ ] three\n- [ ] four (added 2026-11-10)"
+        );
+        // A dropped piece, struck through, still names it, so a new piece beside it is added.
+        let f = with_pieces("- [ ] one\n- [ ] two");
+        let out = f.with_added_tags(
+            "- [ ] one\n- ~~two~~ dropped 2026-11-10: not needed\n- [ ] five",
+            "2026-11-10",
+        );
+        assert_eq!(
+            out,
+            "- [ ] one\n- ~~two~~ dropped 2026-11-10: not needed\n- [ ] five (added 2026-11-10)"
+        );
+    }
+
+    #[test]
+    fn a_tagged_piece_ticks_and_matches_by_its_words() {
+        let mut f = with_pieces("- [ ] one\n- [ ] two (added 2026-11-09)");
+        let at = f.piece_at("two", true).unwrap();
+        f.tick(at, true, "2026-11-10");
+        assert_eq!(
+            f.pieces(),
+            Some("- [ ] one\n- [x] two (added 2026-11-09) (2026-11-10)")
+        );
+        assert_eq!(f.ticked_labels(), vec!["two"]);
+        let at = f.piece_at("two", false).unwrap();
+        f.tick(at, false, "2026-11-11");
+        assert_eq!(f.pieces(), Some("- [ ] one\n- [ ] two (added 2026-11-09)"));
+        // A ticked later piece copied back bare keeps both its days.
+        let f = with_pieces("- [x] two (added 2026-11-09) (2026-11-10)");
+        assert_eq!(
+            f.with_added_tags("- [x] two (2026-11-10)", "2026-11-12"),
+            "- [x] two (added 2026-11-09) (2026-11-10)"
+        );
+    }
 
     #[test]
     fn a_piece_label_drops_only_a_trailing_day_stamp() {

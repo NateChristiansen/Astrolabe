@@ -38,6 +38,9 @@ pub struct EffortRow {
     pub unpushed: Option<String>,
     pub dirty: Option<String>,
     pub state: Option<String>,
+    /// The goal the effort was filed with, kept under its title. Left out when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
     pub next: Option<String>,
     pub needs_owner: bool,
     pub pieces: Option<Pieces>,
@@ -213,6 +216,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             status: Some(status.to_owned()),
             needs_owner,
             state: file.first_paragraph().map(str::to_owned),
+            goal: file.goal(),
             next: file.last_paragraph().map(str::to_owned),
             pieces: file
                 .pieces_count()
