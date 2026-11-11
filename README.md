@@ -8,7 +8,7 @@
 
 Astrolabe is a plugin that gives your agents a shared set of notes: your preferences, decisions, and work in progress. The notes live in your own Git repo, so they can travel with you between sessions, repos, and supported agent apps.
 
-## How it fits into your day
+## What it does
 
 Ask an agent to work on something. Astrolabe gives that work a note called an **effort**, where the agent records what changed, what was decided, and what's next.
 
