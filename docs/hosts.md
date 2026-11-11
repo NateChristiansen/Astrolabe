@@ -151,3 +151,9 @@ Not checked: `powershell.exe` on Windows.
 **Claude Code** (docs) reads a repository's `AGENTS.md` when no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` exists in the working folder or above; it needs 2.1.277 or later, and a setting can load both. Source: [memory](https://code.claude.com/docs/en/memory).
 
 **Codex** (docs) reads one file per folder from the project root down to the working folder, preferring `AGENTS.override.md`, and stops adding files at 32 KiB combined by default. Source: [AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
+## Independent workers in desktop apps
+
+The [Codex worker workflow](codex-workers.md) covers opening the actual CLI thread, app-native sidebar discovery and external queued follow-ups. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff. Both retain independent effort sessions and an explicit CLI fallback.
+
+These workflows were investigated on Windows on 2026-11-11. Their guides record the tested versions and distinguish observed control from unverified app behavior. Mac, restart, concurrent-writer and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.

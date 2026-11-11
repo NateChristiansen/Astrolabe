@@ -12,6 +12,8 @@ The agent records the work in an **effort**. It keeps that note updated with pro
 
 A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files a page with new or existing efforts, and the board derives progress from their statuses. You can run those efforts one at a time, or ask an agent to orchestrate them through workers. The orchestrator keeps its state, decisions, questions and daily journal line on the page; workers keep their own effort records. A planning-only effort stays linked as background, outside the members.
 
+For app visibility when an agent dispatches an independent worker, see the [app-specific worker workflows](hosts.md#independent-workers-in-desktop-apps). Opening a worker, placing it in the sidebar and retaining follow-up control are separate capabilities; the guides distinguish what was observed from what remains unchecked.
+
 ## Choose how the agent works
 
 Tell the agent how involved you want to be:
