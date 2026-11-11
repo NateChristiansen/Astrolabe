@@ -303,6 +303,18 @@ fn an_answer_given_while_another_process_holds_the_notes_still_counts() {
         let held = notes.lock().unwrap();
         let first = hook.join().unwrap().unwrap();
         assert!(first.starts_with("Journal line written for"), "{first}");
+        // Cleanup cannot take the lock we still hold, but the answer is durable.
+        let ops = notes.intents();
+        assert_eq!(ops.len(), 1, "{ops:?}");
+        assert!(ops[0].committed && ops[0].result.is_some(), "{ops:?}");
+        assert!(notes.is_answered(&ops[0].key), "{ops:?}");
+        let before = mac.log();
+        assert_eq!(notes.reconcile(), Vec::<String>::new());
+        assert_eq!(
+            std::fs::read_dir(mac.state().join("ops")).unwrap().count(),
+            0
+        );
+        assert_eq!(mac.log(), before, "cleanup must not commit again");
         held
     });
     drop(held);

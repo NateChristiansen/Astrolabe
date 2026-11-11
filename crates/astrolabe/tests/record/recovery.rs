@@ -101,11 +101,22 @@ fn two_saves_at_once_both_land_under_the_lock() {
         "{}",
         mac.log()
     );
+    // Answering never waits for the notes lock. The other save may hold it at that
+    // moment, leaving a completed, answered intent for the next lock holder to remove.
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    let _held = notes.lock().unwrap();
+    for op in notes.intents() {
+        assert!(op.committed && op.result.is_some(), "unfinished: {op:?}");
+        assert!(notes.is_answered(&op.key), "not answered: {op:?}");
+    }
+    assert_eq!(notes.reconcile(), Vec::<String>::new());
+    let remaining: Vec<_> = std::fs::read_dir(mac.state().join("ops"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
     assert!(
-        std::fs::read_dir(mac.state().join("ops"))
-            .map(|d| d.count())
-            .unwrap_or(0)
-            == 0
+        remaining.is_empty(),
+        "left after reconciliation: {remaining:?}"
     );
 }
 
