@@ -156,4 +156,4 @@ Not checked: `powershell.exe` on Windows.
 
 The [Codex worker workflow](codex-workers.md) covers opening the actual CLI thread, app-native sidebar discovery and external queued follow-ups. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff. Both retain independent effort sessions and an explicit CLI fallback.
 
-These workflows were investigated on Windows on 2026-11-11. Their guides record the tested versions and distinguish observed control from unverified app behavior. Mac, restart, concurrent-writer and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.
+These workflows were investigated on Windows and macOS on 2026-11-11. Their guides record the tested versions, the Mac hook-trust recovery and the host approvals needed there, and distinguish observed control from unverified app display. App restarts, concurrent writers and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.

@@ -6,7 +6,9 @@ An independently dispatched CLI worker can be opened as its actual thread in the
 
 On Windows on 2026-11-11, with CLI 0.166.0 and installed app package 26.1106.6628.0, an independent worker activated its own effort and proved its guard. The app opened its actual transcript, named and pinned it, and completed a follow-up sent by external `codex queue` without `--resume`. The default app history listing had omitted it before opening and pinning.
 
-Mac behavior, app restart, concurrent independent effort separation and missing-app or launch-failure acceptance remain unverified. The installed app package version does not establish which runtime served the app. Treat the steps below as the observed PC workflow, not cross-platform acceptance.
+On macOS on the same day, with CLI 0.166.0 and app 26.1103.60933 (bundled runtime 0.167.0-alpha.3.2), launch and same-thread queue completion worked. Hooks initially did not run. After the owner reviewed the refreshed plugin's hooks, the first app-originated turn bound that same thread to its effort and proved its guard; a later queued turn retained the binding and proof. No replacement thread was created.
+
+Mac sidebar display, app restarts, broader concurrent-worker behavior and missing-app acceptance remain unverified. An installed app package version does not establish which runtime served every turn. The Mac result includes a recovered hook-trust failure, not a promise that every initial CLI launch is already guarded.
 
 ## Launch and retain the worker
 
@@ -30,6 +32,14 @@ astrolabe activate --effort <effort-number> --worker
 ```
 
 It then runs the exact allowed control and denied probe printed by activation, each alone, followed by `astrolabe activate --status`. Claim guard protection only when that worker's status says proven. The dispatcher's proof does not cover it. The worker saves its own effort; the dispatcher handles the journal, review and closing. Notes write access permits the brief and report, not project Git operations.
+
+## When hooks need review
+
+Treat activation and guard proof as a gate before ordinary task work. If activation says the plugin's hook did not take the command, stop and report an unbound worker. An installed, enabled plugin or a returned thread identifier is not proof that its hooks ran.
+
+A plugin refresh can invalidate hook content trust. In the Mac check, unattended execution supplied no warning while hooks were skipped, despite saved trust entries. The same thread recovered after the owner reviewed the current hooks in the app. Use the normal review flow, including `/hooks` in the CLI; do not rewrite trust entries or bypass review. See the official [hook trust reference](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
+After review, continue the retained thread and require binding and guard proof again before work. In the Mac check, the first bound turn came from the app; queue control was verified afterwards, not as the first post-review turn. App-owned threads use queue; idle CLI-only threads use sequential resume. A failed activation is not a reason to duplicate the task.
 
 ## Open the actual thread
 
