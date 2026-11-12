@@ -1,8 +1,10 @@
 name: Prepare release
 # This builds reviewed CI artifacts. Only publish-nightly writes, replacing the rolling nightly prerelease on pushes to main.
+# Branches run it by hand: CI already checks every branch push, and a branch build here repeated those checks.
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/release-prepare.yml'
       - 'Cargo.toml'
@@ -66,7 +68,7 @@ jobs:
         env:
           RELEASE_TARGET: ${{ matrix.target }}
         run: python scripts/smoke-release.py --target "$RELEASE_TARGET" --powershell pwsh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: |
@@ -84,14 +86,14 @@ jobs:
           python-version: '3.13'
       - run: rustup toolchain install 1.99.1 --profile minimal
       - run: python scripts/setup-dist.py "$RUNNER_TEMP/astrolabe-dist"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: native-*
           path: target/distrib
           merge-multiple: true
       - run: dist build --artifacts=global
       - run: python scripts/package-release.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: astrolabe-release-for-review
           path: |
@@ -122,7 +124,7 @@ jobs:
           python-version: '3.13'
       - run: rustup toolchain install 1.99.1 --profile minimal
       - run: python scripts/setup-dist.py "$RUNNER_TEMP/astrolabe-dist"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: native-*
           path: target/distrib

@@ -3,15 +3,57 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  # Each commit is checked once. A branch push checks it, so the same commit landing on
+  # main, or the same branch's pull request, doesn't run the systems again. A commit that
+  # reaches main unchecked, such as a merge made on the website, and a fork's pull request
+  # still run them.
+  gate:
+    runs-on: ubuntu-22.04
+    permissions:
+      checks: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          run=true
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" = "$REPO" ]; then
+            echo "The branch push checks this pull request's commit."
+            run=false
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            passed=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" --paginate \
+              --jq '.check_runs[] | select(.conclusion == "success") | .name' \
+              | grep -xE '(mac|windows|linux) / check' | sort -u | wc -l | tr -d ' ')
+            if [ "$passed" = 3 ]; then
+              echo "All three systems already passed on $SHA, so it isn't checked again."
+              run=false
+            else
+              echo "$SHA has passed on $passed of 3 systems, so it's checked here."
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
   mac:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     uses: ./.github/workflows/system.yml
     with:
       os: macos-latest
   windows:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     uses: ./.github/workflows/system.yml
     with:
       os: windows-latest
   linux:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     uses: ./.github/workflows/system.yml
     with:
       os: ubuntu-22.04
