@@ -10,7 +10,11 @@ Open a session in your project and ask for work as usual:
 
 The agent records the work in an **effort**. It keeps that note updated with progress, decisions and what comes next, and adds a short account of what changed to your journal.
 
-A larger piece of work that you plan as several efforts becomes an **initiative**: the agent files a page with new or existing efforts, and the board derives progress from their statuses. You can run those efforts one at a time, or ask an agent to orchestrate them through workers. The orchestrator keeps its state, decisions, questions and daily journal line on the page; workers keep their own effort records. A planning-only effort stays linked as background, outside the members.
+A larger piece of work that you plan as several efforts becomes an **initiative**. The agent files a page with new or existing efforts, and the board derives progress from their statuses. A planning-only effort stays linked as background, outside the members.
+
+When you ask an agent to implement the initiative, it starts a separate worker session for each independent ready effort and runs them in parallel. A worker waits for a prerequisite before starting the step that needs it. Workers that need exclusive use of the same runtime take turns there. You can ask for serial work or choose another workflow. A request to plan or file the initiative ends at filing.
+
+The orchestrator keeps its state, decisions, questions and daily journal line on the page. Workers keep their own effort records. Each agent works within its authority, and the orchestrator lands reviewed changes when you have authorized landing.
 
 For app visibility when an agent dispatches an independent worker, see the [app-specific worker workflows](hosts.md#independent-workers-in-desktop-apps). Opening a worker, placing it in the sidebar and retaining follow-up control are separate capabilities; the guides distinguish what was observed from what remains unchecked.
 
