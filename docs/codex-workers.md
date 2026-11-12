@@ -10,6 +10,12 @@ On macOS on the same day, with CLI 0.166.0 and app 26.1103.60933 (bundled runtim
 
 Mac sidebar display, app restarts, broader concurrent-worker behavior and missing-app acceptance remain unverified. An installed app package version does not establish which runtime served every turn. The Mac result includes a recovered hook-trust failure, not a promise that every initial CLI launch is already guarded.
 
+## Start a worker from the Codex app
+
+When dispatching a new chat from the app, use `list_projects` to match the effort’s repository to its saved project on the execution host. Check the project’s folder before starting work. Pass that project and the effort’s number and title to `create_thread`. Once creation finishes, check the title, project and working folder of the new chat. Select the worktree environment when the assignment calls for a new managed worktree. For a worker that needs an already prepared checkout, use the CLI handoff below.
+
+On pickup in an existing desktop chat, activation asks the agent to call `set_thread_title`. Make the call on first pickup even when the effort is still being planned. The app can shorten long titles. A later pickup of the same effort preserves a manual rename.
+
 ## Launch and retain the worker
 
 Prepare a branch worktree and a brief under the notes' `.handoffs/<initiative>/` folder. Use the [sandbox and notes setup](codex.md) for permissions. For example, in PowerShell, replace every placeholder before running:
@@ -51,9 +57,15 @@ Start-Process -FilePath 'codex://threads/<real-thread-id>' -WindowStyle Hidden
 
 An accepted OS opening request alone is not a pass. Inspect the app's transcript and confirm the dispatched task, worktree and bound effort belong to the same identifier. An app-hosted dispatcher can use its native thread navigation when available.
 
-Use app-native naming and pinning where available to make that same thread discoverable. App-hosted tools `set_thread_title` and `move_thread_to_sidebar_section` worked in the PC check, and a later app listing included the pinned worker. These tools are capabilities of that app session, not shell commands or a proved external pinning API.
+### Name and file the opened worker
 
-App project membership and execution folder are separate. Opening the worker did not assign it to an app project. Keep its actual worktree even if an app project's saved folder differs. An external app-server could not read the desktop's existing project identifier in this check; do not assume its experimental project and section methods can organize the desktop sidebar.
+A CLI worker can receive the rename instruction before it has desktop tools. At the first handoff, the dispatcher checks the actual chat. An app-hosted dispatcher can use the tools directly. A Claude dispatcher can wait for `codex exec` to exit, open the existing chat, then send one message to that chat with `codex queue --thread <real-thread-id> --message <request>`. Include the real effort name and intended project in the request. For example:
+
+> Check your bound effort and working folder. Set this chat’s initial title to “<number and effort title>” if it still shows the launch prompt. Use `list_projects` to find “<project>” on this host and `move_thread_to_project` to file this chat there. Read back the title, project membership and working folder. Report the exact error if the move fails.
+
+Collect the completed reply. Check that the same chat is listed under the destination project and still runs in the assigned worktree. Preserve a title the owner set. Pinning is a separate sidebar action.
+
+On Windows, a real Claude dispatch completed that queued turn with the desktop tools and named its original worker. Its project move returned `The task's source project could not be safely determined.` The worker ran in a separate Git worktree and the destination project's saved folder pointed to another checkout. The same error occurred with an existing CLI worker in a sibling Git worktree of a repository whose main checkout was registered with the correct project. The original worktree and effort binding survived. Report unresolved placement in this case. If the app specifically requires additional folder access, the owner can move the chat in the sidebar. On macOS, same-chat queue delivery has passed, but naming and project placement from the queued turn still need verification.
 
 These are independent sessions. Pinning does not establish native parent-child nesting, and no independently bound native nesting was proved. Do not fabricate source, origin or parent metadata, or edit provider databases to force grouping.
 
