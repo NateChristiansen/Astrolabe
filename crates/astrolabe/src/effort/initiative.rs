@@ -198,6 +198,14 @@ mod tests {
         assert!(text.contains(
             "1. [Tether cap](../efforts/2026/11-November/0002-tether-cap.md). Cap the tether."
         ));
+        let explicit =
+            InitiativePage::parse("Purpose stays.\n\n## Current state\nAlready under discussion.")
+                .unwrap()
+                .render("Explicit", "demo", "2026-11-11", &[]);
+        assert_eq!(
+            super::super::EffortFile::parse(&explicit).unwrap().current,
+            "Already under discussion."
+        );
         assert_eq!(
             InitiativePage::parse("Purpose only.").unwrap().before,
             "Purpose only."

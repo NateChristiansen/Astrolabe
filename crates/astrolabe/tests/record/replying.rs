@@ -452,3 +452,28 @@ fn an_unknown_notes_identity_does_not_manufacture_a_save_nudge() {
         assert!(!m.effort_text(1).contains("owner: review the notes?"));
     }
 }
+
+#[test]
+fn an_unreadable_registry_does_not_turn_notes_into_a_product_fingerprint() {
+    let world = World::new();
+    let m = world.machine("pc");
+    assert!(m.bash("s1", NEW).1);
+    assert!(
+        m.bash_from(
+            "s1",
+            &m.notes,
+            "astrolabe effort save --status active",
+            None
+        )
+        .1
+    );
+    let before = session(&m);
+    assert!(before["baseline"].is_string());
+    // Keep the notes registration in place but make the registry as a whole unreadable.
+    write(&m.state().join("repos/broken.json"), "not a repo record");
+    let mut input = input(&m, false);
+    input["cwd"] = m.notes.to_str().unwrap().into();
+    input["stop_hook_active"] = false.into();
+    assert!(m.hook_json("stop", input).is_none());
+    assert_eq!(session(&m)["baseline"], before["baseline"]);
+}

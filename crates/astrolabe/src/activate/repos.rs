@@ -462,7 +462,11 @@ pub(crate) fn in_notes(cwd: &Path) -> bool {
 /// A failed identity read is unknown, not proof that this is a product checkout.
 /// Fingerprints must preserve that distinction when a hook runs out of read time.
 pub(crate) fn notes_identity(cwd: &Path) -> Option<bool> {
-    let Some((_, notes)) = notes_and_repos().ok() else {
+    let Some(dir) = state_dir() else {
+        return Some(false);
+    };
+    let repos = Repos::read(&dir).ok()?;
+    let Some(notes) = repos.checkout(AGENT) else {
         return Some(false);
     };
     Some(common_dir(cwd)? == common_dir(&notes)?)
