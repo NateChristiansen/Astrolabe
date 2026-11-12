@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# Prints true when CI's three systems all passed on this commit, else false.
+# Workflows use it to skip checking a commit again. Needs GH_TOKEN, REPO and SHA.
+set -eu
+passed=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" --paginate \
+  --jq '.check_runs[] | select(.conclusion == "success") | .name' \
+  | grep -xE '(mac|windows|linux) / check' | sort -u | wc -l | tr -d ' ')
+if [ "$passed" = 3 ]; then
+  echo "All three systems already passed on $SHA." >&2
+  echo true
+else
+  echo "$SHA has passed on $passed of 3 systems." >&2
+  echo false
+fi

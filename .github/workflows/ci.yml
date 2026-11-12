@@ -14,6 +14,9 @@ jobs:
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
       - id: decide
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,16 +30,8 @@ jobs:
           if [ "$EVENT" = pull_request ] && [ "$HEAD_REPO" = "$REPO" ]; then
             echo "The branch push checks this pull request's commit."
             run=false
-          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
-            passed=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" --paginate \
-              --jq '.check_runs[] | select(.conclusion == "success") | .name' \
-              | grep -xE '(mac|windows|linux) / check' | sort -u | wc -l | tr -d ' ')
-            if [ "$passed" = 3 ]; then
-              echo "All three systems already passed on $SHA, so it isn't checked again."
-              run=false
-            else
-              echo "$SHA has passed on $passed of 3 systems, so it's checked here."
-            fi
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ] && [ "$(scripts/ci-checked)" = true ]; then
+            run=false
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
   mac:
