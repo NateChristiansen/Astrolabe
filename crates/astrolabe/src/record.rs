@@ -1685,8 +1685,17 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
             && !(first == "effort" && args.first() == Some(&"read") && i == 1)
             && !is_flag
             && !wants_value;
+        let file = wants_value
+            && matches!(
+                args.get(i.wrapping_sub(1)),
+                Some(&"--plan-file" | &"--pieces-file")
+            );
         if a.contains('\n') || positional {
             body = Some((*a).to_owned());
+        } else if file && !a.contains('\'') {
+            // A file path is literal, as the hook read it: single quotes keep backslashes
+            // and `$` as they are, so the digest matches the hook's.
+            words.push(format!("'{a}'"));
         } else if a.is_empty()
             || a.contains(|c: char| c.is_whitespace() || "\"'$`\\;|&<>()".contains(c))
         {
@@ -1703,7 +1712,9 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     if let Some(body) = body.as_deref().filter(|b| !b.trim().is_empty()) {
         text += &format!(" <<'ASTROLABE'\n{}\nASTROLABE", body.trim());
     }
-    let parsed = match EffortCommand::parse(&text) {
+    // The shell is unknown here, so file paths are read literally, as PowerShell's are: a
+    // double-quoted path holding an apostrophe keeps its backslashes.
+    let parsed = match EffortCommand::parse_in(&text, true) {
         Ok(p) => p,
         Err(why) => return (format!("Effort command refused: {why}.\n{FORMS}"), false),
     };

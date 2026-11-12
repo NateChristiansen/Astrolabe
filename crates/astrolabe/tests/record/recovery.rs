@@ -447,3 +447,51 @@ fn a_save_commits_the_removal_of_a_whole_folder_git_tracked_files_in() {
         assert!(!pc.notes.join(rel).exists(), "{rel} is gone on the PC too");
     }
 }
+
+#[test]
+fn a_direct_run_recovers_and_diagnoses_literal_file_paths_the_hook_accepted() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    // (the command as the hook read it, whether it came from PowerShell, the literal path)
+    let forms = [
+        (r"C:\notes\pieces.txt", true, r"C:\notes\pieces.txt"),
+        (
+            r#""C:\my notes\pieces.txt""#,
+            true,
+            r"C:\my notes\pieces.txt",
+        ),
+        (
+            r"'C:\posix notes\pieces.txt'",
+            false,
+            r"C:\posix notes\pieces.txt",
+        ),
+        (r#""C:\it's\pieces.txt""#, true, r"C:\it's\pieces.txt"),
+        (r"'C:\$dir\pieces.txt'", false, r"C:\$dir\pieces.txt"),
+    ];
+    for flag in ["pieces-file", "plan-file"] {
+        for (i, (written, powershell, path)) in forms.iter().enumerate() {
+            let text = format!("astrolabe effort save --{flag} {written}");
+            let digest = astrolabe::effort::EffortCommand::parse_in(&text, *powershell)
+                .unwrap_or_else(|why| panic!("{text}: {why}"))
+                .digest();
+            let args = ["effort", "save", &format!("--{flag}"), path];
+            // Hooks skipped: nothing was written, and the direct run says so.
+            let (out, ok) = mac.run(&mac.demo, &args, "");
+            assert!(!ok && out.contains("NOT recorded"), "{text}: {out}");
+            // The hook wrote but its reply was lost: the direct run recovers it.
+            let key = format!("k-path-{flag}-{i}");
+            let op = json!({"key": key, "files": [], "renames": [], "journal": [], "message": "m", "base": null, "states": [], "committed": true,
+                "digest": digest, "result": "Saved effort 1: recovered path", "cwd": astrolabe::hook::comparable(&mac.demo)});
+            write(
+                &mac.state().join(format!("ops/{key}.json")),
+                &op.to_string(),
+            );
+            let (out, ok) = mac.run(&mac.demo, &args, "");
+            assert!(
+                ok && out.contains("Recovered from the hook's record"),
+                "{text}: {out}"
+            );
+        }
+    }
+}
