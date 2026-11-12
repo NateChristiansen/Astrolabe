@@ -18,14 +18,14 @@ On pickup in an existing desktop chat, activation asks the agent to call `set_th
 
 ## Launch and retain the worker
 
-Prepare a branch worktree and a brief under the notes' `.handoffs/<initiative>/` folder. Use the [sandbox and notes setup](codex.md) for permissions. For example, in PowerShell, replace every placeholder before running:
+For a new worker that should appear in a saved app project, start from that project's registered repository folder and let Codex create its managed worktree with `--worktree`. Record the generated working folder from the worker. Use the [sandbox and notes setup](codex.md) for permissions and put the brief under the notes' `.handoffs/<initiative>/` folder. In PowerShell, replace every placeholder before running:
 
 ```powershell
 $brief = 'First run astrolabe activate --effort <effort-number> --worker alone. Then read <absolute-brief-path> and carry out its approved scope. Save your effort and write the requested report.'
-'' | codex exec -C '<absolute-worktree-path>' --add-dir '<absolute-notes-path>' --approve-for-me --json $brief
+'' | codex exec --worktree -C '<saved-project-repository-path>' --add-dir '<absolute-notes-path>' --approve-for-me --json $brief
 ```
 
-The empty pipeline closes stdin. In Bash or zsh, use the equivalent command with `< /dev/null`. The example selects automatic approval review with the workspace sandbox; use it only within the approved authority. It does not bypass approvals or hook trust. See the official [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli) for these options.
+If the assignment requires a previously prepared worktree, omit `--worktree` and pass that checkout to `-C`. It retains its branch and files, but the app may be unable to place its chat under the project. The empty pipeline closes stdin. In Bash or zsh, use the equivalent command with `< /dev/null`. The example selects automatic approval review with the workspace sandbox; use it only within the approved authority. It does not bypass approvals or hook trust. See the official [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli) for these options.
 
 If the dispatcher's sandbox prevents initialization of normal session storage, request host approval for the launch itself. That was required in the PC check. Keep the worker's workspace sandbox and normal approval review; do not bypass them to make the launch succeed. If approval is unavailable, report the launch limitation.
 
@@ -63,9 +63,11 @@ A CLI worker can receive the rename instruction before it has desktop tools. At 
 
 > Check your bound effort and working folder. Set this chat’s initial title to “<number and effort title>” if it still shows the launch prompt. Use `list_projects` to find “<project>” on this host and `move_thread_to_project` to file this chat there. Read back the title, project membership and working folder. Report the exact error if the move fails.
 
-Collect the completed reply. Check that the same chat is listed under the destination project and still runs in the assigned worktree. Preserve a title the owner set. Pinning is a separate sidebar action.
+Collect the completed reply. Match the project and chat in the move response to the requested destination and the original worker. Check the working folder again. If the app listing omits the chat, report the assignment and leave sidebar visibility unverified. Preserve a title the owner set. Pinning is a separate sidebar action.
 
-On Windows, a real Claude dispatch completed that queued turn with the desktop tools and named its original worker. Its project move returned `The task's source project could not be safely determined.` The worker ran in a separate Git worktree and the destination project's saved folder pointed to another checkout. The same error occurred with an existing CLI worker in a sibling Git worktree of a repository whose main checkout was registered with the correct project. The original worktree and effort binding survived. Report unresolved placement in this case. If the app specifically requires additional folder access, the owner can move the chat in the sidebar. On macOS, same-chat queue delivery has passed, but naming and project placement from the queued turn still need verification.
+On Windows, a Claude dispatcher launched a managed worker with `--approve-for-me`. The queued worker named itself, moved its own chat to the existing project and reported the same worktree. The move returned the requested project and chat. Recent and history listings omitted the worker. A read-only control whose approval policy was `never` could rename itself but required an app dispatcher with approval support to make the move.
+
+A real Claude dispatch into a previously prepared worktree completed its queued turn with the desktop tools and named its original worker. Its project move returned `The task's source project could not be safely determined.` The worker ran in a separate Git worktree and the destination project's saved folder pointed to another checkout. The same error occurred with an existing CLI worker in a sibling Git worktree of a repository whose main checkout was registered with the correct project. The original worktree and effort binding survived. Report unresolved placement in this case. If the app specifically requires additional folder access, the owner can move the chat in the sidebar. On macOS, same-chat queue delivery has passed, but naming and project placement from the queued turn still need verification.
 
 These are independent sessions. Pinning does not establish native parent-child nesting, and no independently bound native nesting was proved. Do not fabricate source, origin or parent metadata, or edit provider databases to force grouping.
 
