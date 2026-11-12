@@ -18,6 +18,32 @@ const COMMITTED: [&str; 6] = [
     ".gitattributes",
 ];
 
+/// The committed paths that `git status --porcelain -z` output reports anything under, in
+/// `COMMITTED` order. Each entry is two status letters, a space and a path, and a rename
+/// or copy is followed by the path it came from: both count. Git names paths from the top
+/// of its repo, so a notes folder inside a bigger repo has `prefix` (as `rev-parse
+/// --show-prefix` says it, ending in `/`) taken off first.
+fn changed_under(status: &str, prefix: &str) -> Vec<&'static str> {
+    let mut paths = Vec::new();
+    let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = entries.next() {
+        let (letters, path) = (entry.get(..2).unwrap_or(""), entry.get(3..).unwrap_or(""));
+        paths.extend(path.strip_prefix(prefix));
+        if letters.contains(['R', 'C']) {
+            paths.extend(entries.next().and_then(|from| from.strip_prefix(prefix)));
+        }
+    }
+    let under = |root: &str, path: &str| {
+        path == root
+            || path
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    (COMMITTED.into_iter())
+        .filter(|root| paths.iter().any(|path| under(root, path)))
+        .collect()
+}
+
 impl Notes {
     /// Save's intent/reconcile machinery owns both commits. Commit trailers are phase
     /// markers too, covering a crash after git commits but before the intent is updated.
@@ -443,16 +469,13 @@ impl Notes {
         // the owner staged stays staged and out. A `.tmp` is a write that died before its
         // rename: never part of a commit. Lessons and drafts are written as plain files, so
         // riding along is the only way one is ever committed and reaches another machine.
-        let mut changed = Vec::new();
-        for path in COMMITTED {
-            if !self
-                .git(&["status", "--porcelain", "--", path, NOT_TEMP])?
-                .trim()
-                .is_empty()
-            {
-                changed.push(path);
-            }
-        }
+        // One status for all of them, each entry put under the path it falls in: a git
+        // call costs far more than reading its answer, most of all on Windows.
+        let mut status = vec!["status", "--porcelain", "-z", "--"];
+        status.extend(COMMITTED);
+        status.push(NOT_TEMP);
+        let prefix = self.git(&["rev-parse", "--show-prefix"])?;
+        let changed = changed_under(&self.git(&status)?, prefix.trim_end_matches('\n'));
         if !changed.is_empty() {
             let mut add = vec!["add", "-A", "--"];
             add.extend(&changed);
@@ -555,5 +578,32 @@ impl Notes {
             text.push_str("journal/**/*.md merge=union\n");
         }
         write_text(&path, &text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::changed_under;
+
+    #[test]
+    fn status_entries_are_put_under_the_committed_path_they_fall_in() {
+        let status = " M efforts/2026/a.md\0?? journal/\0R  lessons/new.md\0drafts/old.md\0";
+        assert_eq!(
+            changed_under(status, ""),
+            ["efforts", "journal", "lessons", "drafts"]
+        );
+        assert_eq!(changed_under(" M .gitattributes\0", ""), [".gitattributes"]);
+        // A name that only starts like a committed folder isn't in it.
+        assert!(changed_under("?? effortsish.md\0", "").is_empty());
+        assert!(changed_under("", "").is_empty());
+    }
+
+    /// Notes in a folder of a bigger repo: git names paths from that repo's top.
+    #[test]
+    fn a_notes_folder_inside_a_bigger_repo_is_read_from_its_own_folder() {
+        let status =
+            "?? sub/efforts/\0R  sub/journal/b.md\0sub/journal/a.md\0 M other/efforts/x.md\0";
+        assert_eq!(changed_under(status, "sub/"), ["efforts", "journal"]);
+        assert!(changed_under(status, "").is_empty());
     }
 }

@@ -35,8 +35,134 @@ pub(crate) struct Failed {
 
 /// The same as `git_as`, keeping the exit status of a call that failed.
 pub(crate) fn git_or(kind: Git, cwd: &Path, args: &[&std::ffi::OsStr]) -> Result<String, Failed> {
-    run_git(kind, Command::new("git").args(args), cwd)
-        .map(|out| String::from_utf8_lossy(&out).into_owned())
+    let key = remembered::key(cwd, args);
+    if let Some(out) = key.as_ref().and_then(remembered::get) {
+        return Ok(out);
+    }
+    let out = run_git(kind, Command::new("git").args(args), cwd)
+        .map(|out| String::from_utf8_lossy(&out).into_owned())?;
+    if let Some(key) = key {
+        remembered::put(key, &out);
+    }
+    Ok(out)
+}
+
+/// Answers a hook asks git for again and again that nothing in one hook call changes: where
+/// a folder's repo is, its top folder, its remotes. A hook call asked for the same repo's
+/// common folder eight times or so, each a new git process, which costs far more on
+/// Windows. Only a hook remembers, since it lives for seconds and changes none of these;
+/// a terminal command or the board server asks every time. Only answers are remembered,
+/// never a failure: a folder that isn't a repo yet may become one. A git call that could
+/// change any of them forgets them all.
+mod remembered {
+    use std::collections::HashMap;
+    use std::ffi::{OsStr, OsString};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    type Key = (PathBuf, Vec<OsString>);
+    static ANSWERS: Mutex<Option<HashMap<Key, String>>> = Mutex::new(None);
+
+    /// The questions whose answers stay the same while nothing changes the repo's setup.
+    fn stable(args: &[&str]) -> bool {
+        matches!(
+            args,
+            [
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir" | "--git-dir"
+            ] | ["rev-parse", "--show-toplevel" | "--absolute-git-dir"]
+                | ["rev-parse", "--git-path", "info/exclude"]
+                | ["rev-parse", "--show-prefix"]
+                | ["remote"]
+                | ["remote", "get-url", _]
+        )
+    }
+
+    /// Calls that can move a repo or change its remotes: nothing remembered outlives one.
+    fn changes_setup(args: &[&str]) -> bool {
+        let mut words = args.iter().copied();
+        let mut verb = None;
+        while let Some(word) = words.next() {
+            if word == "-c" || word == "-C" {
+                words.next();
+            } else if !word.starts_with('-') {
+                verb = Some(word);
+                break;
+            }
+        }
+        // Listing worktrees changes nothing, and a session's context lists them.
+        if verb == Some("worktree") && words.next() == Some("list") {
+            return false;
+        }
+        matches!(
+            verb,
+            Some("init" | "clone" | "worktree" | "config" | "remote" | "submodule")
+        )
+    }
+
+    pub(super) fn key(cwd: &Path, args: &[&OsStr]) -> Option<Key> {
+        let words: Option<Vec<&str>> = args.iter().map(|arg| arg.to_str()).collect();
+        let words = words?;
+        if stable(&words) {
+            return crate::deadline::in_hook().then(|| {
+                (
+                    cwd.to_path_buf(),
+                    args.iter().map(|a| a.to_os_string()).collect(),
+                )
+            });
+        }
+        if changes_setup(&words) {
+            forget();
+        }
+        None
+    }
+
+    pub(super) fn get(key: &Key) -> Option<String> {
+        let answers = ANSWERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        answers.as_ref()?.get(key).cloned()
+    }
+
+    pub(super) fn put(key: Key, out: &str) {
+        let mut answers = ANSWERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        answers
+            .get_or_insert_with(HashMap::new)
+            .insert(key, out.to_owned());
+    }
+
+    pub(super) fn forget() {
+        let mut answers = ANSWERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *answers = None;
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn only_setup_questions_are_stable_and_setup_changes_are_seen() {
+            assert!(stable(&[
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir"
+            ]));
+            assert!(stable(&["remote", "get-url", "origin"]));
+            assert!(!stable(&["rev-parse", "HEAD"]));
+            assert!(!stable(&["remote", "add", "origin", "x"]));
+            assert!(!stable(&["status", "--porcelain"]));
+            assert!(changes_setup(&["remote", "add", "origin", "x"]));
+            assert!(changes_setup(&["-c", "a=b", "worktree", "add", "x"]));
+            assert!(!changes_setup(&["commit", "-m", "remote"]));
+            assert!(!changes_setup(&["worktree", "list", "--porcelain"]));
+            assert!(changes_setup(&["worktree", "remove", "x"]));
+        }
+    }
 }
 
 fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Failed> {
