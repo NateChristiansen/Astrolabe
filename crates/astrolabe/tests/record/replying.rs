@@ -212,6 +212,12 @@ fn a_reply_in_the_notes_repo_does_not_manufacture_or_hide_a_save_nudge() {
         let mut input = input(&m, false);
         input["cwd"] = m.notes.to_str().unwrap().into();
         input["stop_hook_active"] = false.into();
+        // Clear the reply on its normal pre-command boundary. Combining the notes
+        // commit and the fingerprint assertion in Stop made this test depend on both
+        // fitting its short read budget. The exhaustion regression below tests the
+        // same-Stop case when identity cannot be observed, without changing deadlines.
+        assert!(m.hook_json("pre-command", input.clone()).is_none());
+        assert!(!m.effort_text(1).contains("owner: review the notes?"));
         let answer = m.hook_json("stop", input);
         assert_eq!(answer.is_some(), dirty, "{answer:?}");
         assert!(!m.effort_text(1).contains("owner: review the notes?"));
