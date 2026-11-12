@@ -196,6 +196,9 @@ impl<'a> SaveRequest<'a> {
             ("Pieces", pieces.as_deref()),
         ] {
             if let Some(line) = text.and_then(|t| t.lines().find(|l| is_heading(l))) {
+                if what == "Current state" && line.trim() == "## Pieces" {
+                    return Err("Pieces belong in a separate checklist file. Write it first, then run alone in PowerShell: astrolabe effort save --pieces-file \"pieces.txt\". Keep Current state as paragraphs. Nothing was written".into());
+                }
                 return Err(format!(
                     "{what} can't hold a `## ` heading ({}), because the effort file's sections are read by those; use ### or deeper. Nothing was written",
                     line.trim()

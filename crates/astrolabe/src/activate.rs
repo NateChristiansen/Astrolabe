@@ -23,7 +23,9 @@ pub(crate) use context::{STILL_ON, leaving, no_note};
 pub(crate) use proof::{powershell_input, session_token};
 pub use proof::{probe_dir, shell_of, status};
 use repos::notes_checked;
-pub(crate) use repos::{Repos, common_dir, in_notes, note_remotes, notes_and_repos, repo_names};
+pub(crate) use repos::{
+    Repos, common_dir, in_notes, note_remotes, notes_and_repos, notes_identity, repo_names,
+};
 pub use repos::{add_repo, add_repo_note, check_repo_name, main_checkout, notes_root};
 pub use routing::gate;
 pub(crate) use routing::{block_reason, provider};

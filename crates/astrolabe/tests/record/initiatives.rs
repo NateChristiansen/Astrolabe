@@ -1033,3 +1033,59 @@ ASTROLABE
         assert!(!ok && out.contains("it's done"), "{cmd}: {out}");
     }
 }
+
+#[test]
+fn initial_initiative_state_uses_the_purpose_for_pages_members_and_joins() {
+    for efforts in [
+        "",
+        "\n\n## Efforts\nChild\nBuild the child.",
+        "\n\n## Efforts\neffort 1",
+    ] {
+        let world = World::new();
+        let m = world.machine("pc");
+        assert!(m.bash("s1", NEW).1);
+        let command = format!(
+            "astrolabe initiative new --title Fresh <<'ASTROLABE'\nPurpose already supplied.\n\nExtra detail.{efforts}\nASTROLABE"
+        );
+        let (out, ok) = m.bash("s1", &command);
+        assert!(ok, "{out}");
+        let page = std::fs::read_to_string(m.notes.join("initiatives/fresh.md")).unwrap();
+        let parsed = astrolabe::effort::EffortFile::parse(&page).unwrap();
+        assert_eq!(parsed.current, "Purpose already supplied.");
+        assert!(page.contains("Extra detail."));
+        let (out, ok) = m.bash("lead", "astrolabe activate --initiative fresh");
+        assert!(ok && out.contains("Purpose already supplied."), "{out}");
+        let (out, ok) = m.bash(
+            "lead",
+            "astrolabe effort save --status active <<'ASTROLABE'\nWork is underway.\nASTROLABE",
+        );
+        assert!(ok, "{out}");
+        let page = std::fs::read_to_string(m.notes.join("initiatives/fresh.md")).unwrap();
+        assert_eq!(
+            astrolabe::effort::EffortFile::parse(&page).unwrap().current,
+            "Work is underway."
+        );
+    }
+}
+
+#[test]
+fn existing_effort_membership_moves_and_detaches_without_new_commands() {
+    let world = World::new();
+    let m = world.machine("pc");
+    assert!(m.bash("s1", NEW).1);
+    for title in ["First", "Second"] {
+        let (out, ok) = m.bash(
+            "s1",
+            &format!(
+                "astrolabe initiative new --title {title} <<'ASTROLABE'\nA grouping.\nASTROLABE"
+            ),
+        );
+        assert!(ok, "{out}");
+    }
+    for (value, expected) in [("first", "first"), ("second", "second"), ("\"\"", "")] {
+        let (out, ok) = m.bash("s1", &format!("astrolabe effort save --initiative {value}"));
+        assert!(ok, "{out}");
+        let effort = astrolabe::effort::EffortFile::parse(&m.effort_text(1)).unwrap();
+        assert_eq!(effort.prop("initiative").unwrap_or_default(), expected);
+    }
+}

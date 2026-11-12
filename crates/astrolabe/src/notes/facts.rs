@@ -60,7 +60,8 @@ impl RepoFacts {
         let diff = git(&["diff", "HEAD"])?;
         use sha2::{Digest, Sha256};
         let mut print = Sha256::new();
-        if !crate::activate::in_notes(cwd) {
+        crate::deadline::stall("fingerprint-identity");
+        if !crate::activate::notes_identity(cwd)? {
             print.update(head.as_bytes());
         }
         print.update(diff.as_bytes());

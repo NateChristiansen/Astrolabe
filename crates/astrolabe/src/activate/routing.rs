@@ -484,7 +484,9 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             .map(|state| state.effort.as_deref().unwrap_or_default().to_owned());
         let powershell = super::proof::powershell_input(input);
         let cwd = hook::folder(input).unwrap_or_else(|| ".".into());
-        let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse(command) {
+        let (text, ok, digest, op_key) = match crate::effort::EffortCommand::parse_in(
+            command, powershell,
+        ) {
             Ok(parsed)
                 if worker.is_some()
                     && (parsed.verb != "read"

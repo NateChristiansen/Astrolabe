@@ -147,6 +147,16 @@ impl InitiativePage {
         }
         let mut file = super::EffortFile::parse(&out).expect("validated initiative body");
         file.set("waits_for", "");
+        if file.current.trim().is_empty() {
+            // Reuse the supplied purpose, without turning approach or member prose into state.
+            let purpose = file
+                .other
+                .iter()
+                .find(|(heading, _)| heading == "Purpose")
+                .map(|(_, text)| text.as_str())
+                .unwrap_or(&self.before);
+            file.current = super::plain_goal(purpose).unwrap_or_default();
+        }
         file.render_initiative()
     }
 }

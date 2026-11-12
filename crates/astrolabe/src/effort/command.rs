@@ -66,13 +66,20 @@ impl EffortCommand {
 
     /// Reads a command, or says why it isn't one the program accepts.
     pub fn parse(command: &str) -> Result<Self, String> {
+        Self::parse_in(command, false)
+    }
+
+    /// File arguments use the shell dialect supplied by the hook, never the host OS.
+    pub fn parse_in(command: &str, powershell: bool) -> Result<Self, String> {
         let text = command.replace("\r\n", "\n");
         let text = text.trim();
         let (head, body) = split_body(text)?;
         let mut words = Words::new(head);
         let program = words.program()?.ok_or("empty command")?;
         if !is_astrolabe(&program) {
-            return Err(format!("{program:?} isn't the astrolabe program"));
+            return Err(format!(
+                "{program:?} isn't the astrolabe program. Run file creation separately, then run only the astrolabe command; for example: astrolabe effort save --pieces-file pieces.txt"
+            ));
         }
         let verb = match words.next_word()?.as_deref() {
             Some("effort") => match words.next_word()?.as_deref() {
@@ -165,9 +172,12 @@ impl EffortCommand {
             if key.is_empty() || !key.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
                 return Err(format!("{word:?} isn't a flag name"));
             }
-            let value = words
-                .next_word()?
-                .ok_or_else(|| format!("--{key} needs a value"))?;
+            let value = if matches!(key, "plan-file" | "pieces-file") {
+                words.file_word(powershell)?
+            } else {
+                words.next_word()?
+            }
+            .ok_or_else(|| format!("--{key} needs a value"))?;
             if value.starts_with("--") {
                 return Err(format!("--{key} needs a value, not another flag"));
             }
@@ -594,6 +604,16 @@ impl<'a> Words<'a> {
         Ok(Some(word.to_owned()))
     }
 
+    /// Reuse literal program-path parsing only for file arguments. PowerShell treats
+    /// backslashes as separators; POSIX callers must quote them with single quotes.
+    fn file_word(&mut self, powershell: bool) -> Result<Option<String>, String> {
+        if powershell || self.rest.trim_start().starts_with(char::from(39)) {
+            self.program()
+        } else {
+            self.next_word()
+        }
+    }
+
     pub(crate) fn next_word(&mut self) -> Result<Option<String>, String> {
         self.rest = self.rest.trim_start();
         if self.rest.is_empty() {
@@ -632,6 +652,43 @@ impl<'a> Words<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_paths_follow_the_calling_shell_and_never_execute_expressions() {
+        for flag in ["plan-file", "pieces-file"] {
+            for path in [
+                r"C:\notes\pieces.txt",
+                r#""C:\my notes\pieces.txt""#,
+                r"'C:\my notes\pieces.txt'",
+            ] {
+                let text = format!("astrolabe effort save --{flag} {path}");
+                let parsed = EffortCommand::parse_in(&text, true).unwrap();
+                assert_eq!(parsed.flag(flag), Some(path.trim_matches(['\'', '"'])));
+            }
+            let bare = format!(r"astrolabe effort save --{flag} C:\notes\pieces.txt");
+            assert!(EffortCommand::parse_in(&bare, false).is_err());
+            let literal = format!(r"astrolabe effort save --{flag} 'C:\my notes\pieces.txt'");
+            assert!(EffortCommand::parse_in(&literal, false).is_ok());
+            for expression in [
+                r#""C:\$env:HOME\pieces.txt""#,
+                r"$(Get-Content secret)",
+                r"C:\notes\pieces.txt;Remove-Item",
+                "`expression",
+            ] {
+                assert!(
+                    EffortCommand::parse_in(
+                        &format!("astrolabe effort save --{flag} {expression}"),
+                        true
+                    )
+                    .is_err()
+                );
+            }
+        }
+        assert!(
+            EffortCommand::parse_in(r#"astrolabe effort save --decision "C:\notes""#, true)
+                .is_err()
+        );
+    }
 
     #[test]
     fn a_posix_heredoc_save_parses_whole() {

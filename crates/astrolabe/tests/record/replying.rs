@@ -389,3 +389,60 @@ fn a_reply_clears_an_owner_wait_on_an_initiative_page() {
     assert!(m.hook_json("pre-command", input(&m, false)).is_none());
     assert_eq!(m.log().lines().count(), commits);
 }
+
+#[test]
+fn an_unknown_notes_identity_does_not_manufacture_a_save_nudge() {
+    for dirty in [false, true] {
+        let world = World::new();
+        let m = world.machine("pc");
+        waiting(&m, false);
+        assert!(
+            m.bash_from(
+                "s1",
+                &m.notes,
+                "astrolabe effort save --status blocked --waits-for \"owner: review the notes?\"",
+                None
+            )
+            .1
+        );
+        let mut before = session(&m);
+        assert!(before["baseline"].is_string());
+        before["delivered_ms"] = (Machine::now_ms() - 2_000).into();
+        save_session(&m, &before);
+        if dirty {
+            write(&m.notes.join("knowledge/pending.md"), "Unsaved findings");
+        }
+        let mut input = input(&m, false);
+        input["cwd"] = m.notes.to_str().unwrap().into();
+        input["stop_hook_active"] = false.into();
+        // Git status and diff have completed, but identity reads no longer fit. This
+        // advances the existing test clock, without a sleep or changing real deadlines.
+        let mut child = m
+            .command(&m.demo, &["hook", "stop", "--if-active"])
+            .env("ASTROLABE_HOOK_TEST_STALL", "fingerprint-identity:+3500")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(session(&m)["baseline"], before["baseline"]);
+        assert!(!m.effort_text(1).contains("owner: review the notes?"));
+    }
+}

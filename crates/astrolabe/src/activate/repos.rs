@@ -456,13 +456,16 @@ pub(crate) fn notes_and_repos() -> Result<(Repos, PathBuf), String> {
 /// registry and git's common directory: the owner's steering seat, where any effort loads
 /// whatever its repo and a new one names the repo its work is for.
 pub(crate) fn in_notes(cwd: &Path) -> bool {
-    let Some(here) = common_dir(cwd) else {
-        return false;
+    notes_identity(cwd).unwrap_or(false)
+}
+
+/// A failed identity read is unknown, not proof that this is a product checkout.
+/// Fingerprints must preserve that distinction when a hook runs out of read time.
+pub(crate) fn notes_identity(cwd: &Path) -> Option<bool> {
+    let Some((_, notes)) = notes_and_repos().ok() else {
+        return Some(false);
     };
-    let notes = notes_and_repos().ok().map(|(_, notes)| notes);
-    notes
-        .and_then(|notes| common_dir(&notes))
-        .is_some_and(|notes| notes == here)
+    Some(common_dir(cwd)? == common_dir(&notes)?)
 }
 
 #[cfg(test)]
