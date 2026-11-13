@@ -643,3 +643,30 @@ fn a_remote_with_only_a_push_url_is_skipped_and_the_rest_still_match() {
         "{text}"
     );
 }
+
+#[test]
+fn another_repos_broken_note_doesnt_stop_this_one_matching() {
+    let f = Fixture::new();
+    let hosted = f.remote_repo("hosted", "git@example.com:team/hosted.git");
+    write(
+        &f.notes().join("knowledge/repos/hosted.md"),
+        "---\nremote: git@example.com:team/hosted.git\n---\n",
+    );
+    // The game's note has an empty remote: unreadable, but plainly not this folder's repo.
+    f.game_note("---\nremote:\n---\n");
+    let text = f.session_start("s1", &hosted, &[]).unwrap();
+    assert!(!text.contains("knowledge/repos/game.md"), "{text}");
+    let (out, ok) = f.bash(
+        "s1",
+        &hosted,
+        "astrolabe effort new --title \"Hosted work\" <<'ASTROLABE'\nA goal.\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("created"), "{out}");
+    // A folder that matches no note may be the broken one's, so it's still refused naming it.
+    let other = f.remote_repo("loose", "git@example.com:team/loose.git");
+    let text = f.session_start("s2", &other, &[]).unwrap();
+    assert!(
+        text.contains("knowledge/repos/game.md: `remote` has no URL"),
+        "{text}"
+    );
+}

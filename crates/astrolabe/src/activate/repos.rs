@@ -189,15 +189,21 @@ pub(crate) fn note_remotes(notes: &Path, name: &str) -> Result<Vec<String>, Stri
     }
 }
 
-/// Every repo note that lists a remote: its name (the file's stem) and its remotes, normalized.
-pub(super) fn remote_notes(notes: &Path) -> Result<Vec<(String, Vec<String>)>, String> {
+/// Repo notes by name with their remotes, and why each unreadable one was left out.
+pub(super) type RemoteNotes = (Vec<(String, Vec<String>)>, Vec<String>);
+
+/// Every repo note that lists a remote: its name (the file's stem) and its remotes, normalized,
+/// and why each note whose remote can't be read was left out. One broken note doesn't stop
+/// every other repo from matching; `repo_names` refuses only where it could be the one.
+pub(super) fn remote_notes(notes: &Path) -> Result<RemoteNotes, String> {
     let dir = notes.join("knowledge/repos");
     let entries = match std::fs::read_dir(&dir) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(e) => return Err(format!("{}: {e}", dir.display())),
         Ok(entries) => entries,
     };
     let mut found = Vec::new();
+    let mut unreadable = Vec::new();
     for entry in entries {
         let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
         let (Some(stem), Some("md")) = (
@@ -207,18 +213,26 @@ pub(super) fn remote_notes(notes: &Path) -> Result<Vec<(String, Vec<String>)>, S
             continue;
         };
         let file = format!("knowledge/repos/{stem}.md");
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"))?;
-        let remotes = parse_remotes(&file, &text)?;
+        let read = std::fs::read_to_string(&path).map_err(|e| format!("{file}: {e}"));
+        let remotes = match read.and_then(|text| parse_remotes(&file, &text)) {
+            Ok(remotes) => remotes,
+            Err(why) => {
+                unreadable.push(why);
+                continue;
+            }
+        };
         if remotes.is_empty() {
             continue;
         }
-        check_repo_name(stem).map_err(|why| {
-            format!("{file} lists a `remote:`, but its file name is the repo's name and {why}, so effort notes couldn't name it in `repo:`; the owner renames the note")
-        })?;
+        if let Err(why) = check_repo_name(stem) {
+            unreadable.push(format!("{file} lists a `remote:`, but its file name is the repo's name and {why}, so effort notes couldn't name it in `repo:`; the owner renames the note"));
+            continue;
+        }
         let remotes = remotes.iter().filter_map(|r| normalize_remote(r)).collect();
         found.push((stem.to_owned(), remotes));
     }
-    Ok(found)
+    unreadable.sort();
+    Ok((found, unreadable))
 }
 
 /// The repo names this folder is, as a checkout or a worktree: those registered on this
@@ -242,10 +256,16 @@ pub(crate) fn repo_names(
         .filter_map(|r| normalize_remote(r))
         .collect();
     if !remotes.is_empty() {
-        for (name, theirs) in remote_notes(notes)? {
+        let (found, unreadable) = remote_notes(notes)?;
+        for (name, theirs) in found {
             if theirs.iter().any(|r| remotes.contains(r)) {
                 names.push(name);
             }
+        }
+        // A folder that matched nothing may belong to a note that couldn't be read, so it's
+        // refused naming that note rather than taken as no repo.
+        if names.is_empty() && !unreadable.is_empty() {
+            return Err(unreadable.join("; "));
         }
     }
     names.sort();
