@@ -269,13 +269,18 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         "that effort resumed",
         f.session_start("s1", &f.demo, &[]).unwrap(),
     );
-    let (text, ok) = f.bash(
+    // The worker binds in a fixture of its own: its binding writes what it runs on into the
+    // effort's note, which the bindings after it would otherwise read.
+    let apart = Fixture::new();
+    git(&apart.notes(), &["add", "-A"]);
+    git(&apart.notes(), &["commit", "-q", "-m", "notes"]);
+    let (text, ok) = apart.bash(
         "w1",
-        &f.demo,
+        &apart.demo,
         &format!("{load} --worker --model opus --reasoning medium"),
     );
     assert!(ok, "{text}");
-    keep("a worker in a lone checkout", text);
+    keep("a worker in a lone checkout", masked(&apart, &text));
     // The owner's seat, and a worktree of its own beside a shared main checkout.
     let (text, ok) = f.bash("s2", &notes, load);
     assert!(ok, "{text}");

@@ -112,6 +112,10 @@ impl Fixture {
             git(repo, &["init", "-q"]);
             git(repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
         }
+        // The notes' own identity, so the program's commits there (a worker's binding
+        // records what it runs on) work on a machine with none, as CI is.
+        git(&notes, &["config", "user.email", "t@example.com"]);
+        git(&notes, &["config", "user.name", "T"]);
         write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
         write(
             &dir.0.join("plugin/.claude-plugin/plugin.json"),
