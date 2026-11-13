@@ -340,7 +340,7 @@ fn new_inner(
         .find(|o| crate::effort::roster::names(title, &o.page))
     {
         return Err(format!(
-            "the title names the initiative \"{}\", so it looks like work on one of its members. Nothing was written. If you were dispatched to a member, bind to it with `astrolabe activate --effort <n> --worker`; if this is a new part of the initiative, add --initiative {}; if it's unrelated, use a title that doesn't name the initiative.\n\n{}",
+            "the title names the initiative \"{}\", so it looks like work on one of its members. Nothing was written. If you were dispatched to a member, bind to it with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>`; if this is a new part of the initiative, add --initiative {}; if it's unrelated, use a title that doesn't name the initiative.\n\n{}",
             named.page.file.title,
             named.page.slug,
             crate::effort::roster::summary(named)
@@ -349,7 +349,7 @@ fn new_inner(
     let beside: Vec<String> = open
         .iter()
         .map(|o| format!(
-            "Initiative \"{}\" is open in {repo}. If this work is one of its members, drop this effort with `astrolabe effort save --status abandoned --reason \"…\"` and bind to the member with `astrolabe activate --effort <n> --worker`.",
+            "Initiative \"{}\" is open in {repo}. If this work is one of its members, drop this effort with `astrolabe effort save --status abandoned --reason \"…\"` and bind to the member with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>`.",
             o.page.file.title
         ))
         .collect();
@@ -519,6 +519,7 @@ pub fn take_up(
     session: &str,
     provider: &str,
     cwd: &Path,
+    runs_on: Option<&str>,
 ) -> Result<(String, Option<String>), String> {
     let n: u32 =
         (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
@@ -566,14 +567,22 @@ pub fn take_up(
     let mut notice = Vec::new();
     if file.prop("initiative").is_none_or(str::is_empty) && !open.is_empty() {
         notice.push(format!(
-            "This effort isn't a member of the initiative open in {repo}. If the work you were dispatched to is one of its members, bind to that member instead with `astrolabe activate --effort <n> --worker`.\n\n{}",
+            "This effort isn't a member of the initiative open in {repo}. If the work you were dispatched to is one of its members, bind to that member instead with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>`.\n\n{}",
             others()
         ));
     }
-    if !matches!(status.as_str(), "proposed" | "ready") {
+    // An effort already started is written only to record what a new worker runs on.
+    let starts = matches!(status.as_str(), "proposed" | "ready");
+    let runs_on = runs_on.filter(|r| file.prop("runs_on") != Some(*r));
+    if !starts && runs_on.is_none() {
         return Ok((notice.join("\n\n"), None));
     }
-    file.set("status", "active");
+    if starts {
+        file.set("status", "active");
+    }
+    if let Some(runs_on) = runs_on {
+        file.set("runs_on", runs_on);
+    }
     let facts = RepoFacts::read(cwd);
     stamp(
         &mut file,
@@ -591,7 +600,10 @@ pub fn take_up(
         files: vec![(rel.clone(), text)],
         renames: Vec::new(),
         journal: Vec::new(),
-        message: format!("{n:04}: active (worker bound)"),
+        message: match starts {
+            true => format!("{n:04}: active (worker bound)"),
+            false => format!("{n:04}: worker bound"),
+        },
         base: Some(notes::content_hash(&on_disk)),
         states: Vec::new(),
         committed: false,
@@ -604,10 +616,12 @@ pub fn take_up(
         rebaseline: None,
     };
     notes.apply(&op)?;
-    notice.insert(
-        0,
-        format!("Effort {n} was {status}; binding a worker marked it active, so the board shows the work started. Replace its Current state at your first save."),
-    );
+    if starts {
+        notice.insert(
+            0,
+            format!("Effort {n} was {status}; binding a worker marked it active, so the board shows the work started. Replace its Current state at your first save."),
+        );
+    }
     let notice = notice.join("\n\n");
     crate::application::finish(&notes, &op.key, &notice);
     notes.spawn_sync();

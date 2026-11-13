@@ -128,8 +128,18 @@ fn a_refused_initiative_files_nothing() {
         let (out, ok) = mac.bash("s1", cmd);
         assert!(!ok && out.contains(why), "{cmd}: {out}");
     }
+    assert_eq!(mac.log().lines().count(), before);
     // A worker files nothing; a subagent neither.
-    assert!(mac.bash("w1", "astrolabe activate --effort 1 --worker").1);
+    assert!(
+        mac.bash(
+            "w1",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
+    // Binding the worker records what it runs on; that's the binding's write, not a filing.
+    assert!(mac.effort_text(1).contains("runs_on: opus, medium effort"));
+    let before = mac.log().lines().count();
     let (out, ok) = mac.bash("w1", INITIATIVE);
     assert!(!ok && out.contains("worker under effort 1"), "{out}");
     let (out, ok) = mac.bash_as("s1", INITIATIVE, Some("child-1"));
@@ -226,8 +236,11 @@ fn workers_and_subagents_cannot_bind_to_an_initiative() {
     legacy_page(&mac);
     assert!(mac.bash("worker", NEW).1);
     assert!(
-        mac.bash("worker", "astrolabe activate --effort 1 --worker")
-            .1
+        mac.bash(
+            "worker",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
     );
     for cmd in [
         "astrolabe activate --initiative smooth-lines",
@@ -971,7 +984,10 @@ fn members_move_with_their_workers_and_drift_is_shown() {
     );
     assert!(ok && !out.contains("is open in demo"), "{out}");
     // A worker bound to a proposed member marks it active, and saves from what it was given.
-    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 2 --worker");
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe activate --effort 2 --worker --model opus --reasoning medium",
+    );
     assert!(
         ok && out.contains("Effort 2 was proposed; binding a worker marked it active"),
         "{out}"
@@ -988,11 +1004,17 @@ fn members_move_with_their_workers_and_drift_is_shown() {
     assert!(ok, "{out}");
     // Bound again, it changes nothing.
     let before = mac.log().lines().count();
-    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 2 --worker");
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe activate --effort 2 --worker --model opus --reasoning medium",
+    );
     assert!(ok && !out.contains("marked it active"), "{out}");
     assert_eq!(mac.log().lines().count(), before);
     // A worker bound to an open effort outside the initiative hears where the members are.
-    let (out, ok) = mac.bash("w2", "astrolabe activate --effort 4 --worker");
+    let (out, ok) = mac.bash(
+        "w2",
+        "astrolabe activate --effort 4 --worker --model opus --reasoning medium",
+    );
     assert!(
         ok && out.contains("isn't a member of the initiative open in demo")
             && out.contains("- active: 0002 Tether cap"),
@@ -1007,7 +1029,10 @@ fn members_move_with_their_workers_and_drift_is_shown() {
         .1
     );
     let before = mac.log().lines().count();
-    let (out, ok) = mac.bash("w3", "astrolabe activate --effort 1 --worker");
+    let (out, ok) = mac.bash(
+        "w3",
+        "astrolabe activate --effort 1 --worker --model opus --reasoning medium",
+    );
     assert!(
         !ok && out.contains("it's done, and a worker takes up open work only"),
         "{out}"
@@ -1027,7 +1052,7 @@ ASTROLABE
     assert!(ok, "{out}");
     for cmd in [
         "astrolabe activate --effort 2",
-        "astrolabe activate --effort 0002 --worker",
+        "astrolabe activate --effort 0002 --worker --model opus --reasoning medium",
     ] {
         let (out, ok) = mac.bash("w1", cmd);
         assert!(!ok && out.contains("it's done"), "{cmd}: {out}");

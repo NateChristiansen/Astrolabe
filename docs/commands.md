@@ -141,7 +141,7 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | Command | Result |
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
-| `astrolabe activate --effort <number> --worker` | Load the effort for a dispatched worker. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and, after `effort read <number>`, marks it done with `effort save --effort <number> --status done` and a Current state body. |
+| `astrolabe activate --effort <number> --worker --model <model> --reasoning <effort>` | Load the effort for a dispatched worker, naming the model and reasoning effort it was launched with. Without both it's refused; a model other than the one the app reports is refused too, and the pair is written to the effort's `runs_on`. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those, and, after `effort read <number>`, marks it done with `effort save --effort <number> --status done` and a Current state body. |
 | `astrolabe activate --initiative <slug>` | Bind to an initiative page. A quoted title also resolves; workers and subagents cannot bind. Missing involvement and authority default to `check in at plan` and `edit`. |
 | `astrolabe activate --status` | Show the loaded effort or initiative and this session's guard proof. |
 | `astrolabe activate --off` | Unload the effort or initiative; the machine switch and guard stay on. |

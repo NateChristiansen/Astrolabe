@@ -817,7 +817,13 @@ fn a_dispatcher_marks_another_effort_by_number_and_sets_an_initiative() {
     let (out, ok) = mac.bash("s1", "astrolabe effort save --effort 1 --status active");
     assert!(!ok && out.contains("repo \"other\""), "{out}");
     // A worker saves only its own effort.
-    assert!(mac.bash("w1", "astrolabe activate --effort 2 --worker").1);
+    assert!(
+        mac.bash(
+            "w1",
+            "astrolabe activate --effort 2 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
     let (out, ok) = mac.bash("w1", "astrolabe effort save --effort 1 --status active");
     assert!(!ok && out.contains("worker"), "{out}");
 }
@@ -1248,7 +1254,13 @@ fn a_worker_cannot_read_another_effort() {
     let world = World::new();
     let m = world.machine("mac");
     dispatcher(&m);
-    assert!(m.bash("worker", "astrolabe activate --effort 1 --worker").1);
+    assert!(
+        m.bash(
+            "worker",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
     let (out, ok) = m.bash("worker", "astrolabe effort read 2");
     assert!(!ok && out.contains("worker"), "{out}");
     let (out, ok) = m.bash("worker", "astrolabe effort read 1");
@@ -1503,7 +1515,10 @@ fn a_note_whose_header_never_closes_is_not_written_over() {
     // A worker can't take up such an effort and mark it active: it has no Current state.
     let ready = "---\nstatus: ready\nrepo: demo\ninvolvement: check in at plan\nauthority: edit\n# 0009 Member\n\n## Current state\nKeep this.\n";
     write(&mac.notes.join("efforts/0009-member.md"), ready);
-    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 9 --worker");
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe activate --effort 9 --worker --model opus --reasoning medium",
+    );
     assert!(
         !ok && out.contains("no `## Current state` section"),
         "{out}"

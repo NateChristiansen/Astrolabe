@@ -233,7 +233,15 @@ impl Fixture {
 
     /// A Bash command as a client runs it: through the hook, then what the hook let through.
     fn bash(&self, session: &str, cwd: &Path, command: &str) -> (String, bool) {
-        let input = json!({"session_id": session, "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": command, "description": "d"}});
+        self.bash_with(session, cwd, command, json!({}))
+    }
+
+    /// `bash`, with more top-level hook input, such as the `model` an app names.
+    fn bash_with(&self, session: &str, cwd: &Path, command: &str, extra: Value) -> (String, bool) {
+        let mut input = json!({"session_id": session, "cwd": cwd, "tool_name": "Bash", "tool_input": {"command": command, "description": "d"}});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            input[key] = value.clone();
+        }
         let answer = self.hook(input);
         let command = match &answer {
             Some(a) if a["hookSpecificOutput"]["permissionDecision"] == "deny" => {

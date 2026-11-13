@@ -314,3 +314,66 @@ fn a_panic_that_escapes_the_hook_denies_a_command_and_is_silent_elsewhere() {
         assert!(other.stderr.is_empty(), "{event}");
     }
 }
+
+const START: &str = "mcp__ccd_session__start_session";
+
+#[test]
+fn a_session_start_names_its_model_and_effort() {
+    let scope = Scope::default();
+    let denied = |input: Value| decide(START, &input, &scope);
+    let both = json!({"initiation": "user_asked", "title": "t", "prompt": "p", "background": "b", "model": "claude-opus-5-5", "effort": "medium"});
+    assert_eq!(denied(both), None);
+    for input in [
+        json!({"initiation": "user_asked", "title": "t", "prompt": "p"}),
+        json!({"initiation": "user_asked", "title": "t", "prompt": "p", "model": "claude-opus-5-5"}),
+        json!({"initiation": "user_asked", "title": "t", "prompt": "p", "effort": "medium"}),
+        json!({"initiation": "user_asked", "title": "t", "prompt": "p", "model": "default", "effort": "medium"}),
+        json!({"initiation": "own_initiative", "title": "t", "prompt": "p", "model": " ", "effort": "medium"}),
+        json!({"initiation": "user_asked", "context": "fork", "title": "t", "prompt": "p"}),
+        json!({"initiation": "user_asked", "target": "ssh", "host": "box", "title": "t", "prompt": "p"}),
+    ] {
+        let reason = denied(input.clone()).unwrap_or_else(|| panic!("{input}"));
+        assert!(astrolabe::guard::correctable(&reason), "{reason}");
+    }
+    // Not read: a proposal started as proposed, a title-only offer, a cloud start.
+    for input in [
+        json!({"proposal_id": "task_1"}),
+        json!({"initiation": "offer", "title": "t"}),
+        json!({"initiation": "user_asked", "target": "cloud", "title": "t", "prompt": "p"}),
+    ] {
+        assert_eq!(denied(input.clone()), None, "{input}");
+    }
+    // Another server's tool of another name isn't read.
+    let other = json!({"title": "t"});
+    assert_eq!(decide("mcp__other__start_task", &other, &scope), None);
+}
+
+#[test]
+fn a_launch_denial_says_what_to_add_and_asks_no_one() {
+    let data = temp("launch");
+    for (tool, tool_input, hint) in [
+        (
+            "Bash",
+            json!({"command": "codex exec 'x' < /dev/null"}),
+            "model_reasoning_effort=medium",
+        ),
+        (
+            "Bash",
+            json!({"command": "claude -p 'x'"}),
+            "--effort medium",
+        ),
+        (
+            START,
+            json!({"initiation": "user_asked", "title": "t", "prompt": "p"}),
+            "claude-opus-5-5",
+        ),
+    ] {
+        let input =
+            json!({"session_id": "s1", "cwd": data, "tool_name": tool, "tool_input": tool_input});
+        let (stdout, code) = run_hook(&data, input.to_string().as_bytes());
+        assert_eq!(code, 0);
+        assert!(stdout.contains(astrolabe::guard::LAUNCH), "{stdout}");
+        assert!(stdout.contains(hint), "{hint}: {stdout}");
+        assert!(!stdout.contains("Ask the owner"), "{stdout}");
+    }
+}

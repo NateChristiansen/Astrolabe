@@ -24,7 +24,7 @@ Not checked: the split launch on macOS, a real effort's binding and guard proof 
 
 ## Start a worker from the Codex app
 
-When dispatching a new chat from the app, use `list_projects` to match the effort's repository to its saved project on the execution host. Check the project's folder before starting work. Pass that project and the effort's number and title to `create_thread`. Once creation finishes, check the title, project and working folder of the new chat. Select the worktree environment when the assignment calls for a new managed worktree. That path needs no launch turn.
+When dispatching a new chat from the app, use `list_projects` to match the effort's repository to its saved project on the execution host. Check the project's folder before starting work. Pass that project and the effort's number and title to `create_thread`, with the model and effort set as for a CLI launch where the tool takes them. Whether it does, and whether the guard sees the call, hasn't been checked, so this path isn't enforced. Once creation finishes, check the title, project and working folder of the new chat. Select the worktree environment when the assignment calls for a new managed worktree. That path needs no launch turn.
 
 On pickup in an existing desktop chat, activation asks the agent to call `set_thread_title`. Make the call on first pickup even when the effort is still being planned. The app can shorten long titles. A later pickup of the same effort preserves a manual rename.
 
@@ -37,9 +37,13 @@ Each step below has a check. Wait for the check, not for a fixed time; the timin
 Start from the saved project's registered repository folder and let Codex make the worktree with `--worktree`, so the app can file the chat under that project. Put the brief under the notes' `.handoffs/<initiative>/` folder first. Use the [sandbox and notes setup](codex.md) for permissions. In PowerShell, replace every placeholder:
 
 ```powershell
-$launch = 'Run astrolabe activate --effort <effort-number> --worker alone. Reply with the first line of its output and stop. Do not run the guard proof yet and do no other work.'
-'' | codex exec --worktree -C '<saved-project-repository-path>' --add-dir '<absolute-notes-path>' --approve-for-me --json $launch
+$launch = 'Run astrolabe activate --effort <effort-number> --worker --model gpt-6.1-sol --reasoning medium alone. Reply with the first line of its output and stop. Do not run the guard proof yet and do no other work.'
+'' | codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium --worktree -C '<saved-project-repository-path>' --add-dir '<absolute-notes-path>' --approve-for-me --json $launch
 ```
+
+Every launch names its model and reasoning effort: Sol at medium (`-m gpt-6.1-sol -c model_reasoning_effort=medium`) unless the work needs more, and then the reason goes in the brief. A launch that names neither inherits `config.toml`'s, which can be the costliest model at a high effort, so Astrolabe's guard refuses it ([worker model and effort](hosts.md#worker-model-and-effort)). A profile alone (`-p`) doesn't count, since what it sets can't be read from the command. The activate line names the same two, and binding is refused when Codex reports a different model.
+
+Not checked: whether turns the app runs after `codex queue` keep the launch's model and effort, or take the app's own selection. Until that's checked, look at the thread's model in the app after the first queued turn.
 
 The empty pipeline closes stdin; in Bash or zsh use `< /dev/null`. `--approve-for-me` selects automatic approval review with the workspace sandbox; use it only within the approved authority. It does not bypass approvals or hook trust. See the official [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
 
@@ -95,7 +99,7 @@ If the app isn't available, the worker can stay CLI-only: send the brief in the 
 
 ```powershell
 Set-Location '<original-absolute-worktree-path>'
-'' | codex exec resume '<real-thread-id>' 'Run the remaining approved checks and update your report.' --json
+'' | codex exec resume -m gpt-6.1-sol -c model_reasoning_effort=medium '<real-thread-id>' 'Run the remaining approved checks and update your report.' --json
 ```
 
 These are independent sessions. Filing under a project or pinning doesn't establish native parent-child nesting. Do not fabricate source, origin or parent metadata, or edit provider databases or app state to force grouping.

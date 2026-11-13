@@ -29,7 +29,10 @@ fn a_finding_with_no_effort_is_one_journal_line_and_a_worker_saves_only_its_effo
     assert!(!ok && out.contains("--journal"), "{out}");
     // A worker binds to its own effort for context and the guard, saves that effort's
     // record, and writes nothing else: the dispatcher files, journals and closes.
-    let (out, ok) = mac.bash("w1", "astrolabe activate --effort 1 --worker");
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe activate --effort 1 --worker --model opus --reasoning medium",
+    );
     assert!(
         ok && out.contains("worker under that effort")
             && out.contains("No journal line")

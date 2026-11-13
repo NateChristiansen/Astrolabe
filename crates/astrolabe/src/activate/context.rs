@@ -80,7 +80,7 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker` alone first and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. Review each result and land when authorized to land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. Review each result and land when authorized to land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
@@ -782,6 +782,9 @@ fn switch_record(
         state.last_save_ms = previous.last_save_ms.clone();
         state.saves = previous.saves.clone();
         state.read_efforts = previous.read_efforts.clone();
+        state.model = previous.model.clone();
+        state.reasoning = previous.reasoning.clone();
+        state.seen_model = previous.seen_model.clone();
         state.worker = previous.worker.clone();
     }
     if worker {
@@ -1547,7 +1550,7 @@ mod tests {
                 "Sequence dependent steps and access to shared runtimes",
                 "land when authorized to land",
                 "own separate session, never a subagent",
-                "`astrolabe activate --effort <n> --worker` alone first",
+                "`astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first",
                 "Give each one a start folder in its effort's repo, never just your own folder",
                 "a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits",
                 "That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't.",

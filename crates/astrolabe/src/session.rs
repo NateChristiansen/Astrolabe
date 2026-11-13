@@ -123,6 +123,15 @@ pub struct SessionState {
     pub mark: Field<bool>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub worker: Field<bool>,
+    /// A worker's model and reasoning effort as its dispatcher declared them on
+    /// `activate --worker`, and the model the host's hook input named, if it names one.
+    /// Declared isn't proven: the effort is never in the hook input.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub model: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub reasoning: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub seen_model: Field<String>,
     /// What the app should call this session: the effort's number and title.
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub name: Field<String>,

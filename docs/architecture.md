@@ -10,7 +10,7 @@ Loading an effort adds its settings, current state, Pieces and linked initiative
 
 The rules delivered with a binding depend on its role. An owner's effort gets every rule: saving, Current state, decisions, plans and Pieces, states, the journal, lessons, initiative filing and how orchestration works. A worker gets the same saving rules without the journal, lessons, filing or orchestration, then its restrictions last. An initiative binding gets saving, decisions, states without review, the initiative's journal line, lessons and the orchestrator's steps.
 
-Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically, and can't bind to an effort. So each worker is a separate session, whose first command is `astrolabe activate --effort <number> --worker` to receive its effort's context. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
+Subagents receive the shell guard, but don't inherit the parent session's context or authority automatically, and can't bind to an effort. So each worker is a separate session, whose first command is `astrolabe activate --effort <number> --worker --model <model> --reasoning <effort>` to receive its effort's context, naming the model and effort it was launched on. A worker saves that effort's own record and nothing else; the dispatcher files efforts, writes the journal and marks each done.
 
 Effort involvement and authority are context supplied to agents. They aren't enforced permissions.
 
@@ -108,7 +108,7 @@ Appearance settings are saved per machine; a browser's own choice takes preceden
 
 ## The shell guard
 
-The pre-command hook checks commands submitted through the app's shell tools. It denies machine-wide kills, force pushes, hard resets, posting through `gh`, and recursive deletes outside the worktree.
+The pre-command hook checks commands submitted through the app's shell tools. It denies machine-wide kills, force pushes, hard resets, posting through `gh`, and recursive deletes outside the worktree. It also denies starting an agent session, from the shell or a desktop app's session tool, that names no model and reasoning effort, since such a launch inherits the host's defaults; the rules are in `guard/launch.rs` and [host behavior](hosts.md#worker-model-and-effort).
 
 `astrolabe allow --once "<exact command>" --said "<the owner's words>"` follows the activation routing: the hook writes and the app reads its result file. It records the command, quote, session, working directory, mint time and five-minute expiry in a separate lease file named for the session, under a per-session lease lock, whether or not the session has an effort loaded. Session-state writers never rewrite leases, so concurrent hooks cannot erase or restore approvals through stale session state. Only force pushes and GitHub writes qualify. After an ordinary denial, the hook checks for an unexpired byte-for-byte match in that session and directory, durably consumes it before returning no denial, and logs minting and use in `guard-denials.log`. Missing, corrupt or unwritable state keeps the command denied. Classification in `guard.rs` remains pure. The hook can't read chat, so the quote records the agent's claim of the owner's words.
 

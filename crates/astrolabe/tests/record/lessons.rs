@@ -589,7 +589,13 @@ fn a_dispatcher_marking_done_by_number_closes_it_and_names_other_open_efforts() 
     seed_lessons(&mac, &["friction"]);
     assert!(mac.bash("s1", &new_with("--lesson lessons/friction.md")).1);
     // A worker may name lessons on its own save.
-    assert!(mac.bash("w1", "astrolabe activate --effort 1 --worker").1);
+    assert!(
+        mac.bash(
+            "w1",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
     seed_lessons(&mac, &["worker"]);
     let (out, ok) = mac.bash("w1", "astrolabe effort save --lesson lessons/worker.md");
     assert!(ok, "{out}");

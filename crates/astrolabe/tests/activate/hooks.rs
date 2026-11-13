@@ -432,6 +432,20 @@ fn hook_input_past_the_cap_runs_only_for_a_tool_the_guard_doesnt_check() {
 }
 
 #[test]
+fn a_session_start_past_the_cap_is_blocked_not_passed() {
+    let f = Fixture::new();
+    let huge = "a".repeat(65 << 20);
+    let start = format!(
+        r#"{{"session_id": "s1", "tool_name": "mcp__ccd_session__start_session", "tool_input": {{"model": "claude-opus-5-5", "effort": "medium", "prompt": "{huge}"}}}}"#
+    );
+    let answer = f.hook_raw(start.into_bytes()).expect("blocked");
+    assert!(
+        reason(&answer).contains("more than the hook reads whole"),
+        "{answer}"
+    );
+}
+
+#[test]
 fn the_cap_counts_what_follows_a_byte_order_mark() {
     let f = Fixture::new();
     let template = r#"{"session_id": "s1", "tool_name": "Write", "tool_input": {"content": ""}}"#;

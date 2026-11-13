@@ -232,7 +232,7 @@ miss	win	PowerShell	powershell -EncodedCommand ZwBpAHQA
 miss	win	PowerShell	powershell -enc ZwBpAHQA
 miss	win	PowerShell	powershell -File deploy.ps1
 miss	win	PowerShell	$c = 'git push --force'; & ([scriptblock]::Create($c))
-miss	win	PowerShell	Start-Process git -ArgumentList 'push --force'
+deny	win	PowerShell	Start-Process git -ArgumentList 'push --force'
 miss	win	PowerShell	python -c "import os; os.system('git push --force')"
 miss	win	PowerShell	cmd /c %CMD%
 deny	win	Bash	cmd //c git push --force
@@ -303,7 +303,7 @@ miss	win	PowerShell	powershell -WorkingDirectory C:\ -Command "Remove-Item -Recu
 miss	win	PowerShell	cmd "/c git push --force"
 miss	win	PowerShell	Remove-Item -Rec C:\Users\me
 miss	win	PowerShell	Invoke-Expression -Command "git push --force"
-miss	win	PowerShell	git.cmd push --force
+deny	win	PowerShell	git.cmd push --force
 deny	mac	Bash	cd sub && rm -rf /etc
 allow	mac	Bash	cd sub && rm -rf /work/repo/target
 deny	mac	Bash	gh -R o/r pr list
@@ -378,3 +378,73 @@ miss	win	Bash	powershell.exe "git push --force"
 miss	win	PowerShell	cmd /c "echo 'a & git push --force & echo b'"
 # What xargs appends at run time isn't carried into the shell it starts.
 miss	mac	Bash	echo --force | xargs sh -c 'git push "$@"' sh
+# Worker launches name a model and a reasoning effort (lesson, 2026-11-12).
+deny	mac	Bash	codex exec 'do the work' < /dev/null
+deny	mac	Bash	codex exec -m gpt-6.1-sol 'do the work' < /dev/null
+deny	mac	Bash	codex exec -c model_reasoning_effort=medium 'do the work' < /dev/null
+allow	mac	Bash	codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium 'do the work' < /dev/null
+allow	mac	Bash	codex exec --model=gpt-6.1-sol --config model_reasoning_effort=high 'x'
+allow	mac	Bash	codex -c 'model="gpt-6.1-sol"' exec --config 'model_reasoning_effort="medium"' 'x'
+allow	mac	Bash	codex -mgpt-6.1-sol -cmodel_reasoning_effort=low exec 'x'
+deny	mac	Bash	codex exec 'use -m gpt-6.1-sol -c model_reasoning_effort=medium'
+deny	mac	Bash	codex exec -- -m gpt-6.1-sol -c model_reasoning_effort=medium
+deny	mac	Bash	codex exec -m "$MODEL" -c model_reasoning_effort=medium 'x'
+deny	mac	Bash	codex exec -m '' -c model_reasoning_effort=medium 'x'
+deny	mac	Bash	codex exec -m gpt-6.1-sol -c model_reasoning_effort= 'x'
+deny	mac	Bash	codex exec -p cheap 'x'
+allow	mac	Bash	codex exec -p cheap -m gpt-6.1-sol -c model_reasoning_effort=medium 'x'
+deny	mac	Bash	codex e 'x'
+deny	mac	Bash	codex exec resume abc 'more'
+deny	mac	Bash	codex exec review
+deny	mac	Bash	codex review --uncommitted
+allow	mac	Bash	codex review --uncommitted -c model=gpt-6.1-sol -c model_reasoning_effort=medium
+deny	mac	Bash	codex resume --last
+deny	mac	Bash	codex fork --last
+deny	mac	Bash	codex
+deny	mac	Bash	codex 'fix the bug'
+deny	mac	Bash	/opt/homebrew/bin/codex exec 'x'
+deny	mac	Bash	bash -lc "codex exec 'x'"
+deny	mac	Bash	npx @openai/codex exec 'x'
+deny	mac	Bash	echo hi && codex exec 'x'
+allow	mac	Bash	codex queue --thread abc --message 'next'
+allow	mac	Bash	codex --help
+allow	mac	Bash	codex exec --help
+allow	mac	Bash	codex --version
+allow	mac	Bash	codex login
+allow	mac	Bash	codex mcp list
+allow	mac	Bash	codex plugin marketplace upgrade
+allow	mac	Bash	codex features list
+allow	mac	Bash	codex help exec
+allow	mac	Bash	which codex
+allow	mac	Bash	grep -rn 'codex exec' docs
+deny	win	PowerShell	'' | codex exec --worktree -C 'C:\work\repo' --json 'x'
+allow	win	PowerShell	'' | codex exec --worktree -C 'C:\work\repo' -m gpt-6.1-sol -c model_reasoning_effort=medium --json 'x'
+deny	win	PowerShell	codex.cmd exec 'x'
+deny	win	PowerShell	codex.ps1 exec 'x'
+deny	win	PowerShell	& 'C:\Users\me\AppData\Roaming\npm\codex.cmd' exec 'x'
+deny	win	PowerShell	Start-Process codex -ArgumentList 'exec','x'
+deny	win	PowerShell	Start-Process -FilePath codex -ArgumentList 'exec x' -Wait
+allow	win	PowerShell	Start-Process codex -ArgumentList 'exec','-m','gpt-6.1-sol','-c','model_reasoning_effort=medium','x'
+allow	win	PowerShell	Start-Process -FilePath 'codex://threads/abc'
+deny	mac	Bash	claude --print 'do the work' < /dev/null
+deny	mac	Bash	claude -p --model opus 'x'
+deny	mac	Bash	claude -p --effort medium 'x'
+deny	mac	Bash	claude -p --model default --effort medium 'x'
+allow	mac	Bash	claude -p --model opus --effort medium 'x'
+allow	mac	Bash	claude --print --model=claude-opus-5-5 --effort=high --fallback-model sonnet 'x'
+deny	mac	Bash	claude
+deny	mac	Bash	claude 'fix it'
+deny	mac	Bash	claude --bg 'x'
+deny	mac	Bash	claude --resume abc
+deny	mac	Bash	claude -c
+deny	mac	Bash	claude --from-pr 12
+deny	mac	Bash	claude -p 'use --model opus --effort medium'
+allow	mac	Bash	claude --desktop --resume abc
+allow	mac	Bash	claude agents --json
+allow	mac	Bash	claude plugin marketplace update astrolabe
+allow	mac	Bash	claude mcp list
+allow	mac	Bash	claude --version
+allow	mac	Bash	claude --help
+allow	mac	Bash	claude --cloud 'x'
+deny	win	PowerShell	'' | claude.exe --print 'x'
+allow	win	PowerShell	'' | claude.exe --print --model opus --effort medium 'x'

@@ -656,3 +656,87 @@ fn resume_preserves_unknown_fields_and_legacy_optional_values() {
     }
     assert!(!f.denies("s1", "git status"));
 }
+
+const BIND: &str = "astrolabe activate --effort 70 --worker";
+
+fn state_of(f: &Fixture, session: &str) -> Value {
+    serde_json::from_str(
+        &std::fs::read_to_string(f.state().join(format!("{session}.json"))).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_worker_binds_only_with_its_model_and_effort_declared() {
+    let f = Fixture::new();
+    let before = std::fs::read_to_string(f.notes().join("efforts/0070-demo.md")).unwrap();
+    for (session, command) in [
+        ("w1", BIND.to_owned()),
+        ("w2", format!("{BIND} --model opus")),
+        ("w3", format!("{BIND} --reasoning medium")),
+        ("w4", format!("{BIND} --model default --reasoning medium")),
+    ] {
+        let (text, ok) = f.bash(session, &f.demo, &command);
+        assert!(
+            !ok && text.contains("--model <model> --reasoning <effort>"),
+            "{command}: {text}"
+        );
+        assert!(
+            !f.state().join(format!("{session}.json")).exists(),
+            "{command} bound nothing"
+        );
+    }
+    let after = std::fs::read_to_string(f.notes().join("efforts/0070-demo.md")).unwrap();
+    assert_eq!(before, after, "a refused worker writes nothing");
+    // Only a worker declares them.
+    let (text, ok) = f.bash(
+        "s1",
+        &f.demo,
+        "astrolabe activate --effort 70 --model opus --reasoning medium",
+    );
+    assert!(!ok && text.contains("Usage"), "{text}");
+    // An ordinary binding is as it was.
+    let (text, ok) = f.bash("s2", &f.demo, "astrolabe activate --effort 70");
+    assert!(ok, "{text}");
+}
+
+#[test]
+fn a_declared_worker_records_what_it_runs_on_and_keeps_it() {
+    let f = Fixture::new();
+    let command = format!("{BIND} --model opus --reasoning medium");
+    let seen = json!({"model": "claude-opus-5-5"});
+    let (text, ok) = f.bash_with("w1", &f.demo, &command, seen.clone());
+    assert!(ok, "{text}");
+    let state = state_of(&f, "w1");
+    assert_eq!(state["model"], "opus");
+    assert_eq!(state["reasoning"], "medium");
+    assert_eq!(state["seen_model"], "claude-opus-5-5");
+    let note = std::fs::read_to_string(f.notes().join("efforts/0070-demo.md")).unwrap();
+    assert!(
+        note.contains("runs_on: opus (claude-opus-5-5), medium effort"),
+        "{note}"
+    );
+    // Reloaded without the flags, it stays the same worker with the same declaration.
+    let (text, ok) = f.bash_with("w1", &f.demo, "astrolabe activate --effort 70", seen);
+    assert!(ok, "{text}");
+    let state = state_of(&f, "w1");
+    assert_eq!(state["worker"], true);
+    assert_eq!(state["model"], "opus");
+    assert_eq!(state["reasoning"], "medium");
+}
+
+#[test]
+fn a_worker_on_another_model_than_declared_is_refused() {
+    let f = Fixture::new();
+    let command = format!("{BIND} --model gpt-6.1-sol --reasoning medium");
+    let (text, ok) = f.bash_with("w1", &f.demo, &command, json!({"model": "gpt-6-astra"}));
+    assert!(
+        !ok && text.contains("runs on gpt-6-astra, not the declared gpt-6.1-sol"),
+        "{text}"
+    );
+    assert!(!f.state().join("w1.json").exists());
+    // No model in the hook input: declared, not checked.
+    let (text, ok) = f.bash("w2", &f.demo, &command);
+    assert!(ok, "{text}");
+    assert!(state_of(&f, "w2").get("seen_model").is_none());
+}

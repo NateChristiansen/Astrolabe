@@ -73,7 +73,13 @@ fn a_dispatched_worker_cannot_wait_on_the_owner_and_an_ordinary_binding_can() {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("lead", NEW).1);
-    assert!(mac.bash("w1", "astrolabe activate --effort 1 --worker").1);
+    assert!(
+        mac.bash(
+            "w1",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
     let before = mac.effort_text(1);
     let ask = "owner: batch the rows or stream them? both pass, batching is 4 seconds faster";
     let (out, ok) = mac.bash(
@@ -423,7 +429,10 @@ fn a_session_leaving_for_a_worker_binding_is_told_what_a_worker_can_do() {
         ),
     );
     assert!(ok, "{out}");
-    let (out, ok) = mac.bash("s1", "astrolabe activate --effort 2 --worker");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe activate --effort 2 --worker --model opus --reasoning medium",
+    );
     assert!(
         ok && out.contains("You're leaving effort 1, \"Smooth ink\", and it still shows under Needs you: in review, waiting on \"owner: land it on main?\".")
             && out.contains("A worker saves only its own effort, so tell your dispatcher now that effort 1 still shows there"),

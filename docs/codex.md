@@ -36,10 +36,10 @@ Start a fresh session after applying. In the desktop app select **Custom (config
 Create a worker's branch worktree before starting it. With setup selected, launch from that worktree as usual. For a one-off CLI launch without persistent setup:
 
 ```sh
-codex exec --approve-for-me --cd /path/to/worktree --add-dir /path/to/notes "<task>"
+codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium --approve-for-me --cd /path/to/worktree --add-dir /path/to/notes "<task>"
 ```
 
-Replace the paths with yours. The same flags work in PowerShell with Windows paths. `--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`. Close stdin when dispatching from a shell tool (`< /dev/null` in Bash or zsh).
+Replace the paths with yours. The model and effort are required: the guard refuses a launch that names neither, as it would inherit `config.toml`'s ([worker model and effort](hosts.md#worker-model-and-effort)). The same flags work in PowerShell with Windows paths. `--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`. Close stdin when dispatching from a shell tool (`< /dev/null` in Bash or zsh).
 
 Resume from the same worktree and retain its permission settings. A different working directory can leave the worker's files outside its writable workspace. An explicit `--sandbox` selects the legacy sandbox settings instead of the named profile, so use `--add-dir` as well if overriding it.
 

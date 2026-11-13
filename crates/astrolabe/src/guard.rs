@@ -7,6 +7,9 @@
 //! imagined bypasses.
 use serde_json::Value;
 
+mod launch;
+pub use launch::{LAUNCH, correctable, launch_tool};
+
 /// How deep wrappers and substitutions nest before the text counts as unparsed.
 const MAX_DEPTH: usize = 8;
 
@@ -365,6 +368,9 @@ pub fn decide(tool: &str, input: &Value, scope: &Scope) -> Option<String> {
 /// would remove the client's approval prompt. `powershell` is `powershell`'s answer for
 /// the session the command came from.
 pub fn decide_in(powershell: bool, tool: &str, input: &Value, scope: &Scope) -> Option<String> {
+    if let Some(reason) = launch::session_tool(tool, input) {
+        return Some(reason);
+    }
     if not_a_shell(tool) {
         return None;
     }
@@ -421,12 +427,17 @@ fn is_assignment(word: &Word) -> bool {
     name.is_some_and(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
 }
 
-/// Lowercase, no folder, no `.exe`. Case folded because the Mac's and Windows' file
-/// systems would find the program either way.
+/// Lowercase, no folder, no `.exe`, `.cmd` or `.ps1` (npm installs a CLI on Windows as all
+/// three). Case folded because the Mac's and Windows' file systems would find the program
+/// either way.
 fn program(word: &str) -> String {
     let name = word.rsplit(['/', '\\']).next().unwrap_or(word);
     let name = name.to_ascii_lowercase();
-    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+    [".exe", ".cmd", ".ps1"]
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext))
+        .unwrap_or(&name)
+        .to_owned()
 }
 
 fn join(words: &[Word]) -> String {
@@ -455,6 +466,7 @@ fn wrapped<'a>(name: &str, args: &'a [Word]) -> Option<&'a [Word]> {
         "command" if args.first().is_some_and(|a| a.text == "-v") => return Some(&[]),
         "exec" => &["-a"],
         "command" | "builtin" | "nohup" | "setsid" | "time" => &[],
+        "npx" => &["-p", "--package", "-c", "--call"],
         "nice" => &["-n", "--adjustment"],
         "timeout" => {
             let rest = after_options(args, &["-k", "-s", "--kill-after", "--signal"]);
@@ -534,6 +546,9 @@ fn simple(
                 |a: &Word| lowered(a) == "-id" || a.text.chars().all(|c| c.is_ascii_digit());
             (!args.iter().any(by_id)).then(|| "Stop-Process by name".to_owned())
         }
+        "start-process" | "saps" | "start" => started(args, dialect, context, depth, piped),
+        "codex" => launch::codex(args),
+        "claude" => launch::claude(args),
         "git" => git(args, piped),
         "gh" => gh(args, piped),
         "find" => find(args, dialect, context, depth),
@@ -542,6 +557,44 @@ fn simple(
         }
         _ => None,
     }
+}
+
+/// PowerShell's `Start-Process <file> -ArgumentList <args>`: the program it starts with its
+/// arguments, read as one command. A list such as `'a','b'` arrives as one word `a,b`.
+fn started(
+    args: &[Word],
+    dialect: Dialect,
+    context: &mut Context,
+    depth: usize,
+    piped: bool,
+) -> Option<String> {
+    let mut file = None;
+    let mut list = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.text.to_ascii_lowercase().as_str() {
+            "-filepath" | "-file" | "-path" => file = iter.next(),
+            "-argumentlist" | "-args" | "-arguments" => list.extend(iter.next()),
+            // A switch takes no value; any other option is taken to, which at worst drops a
+            // word and so never adds a denial.
+            "-wait" | "-nonewwindow" | "-passthru" | "-usenewenvironment" => {}
+            t if t.starts_with('-') => {
+                iter.next();
+            }
+            _ if file.is_none() => file = Some(arg),
+            _ => list.push(arg),
+        }
+    }
+    let mut words = vec![file?.clone()];
+    for arg in list {
+        for part in arg.text.split([',', ' ']).filter(|p| !p.is_empty()) {
+            words.push(Word {
+                text: part.to_owned(),
+                dynamic: arg.dynamic,
+            });
+        }
+    }
+    simple(&words, dialect, context, depth, piped)
 }
 
 fn unscoped(paths: &[Word]) -> bool {

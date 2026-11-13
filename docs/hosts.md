@@ -154,6 +154,29 @@ Not checked: `powershell.exe` on Windows.
 
 ## Independent workers in desktop apps
 
+## Worker model and effort
+
+A worker launch that names no model and reasoning effort inherits the host's: Codex's `config.toml`, or the Claude dispatcher's own session. On 2026-11-12 two Codex workers launched that way ran on the costliest model at high effort and used up the owner's Codex quota in an afternoon. So every launch names both. The default is the newest standard model at medium effort, Opus for Claude and Sol for Codex; anything higher is a choice with the reason in the brief.
+
+Enforced by the guard (`guard/launch.rs`), from the command or tool input only, never the host's config:
+
+- **Codex CLI.** Any `codex` run that starts a turn (bare, a prompt, `exec`, `e`, `review`, `resume`, `fork`, `exec resume`) needs `-m`/`--model` or `-c model=…`, and `-c model_reasoning_effort=…`. Read through `.cmd`, `.ps1`, `npx`, `Start-Process`, `sh -c` and the other wrappers the guard reads. Management commands, `queue`, help and `cloud` pass.
+- **Claude CLI.** Any `claude` run that starts or resumes a session (bare, a prompt, `-p`, `--bg`, `-r`, `-c`, `--from-pr`) needs `--model` (not `default`) and `--effort`. Management subcommands, help, `--cloud` and the desktop handoff `claude --desktop --resume <id>` pass.
+- **Claude desktop's session tool** (`…__start_session`). A fresh local or SSH start, or a proposal of one, needs `model` and `effort`. `context: "fork"` is refused, since a fork can't take either and keeps the caller's.
+
+Checked at binding: `astrolabe activate --effort <n> --worker` needs `--model` and `--reasoning`, refuses a model other than the one the hook input names (Codex sends `model`; Claude's hook input wasn't checked for one), and writes the pair to the effort's `runs_on`. This refuses the binding, not the launch: by then the worker has run a turn. The effort is declared, never observed.
+
+Not enforced, only documented:
+
+- a session the owner starts by hand in an app
+- a cloud start (`target: "cloud"`, `claude --cloud`, `codex cloud`), which ignores or doesn't take these settings
+- starting a proposed session by `proposal_id`, and a title-only `offer`: the values were fixed when it was proposed, or go with the brief, and the guard can't see them
+- `hand_off_to_session`, which moves this session's own task on its own settings
+- the Codex app's `create_thread`: whether it takes a model and effort, and whether the hook sees it, wasn't checked
+- turns the Codex app runs after `codex queue`: whether they keep the launch's model wasn't checked
+- a child started with `--bare` or `--safe-mode`, whose hooks are off, so activation can't check it
+- anything when the hook didn't run (see [a hook that times out or fails](#a-hook-that-times-out-or-fails))
+
 The [Codex worker workflow](codex-workers.md) covers a short CLI launch turn, opening that thread in the app, the brief and follow-ups by queue, and filing the chat under its project. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff. Both retain independent effort sessions and an explicit CLI fallback.
 
 These workflows were investigated on Windows and macOS on 2026-11-11. Their guides record the tested versions, the Mac hook-trust recovery and the host approvals needed there, and distinguish observed control from unverified app display. App restarts, concurrent writers and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.

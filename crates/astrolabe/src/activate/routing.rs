@@ -36,7 +36,7 @@ pub(super) fn act(
     dir: &Path,
     args: &[&str],
     session: &str,
-    provider: &str,
+    (provider, seen_model): (&str, Option<&str>),
     cwd: &Path,
     powershell: bool,
     key: &str,
@@ -50,11 +50,20 @@ pub(super) fn act(
             String::new(),
         ),
         ["--off"] => match previous {
-            Ok(None) => ("This session has no effort set.".to_owned(), true, Change::Keep, String::new()),
+            Ok(None) => (
+                "This session has no effort set.".to_owned(),
+                true,
+                Change::Keep,
+                String::new(),
+            ),
             _ => (
                 {
                     let gone = "This session has no effort or initiative now. The guard stays while Astrolabe is on for this machine.";
-                    match previous.ok().flatten().and_then(|p| super::leaving(&p, None, cwd)) {
+                    match previous
+                        .ok()
+                        .flatten()
+                        .and_then(|p| super::leaving(&p, None, cwd))
+                    {
                         Some(left) => format!("{gone}\n\n{left}"),
                         None => gone.to_owned(),
                     }
@@ -67,23 +76,72 @@ pub(super) fn act(
         ["--initiative", name] => {
             let previous = previous.ok().flatten();
             let refreshed = crate::record::refresh_notes();
-            match switch_initiative(name, session, provider, cwd, previous.as_ref(), &[powershell]).map(Activation::picked_up).map(Activation::mid_session) {
+            match switch_initiative(
+                name,
+                session,
+                provider,
+                cwd,
+                previous.as_ref(),
+                &[powershell],
+            )
+            .map(Activation::picked_up)
+            .map(Activation::mid_session)
+            {
                 Ok(activation) => {
                     let mut text = activation.text();
-                    if let Some(left) = previous.as_ref().and_then(|p| super::leaving(p, Some(&activation.state), cwd)) {
+                    if let Some(left) = previous
+                        .as_ref()
+                        .and_then(|p| super::leaving(p, Some(&activation.state), cwd))
+                    {
                         text = after_first_paragraph(&text, &left);
                     }
-                    if let Some(note) = refreshed { text = after_first_paragraph(&text, &note); }
-                    (text, true, Change::Write(Box::new(activation.state)), "Initiative binding could not be saved".into())
+                    if let Some(note) = refreshed {
+                        text = after_first_paragraph(&text, &note);
+                    }
+                    (
+                        text,
+                        true,
+                        Change::Write(Box::new(activation.state)),
+                        "Initiative binding could not be saved".into(),
+                    )
                 }
-                Err(why) => (format!("Initiative NOT loaded: {why}. The previous binding is unchanged."), false, Change::Keep, String::new()),
+                Err(why) => (
+                    format!("Initiative NOT loaded: {why}. The previous binding is unchanged."),
+                    false,
+                    Change::Keep,
+                    String::new(),
+                ),
             }
         }
-        ["--initiative", _, "--worker"] => ("A worker cannot bind to an initiative.".into(), false, Change::Keep, String::new()),
-        ["--effort", effort] | ["--effort", effort, "--worker"] => {
+        ["--initiative", _, "--worker"] => (
+            "A worker cannot bind to an initiative.".into(),
+            false,
+            Change::Keep,
+            String::new(),
+        ),
+        ["--effort", effort, rest @ ..] => {
+            let Some(flags) = WorkerFlags::read(rest) else {
+                return usage();
+            };
             let previous = previous.ok().flatten();
+            let seen_model = seen_model.map(str::trim).filter(|m| !m.is_empty());
+            // Checked before anything is read or written: a refused worker binds nothing.
+            let declared = match flags.worker {
+                true => match flags.declared(seen_model) {
+                    Ok(declared) => Some(declared),
+                    Err(why) => {
+                        return (
+                            refused(effort, &why, previous.as_ref()),
+                            false,
+                            Change::Keep,
+                            String::new(),
+                        );
+                    }
+                },
+                false => None,
+            };
             // A worker reloading its effort without the flag is still that effort's worker.
-            let worker = args.len() == 3
+            let worker = flags.worker
                 || previous.as_ref().is_some_and(|p| {
                     p.worker.is_true()
                         && p.effort.as_deref().map(str::to_owned)
@@ -91,14 +149,53 @@ pub(super) fn act(
                 });
             // The published checkpoint, not a stale local copy: another machine may hold it.
             let refreshed = crate::record::refresh_notes();
-            match switch_on(dir, effort, session, provider, cwd, previous.as_ref(), &[powershell], worker).map(Activation::picked_up).map(Activation::mid_session) {
+            match switch_on(
+                dir,
+                effort,
+                session,
+                provider,
+                cwd,
+                previous.as_ref(),
+                &[powershell],
+                worker,
+            )
+            .map(Activation::picked_up)
+            .map(Activation::mid_session)
+            {
                 Ok(mut activation) => {
-                    let failed = refused(effort, "its state file couldn't be written", previous.as_ref());
+                    let failed = refused(
+                        effort,
+                        "its state file couldn't be written",
+                        previous.as_ref(),
+                    );
+                    if let Some((model, reasoning)) = &declared {
+                        activation.state.model.set(model.clone());
+                        activation.state.reasoning.set(reasoning.clone());
+                    }
+                    if let Some(seen) = seen_model {
+                        activation.state.seen_model.set(seen.to_owned());
+                    }
                     if worker {
                         // After the binding's own checks: a binding refused for another reason
                         // marks nothing active.
-                        let delivered = activation.state.delivered.as_deref().unwrap_or_default().to_owned();
-                        match crate::record::take_up(effort, &delivered, key, session, provider, cwd) {
+                        let delivered = activation
+                            .state
+                            .delivered
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_owned();
+                        let runs_on = declared
+                            .as_ref()
+                            .map(|(model, reasoning)| runs_on(model, reasoning, seen_model));
+                        match crate::record::take_up(
+                            effort,
+                            &delivered,
+                            key,
+                            session,
+                            provider,
+                            cwd,
+                            runs_on.as_deref(),
+                        ) {
                             Ok((notice, hash)) => {
                                 if let Some(hash) = hash {
                                     activation.state.delivered.set(hash);
@@ -114,23 +211,115 @@ pub(super) fn act(
                                     activation.head += &format!("\n\n{notice}");
                                 }
                             }
-                            Err(why) => return (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
+                            Err(why) => {
+                                return (
+                                    refused(effort, &why, previous.as_ref()),
+                                    false,
+                                    Change::Keep,
+                                    String::new(),
+                                );
+                            }
                         }
                     }
                     let mut text = activation.text();
                     // Ahead of anything about the folder: it's the one thing to do first.
-                    if let Some(left) = previous.as_ref().and_then(|p| super::leaving(p, Some(&activation.state), cwd)) {
+                    if let Some(left) = previous
+                        .as_ref()
+                        .and_then(|p| super::leaving(p, Some(&activation.state), cwd))
+                    {
                         text = after_first_paragraph(&text, &left);
                     }
                     if let Some(note) = refreshed {
                         text = after_first_paragraph(&text, &note);
                     }
-                    (text, true, Change::Write(Box::new(activation.state)), failed)
+                    (
+                        text,
+                        true,
+                        Change::Write(Box::new(activation.state)),
+                        failed,
+                    )
                 }
-                Err(why) => (refused(effort, &why, previous.as_ref()), false, Change::Keep, String::new()),
+                Err(why) => (
+                    refused(effort, &why, previous.as_ref()),
+                    false,
+                    Change::Keep,
+                    String::new(),
+                ),
             }
         }
-        _ => ("Usage: astrolabe activate <--effort <n> [--worker]|--initiative <slug or title>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new()),
+        _ => usage(),
+    }
+}
+
+fn usage() -> (String, bool, Change, String) {
+    ("Usage: astrolabe activate <--effort <n> [--worker --model <model> --reasoning <effort>]|--initiative <slug or title>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new())
+}
+
+/// What a worker binding declares after `--effort <n>`: `--worker`, and the model and
+/// reasoning effort its dispatcher launched it with. Only a worker declares them.
+struct WorkerFlags<'a> {
+    worker: bool,
+    model: Option<&'a str>,
+    reasoning: Option<&'a str>,
+}
+
+/// Why a worker binding is refused without its model and effort. Neutral text: the
+/// defaults by provider live in each provider's guide, linked from docs/hosts.md.
+const UNDECLARED: &str = "a worker binds with the model and reasoning effort it was launched with, as in `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>`, because a launch that names neither inherits the host's defaults, which can be its costliest model at a high effort. The dispatcher's brief names both: by default the model its provider guide names, at medium effort, and a higher one only with the reason in the brief. If the brief names neither, ask the dispatcher, and do no work until it answers";
+
+impl<'a> WorkerFlags<'a> {
+    fn read(rest: &[&'a str]) -> Option<Self> {
+        let mut flags = Self {
+            worker: false,
+            model: None,
+            reasoning: None,
+        };
+        let mut words = rest.iter();
+        while let Some(word) = words.next() {
+            match *word {
+                "--worker" => flags.worker = true,
+                "--model" => flags.model = Some(words.next()?),
+                "--reasoning" => flags.reasoning = Some(words.next()?),
+                _ => return None,
+            }
+        }
+        let declares = flags.model.is_some() || flags.reasoning.is_some();
+        (flags.worker || !declares).then_some(flags)
+    }
+
+    /// Both named, and the model not plainly another than the one the host says this
+    /// session runs on. An alias such as `opus` matches the full id it stands for.
+    fn declared(&self, seen: Option<&str>) -> Result<(String, String), String> {
+        let named = |value: Option<&'a str>| {
+            value
+                .map(str::trim)
+                .filter(|v| !v.is_empty() && !v.eq_ignore_ascii_case("default"))
+        };
+        let (Some(model), Some(reasoning)) = (named(self.model), named(self.reasoning)) else {
+            return Err(UNDECLARED.to_owned());
+        };
+        if let Some(seen) = seen
+            && !same_model(model, seen)
+        {
+            return Err(format!(
+                "this session runs on {seen}, not the declared {model}. A worker runs on the model its dispatcher chose, so the dispatcher stops this session and launches it again with that model, or corrects the declaration if {seen} is the one it meant"
+            ));
+        }
+        Ok((model.to_owned(), reasoning.to_owned()))
+    }
+}
+
+fn same_model(declared: &str, seen: &str) -> bool {
+    let (declared, seen) = (declared.to_ascii_lowercase(), seen.to_ascii_lowercase());
+    seen.contains(&declared) || declared.contains(&seen)
+}
+
+/// The effort note's `runs_on`: the declared model and effort, and the host's own name for
+/// the model when it gave one that differs only as an alias does.
+fn runs_on(model: &str, reasoning: &str, seen: Option<&str>) -> String {
+    match seen.filter(|s| !s.eq_ignore_ascii_case(model)) {
+        Some(seen) => format!("{model} ({seen}), {reasoning} effort"),
+        None => format!("{model}, {reasoning} effort"),
     }
 }
 
@@ -231,7 +420,10 @@ fn answer(event: &str) {
             // Too big to read whole: a tool the guard doesn't check still runs, as it would
             // have; anything else can't be checked.
             let named = over.then(|| tool_named_in(&bytes)).flatten();
-            if named.as_deref().is_some_and(|t| !is_shell_tool(t)) {
+            if named
+                .as_deref()
+                .is_some_and(|t| !is_shell_tool(t) && !crate::guard::launch_tool(t))
+            {
                 return;
             }
             // Not recorded as a denial, so it counts toward no session's proof.
@@ -588,7 +780,8 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 &dir,
                 &words[2..],
                 session,
-                provider(input),
+                // The app, and the model its hook input says this session runs on.
+                (provider(input), input["model"].as_str()),
                 &cwd,
                 powershell,
                 // The same tool call retried gets the same key; with no id, every call its own.

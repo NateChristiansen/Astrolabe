@@ -159,7 +159,7 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                 "Astrolabe: a plan was written in this session with no effort recorded. If the owner asked for this plan, run `astrolabe effort new` with its title and goal now: plan mode doesn't block it, because the hook writes only the owner's notes and the app runs a read of the result. When the owner approves the plan, save it on the effort with --plan-file. If it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             } else if path.exists() {
                 let _ = std::fs::remove_file(&path);
-                "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work the owner asked for (a change or a plan), run `astrolabe effort new` with its title and goal, then save; if another agent dispatched you, run `astrolabe activate --effort <n> --worker` under its effort; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
+                "Astrolabe: files were edited or commits made in this session with no effort recorded. If this is work the owner asked for (a change or a plan), run `astrolabe effort new` with its title and goal, then save; if another agent dispatched you, run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` under its effort; if it was only a look, say so and finish. This is the plugin's hook, not the owner: not a request.".to_owned()
             } else {
                 // A long answer with nothing bound and nothing edited gets no ask: a question
                 // answered now is not an effort, and the one ask that stood here turned a code

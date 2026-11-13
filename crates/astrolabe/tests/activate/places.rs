@@ -53,7 +53,11 @@ fn edit_authority_in_a_main_checkout_with_other_worktrees_is_told_to_use_its_own
     let resumed = f.session_start("s1", &f.demo, &[]).unwrap();
     assert!(resumed.contains(SHARED), "{resumed}");
     // A worker is told the same, ahead of its settings.
-    let (worker, ok) = f.bash("w1", &f.demo, &format!("{load} --worker"));
+    let (worker, ok) = f.bash(
+        "w1",
+        &f.demo,
+        &format!("{load} --worker --model opus --reasoning medium"),
+    );
     let (notice, settings) = (worker.find(SHARED), worker.find("Settings from"));
     assert!(ok && notice.is_some() && notice < settings, "{worker}");
     // In a worktree of its own, with read authority, or in the notes: nothing.
@@ -74,11 +78,19 @@ fn a_worker_bound_in_the_notes_for_another_repos_effort_is_told_to_be_started_ag
     let notes = f.notes();
     git(&notes, &["add", "-A"]);
     git(&notes, &["commit", "-q", "-m", "notes"]);
-    let (text, ok) = f.bash("w1", &notes, "astrolabe activate --effort 70 --worker");
+    let (text, ok) = f.bash(
+        "w1",
+        &notes,
+        "astrolabe activate --effort 70 --worker --model opus --reasoning medium",
+    );
     let (notice, settings) = (text.find(WRONG_FOLDER), text.find("Settings from"));
     assert!(ok && notice.is_some() && notice < settings, "{text}");
     // The same worker in its effort's repo, and a worker on the notes' own effort: nothing.
-    let (text, ok) = f.bash("w2", &f.demo, "astrolabe activate --effort 70 --worker");
+    let (text, ok) = f.bash(
+        "w2",
+        &f.demo,
+        "astrolabe activate --effort 70 --worker --model opus --reasoning medium",
+    );
     assert!(ok, "{text}");
     quiet(&text, "a worker in its repo");
     write(&notes.join("knowledge/repos/agent.md"), "REPO-NOTES-TEXT");
@@ -88,7 +100,11 @@ fn a_worker_bound_in_the_notes_for_another_repos_effort_is_told_to_be_started_ag
     );
     git(&notes, &["add", "-A"]);
     git(&notes, &["commit", "-q", "-m", "77"]);
-    let (text, ok) = f.bash("w3", &notes, "astrolabe activate --effort 77 --worker");
+    let (text, ok) = f.bash(
+        "w3",
+        &notes,
+        "astrolabe activate --effort 77 --worker --model opus --reasoning medium",
+    );
     assert!(ok, "{text}");
     quiet(&text, "a worker on the notes' own effort");
 }
@@ -113,7 +129,7 @@ fn an_orchestrator_is_told_where_a_worker_starts_and_when_it_sits_in_the_notes()
     for said in [
         "Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits.",
         "That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't.",
-        "alone first and names its brief by full path.",
+        "alone first, naming the model and effort it was launched on, and names its brief by full path.",
     ] {
         assert!(text.contains(said), "lacks {said:?}: {text}");
     }
@@ -182,7 +198,11 @@ fn the_notes_under_another_name_are_still_the_notes() {
     );
     git(&notes, &["add", "-A"]);
     git(&notes, &["commit", "-q", "-m", "notes"]);
-    let (text, ok) = f.bash("w1", &notes, "astrolabe activate --effort 78 --worker");
+    let (text, ok) = f.bash(
+        "w1",
+        &notes,
+        "astrolabe activate --effort 78 --worker --model opus --reasoning medium",
+    );
     assert!(ok && text.contains("repo notes"), "{text}");
     quiet(
         &text,
@@ -249,7 +269,11 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         "that effort resumed",
         f.session_start("s1", &f.demo, &[]).unwrap(),
     );
-    let (text, ok) = f.bash("w1", &f.demo, &format!("{load} --worker"));
+    let (text, ok) = f.bash(
+        "w1",
+        &f.demo,
+        &format!("{load} --worker --model opus --reasoning medium"),
+    );
     assert!(ok, "{text}");
     keep("a worker in a lone checkout", text);
     // The owner's seat, and a worktree of its own beside a shared main checkout.

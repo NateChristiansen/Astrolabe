@@ -113,6 +113,10 @@ fn decide(bytes: &[u8], data: Option<&Path>) -> Option<Value> {
         }
         let _ = std::panic::catch_unwind(|| record_denial(bytes, &reason, data));
     }
+    // A launch the agent fixes itself by naming the model and effort: no owner to ask.
+    if crate::guard::correctable(&reason) {
+        return Some(deny(&format!("Astrolabe denied {reason}.")));
+    }
     let hint = if crate::activate::allow::covered(&reason) {
         format!(" {}", crate::activate::allow::HINT)
     } else {
