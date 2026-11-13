@@ -36,7 +36,7 @@ pub(super) fn act(
     dir: &Path,
     args: &[&str],
     session: &str,
-    (provider, seen_model): (&str, Option<&str>),
+    (provider, seen_model, seen_effort): (&str, Option<&str>, Option<&str>),
     cwd: &Path,
     powershell: bool,
     key: &str,
@@ -125,9 +125,10 @@ pub(super) fn act(
             };
             let previous = previous.ok().flatten();
             let seen_model = seen_model.map(str::trim).filter(|m| !m.is_empty());
+            let seen_effort = seen_effort.map(str::trim).filter(|e| !e.is_empty());
             // Checked before anything is read or written: a refused worker binds nothing.
             let declared = match flags.worker {
-                true => match flags.declared(seen_model) {
+                true => match flags.declared(seen_model, seen_effort) {
                     Ok(declared) => Some(declared),
                     Err(why) => {
                         return (
@@ -287,9 +288,14 @@ impl<'a> WorkerFlags<'a> {
         (flags.worker || !declares).then_some(flags)
     }
 
-    /// Both named, and the model not plainly another than the one the host says this
-    /// session runs on. An alias such as `opus` matches the full id it stands for.
-    fn declared(&self, seen: Option<&str>) -> Result<(String, String), String> {
+    /// Both named, and neither plainly another than what the host's hook input says this
+    /// session runs on: Codex names the model, Claude the effort level. An alias such as
+    /// `opus` matches the full id it stands for.
+    fn declared(
+        &self,
+        seen: Option<&str>,
+        seen_effort: Option<&str>,
+    ) -> Result<(String, String), String> {
         let named = |value: Option<&'a str>| {
             value
                 .map(str::trim)
@@ -303,6 +309,13 @@ impl<'a> WorkerFlags<'a> {
         {
             return Err(format!(
                 "this session runs on {seen}, not the declared {model}. A worker runs on the model its dispatcher chose, so the dispatcher stops this session and launches it again with that model, or corrects the declaration if {seen} is the one it meant"
+            ));
+        }
+        if let Some(level) = seen_effort
+            && !level.eq_ignore_ascii_case(reasoning)
+        {
+            return Err(format!(
+                "this session runs at {level} effort, not the declared {reasoning}. A worker runs at the effort its dispatcher chose, so the dispatcher stops this session and launches it again at that effort, or corrects the declaration if {level} is the one it meant"
             ));
         }
         Ok((model.to_owned(), reasoning.to_owned()))
@@ -781,7 +794,14 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 &words[2..],
                 session,
                 // The app, and the model its hook input says this session runs on.
-                (provider(input), input["model"].as_str()),
+                // Claude sends the effort as `effort.level`; a bare string is read too.
+                (
+                    provider(input),
+                    input["model"].as_str(),
+                    input["effort"]["level"]
+                        .as_str()
+                        .or(input["effort"].as_str()),
+                ),
                 &cwd,
                 powershell,
                 // The same tool call retried gets the same key; with no id, every call its own.

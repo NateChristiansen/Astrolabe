@@ -740,3 +740,27 @@ fn a_worker_on_another_model_than_declared_is_refused() {
     assert!(ok, "{text}");
     assert!(state_of(&f, "w2").get("seen_model").is_none());
 }
+
+#[test]
+fn a_worker_at_another_effort_than_declared_is_refused() {
+    let f = Fixture::new();
+    let command = format!("{BIND} --model opus --reasoning medium");
+    let (text, ok) = f.bash_with(
+        "w1",
+        &f.demo,
+        &command,
+        json!({"effort": {"level": "high"}}),
+    );
+    assert!(
+        !ok && text.contains("runs at high effort, not the declared medium"),
+        "{text}"
+    );
+    assert!(!f.state().join("w1.json").exists());
+    let (text, ok) = f.bash_with(
+        "w2",
+        &f.demo,
+        &command,
+        json!({"effort": {"level": "Medium"}}),
+    );
+    assert!(ok, "{text}");
+}

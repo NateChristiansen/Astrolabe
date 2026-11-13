@@ -164,7 +164,9 @@ Enforced by the guard (`guard/launch.rs`), from the command or tool input only, 
 - **Claude CLI.** Any `claude` run that starts or resumes a session (bare, a prompt, `-p`, `--bg`, `-r`, `-c`, `--from-pr`) needs `--model` (not `default`) and `--effort`. Management subcommands, help, `--cloud` and the desktop handoff `claude --desktop --resume <id>` pass.
 - **Claude desktop's session tool** (`…__start_session`). A fresh local or SSH start, or a proposal of one, needs `model` and `effort`. `context: "fork"` is refused, since a fork can't take either and keeps the caller's.
 
-Checked at binding: `astrolabe activate --effort <n> --worker` needs `--model` and `--reasoning`, refuses a model other than the one the hook input names (Codex sends `model`; Claude's hook input wasn't checked for one), and writes the pair to the effort's `runs_on`. This refuses the binding, not the launch: by then the worker has run a turn. The effort is declared, never observed.
+Checked at binding: `astrolabe activate --effort <n> --worker` needs `--model` and `--reasoning`, refuses either one when it differs from what the hook input names, and writes the pair to the effort's `runs_on`. Codex's hook input names the model and not the effort; Claude's names the effort as `effort.level` and not the model (its [hooks reference](https://code.claude.com/docs/en/hooks) puts `model` on SessionStart only). So each host checks one of the two, and the other is declared. This refuses the binding, not the launch: by then the worker has run a turn.
+
+Probed on Windows on 2026-11-12 with the installed build: a bare `codex exec` was denied and the same launch with `-m gpt-6.1-sol -c model_reasoning_effort=low` ran on that model; the desktop app's `start_session` with no model or effort was denied in the hook, and with both it went through; a Codex worker on `gpt-6.1-sol` that declared `gpt-6-astra` was refused binding; a Claude session at medium that declared `ultra` was refused binding.
 
 Not enforced, only documented:
 
