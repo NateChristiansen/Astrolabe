@@ -272,6 +272,51 @@ fn hand_edits_on_both_machines_beside_saves_are_both_kept_and_raise_nothing() {
 }
 
 #[test]
+fn a_hand_edit_swept_into_another_records_save_never_loses_to_a_save() {
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    let (out, ok) = pc.bash(
+        "p2",
+        "astrolabe effort new --title \"Other\" <<'ASTROLABE'\nother goal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(pc.sync().1);
+    assert!(mac.sync().1);
+    // The PC saves effort 2 from its session.
+    save(&pc, "p2", "", "PC's own view of two.\n\nNext.");
+    assert!(pc.sync().1);
+    // On the Mac, effort 2's Current state is rewritten by hand, and a save of effort 1
+    // sweeps it into a program commit: that commit is effort 1's save, not effort 2's.
+    offline_on(&world, &mac, || {
+        let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+            .into_iter()
+            .find(|(n, _)| *n == 2)
+            .unwrap();
+        let path = mac.notes.join(rel);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace(
+                "other goal\n\n## Current state",
+                "other goal\n\n## Current state\nHand view of two.\n",
+            ),
+        )
+        .unwrap();
+        save(&mac, "s1", "", "Mac view of one.\n\nNext.");
+    });
+    let (out, ok) = mac.sync();
+    // Not decided against the hand edit: left to git, so the pull diverges and keeps it.
+    assert!(!ok && out.contains("diverged"), "{out}");
+    let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(n, _)| *n == 2)
+        .unwrap();
+    let two = std::fs::read_to_string(mac.notes.join(rel)).unwrap();
+    assert!(two.contains("Hand view of two."), "{two}");
+    assert!(!two.contains("unseen"), "{two}");
+}
+
+#[test]
 fn a_committed_hand_edit_against_a_save_still_diverges_and_keeps_local_work() {
     let world = World::new();
     let (mac, pc) = both_on_one_effort(&world);

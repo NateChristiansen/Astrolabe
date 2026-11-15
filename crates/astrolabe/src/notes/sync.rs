@@ -15,6 +15,10 @@ const REBASE_STOPPED: i32 = 1;
 /// commits it started from and onto.
 const OWN_REBASE: &str = "own-rebase";
 
+/// The file this program leaves in git's rebase folder for a rebase it started and is
+/// aborting. Git removes the folder whole when the rebase ends, mark and all.
+const OWN_MARK: &str = "astrolabe-own";
+
 /// Whether the rebase in `dir`, found after this call's own rebase failed, is the one this
 /// call began. Never by git's message, which is in the user's language and quotes commit
 /// subjects, but by what doesn't vary: this call's rebase exited with the status of one
@@ -201,9 +205,12 @@ impl Notes {
                 if let Ok(Some(dir)) = self.rebase_dir()
                     && began_here(&dir, code, &before, &onto)
                 {
-                    // Remembered first, so a rebase left standing is finished off by the
-                    // next pull instead of holding every write back.
-                    self.record_sync(OWN_REBASE, &format!("{} {}", before.trim(), onto.trim()));
+                    // Marked as this program's first, inside git's own folder for it, so a
+                    // rebase left standing is finished off by the next pull instead of
+                    // holding every write back, and one the owner starts later never is.
+                    let started = format!("{} {}", before.trim(), onto.trim());
+                    let _ = std::fs::write(dir.join(OWN_MARK), &started);
+                    self.record_sync(OWN_REBASE, &started);
                     if let Err(left) = self.abort_own_rebase() {
                         why = format!("{why}\n{left}");
                     }
@@ -217,22 +224,28 @@ impl Notes {
 
     /// Aborts the rebase this program started, trying again while something else holds the
     /// index for a moment (an agent's `git status`, say): an abort that failed once left the
-    /// Mac partway through a rebase, refusing every write, until the owner aborted it.
+    /// Mac partway through a rebase, refusing every write, until the owner aborted it. Only
+    /// a rebase folder holding this program's own mark is touched: one the owner starts
+    /// after it is a new folder without one.
     fn abort_own_rebase(&self) -> Result<(), String> {
         let mut last = String::new();
         for attempt in 0..5 {
-            if !matches!(self.rebase_dir(), Ok(Some(_))) {
+            let Some(dir) = self.own_rebase_dir() else {
                 self.clear_sync(OWN_REBASE);
                 return Ok(());
-            }
+            };
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(200 * attempt));
+            }
+            // Looked at again right before: the owner may have aborted and begun their own.
+            if !dir.join(OWN_MARK).exists() {
+                continue;
             }
             if let Err(why) = self.git(&["rebase", "--abort"]) {
                 last = why;
             }
         }
-        if matches!(self.rebase_dir(), Ok(None)) {
+        if self.own_rebase_dir().is_none() {
             self.clear_sync(OWN_REBASE);
             return Ok(());
         }
@@ -242,25 +255,22 @@ impl Notes {
         ))
     }
 
-    /// A rebase this program started and couldn't abort, still standing: the commits it was
-    /// recorded as starting from and onto match what git holds. Finished off before a pull;
-    /// any other rebase is the owner's and is left alone.
+    /// The rebase folder, when the rebase in it is one this program started and marked.
+    fn own_rebase_dir(&self) -> Option<std::path::PathBuf> {
+        let dir = self.rebase_dir().ok()??;
+        dir.join(OWN_MARK).exists().then_some(dir)
+    }
+
+    /// A rebase this program started and couldn't abort, still standing with its mark.
+    /// Finished off before a pull; any other rebase is the owner's and is left alone.
     fn finish_own_rebase(&self) {
-        let record = self.sync_record();
-        let Some(mine) = record[OWN_REBASE]["why"].as_str() else {
+        if self.sync_record().get(OWN_REBASE).is_none() {
             return;
-        };
-        let Ok(Some(dir)) = self.rebase_dir() else {
-            self.clear_sync(OWN_REBASE);
-            return;
-        };
-        let read = |name: &str| {
-            std::fs::read_to_string(dir.join(name))
-                .map(|t| t.trim().to_owned())
-                .unwrap_or_default()
-        };
-        if format!("{} {}", read("orig-head"), read("onto")) == mine {
+        }
+        if self.own_rebase_dir().is_some() {
             let _ = self.abort_own_rebase();
+        } else if !matches!(self.rebase_dir(), Ok(Some(_))) {
+            self.clear_sync(OWN_REBASE);
         }
     }
 

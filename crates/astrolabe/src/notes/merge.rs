@@ -97,15 +97,39 @@ fn replayed(path: &str, text: &str) -> bool {
 }
 
 fn program_version(sha: &str, path: &str, text: &str) -> bool {
+    // The record the save was for, by its subject: a hand edit another save swept into its
+    // commit is still a hand edit.
     let made = git_out(&[
         "log",
         "-1",
-        "--format=%(trailers:key=Op-Key,valueonly)",
+        "--format=%s%x1f%(trailers:key=Op-Key,valueonly)",
         sha,
     ])
-    .is_some_and(|key| !key.trim().is_empty());
+    .and_then(|out| {
+        let (subject, key) = out.split_once('\u{1f}')?;
+        (!key.trim().is_empty()).then(|| saved_for(subject, path))
+    })
+    .unwrap_or(false);
     made && git_out(&["show", &format!("{sha}:{path}")])
         .is_some_and(|there| there.replace("\r\n", "\n") == text)
+}
+
+/// Whether a save's commit subject (`0356: active`, `initiative deck-frame-time:
+/// checkpoint`) names the record at `path`.
+fn saved_for(subject: &str, path: &str) -> bool {
+    let Some((name, _)) = subject.split_once(':') else {
+        return false;
+    };
+    let file = path.rsplit('/').next().unwrap_or_default();
+    match name.strip_prefix("initiative ") {
+        Some(slug) => path == format!("initiatives/{slug}.md"),
+        None => {
+            name.len() == 4
+                && name.bytes().all(|b| b.is_ascii_digit())
+                && path.starts_with("efforts/")
+                && file.starts_with(&format!("{name}-"))
+        }
+    }
 }
 
 fn git_out(args: &[&str]) -> Option<String> {
@@ -208,7 +232,7 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
             ov
         } else if ov == bv {
             tv
-        } else if STAMP.contains(&key) {
+        } else if decidable && STAMP.contains(&key) {
             pick(later, ov, tv)
         } else if decidable {
             overlap = true;
@@ -618,6 +642,33 @@ mod tests {
             "{merged}"
         );
         assert!(merged.contains("saved_by: pc · claude"), "{merged}");
+    }
+
+    #[test]
+    fn a_stamp_property_a_hand_edit_changed_is_never_decided_against() {
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        let ours = record("2026-11-14T10:05-07:00", "pc · claude", BODY)
+            .replace("session: s-pc · claude", "session: p9");
+        let theirs = base.replace("session: s-mac · claude", "session: by hand");
+        assert_eq!(merge_record(&base, &ours, &theirs, Saves::default()), None);
+    }
+
+    #[test]
+    fn only_the_record_a_save_was_for_counts_as_saved() {
+        let shelf = "efforts/2026/11-November/0356-planned-cases.md";
+        assert!(saved_for("0356: active (worker bound)", shelf));
+        assert!(saved_for("0356: checkpoint", shelf));
+        assert!(!saved_for("0333: checkpoint", shelf));
+        assert!(saved_for(
+            "initiative deck-frame-time: done",
+            "initiatives/deck-frame-time.md"
+        ));
+        assert!(!saved_for(
+            "initiative deck-frame-time: done",
+            "initiatives/deck-frame.md"
+        ));
+        assert!(!saved_for("0356: checkpoint", "initiatives/0356-x.md"));
+        assert!(!saved_for("journal tidied after a merge", shelf));
     }
 
     #[test]
