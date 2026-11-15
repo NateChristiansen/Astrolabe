@@ -425,6 +425,8 @@ fn keeps_ticked(file: &EffortFile, new: &str) -> Result<(), String> {
 
 /// Who saved it and when.
 pub(super) fn stamp_saver(file: &mut EffortFile, saver: &Saver) {
+    // A save is made from the text the session was shown, so an overlap's mark has been read.
+    file.props.retain(|(k, _)| k != crate::notes::merge::UNSEEN);
     file.set("updated", saver.now);
     file.set(
         "saved_by",

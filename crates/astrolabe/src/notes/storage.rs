@@ -501,10 +501,6 @@ impl Notes {
         }
         op.committed = true;
         self.save_intent(&op)?;
-        // A save of a file two machines wrote unseen resolves that warning.
-        for (rel, _) in &op.files {
-            self.clear_stale(rel);
-        }
         self.apply_closes(&op)?;
         self.write_states(&op)
     }

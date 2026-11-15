@@ -161,7 +161,9 @@ fn ambiguous_busy_or_newer_waits_are_left_alone() {
             "provider" => input["turn_id"] = "codex".into(),
             "reload failed" => state["reload_failed"] = "unavailable".into(),
             "stale version" => effort.set("waits_for", "owner: a newer question"),
-            "unresolved sync" => m.set_sync("stale", json!({"files":[before["file"]]})),
+            "unresolved sync" => {
+                effort.set("unseen", "mac 2026-11-14T10:05-07:00; both are in git")
+            }
             "other session" => effort.set("session", "other"),
             "done" => effort.set("status", "done"),
             "external wait" => effort.set("waits_for", "CI"),
@@ -186,7 +188,6 @@ fn ambiguous_busy_or_newer_waits_are_left_alone() {
         assert_eq!(m.log().lines().count(), commits, "{case}");
         if case == "unresolved sync" {
             assert!(notes.warnings().iter().any(|w| w.contains("Two machines")));
-            m.set_sync("stale", Value::Null);
         }
         drop(held);
         let _ = std::fs::remove_file(&pending);

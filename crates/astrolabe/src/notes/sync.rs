@@ -1,7 +1,7 @@
 //! Git synchronization, retry backoff and published status.
 use super::{
-    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, Unfit, content_hash, hash, md_files, now_ms,
-    tidy_journal, write_text,
+    ASKED, BACKOFF_MS, Notes, Op, Pull, SYNC, Unfit, hash, md_files, now_ms, tidy_journal,
+    write_text,
 };
 use crate::deadline::Step;
 use serde_json::{Value, json};
@@ -10,6 +10,10 @@ use serde_json::{Value, json};
 /// couldn't replay. One that can't start at all, as when another rebase is already under
 /// way, dies with a different status and leaves no state of its own.
 const REBASE_STOPPED: i32 = 1;
+
+/// The sync record's entry for a rebase this program started and couldn't abort: the
+/// commits it started from and onto.
+const OWN_REBASE: &str = "own-rebase";
 
 /// Whether the rebase in `dir`, found after this call's own rebase failed, is the one this
 /// call began. Never by git's message, which is in the user's language and quotes commit
@@ -77,6 +81,8 @@ impl Notes {
 
     /// The fetch half of a pull, bounded and backed off after a timeout.
     fn fetch(&self) -> Result<(), Pull> {
+        // A rebase this program started and couldn't abort is its own, offline or not.
+        self.finish_own_rebase();
         if !self.has_remote() {
             return Err(Pull::Offline("no remote".to_owned()));
         }
@@ -143,8 +149,26 @@ impl Notes {
         let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let onto = self.git(&["rev-parse", "@{upstream}"]).unwrap_or_default();
         let stashes_before = self.stashes();
+        // Records merge through the program's driver (see `merge`), so two machines' saves of
+        // one record don't conflict on their stamp lines. Its config rides on this command
+        // alone: a pull by hand merges as git always has.
+        let mut args: Vec<String> = Vec::new();
+        if let Some(driver) = super::merge::driver_command()
+            && self.route_records().is_ok()
+        {
+            args.extend([
+                "-c".to_owned(),
+                "merge.astrolabe.name=astrolabe records".to_owned(),
+                "-c".to_owned(),
+                format!("merge.astrolabe.driver={driver}"),
+            ]);
+        }
+        // `--merge` holds even where `rebase.backend` is set to apply, which skips drivers.
+        args.extend(
+            ["rebase", "--merge", "--quiet", "--autostash", "@{upstream}"].map(str::to_owned),
+        );
+        let args: Vec<&std::ffi::OsStr> = args.iter().map(AsRef::as_ref).collect();
         // Never ended by a hook, which decided above whether there was time to start it.
-        let args = ["rebase", "--quiet", "--autostash", "@{upstream}"].map(AsRef::as_ref);
         let rebased = crate::worktree::git_or(crate::deadline::Git::Notes, &self.root, &args);
         let code = rebased.as_ref().err().and_then(|failed| failed.code);
         match rebased.map_err(|failed| failed.why) {
@@ -173,16 +197,95 @@ impl Notes {
             Err(why) => {
                 // Only this call's own rebase is put back: one it started, which then
                 // failed. Never one that was already there, which is why it failed.
+                let mut why = why;
                 if let Ok(Some(dir)) = self.rebase_dir()
                     && began_here(&dir, code, &before, &onto)
                 {
-                    let _ = self.git(&["rebase", "--abort"]);
+                    // Remembered first, so a rebase left standing is finished off by the
+                    // next pull instead of holding every write back.
+                    self.record_sync(OWN_REBASE, &format!("{} {}", before.trim(), onto.trim()));
+                    if let Err(left) = self.abort_own_rebase() {
+                        why = format!("{why}\n{left}");
+                    }
                 }
                 self.record_sync("diverged", &why);
                 self.changed();
                 Pull::Diverged(why)
             }
         }
+    }
+
+    /// Aborts the rebase this program started, trying again while something else holds the
+    /// index for a moment (an agent's `git status`, say): an abort that failed once left the
+    /// Mac partway through a rebase, refusing every write, until the owner aborted it.
+    fn abort_own_rebase(&self) -> Result<(), String> {
+        let mut last = String::new();
+        for attempt in 0..5 {
+            if !matches!(self.rebase_dir(), Ok(Some(_))) {
+                self.clear_sync(OWN_REBASE);
+                return Ok(());
+            }
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt));
+            }
+            if let Err(why) = self.git(&["rebase", "--abort"]) {
+                last = why;
+            }
+        }
+        if matches!(self.rebase_dir(), Ok(None)) {
+            self.clear_sync(OWN_REBASE);
+            return Ok(());
+        }
+        Err(format!(
+            "The rebase it started couldn't be aborted ({}); the next pull tries again.",
+            last.lines().next().unwrap_or("no reason given")
+        ))
+    }
+
+    /// A rebase this program started and couldn't abort, still standing: the commits it was
+    /// recorded as starting from and onto match what git holds. Finished off before a pull;
+    /// any other rebase is the owner's and is left alone.
+    fn finish_own_rebase(&self) {
+        let record = self.sync_record();
+        let Some(mine) = record[OWN_REBASE]["why"].as_str() else {
+            return;
+        };
+        let Ok(Some(dir)) = self.rebase_dir() else {
+            self.clear_sync(OWN_REBASE);
+            return;
+        };
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name))
+                .map(|t| t.trim().to_owned())
+                .unwrap_or_default()
+        };
+        if format!("{} {}", read("orig-head"), read("onto")) == mine {
+            let _ = self.abort_own_rebase();
+        }
+    }
+
+    /// Sends records to the merge driver through the checkout's own attributes file, which
+    /// git reads but never tracks, so the first pull after an update uses it too.
+    fn route_records(&self) -> Result<(), String> {
+        let rel = self.git(&["rev-parse", "--git-path", "info/attributes"])?;
+        let path = self.root.join(rel.trim());
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        let missing: Vec<&str> = super::merge::ATTRIBUTES
+            .into_iter()
+            .filter(|line| !have.lines().any(|l| l.trim() == *line))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut text = have;
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        for line in missing {
+            text.push_str(line);
+            text.push('\n');
+        }
+        write_text(&path, &text)
     }
 
     /// The stash entries, one `<id> <subject>` line each.
@@ -253,7 +356,6 @@ impl Notes {
             Pull::Diverged(why) => return Err(format!("diverged: {why}")),
             Pull::Pulled => {}
         }
-        let stale = self.stale_saves();
         let mut pushed = self.git_timed(&["push", "--quiet"]);
         // Another machine's push can land between our pull and push: once more, fresh.
         if pushed
@@ -269,11 +371,7 @@ impl Notes {
             Ok(_) => {
                 self.record_pushed();
                 self.changed();
-                let mut text = "pushed".to_owned();
-                if !stale.is_empty() {
-                    text += &format!("; stale saves: {}", stale.join("; "));
-                }
-                Ok(text)
+                Ok("pushed".to_owned())
             }
             Err(why) => {
                 self.record_sync("push-failed", &why);
@@ -286,90 +384,25 @@ impl Notes {
         }
     }
 
-    /// After a pull: a local commit whose `Base` trailer doesn't match the file as origin had it
-    /// before our commit was saved blind to another machine's save. Both versions are in git;
-    /// this names the effort so a session can say so.
-    fn stale_saves(&self) -> Vec<String> {
-        let Ok(log) = self.git(&[
-            "log",
-            "@{upstream}..HEAD",
-            "--format=%H%x1f%(trailers:key=Base,valueonly)",
-            "--",
-        ]) else {
-            return Vec::new();
-        };
-        let mut stale = Vec::new();
-        for line in log.lines() {
-            let Some((sha, base)) = line.split_once('\x1f') else {
-                continue;
-            };
-            let base = base.trim();
-            if base.is_empty() {
-                continue;
-            }
-            let Ok(files) = self.git(&["show", "--name-only", "--format=", sha]) else {
-                continue;
-            };
-            for file in files
-                .lines()
-                .filter(|f| f.starts_with("efforts/") || f.starts_with("initiatives/"))
-            {
-                let before = self
-                    .git(&["show", &format!("{sha}~1:{file}")])
-                    .unwrap_or_default();
-                if !before.is_empty() && content_hash(&before) != base {
-                    stale.push(file.to_owned());
-                }
-            }
-        }
-        stale.sort();
-        stale.dedup();
-        if !stale.is_empty() {
-            // Kept, per file, until a later save of that file lands.
-            let mut record = self.sync_record();
-            let mut files: Vec<String> = record["stale"]["files"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-            files.extend(stale.iter().cloned());
-            files.sort();
-            files.dedup();
-            record["stale"] = json!({"files": files, "at_ms": now_ms()});
-            let _ = write_text(&self.state.join(SYNC), &record.to_string());
-        }
-        stale
+    /// Records whose two saves overlapped in a merge, by the `unseen` mark the merge committed
+    /// in them (see `merge`). Read from the records, so every machine says the same, and a
+    /// save of the record on either machine clears it.
+    pub(crate) fn unseen(&self) -> Vec<String> {
+        let pattern = format!("^{}:", super::merge::UNSEEN);
+        self.git(&["grep", "-l", "-e", &pattern, "--", "efforts", "initiatives"])
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
-    /// A status-only reply transition cannot resolve an unseen concurrent save.
+    /// A status-only reply transition cannot resolve an overlap the merge marked.
     pub(crate) fn has_stale(&self, rel: &str) -> bool {
-        self.sync_record()["stale"]["files"]
-            .as_array()
-            .is_some_and(|files| files.iter().any(|file| file.as_str() == Some(rel)))
-    }
-
-    pub(super) fn clear_stale(&self, rel: &str) {
-        let mut record = self.sync_record();
-        let Some(files) = record["stale"]["files"].as_array() else {
-            return;
-        };
-        let kept: Vec<Value> = files
-            .iter()
-            .filter(|f| f.as_str() != Some(rel))
-            .cloned()
-            .collect();
-        if kept.len() == files.len() {
-            return;
-        }
-        if kept.is_empty() {
-            record.as_object_mut().map(|o| o.remove("stale"));
-        } else {
-            record["stale"]["files"] = kept.into();
-        }
-        let _ = write_text(&self.state.join(SYNC), &record.to_string());
+        std::fs::read_to_string(self.root.join(rel)).is_ok_and(|text| {
+            crate::effort::frontmatter(&text)
+                .iter()
+                .any(|(k, v)| k == super::merge::UNSEEN && !v.is_empty())
+        })
     }
 
     fn sync_record(&self) -> Value {
@@ -454,7 +487,7 @@ impl Notes {
     fn record_pushed(&self) {
         let mut record = self.sync_record();
         record["pushed_ms"] = json!(now_ms());
-        for what in ["offline", "push-failed", "backoff_until_ms"] {
+        for what in ["offline", "push-failed", "backoff_until_ms", "stale"] {
             record.as_object_mut().map(|o| o.remove(what));
         }
         let _ = write_text(&self.state.join(SYNC), &record.to_string());
@@ -491,14 +524,11 @@ impl Notes {
                 d["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
             ));
         }
-        if let Some(files) = record["stale"]["files"]
-            .as_array()
-            .filter(|f| !f.is_empty())
-        {
-            let names: Vec<&str> = files.iter().filter_map(Value::as_str).collect();
+        let unseen = self.unseen();
+        if !unseen.is_empty() {
             lines.push(format!(
-                "Two machines saved the same record unseen: {}. The file holds whichever landed last; both are in git. Resave it from what's there.",
-                names.join(", ")
+                "Two machines saved the same record unseen: {}. The merge kept the later save where both changed the same lines; the other is in git. Read it and resave the record, which clears this.",
+                unseen.join(", ")
             ));
         }
         let unpublished = self.unpublished();

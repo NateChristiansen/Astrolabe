@@ -103,34 +103,15 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     );
 }
 
-#[test]
-fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    let pc = world.machine("pc");
-    assert!(mac.bash("s1", NEW).1);
-    assert!(mac.sync().1);
-    // The PC loads 1 (pulling it), saves, pushes.
-    let (out, ok) = pc.bash("p1", "astrolabe activate --effort 1");
-    assert!(ok, "{out}");
-    let (out, ok) = pc.bash(
-        "p1",
-        "astrolabe effort save <<'ASTROLABE'\nPC view.\n\nPC next.\nASTROLABE\n",
-    );
-    assert!(ok, "{out}");
-    assert!(pc.sync().1);
-    // The Mac, offline, saves the same effort from its older delivered text.
+/// The Mac goes offline, `act` runs on it, and it comes back.
+fn offline_on(world: &World, m: &Machine, act: impl FnOnce()) {
     git(
-        &mac.notes,
+        &m.notes,
         &["remote", "set-url", "origin", "/nonexistent/notes.git"],
     );
-    let (out, ok) = mac.bash(
-        "s1",
-        "astrolabe effort save <<'ASTROLABE'\nMac view.\n\nMac next.\nASTROLABE\n",
-    );
-    assert!(ok, "{out}");
+    act();
     git(
-        &mac.notes,
+        &m.notes,
         &[
             "remote",
             "set-url",
@@ -138,8 +119,180 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
             world.origin.0.join("notes.git").to_str().unwrap(),
         ],
     );
-    // Both rewrote the same stamp and Current state, so the rebase conflicts: aborted, the
-    // Mac's commit kept, and every session hears it until the owner resolves it.
+}
+
+/// Effort 1 made on the Mac and loaded on the PC, both synced.
+fn both_on_one_effort(world: &World) -> (Machine, Machine) {
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.sync().1);
+    let (out, ok) = pc.bash("p1", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    (mac, pc)
+}
+
+fn save(m: &Machine, session: &str, flags: &str, body: &str) {
+    let (out, ok) = m.bash(
+        session,
+        &format!("astrolabe effort save {flags} <<'ASTROLABE'\n{body}\nASTROLABE\n"),
+    );
+    assert!(ok, "{out}");
+}
+
+fn status(m: &Machine) -> String {
+    m.run(&m.notes, &["notes", "status"], "").0
+}
+
+#[test]
+fn two_machines_saving_one_effort_apart_merge_without_diverging() {
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    // A checkout set to the backend that skips merge drivers still gets the driver.
+    git(&mac.notes, &["config", "rebase.backend", "apply"]);
+    save(
+        &pc,
+        "p1",
+        "--decision \"chose pc: reason\"",
+        "PC view.\n\nPC next.",
+    );
+    assert!(pc.sync().1);
+    // A worker binds to the same effort on the Mac without having seen the PC's save: both
+    // rewrote the stamp lines, which used to conflict and strand the Mac.
+    offline_on(&world, &mac, || {
+        let (out, ok) = mac.bash(
+            "w1",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium",
+        );
+        assert!(ok, "{out}");
+    });
+    let (out, ok) = mac.sync();
+    assert!(
+        ok,
+        "{out}\n{}",
+        git(&mac.notes, &["log", "--oneline", "--all", "--graph"])
+    );
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("chose pc: reason") && text.contains("PC view."),
+        "{text}"
+    );
+    // What only the binding changed (the worker's model) is kept beside the PC's save.
+    assert!(
+        text.contains("runs_on: "),
+        "the binding's own property: {text}"
+    );
+    assert!(
+        !text.contains("<<<<<<<") && !text.contains("unseen"),
+        "{text}"
+    );
+    assert!(status(&mac).contains("nothing pending"), "{}", status(&mac));
+    assert!(pc.sync().1);
+    assert_eq!(pc.effort_text(1), text);
+}
+
+#[test]
+fn two_saves_of_one_section_keep_the_later_and_every_machine_hears_it() {
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    save(&pc, "p1", "", "PC view.\n\nPC next.");
+    assert!(pc.sync().1);
+    offline_on(&world, &mac, || {
+        save(&mac, "s1", "", "Mac view.\n\nMac next.")
+    });
+    // Both rewrote Current state: the later save's stays, the other is in git, and the
+    // record says so, so the pull doesn't strand the Mac.
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert!(
+        text.contains("PC view.") != text.contains("Mac view."),
+        "{text}"
+    );
+    assert!(text.contains("unseen: "), "{text}");
+    assert!(pc.sync().1);
+    for m in [&mac, &pc] {
+        let status = status(m);
+        assert!(
+            status.contains("Two machines saved the same record unseen"),
+            "{status}"
+        );
+        assert!(!status.contains("diverged"), "{status}");
+    }
+    // A save of the record on either machine clears it on both, once it's read again.
+    let (out, ok) = pc.bash("p1", "astrolabe effort read 1");
+    assert!(ok, "{out}");
+    save(&pc, "p1", "", "Read both.\n\nNext.");
+    assert!(pc.sync().1);
+    assert!(mac.sync().1);
+    for m in [&mac, &pc] {
+        assert!(status(m).contains("nothing pending"), "{}", status(m));
+        assert!(!m.effort_text(1).contains("unseen"));
+    }
+}
+
+#[test]
+fn hand_edits_on_both_machines_beside_saves_are_both_kept_and_raise_nothing() {
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Other\" <<'ASTROLABE'\nother goal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(mac.sync().1);
+    assert!(pc.sync().1);
+    // Each machine adds a notice to effort 2 by hand, and a save of effort 1 sweeps it into
+    // its commit: one Base for effort 1, which used to flag effort 2 as saved unseen.
+    let notice = |m: &Machine, text: &str| {
+        let (_, rel) = astrolabe::notes::effort_files(&m.notes)
+            .into_iter()
+            .find(|(n, _)| *n == 2)
+            .unwrap();
+        let path = m.notes.join(rel);
+        let mut body = std::fs::read_to_string(&path).unwrap();
+        body.push_str(&format!("\n{text}\n"));
+        std::fs::write(&path, body).unwrap();
+    };
+    notice(&pc, "PC notice.");
+    save(&pc, "p1", "", "PC view.\n\nPC next.");
+    assert!(pc.sync().1);
+    offline_on(&world, &mac, || {
+        notice(&mac, "Mac notice.");
+        save(&mac, "s1", "", "PC view.\n\nPC next.");
+    });
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let other = mac.effort_text(2);
+    assert!(
+        other.contains("PC notice.") && other.contains("Mac notice."),
+        "{other}"
+    );
+    assert!(status(&mac).contains("nothing pending"), "{}", status(&mac));
+}
+
+#[test]
+fn a_committed_hand_edit_against_a_save_still_diverges_and_keeps_local_work() {
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    save(&pc, "p1", "", "PC view.\n\nPC next.");
+    assert!(pc.sync().1);
+    // On the Mac, Current state is rewritten by hand and committed with git, stamp and all
+    // as they were: the merge never decides against a hand edit.
+    let (_, rel) = astrolabe::notes::effort_files(&mac.notes)
+        .into_iter()
+        .find(|(n, _)| *n == 1)
+        .unwrap();
+    let path = mac.notes.join(&rel);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let at = text.find("## Current state\n").unwrap() + "## Current state\n".len();
+    let end = text[at..].find("\n## ").map_or(text.len(), |e| at + e);
+    std::fs::write(
+        &path,
+        format!("{}Hand view.\n{}", &text[..at], &text[end..]),
+    )
+    .unwrap();
+    git(&mac.notes, &["commit", "-qam", "by hand"]);
     let (out, ok) = mac.sync();
     assert!(!ok && out.contains("diverged"), "{out}");
     assert!(
@@ -148,9 +301,8 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
             .is_empty(),
         "rebase aborted cleanly"
     );
-    assert!(mac.effort_text(1).contains("Mac view"), "local save kept");
-    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
-    assert!(status.contains("Notes diverged from origin"), "{status}");
+    assert!(mac.effort_text(1).contains("Hand view."), "local edit kept");
+    assert!(status(&mac).contains("Notes diverged from origin"));
     let resumed = mac.session_start("s1", "resume");
     assert!(resumed.contains("Notes diverged from origin"), "{resumed}");
     // The owner resolves it (here: keep theirs), and the next sync is clean.
@@ -158,8 +310,7 @@ fn a_save_blind_to_the_other_machines_save_is_reported_after_sync() {
     git(&mac.notes, &["reset", "-q", "--hard", "origin/main"]);
     let (out, ok) = mac.sync();
     assert!(ok, "{out}");
-    let (status, _) = mac.run(&mac.notes, &["notes", "status"], "");
-    assert!(status.contains("nothing pending"), "{status}");
+    assert!(status(&mac).contains("nothing pending"), "{}", status(&mac));
 }
 
 #[test]

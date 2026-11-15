@@ -133,6 +133,7 @@ pub enum Pull {
 
 mod facts;
 mod journal;
+pub mod merge;
 mod process;
 pub(crate) use process::keep_stdio_here;
 mod storage;

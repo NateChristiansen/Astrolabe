@@ -1181,3 +1181,60 @@ fn a_rebase_the_owner_starts_in_the_same_instant_is_left_alone() {
     let reflog = git(&mac.notes, &["reflog", "--format=%gs"]);
     assert!(!reflog.contains("abort"), "{reflog}");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_rebase_the_pull_couldnt_abort_is_finished_by_the_next_pull() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let pc = world.machine("pc");
+    std::fs::write(pc.notes.join("knowledge/owner.md"), "THEIRS").unwrap();
+    git(&pc.notes, &["commit", "-q", "-am", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    std::fs::write(mac.notes.join("knowledge/owner.md"), "OURS").unwrap();
+    git(&mac.notes, &["commit", "-q", "-am", "ours"]);
+    // Something holds the index whenever the pull tries to abort its stopped rebase, as an
+    // agent's `git status` did on the Mac: it stayed partway through, refusing every write.
+    let held = mac.dir.0.join("index.held");
+    write(&held, "");
+    let path = git_shim(
+        &mac,
+        &format!(
+            "case \" $* \" in *\" --abort \"*) if [ -e '{held}' ]; then echo 'fatal: Unable to create index.lock: File exists.' >&2; exit 128; fi;; esac",
+            held = held.display()
+        ),
+    );
+    let out = mac
+        .command_from(
+            Path::new(env!("CARGO_BIN_EXE_astrolabe")),
+            &mac.notes,
+            &["notes", "sync"],
+        )
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success() && text.contains("couldn't be aborted"),
+        "{text}"
+    );
+    assert!(mac.mid_rebase(), "the abort was held off");
+    // Once the index is free, the next pull finishes off its own rebase first.
+    std::fs::remove_file(&held).unwrap();
+    let (out, _) = mac.sync();
+    assert!(!mac.mid_rebase(), "{out}");
+    assert_eq!(
+        git(&mac.notes, &["log", "-1", "--format=%s"]).trim(),
+        "ours",
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "OURS"
+    );
+}

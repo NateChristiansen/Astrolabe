@@ -239,6 +239,15 @@ fn main() {
             },
             Err(why) => fail(&why),
         },
+        // Git's merge driver for records, run by git during the program's own pulls.
+        ["notes", "merge-file", base, ours, theirs, path] => {
+            std::process::exit(astrolabe::notes::merge::run(
+                std::path::Path::new(base),
+                std::path::Path::new(ours),
+                std::path::Path::new(theirs),
+                path,
+            ))
+        }
         ["notes", "status"] => match notes_here() {
             Ok(notes) => println!("{}", notes.status_text()),
             Err(why) => fail(&why),

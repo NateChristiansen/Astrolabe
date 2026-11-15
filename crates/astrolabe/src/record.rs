@@ -79,6 +79,8 @@ fn repo_of(
 /// The save's stamp. The repo facts are the session folder's; from the notes checkout they
 /// would be the notes' own, which say nothing about the work, so there they're left blank.
 fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&RepoFacts>) {
+    // A save is made from the text the session was shown, so an overlap's mark has been read.
+    file.props.retain(|(k, _)| k != notes::merge::UNSEEN);
     file.set("updated", &notes::local_stamp());
     file.set(
         "saved_by",

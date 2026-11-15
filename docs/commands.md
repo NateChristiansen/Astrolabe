@@ -126,6 +126,8 @@ The output contains `efforts`, `initiatives` (each page with progress counted fr
 
 `notes status` reports unpublished changes, divergence and unfinished writes. `notes sync` retries pending writes and synchronization with the notes remote. See [troubleshooting](troubleshooting.md) for failures and [using another machine](usage.md#use-another-machine) for setup.
 
+`notes merge-file <base> <ours> <theirs> <path>` is the merge driver Astrolabe's own pulls hand records to; Git runs it, not people. See [architecture](architecture.md).
+
 Run `astrolabe notes sync` alone in an agent session: the plugin's hook recovers unfinished writes locally, starts background sync and reports whether it started. Use `astrolabe notes status` for the result. In a terminal without the hook it runs synchronization directly as before.
 
 ### `lesson close`
