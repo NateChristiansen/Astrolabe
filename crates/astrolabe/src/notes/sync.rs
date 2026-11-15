@@ -307,10 +307,12 @@ impl Notes {
             .collect()
     }
 
-    /// After a rebase: a stash git created for the hand edits and couldn't reapply (it leaves
-    /// the conflict in the tree and the edits in the stash) is recorded by id, one line per
-    /// stash still there, and the tree reset to the pulled state. A reset that fails is an
-    /// error, since the next save would stage the markers.
+    /// After a rebase: a stash git created for the hand edits and couldn't reapply is recorded
+    /// by id with its files, one line per stash still there. When the reapply left conflicts,
+    /// the tree is reset to the pulled state, and a reset that fails is an error, since the
+    /// next save would stage the markers. When it left none, git refused because something
+    /// wrote a stashed file during the pull: that write is the only change in the tree, so
+    /// the tree stays as it is.
     fn keep_stash(&self, before: &[String]) -> Result<(), String> {
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
@@ -329,9 +331,16 @@ impl Notes {
             })
             .map(str::to_owned)
             .collect();
+        let conflicted = !unmerged.trim().is_empty();
         if let Some(line) = new {
             let id = line.split(' ').next().unwrap_or_default();
-            let files: Vec<&str> = unmerged.lines().collect();
+            let files = if conflicted {
+                unmerged
+            } else {
+                self.git(&["stash", "show", "--name-only", id])
+                    .unwrap_or_default()
+            };
+            let files: Vec<&str> = files.lines().filter(|f| !f.is_empty()).collect();
             kept.push(format!("{id} {}", files.join(", ")));
         }
         // Recorded before the reset, so a reset that fails still leaves the stash named.
@@ -340,7 +349,7 @@ impl Notes {
         } else {
             self.record_sync("stash", &kept.join("\n"));
         }
-        if new.is_some() {
+        if new.is_some() && conflicted {
             self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
                 format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
             })?;

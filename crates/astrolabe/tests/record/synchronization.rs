@@ -632,6 +632,65 @@ fn a_dirty_notes_checkout_still_pulls() {
 }
 
 #[test]
+fn a_write_during_a_pull_survives_a_reapply_that_leaves_no_conflict() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    write(
+        &mac.notes.join("knowledge/machines.md"),
+        "MACHINES from the mac",
+    );
+    git(&mac.notes, &["add", "-A"]);
+    git(&mac.notes, &["commit", "-qm", "machines"]);
+    git(&mac.notes, &["push", "-q"]);
+    // A local commit for the rebase to replay, so git runs post-rewrite inside the pull,
+    // after the picks and before the autostash goes back: a session writing the hand-edited
+    // file at that moment makes git refuse the reapply without leaving a conflict.
+    write(&pc.notes.join("knowledge/voice.md"), "VOICE local");
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-qm", "voice"]);
+    write(&pc.notes.join("knowledge/owner.md"), "OWNER-TEXT by hand");
+    let hook = pc.notes.join(".git/hooks/post-rewrite");
+    write(
+        &hook,
+        "#!/bin/sh\nprintf 'OWNER-TEXT written during the pull' > knowledge/owner.md\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    std::fs::remove_file(&hook).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT written during the pull",
+        "the write during the pull is kept"
+    );
+    assert!(
+        std::fs::read_to_string(pc.notes.join("knowledge/machines.md"))
+            .unwrap()
+            .contains("MACHINES from the mac")
+    );
+    let stash = git(&pc.notes, &["stash", "list", "--format=%H"]);
+    let id = stash.trim();
+    assert_eq!(id.len(), 40, "{stash}");
+    assert!(git(&pc.notes, &["stash", "show", "-p", id]).contains("+OWNER-TEXT by hand"));
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert!(
+        status.contains("(knowledge/owner.md) didn't reapply")
+            && status.contains(&format!("git stash apply {}", &id[..7])),
+        "{status}"
+    );
+}
+
+#[test]
 fn an_offline_pickup_still_begins_astrolabe_is_on_with_the_note_after() {
     let world = World::new();
     let mac = world.machine("mac");
