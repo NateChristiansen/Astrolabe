@@ -73,13 +73,10 @@ impl Notes {
     /// the board server's background pulls: hand edits aren't stashed and reapplied every
     /// minute when nothing came in.
     pub fn pull_if_behind(&self) -> Pull {
-        if let Err(offline) = self.fetch() {
-            return offline;
-        }
-        match self.git(&["rev-list", "--count", "HEAD..@{upstream}"]) {
-            Ok(n) if n.trim() == "0" => Pull::Pulled,
-            Ok(_) => self.rebase(),
-            Err(why) => Pull::Offline(why),
+        // The rebase itself leaves the tree alone when nothing came in.
+        match self.fetch() {
+            Ok(()) => self.rebase(),
+            Err(offline) => offline,
         }
     }
 
@@ -148,9 +145,17 @@ impl Notes {
             }
             Err(why) => return Pull::Offline(why),
         }
+        // Nothing came in: no rebase, so hand edits aren't stashed and reapplied for nothing.
+        // Every pickup pulls, and each round trip was a chance for the reapply to fail.
+        let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        if self
+            .git(&["rev-list", "--count", "HEAD..@{upstream}"])
+            .is_ok_and(|n| n.trim() == "0")
+        {
+            return self.settle(&before, &self.stashes());
+        }
         // The backstop waits for a rebase and what follows it, after it answers.
         let _under_way = crate::deadline::under_way();
-        let before = self.git(&["rev-parse", "HEAD"]).unwrap_or_default();
         let onto = self.git(&["rev-parse", "@{upstream}"]).unwrap_or_default();
         let stashes_before = self.stashes();
         // Records merge through the program's driver (see `merge`), so two machines' saves of
@@ -176,25 +181,7 @@ impl Notes {
         let rebased = crate::worktree::git_or(crate::deadline::Git::Notes, &self.root, &args);
         let code = rebased.as_ref().err().and_then(|failed| failed.code);
         match rebased.map_err(|failed| failed.why) {
-            Ok(_) => {
-                self.clear_sync("diverged");
-                if let Err(why) = self.keep_stash(&stashes_before) {
-                    self.record_sync("diverged", &why);
-                    self.changed();
-                    return Pull::Diverged(why);
-                }
-                self.fix_duplicate();
-                // Every pull, not only a sync's: a pickup's pull merges day files too. A
-                // failure is recorded, not hidden: the next status and session text say so.
-                match self.tidy_after_merge() {
-                    Ok(()) => self.clear_sync("tidy-failed"),
-                    Err(why) => self.record_sync("tidy-failed", &why),
-                }
-                if self.git(&["rev-parse", "HEAD"]).unwrap_or_default() != before {
-                    self.changed();
-                }
-                Pull::Pulled
-            }
+            Ok(_) => self.settle(&before, &stashes_before),
             Err(why) if why.contains("no upstream") || why.contains("no tracking") => {
                 Pull::Offline(why)
             }
@@ -220,6 +207,27 @@ impl Notes {
                 Pull::Diverged(why)
             }
         }
+    }
+
+    /// What follows a rebase that went through, or one there was nothing to do for.
+    fn settle(&self, before: &str, stashes_before: &[String]) -> Pull {
+        self.clear_sync("diverged");
+        if let Err(why) = self.keep_stash(stashes_before) {
+            self.record_sync("diverged", &why);
+            self.changed();
+            return Pull::Diverged(why);
+        }
+        self.fix_duplicate();
+        // Every pull, not only a sync's: a pickup's pull merges day files too. A
+        // failure is recorded, not hidden: the next status and session text say so.
+        match self.tidy_after_merge() {
+            Ok(()) => self.clear_sync("tidy-failed"),
+            Err(why) => self.record_sync("tidy-failed", &why),
+        }
+        if self.git(&["rev-parse", "HEAD"]).unwrap_or_default() != before {
+            self.changed();
+        }
+        Pull::Pulled
     }
 
     /// Aborts the rebase this program started, trying again while something else holds the
@@ -307,20 +315,26 @@ impl Notes {
             .collect()
     }
 
-    /// After a rebase: a stash git created for the hand edits and couldn't reapply is recorded
-    /// by id with its files, one line per stash still there. When the reapply left conflicts,
-    /// the tree is reset to the pulled state, and a reset that fails is an error, since the
-    /// next save would stage the markers. When it left none, git refused because something
-    /// wrote a stashed file during the pull: that write is the only change in the tree, so
-    /// the tree stays as it is.
+    /// After a rebase: a stash git created for the hand edits and couldn't reapply is put
+    /// back when nothing clashed, since git also leaves one when a file or the index was held
+    /// for a moment, and exits 0 either way. One that clashed (git leaves the conflict in the
+    /// tree and the edits in the stash), or that still won't go back, is recorded by id with
+    /// its files, one line per stash still there. Only a clash resets the tree to the pulled
+    /// state, so no save commits a marker; a reset that fails is an error for that reason.
     fn keep_stash(&self, before: &[String]) -> Result<(), String> {
         let unmerged = self
             .git(&["diff", "--name-only", "--diff-filter=U"])
             .unwrap_or_default();
+        let new = self
+            .stashes()
+            .into_iter()
+            .find(|l| !before.contains(l) && l.ends_with(" autostash"))
+            .map(|l| l.split(' ').next().unwrap_or_default().to_owned());
+        let new = match new {
+            Some(id) if unmerged.trim().is_empty() && self.reapply(&id) => None,
+            other => other,
+        };
         let now = self.stashes();
-        let new = now
-            .iter()
-            .find(|l| !before.contains(l) && l.ends_with(" autostash"));
         let mut kept: Vec<String> = self.sync_record()["stash"]["why"]
             .as_str()
             .unwrap_or_default()
@@ -331,30 +345,74 @@ impl Notes {
             })
             .map(str::to_owned)
             .collect();
-        let conflicted = !unmerged.trim().is_empty();
-        if let Some(line) = new {
-            let id = line.split(' ').next().unwrap_or_default();
-            let files = if conflicted {
-                unmerged
-            } else {
-                self.git(&["stash", "show", "--name-only", id])
-                    .unwrap_or_default()
-            };
-            let files: Vec<&str> = files.lines().filter(|f| !f.is_empty()).collect();
+        if let Some(id) = &new {
+            let files = self
+                .git(&["stash", "show", "--name-only", "--format=", id])
+                .unwrap_or_default();
+            let files: Vec<&str> = files.lines().filter(|l| !l.trim().is_empty()).collect();
             kept.push(format!("{id} {}", files.join(", ")));
         }
         // Recorded before the reset, so a reset that fails still leaves the stash named.
         if kept.is_empty() {
             self.clear_sync("stash");
         } else {
-            self.record_sync("stash", &kept.join("\n"));
+            self.record_sync(
+                "stash",
+                &kept.join(
+                    "
+",
+                ),
+            );
         }
-        if new.is_some() && conflicted {
+        // Looked at again: a retried reapply can clash too, and leave its markers.
+        let clashed = self
+            .git(&["diff", "--name-only", "--diff-filter=U"])
+            .is_ok_and(|u| !u.trim().is_empty());
+        if new.is_some() && clashed {
             self.git(&["reset", "--quiet", "--hard"]).map_err(|why| {
                 format!("hand edits that wouldn't reapply are in a stash, and the tree couldn't be reset after them: {why}")
             })?;
         }
         Ok(())
+    }
+
+    /// Puts back the stash with commit `id` and drops it, trying again while something holds
+    /// a file or the index for a moment. True once the stash is gone and its edits are in.
+    fn reapply(&self, id: &str) -> bool {
+        // Something wrote a stashed file during the pull: git won't put the stash over that
+        // write however often it's asked, and the write is what the tree keeps.
+        let stashed = self
+            .git(&["stash", "show", "--name-only", "--format=", id])
+            .unwrap_or_default();
+        let changed = self.git(&["diff", "--name-only"]).unwrap_or_default();
+        if changed.lines().any(|f| stashed.lines().any(|s| s == f)) {
+            return false;
+        }
+        for attempt in 0..5 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(200 * attempt));
+            }
+            // A stash is dropped by its place in the list, which can shift between tries.
+            let Some(place) = self
+                .git(&["stash", "list", "--format=%gd %H"])
+                .unwrap_or_default()
+                .lines()
+                .find_map(|l| l.strip_suffix(id).map(|p| p.trim().to_owned()))
+            else {
+                return false;
+            };
+            if self.git(&["stash", "pop", "--quiet", &place]).is_ok() {
+                return true;
+            }
+            // A pop that clashed leaves markers and keeps the stash: no retry undoes that.
+            let clashed = self
+                .git(&["diff", "--name-only", "--diff-filter=U"])
+                .is_ok_and(|u| !u.trim().is_empty());
+            if clashed {
+                return false;
+            }
+        }
+        false
     }
 
     /// Pull, then push, under the lock; what happened is recorded for every session to read.
@@ -621,6 +679,67 @@ impl Notes {
 #[cfg(test)]
 mod tests {
     use super::{REBASE_STOPPED, began_here};
+    use crate::notes::Notes;
+
+    fn run(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "core.autocrlf=false",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Git leaves an autostash behind when a file or the index was held for a moment, with
+    /// nothing clashing: it goes back into the tree, and nothing is recorded or reset.
+    #[test]
+    fn an_autostash_left_without_a_clash_is_put_back() {
+        let dir = std::env::temp_dir().join(format!("astrolabe-stash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q"]);
+        std::fs::write(
+            root.join("note.md"),
+            "one
+",
+        )
+        .unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-qm", "one"]);
+        std::fs::write(
+            root.join("note.md"),
+            "one
+by hand
+",
+        )
+        .unwrap();
+        run(&root, &["stash", "push", "-q", "-m", "autostash"]);
+        let notes = Notes::new(root.clone(), dir.join("state"));
+        notes.keep_stash(&[]).unwrap();
+        // Line endings follow the machine's git config.
+        assert!(
+            std::fs::read_to_string(root.join("note.md"))
+                .unwrap()
+                .contains("by hand")
+        );
+        assert!(run(&root, &["stash", "list"]).trim().is_empty());
+        assert!(notes.sync_record().get("stash").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A rebase folder as git leaves one, with what it recorded.
     fn rebase_folder(name: &str, from: &str, onto: &str) -> std::path::PathBuf {

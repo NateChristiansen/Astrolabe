@@ -691,6 +691,28 @@ fn a_write_during_a_pull_survives_a_reapply_that_leaves_no_conflict() {
 }
 
 #[test]
+fn a_pull_with_nothing_incoming_leaves_hand_edits_alone() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    write(&mac.notes.join("knowledge/owner.md"), "OWNER-TEXT mid-edit");
+    let reflog = git(&mac.notes, &["reflog"]).lines().count();
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    let (out, ok) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(ok, "{out}");
+    // No stash, no reset: the edit was never lifted out of the tree.
+    assert_eq!(git(&mac.notes, &["reflog"]).lines().count(), reflog);
+    assert!(git(&mac.notes, &["stash", "list"]).trim().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(mac.notes.join("knowledge/owner.md")).unwrap(),
+        "OWNER-TEXT mid-edit"
+    );
+}
+
+#[test]
 fn an_offline_pickup_still_begins_astrolabe_is_on_with_the_note_after() {
     let world = World::new();
     let mac = world.machine("mac");
