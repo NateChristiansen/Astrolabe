@@ -174,8 +174,8 @@ Not enforced, only documented:
 - a cloud start (`target: "cloud"`, `claude --cloud`, `codex cloud`), which ignores or doesn't take these settings
 - starting a proposed session by `proposal_id`, and a title-only `offer`: the values were fixed when it was proposed, or go with the brief, and the guard can't see them
 - `hand_off_to_session`, which moves this session's own task on its own settings
-- the Codex app's `create_thread`: whether it takes a model and effort, and whether the hook sees it, wasn't checked
-- turns the Codex app runs after `codex queue`: whether they keep the launch's model wasn't checked
+- the Codex app's `create_thread`: the app tool accepts `model` and `thinking`; hook enforcement on this path is unverified
+- turns the Codex app runs after `codex queue`: one Windows worker kept GPT-6.2 Sol at medium on its first queued turn ([worker check](codex-workers.md#1-run-the-launch-turn))
 - a child started with `--bare` or `--safe-mode`, whose hooks are off, so activation can't check it
 - anything when the hook didn't run (see [a hook that times out or fails](#a-hook-that-times-out-or-fails))
 

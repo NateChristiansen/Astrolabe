@@ -12,7 +12,7 @@ use serde_json::Value;
 pub const LAUNCH: &str = "a worker launch with no explicit model and effort";
 
 /// The defaults a denial suggests. Update them when a provider ships a newer model.
-const CODEX_DEFAULT: &str = "-m gpt-6.1-sol -c model_reasoning_effort=medium";
+const CODEX_DEFAULT: &str = "-m gpt-6.2-sol -c model_reasoning_effort=medium";
 const CLAUDE_DEFAULT: &str = "--model opus --effort medium";
 const SESSION_DEFAULT: &str = "model \"claude-opus-5-5\" and effort \"medium\"";
 
