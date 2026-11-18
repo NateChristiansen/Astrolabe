@@ -96,6 +96,9 @@ pub struct Op {
     /// intent file's time, which moves whenever a later run finishes the write.
     #[serde(default)]
     pub at_ms: Option<i64>,
+    /// The hand-off files a save owns, committed with it when they changed.
+    #[serde(default)]
+    pub handoffs: Option<Handoffs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +130,7 @@ pub enum Pull {
 }
 
 mod facts;
+pub mod handoffs;
 mod journal;
 pub mod merge;
 mod process;
@@ -134,6 +138,7 @@ pub(crate) use process::keep_stdio_here;
 mod storage;
 mod sync;
 pub use facts::RepoFacts;
+pub use handoffs::Handoffs;
 pub use journal::{JournalEntry, JournalLine, parse_journal, tidy_journal};
 
 impl Notes {
@@ -450,6 +455,7 @@ impl Notes {
             session: None,
             bound: None,
             at_ms: None,
+            handoffs: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
         for entry in std::fs::read_dir(&self.state)

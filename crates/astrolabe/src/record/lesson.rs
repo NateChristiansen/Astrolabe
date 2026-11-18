@@ -361,6 +361,7 @@ fn close_inner(
             session: None,
             bound: None,
             at_ms: None,
+            handoffs: None,
         };
         notes.apply(&op)?;
     }

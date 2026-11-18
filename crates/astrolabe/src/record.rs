@@ -440,6 +440,7 @@ fn new_inner(
         session: Some(session.to_owned()),
         bound: Some(format!("effort {number}")),
         at_ms: Some(notes::now_ms()),
+        handoffs: None,
     };
     notes.apply(&op)?;
     notes.spawn_sync();
@@ -604,6 +605,7 @@ pub fn take_up(
         session: None,
         bound: None,
         at_ms: None,
+        handoffs: None,
     };
     notes.apply(&op)?;
     if starts {
@@ -882,6 +884,7 @@ fn initiative_inner(
         session: Some(session.to_owned()),
         bound: bound_label(&notes.state, session),
         at_ms: Some(notes::now_ms()),
+        handoffs: None,
     };
     notes.apply(&op)?;
     let saved = saved_text(&pulled, notes.spawn_sync());
@@ -1101,8 +1104,9 @@ fn save_inner(
         session: Some(session.to_owned()),
         bound: Some(state.record_label()),
         at_ms: Some(notes::now_ms()),
+        handoffs: handoff_scope(&notes.root, rel, req.page_binding, &req.number, &file),
     };
-    apply_save(&notes, &op, record)?;
+    notes_lines.extend(apply_save(&notes, &op, record)?);
     // The save covers what the session's commands changed up to now.
     crate::nudge::clear_shell(session);
     // Every save, so the other machine's board follows it: a checkpoint held for a batching
@@ -1167,9 +1171,9 @@ const LESSONS_UNFINISHED: &str = ", but closing its lessons stopped: ";
 
 /// The write, and when only its lesson closes failed, a reply that says the save landed: the
 /// intent stays without a result, so the next notes write finishes the closes.
-fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<(), String> {
-    match notes.apply(op) {
-        Ok(()) => Ok(()),
+fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<Vec<String>, String> {
+    match notes.apply_noting(op) {
+        Ok(lines) => Ok(lines),
         Err(why) if !op.lesson_closes.is_empty() && notes.already_applied(&op.key) => {
             let why = match why.trim() {
                 "" => "git refused a commit".to_owned(),
@@ -1180,6 +1184,28 @@ fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<(), String> {
             ))
         }
         Err(why) => Err(why),
+    }
+}
+
+/// The hand-off files a save carries, as `notes::handoffs` says: an initiative's page its
+/// folder, an effort its own entries. An effort naming an initiative with no page carries none,
+/// since which folder is its can't be known; that's no reason to fail the save.
+fn handoff_scope(
+    root: &Path,
+    rel: &str,
+    page: bool,
+    number: &str,
+    file: &EffortFile,
+) -> Option<notes::Handoffs> {
+    if page {
+        let slug = Path::new(rel).file_stem()?.to_str()?;
+        return Some(notes::Handoffs::initiative(slug));
+    }
+    let number = number.parse().ok()?;
+    match file.prop("initiative").filter(|name| !name.is_empty()) {
+        None => Some(notes::Handoffs::effort(number, None)),
+        Some(name) => (canonical_membership(root, name).ok())
+            .map(|slug| notes::Handoffs::effort(number, Some(&slug))),
     }
 }
 
@@ -1497,8 +1523,9 @@ fn save_target(
         session: Some(session.to_owned()),
         bound: Some(state.record_label()),
         at_ms: Some(notes::now_ms()),
+        handoffs: handoff_scope(&notes.root, "", false, &target.to_string(), &file),
     };
-    apply_save(notes, &op, &format!("effort {target}"))?;
+    needs_you.extend(apply_save(notes, &op, &format!("effort {target}"))?);
     let sync_started = notes.spawn_sync();
     let head = saved_reply(&Reply {
         record: &format!("effort {target}"),
@@ -1663,6 +1690,7 @@ fn journal_inner(
         session: Some(session.to_owned()),
         bound: None,
         at_ms: Some(notes::now_ms()),
+        handoffs: None,
     };
     notes.apply(&op)?;
     notes.spawn_sync();

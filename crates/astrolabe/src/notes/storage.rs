@@ -1,4 +1,5 @@
 //! Recoverable note writes and their commit scope. Callers hold the notes lock.
+use super::handoffs::{self, Handoffs, Left};
 use super::{
     EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RETRY_MS, journal_file, now_ms,
     tidy_journal, write_text,
@@ -18,21 +19,31 @@ const COMMITTED: [&str; 6] = [
     ".gitattributes",
 ];
 
-/// The committed paths that `git status --porcelain -z` output reports anything under, in
-/// `COMMITTED` order. Each entry is two status letters, a space and a path, and a rename
-/// or copy is followed by the path it came from: both count. Git names paths from the top
-/// of its repo, so a notes folder inside a bigger repo has `prefix` (as `rev-parse
-/// --show-prefix` says it, ending in `/`) taken off first.
-fn changed_under(status: &str, prefix: &str) -> Vec<&'static str> {
-    let mut paths = Vec::new();
-    let mut entries = status.split('\0').filter(|entry| !entry.is_empty());
-    while let Some(entry) = entries.next() {
+/// `git status --porcelain -z` entries as status letters and a path from the notes folder.
+/// Each entry is two status letters, a space and a path, and a rename or copy is followed by
+/// the path it came from, given here with no letters. Git names paths from the top of its
+/// repo, so a notes folder inside a bigger repo has `prefix` (as `rev-parse --show-prefix`
+/// says it, ending in `/`) taken off first, and a path outside it is dropped.
+fn entries<'a>(status: &'a str, prefix: &str) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    let mut raw = status.split('\0').filter(|entry| !entry.is_empty());
+    while let Some(entry) = raw.next() {
         let (letters, path) = (entry.get(..2).unwrap_or(""), entry.get(3..).unwrap_or(""));
-        paths.extend(path.strip_prefix(prefix));
+        out.extend(path.strip_prefix(prefix).map(|path| (letters, path)));
         if letters.contains(['R', 'C']) {
-            paths.extend(entries.next().and_then(|from| from.strip_prefix(prefix)));
+            out.extend(
+                raw.next()
+                    .and_then(|from| from.strip_prefix(prefix))
+                    .map(|p| ("", p)),
+            );
         }
     }
+    out
+}
+
+/// The committed paths that status entries fall under, in `COMMITTED` order: a renamed
+/// file's old path counts too.
+fn changed_under(entries: &[(&str, &str)]) -> Vec<&'static str> {
     let under = |root: &str, path: &str| {
         path == root
             || path
@@ -40,8 +51,39 @@ fn changed_under(status: &str, prefix: &str) -> Vec<&'static str> {
                 .is_some_and(|rest| rest.starts_with('/'))
     };
     (COMMITTED.into_iter())
-        .filter(|root| paths.iter().any(|path| under(root, path)))
+        .filter(|root| entries.iter().any(|(_, path)| under(root, path)))
         .collect()
+}
+
+/// The changed hand-off files a save owns that go in its commit, and those it leaves and
+/// why. A deletion goes in when the file was committed before; a rename's old path, or a
+/// file someone added to the index and then removed, is left alone.
+fn handoffs_changed(
+    root: &std::path::Path,
+    entries: &[(&str, &str)],
+    scope: &Handoffs,
+) -> (Vec<String>, Vec<(String, Left)>) {
+    let (mut take, mut left) = (Vec::new(), Vec::new());
+    for (letters, path) in entries {
+        if letters.is_empty() || !scope.owns(path) {
+            continue;
+        }
+        let deleted = letters.contains('D');
+        if deleted && letters.starts_with('A') {
+            continue;
+        }
+        match handoffs::fits(root, path, deleted) {
+            Ok(()) => take.push((*path).to_owned()),
+            Err(Some(why)) => left.push(((*path).to_owned(), why)),
+            Err(None) => {}
+        }
+    }
+    (take, left)
+}
+
+/// A path for git to take as written, so a name with `*` or `[` in it isn't a pattern.
+fn literal(path: &str) -> String {
+    format!(":(literal){path}")
 }
 
 impl Notes {
@@ -403,6 +445,11 @@ impl Notes {
     /// already done, so applying twice is applying once. Once committed, the files are never
     /// written again, only the state files: a newer save may have landed since.
     pub fn apply(&self, op: &Op) -> Result<(), String> {
+        self.apply_noting(op).map(|_| ())
+    }
+
+    /// `apply`, with what the reply should say about hand-off files the commit left out.
+    pub fn apply_noting(&self, op: &Op) -> Result<Vec<String>, String> {
         self.refuse_unmerged()?;
         let mut op = op.clone();
         if let Ok(bytes) = std::fs::read(self.intent_path(&op.key))
@@ -414,13 +461,13 @@ impl Notes {
         self.save_intent(&op)?;
         if op.committed {
             self.apply_closes(&op)?;
-            return self.write_states(&op);
+            return self.write_states(&op).map(|()| Vec::new());
         }
         if let Some(lesson) = &op.lesson_close {
             self.apply_lesson(&op, lesson)?;
             op.committed = true;
             self.save_intent(&op)?;
-            return self.write_states(&op);
+            return self.write_states(&op).map(|()| Vec::new());
         }
         for (from, to) in &op.renames {
             let (from, to) = (self.root.join(from), self.root.join(to));
@@ -471,16 +518,46 @@ impl Notes {
         // riding along is the only way one is ever committed and reaches another machine.
         // One status for all of them, each entry put under the path it falls in: a git
         // call costs far more than reading its answer, most of all on Windows.
-        let mut status = vec!["status", "--porcelain", "-z", "--"];
+        // Hand-off files the save owns ride along by name, each one text under the size
+        // limit, so a brief written here reaches the other machine without hand git. Another
+        // worker's file in the same folder isn't named, so it stays out even when staged.
+        let mut status = vec!["status", "--porcelain", "-z", "--untracked-files=all", "--"];
         status.extend(COMMITTED);
+        let scope = op.handoffs.as_ref();
+        let folder = scope.map(|h| literal(&h.folder));
+        status.extend(folder.as_deref());
         status.push(NOT_TEMP);
         let prefix = self.git(&["rev-parse", "--show-prefix"])?;
-        let changed = changed_under(&self.git(&status)?, prefix.trim_end_matches('\n'));
-        if !changed.is_empty() {
-            let mut add = vec!["add", "-A", "--"];
-            add.extend(&changed);
-            add.push(NOT_TEMP);
-            self.git(&add)?;
+        let status = self.git(&status)?;
+        let entries = entries(&status, prefix.trim_end_matches('\n'));
+        let changed = changed_under(&entries);
+        let (carried, left) = match scope {
+            Some(scope) => handoffs_changed(&self.root, &entries, scope),
+            None => (Vec::new(), Vec::new()),
+        };
+        let mut notes: Vec<String> = handoffs::left_line(&left).into_iter().collect();
+        let mut carried: Vec<String> = carried.iter().map(|p| literal(p)).collect();
+        if !carried.is_empty() {
+            let specs: Vec<&str> = carried.iter().map(String::as_str).collect();
+            if let Err(why) = self.git(&[&["add", "-A", "--"][..], &specs].concat()) {
+                // A hand-off file is never why a save fails: the effort goes in without them,
+                // and what this add staged before it stopped is staged no more.
+                let _ = self.git(&[&["reset", "-q", "--"][..], &specs].concat());
+                notes.push(format!(
+                    "Hand-off files weren't committed, so they stay on this machine: {}.",
+                    why.trim().trim_end_matches('.')
+                ));
+                carried.clear();
+            }
+        }
+        if !changed.is_empty() || !carried.is_empty() {
+            // With no path named, `add -A` would take everything.
+            if !changed.is_empty() {
+                let mut add = vec!["add", "-A", "--"];
+                add.extend(&changed);
+                add.push(NOT_TEMP);
+                self.git(&add)?;
+            }
             let mut message = format!("{}\n\nOp-Key: {}", op.message, op.key);
             if let Some(base) = &op.base {
                 message += &format!("\nBase: {base}");
@@ -496,13 +573,15 @@ impl Notes {
                 "--",
             ];
             commit.extend(&changed);
+            commit.extend(carried.iter().map(String::as_str));
             commit.push(NOT_TEMP);
             self.git(&commit)?;
         }
         op.committed = true;
         self.save_intent(&op)?;
         self.apply_closes(&op)?;
-        self.write_states(&op)
+        self.write_states(&op)?;
+        Ok(notes)
     }
 
     /// The session states, once the notes are committed.
@@ -569,19 +648,22 @@ impl Notes {
 
 #[cfg(test)]
 mod tests {
-    use super::changed_under;
+    use super::{changed_under, entries};
 
     #[test]
     fn status_entries_are_put_under_the_committed_path_they_fall_in() {
         let status = " M efforts/2026/a.md\0?? journal/\0R  lessons/new.md\0drafts/old.md\0";
         assert_eq!(
-            changed_under(status, ""),
+            changed_under(&entries(status, "")),
             ["efforts", "journal", "lessons", "drafts"]
         );
-        assert_eq!(changed_under(" M .gitattributes\0", ""), [".gitattributes"]);
+        assert_eq!(
+            changed_under(&entries(" M .gitattributes\0", "")),
+            [".gitattributes"]
+        );
         // A name that only starts like a committed folder isn't in it.
-        assert!(changed_under("?? effortsish.md\0", "").is_empty());
-        assert!(changed_under("", "").is_empty());
+        assert!(changed_under(&entries("?? effortsish.md\0", "")).is_empty());
+        assert!(changed_under(&entries("", "")).is_empty());
     }
 
     /// Notes in a folder of a bigger repo: git names paths from that repo's top.
@@ -589,7 +671,10 @@ mod tests {
     fn a_notes_folder_inside_a_bigger_repo_is_read_from_its_own_folder() {
         let status =
             "?? sub/efforts/\0R  sub/journal/b.md\0sub/journal/a.md\0 M other/efforts/x.md\0";
-        assert_eq!(changed_under(status, "sub/"), ["efforts", "journal"]);
-        assert!(changed_under(status, "").is_empty());
+        assert_eq!(
+            changed_under(&entries(status, "sub/")),
+            ["efforts", "journal"]
+        );
+        assert!(changed_under(&entries(status, "")).is_empty());
     }
 }

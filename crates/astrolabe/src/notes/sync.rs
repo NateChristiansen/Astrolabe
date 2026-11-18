@@ -539,6 +539,7 @@ impl Notes {
             session: None,
             bound: None,
             at_ms: None,
+            handoffs: None,
         };
         self.apply(&op)?;
         self.forget(&key);
