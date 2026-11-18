@@ -2,7 +2,7 @@
 
 Rust 1.99.1, edition 2024, is pinned by `rust-toolchain.toml` and installed in CI. The crate requires Rust 1.99. Rust dependencies are recorded in the workspace's `Cargo.lock`; checks use `--locked`.
 
-Prebuilt releases need Git and a supported agent app, but no Rust toolchain. Node.js and Python 3.13 are used for development checks and release preparation, not by the installed program or hooks. Normal CI checks macOS, Windows, and Linux.
+Prebuilt releases need Git 2.26 or later and a supported agent app, but no Rust toolchain. Node.js and Python 3.13 are used for development checks and release preparation, not by the installed program or hooks. Normal CI checks macOS, Windows, and Linux.
 
 The first prebuilt release is a candidate until its [release checks](releases.md#review-before-publication) pass. The release workflow builds and tests Apple silicon macOS 15, Intel macOS 15, x64 Windows Server 2022, and x64 Ubuntu 22.04. Linux requires glibc 2.35 or newer; Alpine/musl and other architectures are not included. These runner baselines are not a promise that every older or newer OS or app combination works. Test normal downloaded-file protections and a fresh agent session on the supported desktop systems before publication.
 

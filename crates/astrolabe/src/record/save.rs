@@ -512,8 +512,11 @@ pub(super) fn saved_reply(r: &Reply) -> String {
     if let Some(label) = r.unchanged {
         head += &format!(" This session's {label} is unchanged.");
     }
-    if matches!(r.pulled, Pull::Diverged(_)) {
-        head += " Notes diverged from origin; resolve in the notes checkout when you can.";
+    if let Pull::Diverged(why) = r.pulled {
+        head += &format!(
+            " Notes diverged from origin ({}); resolve in the notes checkout when you can.",
+            why.lines().next().unwrap_or_default()
+        );
     }
     for l in r.notes_lines {
         head += &format!(" {l}");
@@ -667,7 +670,7 @@ mod tests {
         };
         assert_eq!(
             saved_reply(&reply),
-            "Saved effort 3: status done, Current state replaced, journal line written; committed, background sync started. Notes diverged from origin; resolve in the notes checkout when you can. The plan's headings were shifted. This effort answers issue #5.\nUnticked pieces:\n- [ ] a"
+            "Saved effort 3: status done, Current state replaced, journal line written; committed, background sync started. Notes diverged from origin (x); resolve in the notes checkout when you can. The plan's headings were shifted. This effort answers issue #5.\nUnticked pieces:\n- [ ] a"
         );
         let offline = Pull::Offline("no remote".to_owned());
         let by_number = Reply {

@@ -6,7 +6,7 @@ Already installed? See [Using Astrolabe](usage.md), [updating](#update-astrolabe
 
 ## Before you start
 
-- Install [Git](https://git-scm.com/downloads) and configure a name and email for commits. Astrolabe commits changes to your notes.
+- Install [Git](https://git-scm.com/downloads) 2.26 or later and configure a name and email for commits. Astrolabe commits changes to your notes, passing long path lists to git through a file, which needs 2.26.
 - Install and sign in to Claude Code or Codex, with its command available in your terminal. Astrolabe requires plugin hooks; see [compatibility](versions.md).
 
 Run the commands below in your own terminal. Use Bash or zsh on macOS/Linux, or PowerShell on Windows. You don't need Rust, Node.js, Python, or a source checkout to install a prebuilt release. Git is still needed for your notes and the plugin marketplace.

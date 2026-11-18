@@ -229,3 +229,96 @@ fn an_effort_with_no_initiative_carries_the_folders_named_for_its_number() {
         ]
     );
 }
+
+/// Catches: the other machine's pull stopping for good on an untracked copy of a hand-off
+/// file this save committed, which `rebase --autostash` doesn't keep.
+#[test]
+fn an_identical_untracked_copy_on_the_other_machine_gives_way_and_a_different_one_is_named() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let pc = world.machine("pc");
+    member(&mac);
+    assert!(mac.sync().1);
+    assert!(pc.sync().1);
+    // The same brief copied across by hand, and one that differs.
+    write(&mac.notes.join(".handoffs/quill/1-brief.md"), "# Brief\n");
+    write(&mac.notes.join(".handoffs/quill/1-report.md"), "# Report\n");
+    write(&pc.notes.join(".handoffs/quill/1-brief.md"), "# Brief\n");
+    write(
+        &pc.notes.join(".handoffs/quill/1-report.md"),
+        "# Report, the PC's\n",
+    );
+    write(
+        &pc.notes.join(".handoffs/quill/2-draft.md"),
+        "another worker's\n",
+    );
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe effort save --decision \"chose a brief over chat: it lasts\""
+        )
+        .1
+    );
+    assert!(mac.sync().1);
+    let (out, ok) = pc.sync();
+    assert!(
+        !ok && out.contains("nothing was pulled")
+            && out.contains(".handoffs/quill/1-report.md")
+            && !out.contains("1-brief.md")
+            && out.contains("astrolabe notes sync"),
+        "{out}"
+    );
+    let (status, _) = pc.run(&pc.notes, &["notes", "status"], "");
+    assert!(status.contains(".handoffs/quill/1-report.md"), "{status}");
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join(".handoffs/quill/1-report.md")).unwrap(),
+        "# Report, the PC's\n",
+        "a copy that differs is never discarded"
+    );
+    // Moved aside, the next sync goes through and the identical copy is the pulled one.
+    std::fs::rename(
+        pc.notes.join(".handoffs/quill/1-report.md"),
+        pc.notes.join(".handoffs/quill/1-report-pc.md"),
+    )
+    .unwrap();
+    let (out, ok) = pc.sync();
+    assert!(ok, "{out}");
+    let tracked = git(&pc.notes, &["ls-files", ".handoffs"]);
+    assert!(
+        tracked.contains("1-brief.md") && tracked.contains("1-report.md"),
+        "{tracked}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(pc.notes.join(".handoffs/quill/1-report.md")).unwrap(),
+        "# Report\n"
+    );
+    assert!(pc.notes.join(".handoffs/quill/1-report-pc.md").exists());
+    assert!(pc.notes.join(".handoffs/quill/2-draft.md").exists());
+}
+
+/// Catches: a first save over a big hand-off folder passing Windows' 32,767-character
+/// command line, which would fail that save on every replay.
+#[test]
+fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    member(&mac);
+    let dir = mac
+        .notes
+        .join(".handoffs/quill/1-evidence-from-a-long-running-measurement");
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..700 {
+        std::fs::write(
+            dir.join(format!("sample-number-{i:04}.txt")),
+            format!("{i}\n"),
+        )
+        .unwrap();
+    }
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --decision \"chose all over some: complete\"",
+    );
+    assert!(ok, "{out}");
+    assert_eq!(committed(&mac).len(), 701, "{out}");
+    assert!(!status(&mac).contains("sample-number"));
+}

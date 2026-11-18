@@ -6,6 +6,8 @@ use super::{
 };
 use std::path::PathBuf;
 
+/// Where a write's path lists for git wait while git reads them, beside the intents.
+const PATHS: &str = "paths";
 /// Leaves out a write that died between being written aside and renamed into place.
 const NOT_TEMP: &str = ":(exclude)*.tmp";
 
@@ -539,10 +541,10 @@ impl Notes {
         let mut carried: Vec<String> = carried.iter().map(|p| literal(p)).collect();
         if !carried.is_empty() {
             let specs: Vec<&str> = carried.iter().map(String::as_str).collect();
-            if let Err(why) = self.git(&[&["add", "-A", "--"][..], &specs].concat()) {
+            if let Err(why) = self.git_paths(&op.key, &["add", "-A"], &specs) {
                 // A hand-off file is never why a save fails: the effort goes in without them,
                 // and what this add staged before it stopped is staged no more.
-                let _ = self.git(&[&["reset", "-q", "--"][..], &specs].concat());
+                let _ = self.git_paths(&op.key, &["reset", "-q"], &specs);
                 notes.push(format!(
                     "Hand-off files weren't committed, so they stay on this machine: {}.",
                     why.trim().trim_end_matches('.')
@@ -562,7 +564,10 @@ impl Notes {
             if let Some(base) = &op.base {
                 message += &format!("\nBase: {base}");
             }
-            let mut commit = vec![
+            let mut paths: Vec<&str> = changed.clone();
+            paths.extend(carried.iter().map(String::as_str));
+            paths.push(NOT_TEMP);
+            let commit = [
                 "-c",
                 "user.useConfigOnly=false",
                 "commit",
@@ -570,18 +575,39 @@ impl Notes {
                 "--only",
                 "-m",
                 &message,
-                "--",
             ];
-            commit.extend(&changed);
-            commit.extend(carried.iter().map(String::as_str));
-            commit.push(NOT_TEMP);
-            self.git(&commit)?;
+            self.git_paths(&op.key, &commit, &paths)?;
         }
         op.committed = true;
         self.save_intent(&op)?;
         self.apply_closes(&op)?;
         self.write_states(&op)?;
         Ok(notes)
+    }
+
+    /// `git <args>` on `specs`, read from a file in the state folder and not the command line:
+    /// Windows caps a command line at 32,767 characters, and a first save over a big hand-off
+    /// folder can name more, which would fail that save on every replay. Not stdin, which a
+    /// notes git call holds as its running marker. Needs git 2.26. A hook that runs out of time
+    /// leaves git to finish and its file behind; one left an hour is cleared by a later call.
+    fn git_paths(&self, key: &str, args: &[&str], specs: &[&str]) -> Result<String, String> {
+        let dir = self.state.join(PATHS);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let old = (entry.metadata().and_then(|m| m.modified()).ok())
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age.as_secs() > 3600);
+            if old {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        let file = dir.join(key);
+        let list: String = specs.iter().map(|s| format!("{s}\0")).collect();
+        std::fs::write(&file, list).map_err(|e| format!("{}: {e}", file.display()))?;
+        let from = format!("--pathspec-from-file={}", file.display());
+        let ran = self.git(&[args, &[from.as_str(), "--pathspec-file-nul"]].concat());
+        let _ = std::fs::remove_file(&file);
+        ran
     }
 
     /// The session states, once the notes are committed.

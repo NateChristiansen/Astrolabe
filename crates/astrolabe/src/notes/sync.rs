@@ -157,6 +157,11 @@ impl Notes {
         // The backstop waits for a rebase and what follows it, after it answers.
         let _under_way = crate::deadline::under_way();
         let onto = self.git(&["rev-parse", "@{upstream}"]).unwrap_or_default();
+        if let Err(why) = self.clear_the_way() {
+            self.record_sync("diverged", &why);
+            self.changed();
+            return Pull::Diverged(why);
+        }
         let stashes_before = self.stashes();
         // Records merge through the program's driver (see `merge`), so two machines' saves of
         // one record don't conflict on their stamp lines. Its config rides on this command
@@ -207,6 +212,70 @@ impl Notes {
                 Pull::Diverged(why)
             }
         }
+    }
+
+    /// Untracked files where the incoming commits add one. A rebase won't write over them and
+    /// `--autostash` doesn't keep them, so one would stop every pull here: a hand-off file a
+    /// save committed on the other machine can sit untracked here too, copied across or
+    /// written again. One that is byte for byte the incoming file goes, since the pull puts
+    /// the same bytes back. Any other is named and nothing is pulled, because only the owner
+    /// can say which copy to keep.
+    fn clear_the_way(&self) -> Result<(), String> {
+        let added = self.git(&[
+            "diff",
+            "--name-only",
+            "-z",
+            "--relative",
+            "--no-renames",
+            "--diff-filter=A",
+            "HEAD",
+            "@{upstream}",
+            "--",
+        ])?;
+        let here: Vec<String> = (added.split('\0'))
+            .filter(|p| !p.is_empty() && self.root.join(p).is_file())
+            .map(|p| format!(":(literal){p}"))
+            .collect();
+        if here.is_empty() {
+            return Ok(());
+        }
+        // Ignored files git writes over anyway, and tracked ones the autostash keeps.
+        let mut untracked = vec!["ls-files", "-z", "--others", "--exclude-standard", "--"];
+        untracked.extend(here.iter().map(String::as_str));
+        let untracked = self.git(&untracked)?;
+        let untracked: Vec<&str> = untracked.split('\0').filter(|p| !p.is_empty()).collect();
+        if untracked.is_empty() {
+            return Ok(());
+        }
+        let mut local = vec!["hash-object", "--no-filters", "--"];
+        local.extend(&untracked);
+        let local = self.git(&local)?;
+        let wanted: Vec<String> = untracked
+            .iter()
+            .map(|p| format!("@{{upstream}}:./{p}"))
+            .collect();
+        let mut incoming = vec!["rev-parse"];
+        incoming.extend(wanted.iter().map(String::as_str));
+        let incoming = self.git(&incoming)?;
+        let mut differ = Vec::new();
+        for ((path, mine), theirs) in untracked.iter().zip(local.lines()).zip(incoming.lines()) {
+            if mine.trim() == theirs.trim() {
+                std::fs::remove_file(self.root.join(path)).map_err(|e| format!("{path}: {e}"))?;
+            } else {
+                differ.push(*path);
+            }
+        }
+        if differ.is_empty() {
+            return Ok(());
+        }
+        let mut named: Vec<String> = differ.iter().take(5).map(|p| p.to_string()).collect();
+        if differ.len() > 5 {
+            named.push(format!("{} more", differ.len() - 5));
+        }
+        Err(format!(
+            "nothing was pulled, because the other machine committed files that sit here untracked with other content: {}. Move or rename them in the notes checkout, then run `astrolabe notes sync`",
+            named.join(", ")
+        ))
     }
 
     /// What follows a rebase that went through, or one there was nothing to do for.
