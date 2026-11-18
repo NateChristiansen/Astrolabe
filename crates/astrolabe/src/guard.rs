@@ -195,6 +195,31 @@ impl Parser {
                         expect = Expect::Heredoc;
                     }
                 }
+                // A `(` glued to a word in zsh is a glob qualifier, `x(:h:h)`, which can rewrite
+                // the path; `name()` is still a function.
+                '(' if self.dialect == Dialect::Sh
+                    && word.is_some()
+                    && !self.chars[self.at..]
+                        .iter()
+                        .take_while(|c| **c != ')')
+                        .all(|c| c.is_whitespace()) =>
+                {
+                    let open = word.get_or_insert_default();
+                    open.dynamic = true;
+                    open.opaque = true;
+                    open.text.push('(');
+                    let mut depth = 1;
+                    while let Some(c) = self.peek() {
+                        self.at += 1;
+                        open.text.push(c);
+                        depth += usize::from(c == '(');
+                        depth -= usize::from(c == ')');
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    self.broken |= depth != 0;
+                }
                 c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
                     self.literal_error.get_or_insert(ONE_COMMAND);
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
@@ -513,6 +538,10 @@ struct Context {
     chained: bool,
     /// The folder the hook gave, before any `cd`.
     start: Option<String>,
+    /// The command sets `IFS`, so an unquoted value may split anywhere.
+    ifs: bool,
+    /// The command sets `CDPATH`, so a relative `cd` may go anywhere.
+    cdpath: bool,
 }
 
 /// The name of the field a shell tool's command is in: `command` if the input has one at
@@ -604,6 +633,8 @@ pub fn decide_in(powershell: bool, tool: &str, input: &Value, scope: &Scope) -> 
         top: false,
         chained: false,
         start: None,
+        ifs: false,
+        cdpath: false,
     };
     // A tool's own working directory, which the hook's `cwd` doesn't reflect.
     if let Some(workdir) = tool_folder(input) {
@@ -714,16 +745,18 @@ fn makes_temp_folder(words: &[Word]) -> bool {
 /// `$(mktemp -d)` is the folder it made; anything appended to it isn't, as a failed
 /// `mktemp` leaves `$T/x` as `/x`.
 fn expand(word: &Word, context: &Context) -> Option<Vec<Possible>> {
+    if !word.dynamic {
+        return Some(vec![Possible::Path(word.text.clone())]);
+    }
+    // After a function (one could be named `mktemp`) or a changed `IFS`, which splits an
+    // unquoted value, nothing is expanded.
+    if context.loops || context.ifs {
+        return None;
+    }
     if word.substitutions == 1 && word.fresh_at == Some(0) && word.text.is_empty() {
         return Some(vec![Possible::Fresh]);
     }
     if word.opaque {
-        return None;
-    }
-    if !word.dynamic {
-        return Some(vec![Possible::Path(word.text.clone())]);
-    }
-    if context.loops {
         return None;
     }
     let parts: Vec<&str> = word.text.split(VAR).collect();
@@ -794,9 +827,18 @@ fn assign(word: &Word, definite: bool, context: &mut Context) {
 /// A command that names a variable set here may change it (`read S`, `for S in`, `unset
 /// S`, `S+=x`), so it's unknown from then on.
 fn forget_named(words: &[Word], context: &mut Context) {
+    // Also an option with the name attached (`printf -vS`, `read -rS`), `let S=1` or any
+    // other `S=` argument, and `${S:=x}` or `${S=x}`, which assign as they expand.
     let named = |name: &str, word: &Word| {
-        let rest = word.text.strip_prefix(name);
-        rest.is_some_and(|rest| rest.is_empty() || rest.starts_with("+=") || rest.starts_with('['))
+        let text = word.text.as_str();
+        let attached = text.starts_with('-') && text.ends_with(name);
+        let assigns = [":=", "="]
+            .iter()
+            .any(|op| text.contains(&format!("${{{name}{op}")));
+        let rest = text.strip_prefix(name);
+        let changes =
+            |rest: &str| rest.is_empty() || rest.starts_with(['=', '[']) || rest.starts_with("+=");
+        attached || assigns || rest.is_some_and(changes)
     };
     for (name, values) in context.vars.iter_mut().chain(context.chain_vars.iter_mut()) {
         if words.iter().any(|word| named(name, word)) {
@@ -834,8 +876,19 @@ fn change_folder(
             break;
         }
     }
+    // zsh's `cd old new` swaps `old` for `new` in the current folder's path.
+    if iter.any(|arg| !arg.text.starts_with('-')) {
+        target = None;
+    }
+    // A `CDPATH` set in the command can send a relative `cd` anywhere.
+    let relative = target.is_some_and(|t| !is_rooted(&t.text, context));
+    if context.cdpath && relative {
+        target = None;
+    }
     let ends = |value: &Possible| match value {
-        Possible::Path(p) if !p.is_empty() && !p.contains('~') => resolve(p, context),
+        Possible::Path(p) if !p.is_empty() && !p.contains('~') && !provider_path(p) => {
+            resolve(p, context)
+        }
         _ => None,
     };
     let leads = target
@@ -960,11 +1013,19 @@ fn simple(
     }
     // Only a command of assignments alone sets them for what follows.
     if dialect == Dialect::Sh && words.is_empty() {
-        for word in assignments {
+        for word in &assignments {
             assign(word, definite, context);
         }
     }
     forget_named(words, context);
+    let sets = |name: &str| {
+        let all = assignments.iter().copied().chain(words.iter());
+        all.map(|word| word.text.as_str()).any(|text| {
+            text.starts_with(&format!("{name}=")) || text.starts_with(&format!("{name}+="))
+        })
+    };
+    context.ifs |= sets("IFS");
+    context.cdpath |= sets("CDPATH");
     let first = words.first()?;
     if depth > MAX_DEPTH {
         return names_denied_program(&join(words)).then(unparsed);
@@ -1238,8 +1299,9 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
         }
         resolve(path, context).is_some_and(|ends| ends.iter().all(|p| in_root(p) || own(p)))
     };
-    // `@(...)` is not read. PowerShell takes `a,b` as two paths.
-    let inside = |part: &str| !part.ends_with('@') && in_reach(part);
+    // `@(...)` is not read. PowerShell takes `a,b` as two paths. A PowerShell provider path,
+    // `HKCU:\...` or `Env:x`, is never in the worktree.
+    let inside = |part: &str| !part.ends_with('@') && !provider_path(part) && in_reach(part);
     // A variable's value is split and globbed if unquoted, so one holding a space or a
     // pattern isn't taken as one path.
     let plain = |path: &Word, value: &str| {
@@ -1275,6 +1337,15 @@ fn resolve(text: &str, context: &Context) -> Option<Vec<String>> {
         let cwds = context.chain.as_ref().or(context.cwds.as_ref())?;
         Some(cwds.iter().map(at).collect())
     }
+}
+
+/// `name:` before anything else, with a name longer than a drive letter: a PowerShell
+/// provider such as `HKCU:`, `Env:` or `Cert:`.
+fn provider_path(text: &str) -> bool {
+    let text = text.trim_start_matches(r"\\?\");
+    text.split_once(':').is_some_and(|(name, _)| {
+        name.len() > 1 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 fn is_rooted(text: &str, context: &Context) -> bool {

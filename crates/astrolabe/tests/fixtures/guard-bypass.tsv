@@ -521,6 +521,35 @@ deny	mac	Bash	rm -rf a=~/x
 deny	mac	Bash	cd -P sub/link/.. && rm -rf x
 deny	win	PowerShell	$m = @'⏎x⏎  '@⏎Remove-Item -Recurse -Force C:\other⏎$n = @'⏎'@
 allow	mac	Bash	S=/work/repo/a; rm -rf "$S"/b
+# Round two of the review (388): zsh's forms, and what changes how later words are read.
+deny	mac	Bash	cd crates x && rm -rf target
+deny	mac	Bash	cd /work/repo/sub /work/other && rm -rf x
+deny	mac	Bash	rm -rf /work/repo/crates(:h:h)
+deny	mac	Bash	cd sub && rm -rf build(:h:h:h)
+deny	mac	Bash	S=/work/repo/a; rm -rf $S(:h:h)
+deny	mac	Bash	IFS=/; S=/work/repo/a; rm -rf $S
+deny	mac	Bash	S=/work/repo/a; printf -vS %s /etc; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/a; printf -v S %s /etc; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/a; read -rS <<< /etc; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/a; let S=1; rm -rf "$S"
+deny	mac	Bash	S=; : ${S:=/etc}; rm -rf "$S"
+deny	mac	Bash	unset S; : ${S=/etc}; rm -rf "$S"
+deny	mac	Bash	CDPATH=/elsewhere; cd sub && rm -rf x
+deny	mac	Bash	export CDPATH=/elsewhere; cd sub && rm -rf x
+deny	mac	Bash	mktemp() { echo /etc; }; rm -rf "$(mktemp -d)"
+deny	mac	Bash	f() { :; }; T=$(mktemp -d); rm -rf "$T"
+allow	mac	Bash	rm -rf "$(mktemp -d)"
+allow	mac	Bash	A=(a b); rm -rf target
+allow	mac	Bash	f() { :; }; rm -rf target
+# PowerShell provider paths are never in the worktree (on main too).
+deny	win	PowerShell	Remove-Item -Recurse -Force HKCU:\Software\Foo
+deny	win	PowerShell	Set-Location HKCU:\Software; Remove-Item -Recurse -Force Foo
+deny	win	PowerShell	Remove-Item -Recurse Env:\Foo
+deny	win	PowerShell	Remove-Item -Recurse -Force Cert:\CurrentUser\My
+# Stated limits: what the command doesn't show isn't seen (an alias, a changed PATH, a CDPATH
+# from the profile).
+miss	mac	Bash	alias mktemp="echo /etc"⏎rm -rf "$(mktemp -d)"
+miss	mac	Bash	PATH=/elsewhere/bin:$PATH; rm -rf "$(mktemp -d)"
 # mktemp -d: the bare folder it just made, nothing appended, never -u.
 allow	mac	Bash	T=$(mktemp -d); cp a.txt "$T"/; rm -rf "$T"
 allow	mac	Bash	S=$(mktemp -d) && cp -r state/repos "$S"/ && rm -rf "$S"
