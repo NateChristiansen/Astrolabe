@@ -69,6 +69,42 @@ fn the_no_effort_context_keeps_under_the_cut_counting_everything() {
     assert!(text.contains("pick up 70") && text.contains("guard runs"));
 }
 
+/// Catches a resumed owner's session losing its effort's finish line when the notes are too
+/// long to send inline: the line rides under Current state, and Current state then goes out
+/// as a pointer, which has to name the property or the session never learns the event.
+#[test]
+fn a_spilled_owners_effort_is_pointed_at_its_finish_line() {
+    let f = Fixture::new();
+    assert!(f.bash("s1", &f.demo, "astrolabe activate --effort 70").1);
+    // A Current state and owner notes of a real size: too long for any to go inline.
+    let effort = f.dir.0.join("notes/efforts/0070-demo.md");
+    let note = std::fs::read_to_string(&effort).unwrap();
+    std::fs::write(
+        &effort,
+        note.replace("EFFORT-70 goal.", &"EFFORT-70 goal. ".repeat(120)),
+    )
+    .unwrap();
+    let big = "word ".repeat(1500);
+    write(&f.dir.0.join("notes/knowledge/owner.md"), &big);
+    write(
+        &f.dir.0.join("notes/knowledge/voice.md"),
+        &format!("VOICE\n\n## Rules\n\n{big}"),
+    );
+    let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    assert!(text.encode_utf16().count() <= 10_000);
+    // Current state goes out as a pointer, not inline, and the pointer names the property.
+    let (_, listed) = text
+        .split_once("Not inline, as a hook's text is cut near 10,000 characters.")
+        .expect(&text);
+    assert!(!text.contains("EFFORT-70 goal."), "{text}");
+    assert!(
+        listed.contains(
+            "0070-demo.md: its `finish` property and only its `## Current state` section"
+        ),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_resumed_effort_with_a_head_too_long_for_the_hook_is_cut_and_names_its_file() {
     let f = Fixture::new();
@@ -97,7 +133,7 @@ fn a_resumed_effort_with_a_head_too_long_for_the_hook_is_cut_and_names_its_file(
     let files = files.split("\n\n").next().unwrap();
     // Every note the uncut text names, so a cut session still reads the owner's notes.
     for file in [
-        "0070-demo.md: only its `## Current state` section",
+        "0070-demo.md: its `finish` property and only its `## Current state` section",
         "voice.md",
         "owner.md",
         "repos/demo.md",

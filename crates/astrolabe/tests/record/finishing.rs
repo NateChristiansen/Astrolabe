@@ -171,3 +171,33 @@ fn the_board_shows_a_finish_line_other_than_the_merge() {
     // The default is every card's, so it isn't drawn: one finish line on the board.
     assert_eq!(active.matches("class=\"finish\"").count(), 1, "{active}");
 }
+
+/// Catches a `look:` text that ends in a quote losing it on the way back out, on the board
+/// and wherever else the note is read.
+#[test]
+fn a_finish_line_ending_in_a_quote_reads_back_as_filed() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe initiative new --title \"Ink\" <<'ASTROLABE'\n## Efforts\nNotes\nWrite notes.\nfinish: look: the 'release notes'\n\nCard\nDraw the card.\nfinish: look: \"the board card\"\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.run(&mac.demo, &["efforts", "--repo", "demo"], "");
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let finish = |n: u64| {
+        (v["efforts"].as_array().unwrap().iter())
+            .find(|e| e["number"] == n)
+            .map(|e| e["finish"].clone())
+            .unwrap()
+    };
+    assert_eq!(
+        finish(1),
+        "done when merged and the owner has looked at the 'release notes'"
+    );
+    assert_eq!(
+        finish(2),
+        "done when merged and the owner has looked at \"the board card\""
+    );
+}

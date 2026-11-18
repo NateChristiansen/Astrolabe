@@ -69,10 +69,13 @@ pub(crate) fn header_bounds(text: &str) -> Option<HeaderBounds> {
 /// read. The board and each note's page both read properties here, so they never disagree.
 pub(crate) fn frontmatter(text: &str) -> Vec<(String, String)> {
     let (header, _) = split_frontmatter(text);
+    // One pair of matching quotes, so a value that ends in a quote of its own keeps it.
     let unquote = |v: &str| {
-        v.trim()
-            .trim_matches('"')
-            .trim_matches('\'')
+        let v = v.trim();
+        ['"', '\'']
+            .iter()
+            .find_map(|q| v.strip_prefix(*q)?.strip_suffix(*q))
+            .unwrap_or(v)
             .trim()
             .to_owned()
     };
@@ -690,9 +693,17 @@ impl EffortFile {
         let quoted = |v: &str| {
             if v.is_empty() {
                 "\"\"".to_owned()
-            } else if v.contains(':') || v.contains('#') || v.starts_with('[') || v.starts_with('"')
+            } else if v.contains(':')
+                || v.contains('#')
+                || v.starts_with(['[', '"', '\''])
+                || v.ends_with(['"', '\''])
             {
-                format!("\"{}\"", v.replace('"', "'"))
+                // Single quotes keep a value's double quotes as written, where it has no
+                // single quote of its own.
+                match v.contains('"') && !v.contains('\'') {
+                    true => format!("'{v}'"),
+                    false => format!("\"{}\"", v.replace('"', "'")),
+                }
             } else {
                 v.to_owned()
             }
@@ -907,6 +918,41 @@ pub fn slug(title: &str) -> String {
 #[cfg(test)]
 mod file_tests {
     use super::*;
+
+    /// Catches a property that ends in a quote of its own losing it when the note is read
+    /// back, as a `look:` finish line naming a quoted thing did.
+    #[test]
+    fn a_property_ending_in_a_quote_keeps_it_through_a_save() {
+        let values = [
+            "done when merged and the owner has looked at \"the board card\"",
+            "done when merged and the owner has looked at the 'release notes'",
+            "'quoted' at the start",
+            "\"both\" kinds 'of' quote",
+            "owner: pick one",
+            "plain",
+        ];
+        let mut f = EffortFile {
+            title: "0001 Quotes".to_owned(),
+            current: "Working.".to_owned(),
+            ..Default::default()
+        };
+        for (i, v) in values.iter().enumerate() {
+            f.set(&format!("k{i}"), v);
+        }
+        let text = f.render();
+        let read = EffortFile::parse(&text).unwrap();
+        for (i, v) in values.iter().enumerate() {
+            let want = match i {
+                // Both kinds in one value: double quotes become single, as before.
+                3 => "'both' kinds 'of' quote",
+                _ => v,
+            };
+            assert_eq!(read.prop(&format!("k{i}")), Some(want), "{text}");
+        }
+        // And once more through a save of what was read.
+        let again = EffortFile::parse(&read.render()).unwrap();
+        assert_eq!(again.props, read.props);
+    }
 
     #[test]
     fn a_goal_under_the_title_survives_a_rewritten_current_state() {

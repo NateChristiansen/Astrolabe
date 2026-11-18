@@ -663,8 +663,15 @@ fn switch_record(
         body: effort.current.clone(),
         // Never the whole file: the rest holds history and plans that no longer apply.
         files: vec![format!(
-            "{}: only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans.",
-            notes.join(&effort.file).display()
+            "{}: {}only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans.",
+            notes.join(&effort.file).display(),
+            // The finish line rides under Current state inline; sent as a pointer, it's
+            // named here or a cut session never learns it.
+            if initiative {
+                ""
+            } else {
+                "its `finish` property and "
+            }
         )],
     };
     let mut parts = vec![current];
