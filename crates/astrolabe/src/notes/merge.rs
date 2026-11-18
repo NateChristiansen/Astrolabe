@@ -12,7 +12,7 @@
 //! - only where both sides are program saves (each changed `updated`) are both decided
 //!   between. Decisions and Pieces both rewrote merge entry by entry, keeping every entry and
 //!   every tick either side made. Elsewhere the later save wins where both changed the same
-//!   lines, and what it replaced from the earlier save goes in the record's `## Unmerged
+//!   lines, and what the merge didn't keep from either save goes in the record's `## Unmerged
 //!   state` section, committed with it, so every machine shows the same text until a save
 //!   with a Current state replaces it.
 //!

@@ -615,7 +615,7 @@ impl Notes {
         let unseen = self.unseen();
         if !unseen.is_empty() {
             lines.push(format!(
-                "Two machines saved the same record unseen: {}. The merge kept the later save, and what it replaced from the earlier one is in the record's Unmerged state section. Read it and save the record with a Current state that folds in what still holds, which clears this.",
+                "Two machines saved the same record unseen: {}. The merge kept the later save, and what it didn't keep is in the record's Unmerged state section. Read it and save the record with a Current state that folds in what still holds, which clears this.",
                 unseen.join(", ")
             ));
         }
