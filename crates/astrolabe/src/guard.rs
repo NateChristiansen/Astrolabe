@@ -304,12 +304,20 @@ impl Parser {
         self.at += 1;
         let mut word = Word::default();
         let mut line_start = true;
+        let mut indent = false;
         while let Some(c) = self.peek() {
-            if line_start && c == quote && self.chars.get(self.at + 1) == Some(&'@') {
+            let closes = c == quote && self.chars.get(self.at + 1) == Some(&'@');
+            if line_start && closes {
                 self.at += 2;
                 return Some(word);
             }
+            // An indented close may end the string in some PowerShell, so where the body
+            // ends isn't certain: read as unparsed, a denied program in it is denied.
+            if indent && closes {
+                self.broken = true;
+            }
             self.at += 1;
+            indent = (line_start || indent) && matches!(c, ' ' | '\t');
             line_start = c == '\n';
             match c {
                 '`' if quote == '"' => {
@@ -398,6 +406,12 @@ impl Parser {
             word.dynamic = true;
             word.text
                 .extend([VAR].into_iter().chain(name.chars()).chain([VAR]));
+            // zsh reads `$S:h` as a modifier and `$S[1]` as a subscript, so neither is the
+            // plain value followed by text.
+            let next = self.chars.get(self.at + 1);
+            let modifier =
+                self.peek() == Some(':') && next.is_some_and(|c| c.is_ascii_alphabetic());
+            word.opaque |= modifier || self.peek() == Some('[');
             return;
         }
         let dynamic = (self.peek())
@@ -756,7 +770,8 @@ fn assign(word: &Word, definite: bool, context: &mut Context) {
         fresh_at: word.fresh_at.and_then(|at| at.checked_sub(prefix)),
         ..word.clone()
     };
-    let new = expand(&value, context);
+    // `S=a:~/x` holds the home folder.
+    let new = expand(&value, context).filter(|_| !value.text.contains('~'));
     if context.chained {
         context.chain_vars.insert(name.to_owned(), new.clone());
     }
@@ -791,7 +806,15 @@ fn forget_named(words: &[Word], context: &mut Context) {
 }
 
 /// A `cd`: each folder it could lead to is added to those the command could be in.
-fn change_folder(name: &str, args: &[Word], dialect: Dialect, context: &mut Context) {
+/// `certain`: the `cd` itself runs whenever what follows it in an `&&` chain does: at the
+/// start of a list or joined by `&&`, and not negated. After `||` or `!` it may not have run.
+fn change_folder(
+    name: &str,
+    args: &[Word],
+    certain: bool,
+    dialect: Dialect,
+    context: &mut Context,
+) {
     let mut iter = args.iter();
     let mut target = None;
     while let Some(arg) = iter.next() {
@@ -800,14 +823,19 @@ fn change_folder(name: &str, args: &[Word], dialect: Dialect, context: &mut Cont
             target = iter.next();
             break;
         }
-        // `-L`, `-P`; `-` alone is the last folder, which isn't known.
+        // `-P` resolves links before a `..`, which the guard doesn't. `-` alone is the last
+        // folder, which isn't known.
+        if short_flags(&arg.text).is_some_and(|flags| flags.contains('P')) {
+            target = None;
+            break;
+        }
         if !text.starts_with('-') {
             target = Some(arg);
             break;
         }
     }
     let ends = |value: &Possible| match value {
-        Possible::Path(p) if !p.is_empty() && !p.starts_with('~') => resolve(p, context),
+        Possible::Path(p) if !p.is_empty() && !p.contains('~') => resolve(p, context),
         _ => None,
     };
     let leads = target
@@ -816,7 +844,7 @@ fn change_folder(name: &str, args: &[Word], dialect: Dialect, context: &mut Cont
         .and_then(|target| expand(target, context))
         .and_then(|values| values.iter().map(ends).collect::<Option<Vec<_>>>());
     let leads: Option<Vec<String>> = leads.map(|leads| leads.into_iter().flatten().collect());
-    context.chain = leads.clone().filter(|_| context.top);
+    context.chain = leads.clone().filter(|_| context.top && certain);
     context.cwds = match (leads, context.cwds.take()) {
         (Some(leads), Some(mut cwds)) => {
             for folder in leads {
@@ -914,9 +942,13 @@ fn simple(
 ) -> Option<String> {
     let mut words = words;
     let mut assignments = Vec::new();
+    let mut negated = false;
     loop {
         match words {
-            [first, ..] if KEYWORDS.contains(&first.text.as_str()) => words = &words[1..],
+            [first, ..] if KEYWORDS.contains(&first.text.as_str()) => {
+                negated |= first.text == "!";
+                words = &words[1..];
+            }
             [first, ..] if is_assignment(first) => {
                 assignments.push(first);
                 words = &words[1..];
@@ -962,8 +994,16 @@ fn simple(
     let lowered = |arg: &Word| arg.text.to_ascii_lowercase();
     match name.as_str() {
         "export" | "declare" | "local" | "readonly" | "typeset" if dialect == Dialect::Sh => {
+            // An option can change what the value means (`-n` makes a name a reference to
+            // another variable), so with one the names are unknown.
+            let plain = !args.iter().any(|arg| arg.text.starts_with(['-', '+']));
             for arg in args.iter().filter(|arg| is_assignment(arg)) {
-                assign(arg, definite, context);
+                if plain {
+                    assign(arg, definite, context);
+                } else if let Some((name, _)) = arg.text.split_once('=') {
+                    context.vars.insert(name.to_owned(), None);
+                    context.chain_vars.insert(name.to_owned(), None);
+                }
             }
             None
         }
@@ -995,7 +1035,8 @@ fn simple(
             script(&join(&args[flag + 1..]), inner, context, depth)
         }
         name if CHANGES_FOLDER.contains(&name) => {
-            change_folder(name, args, dialect, context);
+            let certain = (definite || context.chained) && !negated;
+            change_folder(name, args, certain, dialect, context);
             None
         }
         "pkill" | "killall" => Some(format!("machine-wide {name}")),
@@ -1177,8 +1218,16 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
         let in_root = |p: &String| root.is_some_and(|r| p.starts_with(&format!("{r}/")));
         let climbs = path.split(['/', '\\']).any(|part| part == "..");
         let session = context.session.as_deref();
-        let own =
-            |p: &String| !climbs && session.is_some_and(|s| scratch::owned(p, s, context.windows));
+        // The guard looks before the command runs, so a link the command makes first isn't
+        // there yet: only a plain last name may be missing, with nothing after it that `rm`
+        // would follow (a trailing separator) or expand (a glob).
+        let follows = path.ends_with(['/', '\\'])
+            || path.ends_with("/.")
+            || path.ends_with("\\.")
+            || path.contains(['*', '?', '[']);
+        let own = |p: &String| {
+            !climbs && !follows && session.is_some_and(|s| scratch::owned(p, s, context.windows))
+        };
         // A `cd` may have gone through a link, which `..` then climbs out of for real.
         let moved = || {
             let cwds = context.chain.as_ref().or(context.cwds.as_ref());
@@ -1203,7 +1252,8 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
                 Possible::Path(text) => {
                     plain(path, text)
                         && !text.contains('%')
-                        && !text.starts_with('~')
+                        // Bash expands a `~` after `=` or `:` too.
+                        && !text.contains('~')
                         && text.split(',').filter(|p| !p.is_empty()).all(inside)
                 }
             })

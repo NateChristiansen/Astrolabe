@@ -18,7 +18,10 @@ pub(super) fn owned(path: &str, session: &str, windows: bool) -> bool {
         && session
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-    let Some(real) = real_path(Path::new(path)).filter(|_| plausible) else {
+    // A missing part could be a link the command makes before its delete runs. Only the last
+    // name may be missing, and none on Windows, where a delete goes into a junction.
+    let missing = if windows { 0 } else { 1 };
+    let Some(real) = real_path(Path::new(path), missing).filter(|_| plausible) else {
         return false;
     };
     let real = super::normal(&real.to_string_lossy(), windows);
@@ -37,13 +40,17 @@ pub(super) fn owned(path: &str, session: &str, windows: bool) -> bool {
         })
 }
 
-/// The path with every link resolved in the part that exists, the rest appended.
-fn real_path(path: &Path) -> Option<PathBuf> {
+/// The path with every link resolved, when at most `missing` last names don't exist yet;
+/// those are appended as they are.
+fn real_path(path: &Path, missing: usize) -> Option<PathBuf> {
     let mut rest = Vec::new();
     let mut existing = path;
     loop {
         if let Ok(real) = std::fs::canonicalize(existing) {
             return Some(rest.iter().rev().fold(real, |path, part| path.join(part)));
+        }
+        if rest.len() == missing {
+            return None;
         }
         rest.push(existing.file_name()?);
         existing = existing.parent()?;

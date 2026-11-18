@@ -64,6 +64,26 @@ fn a_sessions_own_scratch_folder_can_be_deleted_and_nothing_beside_it() {
     for folder in [&own, &other, &outside, &base.join("links")] {
         std::fs::create_dir_all(folder).unwrap();
     }
+    let made = [
+        "state",
+        "t1",
+        "home-state",
+        "probe-a",
+        "work",
+        "tpl",
+        "build",
+        "preview",
+        "rb",
+        "fmt/copy",
+        "i",
+        "repro",
+        "x",
+        "old",
+        "sub",
+    ];
+    for name in made {
+        std::fs::create_dir_all(own.join(name)).unwrap();
+    }
     // A junction's target is made first, as Windows links to a folder that exists.
     std::fs::create_dir_all(outside.join(&session).join("scratchpad")).unwrap();
     link(&outside, &own.join("out"));
@@ -97,9 +117,30 @@ fn a_sessions_own_scratch_folder_can_be_deleted_and_nothing_beside_it() {
             wrong.push(format!("{expect} {tool}: {command:?} got {verdict:?}"));
         }
     }
-    let _ = std::fs::remove_dir_all(&base);
-    let _ = std::fs::remove_dir_all(&outside);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // A last name that doesn't exist yet: on Unix `rm` removes only that name, even if the
+    // command makes it a link first; on Windows a delete goes into a junction, so the whole
+    // path must exist.
+    let fresh = format!("rm -rf {}/fresh", slash(&own));
+    let fresh = decide("Bash", &json!({ "command": fresh }), &scope);
+    assert_eq!(fresh.is_some(), cfg!(windows), "{fresh:?}");
+    let junction = format!(
+        "New-Item -ItemType Junction -Path {0}\\j -Target C:\\other; Remove-Item -Recurse -Force {0}\\j",
+        own.display()
+    );
+    let junction = decide("PowerShell", &json!({ "command": junction }), &scope);
+    assert_eq!(junction.is_some(), cfg!(windows), "{junction:?}");
+    // Outside any repo, a cd after || leaves the folder unknown.
+    let unrooted = Scope {
+        root: None,
+        cwd: Some(slash(&base)),
+        session: Some(session.clone()),
+    };
+    for command in ["true || cd {S} && rm -rf work", "! cd {S} && rm -rf work"] {
+        let command = command.replace("{S}", &slash(&own));
+        let verdict = decide("Bash", &json!({ "command": command }), &unrooted);
+        assert!(verdict.is_some(), "{command}");
+    }
     // Without the session's id, its folder is like any other.
     let unbound = Scope {
         session: None,
@@ -107,6 +148,8 @@ fn a_sessions_own_scratch_folder_can_be_deleted_and_nothing_beside_it() {
     };
     let command = format!("rm -rf {}/x", slash(&own));
     assert!(decide("Bash", &json!({ "command": command }), &unbound).is_some());
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&outside);
 }
 
 /// A link to a folder: a symlink on Unix; a junction on Windows, which needs no privilege.

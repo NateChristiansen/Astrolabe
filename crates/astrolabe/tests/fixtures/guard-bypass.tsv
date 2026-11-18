@@ -472,6 +472,15 @@ deny	mac	Bash	f() { cd ..; }; f; rm -rf x
 deny	mac	Bash	cd /work/repo/sub && echo $(cd /work/repo && pwd) && cd /elsewhere; rm -rf x
 deny	mac	Bash	cd /elsewhere && echo $(cd /work/repo && pwd) && rm -rf x
 deny	mac	Bash	pushd /elsewhere; popd; rm -rf x
+# A cd after || or ! may not have run, so it doesn't fix the folder for the chain (review, 388).
+deny	mac	Bash	cd /elsewhere; [ -d out ] || cd /work/repo/sub && rm -rf out
+deny	mac	Bash	cd /elsewhere; true || cd /work/repo/sub && rm -rf work
+deny	mac	Bash	cd /elsewhere; ! cd /work/repo/sub && rm -rf work
+deny	mac	Bash	cd ~; true || cd /work/repo/sub && rm -rf work
+deny	mac	Bash	cd /elsewhere; false && true || cd /work/repo/sub && rm -rf work
+allow	mac	Bash	cd /elsewhere; cd /work/repo/sub && rm -rf work
+allow	mac	Bash	cd /elsewhere && cd /work/repo/sub && rm -rf work
+allow	mac	Bash	true || false && cd /work/repo/sub && rm -rf work
 deny	mac	Bash	cd -; rm -rf x
 deny	mac	Bash	source env.sh; rm -rf x
 deny	win	Bash	rm -rf /c/Users/me/Projects/other.worktrees/feat/evidence/progress-runtime && echo removed
@@ -501,6 +510,17 @@ deny	mac	Bash	S=; rm -rf $S/etc
 deny	mac	Bash	rm -rf $S; S=/work/repo/x
 deny	mac	Bash	S=/work/repo/x rm -rf $S
 deny	mac	Bash	S=/work/repo/x; rm -rf "${S:-/etc}"
+# Forms the variable and cd rules would read literally (review, 388).
+deny	mac	Bash	declare -n S=HOME; rm -rf "$S"
+deny	mac	Bash	typeset -n S=HOME; rm -rf "$S"
+deny	mac	Bash	local -n S=HOME; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/a/b; rm -rf $S:h:h:h
+deny	mac	Bash	S=/work/repo/a; rm -rf $S[1]
+deny	mac	Bash	S=a:~/x; rm -rf $S
+deny	mac	Bash	rm -rf a=~/x
+deny	mac	Bash	cd -P sub/link/.. && rm -rf x
+deny	win	PowerShell	$m = @'⏎x⏎  '@⏎Remove-Item -Recurse -Force C:\other⏎$n = @'⏎'@
+allow	mac	Bash	S=/work/repo/a; rm -rf "$S"/b
 # mktemp -d: the bare folder it just made, nothing appended, never -u.
 allow	mac	Bash	T=$(mktemp -d); cp a.txt "$T"/; rm -rf "$T"
 allow	mac	Bash	S=$(mktemp -d) && cp -r state/repos "$S"/ && rm -rf "$S"

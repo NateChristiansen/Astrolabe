@@ -51,7 +51,7 @@ The guard lets a recursive delete through inside a session's own scratch folder 
 
 - **Claude Code** gives each session a folder named for its session id, the same id its hooks receive as `session_id`: `/private/tmp/claude-<uid>/<project>/<session id>/` on the Mac, holding `scratchpad/` and `tasks/`, and `%TEMP%\claude\<hash>\<session id>\scratchpad` on Windows. Subagents share the session id, so they share the folder.
 - **Codex** names no temp folder for its session id: its folders in the Mac's temp folders carry random suffixes (`codex-artifact-session-…`, `com.openai.codex.…`), so the exception never matches it and its shared temp folder never qualifies. Windows isn't checked.
-- On the Mac, `/private/tmp/claude-<uid>` is mode 700 and owned by the user; the shared `/tmp` isn't, so the folder's owner is checked against the owner of `$HOME`. On Windows `%TEMP%` is under the user's profile and is already the user's alone, so being inside it is the check.
+- On the Mac, `/private/tmp/claude-<uid>` is mode 700 and owned by the user; the shared `/tmp` isn't, so the folder's owner is checked against the owner of `$HOME`. On Windows `%TEMP%` is under the user's profile and is already the user's alone, so being inside it is the check. A delete there goes into a junction, so on Windows the whole path must already exist; on Unix `rm` without a trailing separator removes a link itself, so a last name the command makes first is safe.
 
 ## Registering a marketplace at a different ref
 

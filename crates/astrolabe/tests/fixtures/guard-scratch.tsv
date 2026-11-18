@@ -7,12 +7,14 @@
 #   {D} a folder named for this session's id that is itself a link out of the temp folder
 #   {W} {S} with the system's own separators
 # The worktree is /work/repo, or C:\work\repo on Windows. The sign ⏎ stands for a newline.
+# What an allowed row deletes is made first: on Windows the whole path must exist.
 # The audit's false alarms (effort 388), allowed now.
 allow	Bash	S={S}/state && rm -rf "$S" && mkdir -p "$S"
 allow	Bash	S={S}/t1; rm -rf $S; mkdir -p $S/work $S/state
 allow	Bash	kill 13156; rm -rf {S}/home-state; lsof -nP -iTCP:47
 allow	Bash	rm -rf {S}
 allow	Bash	S={S}; R=$S/probe-a; rm -rf $R; mkdir -p $R/home $R/fix
+allow	Bash	cd /elsewhere; cd {S} && rm -rf work
 allow	Bash	cd {S} && rm -rf tpl && mkdir tpl
 allow	Bash	S={S} && cd $S && sed -n 1p a.txt; rm -rf build
 allow	Bash	cd /work/repo/sub && cargo build --locked && S={S}/preview && rm -rf "$S" && mkdir -p "$S"
@@ -24,6 +26,20 @@ allow	Bash	S="{S}/repro"⏎rm -rf "$S"
 allow	Bash	export S={S}/x; rm -rf "$S"
 allow	PowerShell	Remove-Item -Recurse -Force '{W}/old'
 # Still denied: another session's folder, the shared parent, shared temp, and links out.
+# A link the command makes first isn't there when the guard looks (review, 388).
+deny	Bash	ln -s /work/other {S}/l && rm -rf {S}/l/
+deny	Bash	ln -s /work/other {S}/l && rm -rf {S}/l/*
+deny	Bash	ln -s /work/other {S}/l && rm -rf {S}/l/src
+deny	Bash	L={S}/l; ln -s /work/other $L && rm -rf "$L/"
+deny	Bash	mv /work/projlink {S}/l && rm -rf {S}/l/
+deny	Bash	rm -rf {S}/*
+deny	Bash	rm -rf {S}/old/
+deny	Bash	rm -rf {S}/old/.
+# A cd after || or ! may not have run.
+deny	Bash	cd /elsewhere; [ -d out ] || cd {S} && rm -rf out
+deny	Bash	cd /elsewhere; true || cd {S} && rm -rf work
+deny	Bash	cd /elsewhere; ! cd {S} && rm -rf work
+deny	Bash	cd ~; true || cd {S} && rm -rf work
 deny	Bash	rm -rf {O}/x
 deny	Bash	S={O}; rm -rf "$S"
 deny	Bash	rm -rf {P}/x
