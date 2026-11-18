@@ -50,6 +50,8 @@ struct Machine {
     name: &'static str,
     notes: PathBuf,
     demo: PathBuf,
+    /// The read the hook last handed back in place of a command, as the app would run it.
+    last_read: std::sync::Mutex<String>,
 }
 
 struct World {
@@ -116,6 +118,7 @@ impl World {
             name,
             notes,
             demo,
+            last_read: Default::default(),
         };
         let notes_str = m.notes.to_str().unwrap().to_owned();
         let (out, ok) = m.run(&m.notes, &["repo", "add", "agent", &notes_str], "");
@@ -251,6 +254,7 @@ impl Machine {
         // and carries whether it worked. A refused command's read fails too.
         let failing =
             (command.strip_suffix("; false")).or_else(|| command.strip_suffix("; exit 1"));
+        *self.last_read.lock().unwrap() = command.to_owned();
         let read = failing.unwrap_or(command);
         let path = (read.strip_prefix("cat '"))
             .or_else(|| read.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))

@@ -927,6 +927,8 @@ fn initiative_inner(
 pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: &Path) -> Done {
     match save_inner(cmd, key, session, provider, cwd) {
         Ok(text) => Done { text, ok: true },
+        // Not ok, so the hook keeps the write for the next notes write to finish its closes;
+        // the shell still hears that the save landed (see `landed`).
         Err(why) if why.contains(LESSONS_UNFINISHED) => Done {
             text: why,
             ok: false,
@@ -1231,6 +1233,12 @@ fn handoff_scope(
 }
 
 const KEPT: &str = " not saved yet: ";
+
+/// A reply for a save that landed with only its lesson closes left: the shell is told it
+/// worked, while the write stays kept for the closes.
+pub(crate) fn landed(reply: &str) -> bool {
+    reply.contains(LESSONS_UNFINISHED)
+}
 
 /// A save that moves the effort to done from any other status: the one that closes its lessons.
 fn marks_done(status: Option<&str>, before: &str) -> bool {

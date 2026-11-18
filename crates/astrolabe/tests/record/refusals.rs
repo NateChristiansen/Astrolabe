@@ -253,15 +253,30 @@ fn help_is_answered_with_the_forms() {
     }
 }
 
-/// PowerShell gets its own body marker and closing line, and its read fails with `exit 1`.
+/// PowerShell gets its own body marker and closing line. Its read stays a plain read that
+/// succeeds: Claude's read-only check doesn't pass `exit 1`, and a read stopped there would
+/// hide the reply (review of effort 401).
 #[test]
 fn powershell_is_offered_a_here_string() {
     let (_world, mac) = bound();
     let command =
         "cd C:\\work\\repo; astrolabe effort save --status active @'\nWhere it stands.\n'@";
     let input = json!({"session_id": "s1", "cwd": mac.demo, "tool_name": "PowerShell", "tool_use_id": "call-ps", "tool_input": {"command": command}});
-    let (out, ok) = mac.shell(input, &mac.demo, command);
+    let (out, ok) = mac.shell(input.clone(), &mac.demo, command);
     assert!(!ok, "{out}");
+    let (answer, _) = mac.run(
+        &mac.demo,
+        &["hook", "pre-command", "--if-active"],
+        &input.to_string(),
+    );
+    let answer: Value = serde_json::from_str(&answer).unwrap();
+    let read = answer["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        read.starts_with("Get-Content -Raw -Encoding UTF8 -LiteralPath '") && read.ends_with('\''),
+        "{read}"
+    );
     let mut lines = out.lines();
     assert!(
         lines

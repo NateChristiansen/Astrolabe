@@ -27,13 +27,15 @@ Astrolabe's hook answers inside that timeout once it's running, and denies when 
 
 ## What the agent sees of a command that fails
 
-The hook hands back a read of an effort command's reply in place of the command, and makes that read fail when the command did, so the shell's status matches the reply.
+The hook hands back a read of an effort command's reply in place of the command. In a POSIX shell, a refused or failed command's read is `cat '<reply>'; false`, so the shell's status matches the reply. In PowerShell the read stays a plain `Get-Content`, which succeeds whatever the reply says.
 
-**Claude Code** (probe, Mac, 2026-11-18). A Bash command that prints a line and then exits 1 comes back to the model as `Exit code 1` followed by the full output.
+**Claude Code** (probe, Mac, 2.1.316, 2026-11-18). One-line `claude -p` runs on a small model, each running a given Bash command:
+- `cat '<reply>'; false` in plan mode, auto mode and the ask-first mode (`manual`): it ran without approval each time, and came back as `Exit code 1` followed by the reply. `false` is on the read-only list.
+- `cat '<reply>'; touch '<file>'` in the ask-first mode: denied as needing approval, which shows that mode applies the read-only check. Headless plan mode let that same `touch` run in the session's own folder, so plan mode alone wasn't a usable control.
 
-**Codex** (its own transcripts, Mac, 2026-11-18). A shell command's result carries `exit_code` beside its full `output`, as for a failed `kill` with exit code 1. No live probe was run.
+**Claude Code, PowerShell** (read from the 2.1.316 and 2.1.325 binaries, not probed). `exit 1` isn't in the PowerShell tool's read-only cmdlet map, so `Get-Content …; exit 1` would fail the read-only check, and plan or auto mode could stop the read and hide the reply. PowerShell keeps the read that succeeds.
 
-Not checked: either app's PowerShell tool with the `; exit 1` the hook appends there.
+**Codex** (its own transcripts, Mac, 2026-11-18). A shell command's result carries `exit_code` beside its full `output`, as for a failed `kill` with exit code 1. No live probe was run. Its approval treatment of a failing read on Windows isn't known.
 
 ## How much hook text reaches the model
 

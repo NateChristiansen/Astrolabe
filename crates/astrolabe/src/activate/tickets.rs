@@ -86,9 +86,12 @@ pub(crate) fn quoted(path: &str, powershell: bool) -> String {
 /// UTF8` keeps Windows PowerShell 5.1 from reading the UTF-8 text as ANSI.
 pub(super) fn print_command(path: &str, powershell: bool, worked: bool) -> String {
     let path = quoted(path, powershell);
+    // A failed command's read fails too, in POSIX shells only: `false` is on Claude's
+    // read-only list, so the read still runs in every mode (probed 2026-11-18). PowerShell's
+    // `exit 1` isn't, so there it would be stopped and the reply never seen: PowerShell keeps
+    // a read that succeeds.
     match (powershell, worked) {
-        (true, true) => format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}"),
-        (true, false) => format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}; exit 1"),
+        (true, _) => format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}"),
         (false, true) => format!("cat {path}"),
         (false, false) => format!("cat {path}; false"),
     }
@@ -234,9 +237,10 @@ mod print_tests {
             print_command("/s/t.txt", false, false),
             "cat '/s/t.txt'; false"
         );
+        // PowerShell's read stays a plain read, so Claude's read-only check still passes it.
         assert_eq!(
             print_command("C:\\s\\t.txt", true, false),
-            "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\s\\t.txt'; exit 1"
+            "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\s\\t.txt'"
         );
     }
 }

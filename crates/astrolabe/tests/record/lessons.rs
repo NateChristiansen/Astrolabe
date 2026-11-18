@@ -688,6 +688,10 @@ fn an_interrupted_done_save_finishes_its_closes_without_repeating_a_disposition(
             !ok && out.starts_with("Saved effort 1, but closing its lessons stopped: git refused a commit. Don't save it again"),
             "{out}"
         );
+        // The write stays kept for its closes, but the save landed, so the shell's read
+        // succeeds (review of effort 401).
+        let read = mac.last_read.lock().unwrap().clone();
+        assert!(!read.ends_with("; false"), "{read}");
         assert_eq!(mac.log().lines().count(), before + 2);
         let disposed = git(&mac.notes, &["show", "HEAD:lessons/friction.md"]);
         assert_eq!(disposed.matches("Fixed by effort 1").count(), 1);

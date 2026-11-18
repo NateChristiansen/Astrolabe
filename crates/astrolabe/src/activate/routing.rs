@@ -754,7 +754,13 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 if let (Some(op_key), true) = (op_key, ok) {
                     crate::record::answers(&op_key);
                 }
-                rewrite_to_show(tool_input, key, &ticket, powershell, ok)
+                rewrite_to_show(
+                    tool_input,
+                    key,
+                    &ticket,
+                    powershell,
+                    ok || crate::record::landed(&text),
+                )
             }
             Err(why) => hook::deny(&format!(
                 "Astrolabe couldn't show this effort command's result ({why}); run `astrolabe notes status`."
@@ -849,12 +855,9 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
 /// runs in every mode, where Claude's plan mode ignores a hook's allow for anything else
 /// and its classifier denied this program's own print; the hook has written by then, so a
 /// denied print would hide a write that happened. This program's `--show` is the fallback
-/// when there's no state folder to name.
-/// The app runs a read of the result in place of the command. `worked` false makes that read
-/// fail too, so the shell's status says what the reply says: both apps still show a failed
-/// command's output to the agent (Claude probed, Codex seen in its transcripts, 2026-11-18).
-/// Effort and notes commands pass whether they worked; activation and approvals keep the
-/// read's own status.
+/// when there's no state folder to name. Effort and notes commands pass whether they worked,
+/// and in a POSIX shell a failed one's read fails too (see `print_command`); activation and
+/// approvals keep the read's own status.
 pub(super) fn rewrite_to_show(
     tool_input: &Value,
     key: &str,
