@@ -51,6 +51,7 @@ pub(super) fn note_page(
         "issue",
         "involvement",
         "authority",
+        "finish",
         "waits_for",
     ] {
         let Some(value) = prop(key) else { continue };

@@ -11,6 +11,9 @@ pub struct InitiativePage {
     pub before: String,
     pub heading: String,
     pub efforts: Vec<(String, String)>,
+    /// Each new effort's finish line, in the order of `efforts`, from a `finish:` line in
+    /// its paragraph; None where the paragraph names none, which files the default.
+    pub finishes: Vec<Option<String>>,
     pub joins: Vec<u32>,
     pub after: String,
 }
@@ -55,6 +58,7 @@ impl InitiativePage {
             before.remove(at);
         }
         let mut efforts = Vec::new();
+        let mut finishes = Vec::new();
         let mut joins = Vec::new();
         // A blank line is one with nothing but whitespace, as Markdown reads it, so a line
         // of spaces between two efforts still separates them (review, 2026-11-07).
@@ -99,13 +103,26 @@ impl InitiativePage {
                 .unwrap_or(title)
                 .trim()
                 .to_owned();
-            let goal = parts.collect::<Vec<_>>().join("\n").trim().to_owned();
+            // A `finish:` line names the event that finishes this member; it's no part of
+            // the goal.
+            let (finish, goal): (Vec<&str>, Vec<&str>) =
+                parts.partition(|line| line.starts_with("finish:"));
+            let finish = match finish.as_slice() {
+                [] => None,
+                [line] => Some(
+                    super::finish_line(line.trim_start_matches("finish:"))
+                        .map_err(|why| format!("effort {title:?}: {why}"))?,
+                ),
+                _ => return Err(format!("effort {title:?} has more than one finish: line")),
+            };
+            let goal = goal.join("\n").trim().to_owned();
             if goal.is_empty() {
                 return Err(format!(
                     "effort {title:?} has no goal: write it on the lines below its title"
                 ));
             }
             efforts.push((title, goal));
+            finishes.push(finish);
         }
         if !efforts.is_empty() && !joins.is_empty() {
             return Err("an Efforts section either creates efforts or joins existing numbers; do not mix them".into());
@@ -117,6 +134,7 @@ impl InitiativePage {
             before: before.join("\n").trim().to_owned(),
             heading: heading_at(start).unwrap_or("Efforts").to_owned(),
             efforts,
+            finishes,
             joins,
             after: lines[end..].join("\n").trim().to_owned(),
         })

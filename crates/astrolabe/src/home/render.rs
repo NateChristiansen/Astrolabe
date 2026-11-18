@@ -772,6 +772,13 @@ pub(super) fn card_html(
     } else {
         format!("<p class=\"waits\">waits for {}</p>\n", esc(waits))
     };
+    // Only a finish line other than the default is news on a card.
+    let finish = match card.row.finish.as_deref() {
+        Some(line) if !small && line != crate::effort::FINISH_DEFAULT => {
+            format!("<p class=\"finish\">{}</p>\n", esc(line))
+        }
+        _ => String::new(),
+    };
     let href = match card.row.file.as_deref() {
         Some(file) => links.href(root, file),
         None => "#".to_owned(),
@@ -826,7 +833,7 @@ pub(super) fn card_html(
         number.clone()
     };
     format!(
-        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span> {}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{context}{next}{pieces}{review}</article>\n",
+        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span> {}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{context}{next}{finish}{pieces}{review}</article>\n",
         esc(state),
         if small { " small" } else { "" },
         esc(&key),

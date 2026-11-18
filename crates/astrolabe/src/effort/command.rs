@@ -1,12 +1,13 @@
 //! Shell command grammar; parsing performs no filesystem writes or subprocess work.
 
 /// The flags each verb takes; any other is refused, so a mistyped one can't be ignored.
-pub const NEW_FLAGS: [&str; 9] = [
+pub const NEW_FLAGS: [&str; 10] = [
     "title",
     "repo",
     "status",
     "involvement",
     "authority",
+    "finish",
     "initiative",
     "priority",
     "issue",

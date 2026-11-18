@@ -47,6 +47,9 @@ pub struct EffortRow {
     /// The lessons this effort answers, which marking it done closes. Left out when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lessons: Vec<String>,
+    /// The event that finishes it, as filed. Left out when the note names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +268,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             unpushed: file.prop("unpushed").map(str::to_owned),
             dirty: file.prop("dirty").map(str::to_owned),
             lessons,
+            finish: file.prop("finish").map(str::to_owned),
         });
     }
     let mut initiative_attention = Vec::new();

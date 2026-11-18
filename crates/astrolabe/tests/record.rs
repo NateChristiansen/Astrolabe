@@ -454,6 +454,8 @@ impl Drop for Kill {
 
 #[path = "record/deadlines.rs"]
 mod deadlines;
+#[path = "record/finishing.rs"]
+mod finishing;
 #[path = "record/handoffs.rs"]
 mod handoffs;
 #[path = "record/home.rs"]

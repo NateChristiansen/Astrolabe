@@ -285,6 +285,7 @@ fn new_inner(
         cmd.flag("authority").unwrap_or("edit"),
         &AUTHORITIES,
     )?;
+    let finish = crate::effort::finish_line(cmd.flag("finish").unwrap_or("merged"))?;
     let issue = cmd.flag("issue").map(issues).transpose()?;
     let lessons = lesson::named(&cmd.flags_all("lesson"))?;
     let (registry, notes) = notes_here()?;
@@ -374,6 +375,7 @@ fn new_inner(
             priority: cmd.flag("priority").unwrap_or("none"),
             involvement: &involvement,
             authority: &authority,
+            finish: &finish,
         },
         &day,
     );
@@ -640,6 +642,7 @@ struct Settings<'a> {
     priority: &'a str,
     involvement: &'a str,
     authority: &'a str,
+    finish: &'a str,
 }
 
 /// A new effort note before its stamp: the title with its number, the goal as Current state,
@@ -666,6 +669,7 @@ fn effort_note(
         ("priority", settings.priority),
         ("involvement", settings.involvement),
         ("authority", settings.authority),
+        ("finish", settings.finish),
         ("waits_for", ""),
         ("created", day),
     ] {
@@ -804,6 +808,7 @@ fn initiative_inner(
         priority: "none",
         involvement: &involvement,
         authority: &authority,
+        finish: crate::effort::FINISH_DEFAULT,
     };
     let mut files = Vec::new();
     let mut filed = Vec::new();
@@ -811,6 +816,11 @@ fn initiative_inner(
     for (i, ((name, _), goal)) in page.efforts.iter().zip(goals).enumerate() {
         let number = start + i as u32;
         let rel = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(name));
+        let finish = page.finishes.get(i).cloned().flatten();
+        let settings = Settings {
+            finish: finish.as_deref().unwrap_or(settings.finish),
+            ..settings
+        };
         let mut file = effort_note(number, name, goal, &settings, &day);
         stamp(
             &mut file,

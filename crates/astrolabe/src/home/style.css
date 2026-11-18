@@ -776,14 +776,14 @@ h1, h2, h3, p {
   color: var(--bad);
 }
 
-.context, .next, .waits, .ask {
+.context, .next, .finish, .waits, .ask {
   font-size: 14.5px;
   line-height: 1.65;
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-.context, .next {
+.context, .next, .finish {
   color: var(--mute);
 }
 
@@ -837,7 +837,7 @@ h1, h2, h3, p {
   color: var(--accent-ink);
 }
 
-.s-needs :is(.meta, .pill.repo, .context, .next, .ask, .waits, .bar, .pri) {
+.s-needs :is(.meta, .pill.repo, .context, .next, .finish, .ask, .waits, .bar, .pri) {
   color: var(--accent-ink);
 }
 
@@ -2302,7 +2302,7 @@ html[data-view=drafts] .view-head[data-for=drafts] {
   body {
     font-size: 16px;
   }
-  .context, .next, .waits, .ask, .today li, .lessons li, .empty, .quiet {
+  .context, .next, .finish, .waits, .ask, .today li, .lessons li, .empty, .quiet {
     font-size: 15.5px;
   }
   .card:not(.small) h3 {
