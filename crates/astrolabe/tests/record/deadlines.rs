@@ -1026,13 +1026,6 @@ fn a_rebase_that_outlives_the_hook_finishes_though_it_prints() {
 }
 
 impl Machine {
-    fn session_state(&self, session: &str) -> Value {
-        serde_json::from_slice(
-            &std::fs::read(self.state().join(format!("{session}.json"))).unwrap(),
-        )
-        .unwrap()
-    }
-
     /// What a turn end says to the session, if anything.
     fn turn_end(&self, session: &str) -> String {
         let input = json!({"session_id": session, "cwd": self.demo, "stop_hook_active": false, "last_assistant_message": "done"});
@@ -1043,65 +1036,26 @@ impl Machine {
 
 const MOVED: &str = "the repo changed since the last save";
 
-/// A session with no fingerprint of its repo stored, because the repo couldn't be read
-/// when it was bound, is told nothing about the repo having moved: there's nothing to
-/// compare with. The turn end takes the repo as it is, and the next one compares with that.
+/// A turn whose first command couldn't read the repo in the hook's time makes no claim about
+/// the repo: there's nothing to compare with, and an empty read would hash as a clean tree.
+/// The next turn's command reads it again, and from there a real change is seen.
 #[test]
-fn a_session_with_no_stored_fingerprint_isnt_told_its_repo_moved() {
+fn a_command_that_couldnt_read_its_repo_makes_no_claim_about_it() {
     let world = World::new();
     let mac = world.machine("mac");
-    write(&mac.demo.join("untracked.txt"), "work in progress");
     assert!(mac.bash("s1", NEW).1);
-    // A second session picks the effort up with its clock moved past its time for reads as
-    // it comes to read the repo's status, so that read isn't started.
+    // The hook's clock moves past its time for reads as it comes to read the repo's status.
+    let input = json!({"session_id": "s1", "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": "printf a > work.txt"}});
     let env = [("ASTROLABE_HOOK_TEST_STALL", "status:+14500")];
-    let (answer, _) = mac.timed(
-        "s2",
-        "call-1",
-        "astrolabe activate --effort 1",
-        &env,
-        Duration::from_secs(14),
-    );
-    assert!(matches!(answer, Answer::Shown(_, true)), "the effort loads");
+    let (out, _) = mac.timed_event("pre-command", &input, &env, Duration::from_secs(14));
+    assert!(!out.contains("deny"), "the command runs: {out}");
+    write(&mac.demo.join("work.txt"), "a");
     assert_eq!(
-        mac.session_state("s2")["baseline"],
-        Value::Null,
-        "a read that didn't finish was stored as the repo's fingerprint"
+        mac.turn_end("s1"),
+        "",
+        "a read that didn't finish made a claim"
     );
-    // Nothing changed in the repo, and the turn end says nothing.
-    assert_eq!(mac.turn_end("s2"), "");
-    assert!(mac.session_state("s2")["baseline"].is_string());
-    assert_eq!(mac.turn_end("s2"), "");
-    // From there a real change is seen.
-    write(&mac.demo.join("more.txt"), "more work");
-    assert!(mac.turn_end("s2").contains(MOVED));
-}
-
-/// A save whose own read of the repo failed makes no claim about the repo: not the
-/// fingerprint of the save before it, which the work since has left behind.
-#[test]
-fn a_save_that_couldnt_read_its_repo_makes_no_claim_about_it() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    assert!(mac.bash("s1", NEW).1);
-    let saved_with = mac.session_state("s1")["baseline"].clone();
-    assert!(saved_with.is_string());
-    // Work since that save, then a save while git can't read the repo's status.
-    write(&mac.demo.join("work.txt"), "work since the first save");
-    let index = mac.demo.join(".git/index");
-    let was = std::fs::read(&index).unwrap();
-    std::fs::write(&index, "not an index").unwrap();
-    let (out, ok) = mac.bash("s1", SAVE);
-    assert!(ok, "{out}");
-    std::fs::write(&index, was).unwrap();
-    assert_eq!(
-        mac.session_state("s1")["baseline"],
-        Value::Null,
-        "the save kept a fingerprint it didn't take"
-    );
-    // The turn end right after that save has nothing to say about the repo.
-    assert_eq!(mac.turn_end("s1"), "");
-    write(&mac.demo.join("later.txt"), "work after the second save");
+    assert!(mac.bash("s1", "printf b > more.txt").1);
     assert!(mac.turn_end("s1").contains(MOVED));
 }
 

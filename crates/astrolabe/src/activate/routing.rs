@@ -200,12 +200,10 @@ pub(super) fn act(
                             Ok((notice, hash)) => {
                                 if let Some(hash) = hash {
                                     activation.state.delivered.set(hash);
-                                    // From the notes checkout the take-up's own commit moved
-                                    // what the Stop hook compares, so it's the baseline now.
-                                    if super::in_notes(cwd)
-                                        && let Some(facts) = crate::notes::RepoFacts::read(cwd)
-                                    {
-                                        activation.state.baseline.set(facts.fingerprint);
+                                    // From the notes checkout the take-up's own commit moves
+                                    // what the Stop hook compares: the next command reads it.
+                                    if super::in_notes(cwd) {
+                                        crate::nudge::clear_shell(session);
                                     }
                                 }
                                 if !notice.is_empty() {
@@ -464,8 +462,10 @@ fn answer(event: &str) {
                 return;
             }
             // A commit is work the save should cover; a child's counts for its parent.
-            if let (Some(session), Some(command)) =
-                (session, crate::guard::command_field(&input["tool_input"]))
+            let tool = input["tool_name"].as_str().unwrap_or_default();
+            let shell = crate::guard::command_field(&input["tool_input"])
+                .filter(|_| !crate::guard::not_a_shell(tool));
+            if let (Some(session), Some(command)) = (session, shell)
                 && crate::nudge::commits(&crate::guard::command_text(command))
             {
                 let _ = std::panic::catch_unwind(|| crate::nudge::mark(session, false));
@@ -492,6 +492,14 @@ fn answer(event: &str) {
                         if !child {
                             let _ =
                                 std::panic::catch_unwind(|| crate::reply::check(&input, session));
+                        }
+                        // Any shell command may change files: the repo as it is before one
+                        // that will run, so the turn end can tell this session's changes.
+                        if shell.is_some() && verdict.is_none() {
+                            let folder = hook::folder(&input);
+                            let _ = std::panic::catch_unwind(|| {
+                                crate::nudge::before_shell(dir, session, folder.as_deref())
+                            });
                         }
                         if let Some(denial) = verdict {
                             hook::say(&denial);

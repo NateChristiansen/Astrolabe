@@ -96,11 +96,6 @@ pub struct Op {
     /// intent file's time, which moves whenever a later run finishes the write.
     #[serde(default)]
     pub at_ms: Option<i64>,
-    /// The notes checkout itself, when the command ran there: the states' nudge baseline is
-    /// taken again as they're written, after the commit, since that commit is in the folder
-    /// the fingerprint reads. Kept in the intent so a replay does the same.
-    #[serde(default)]
-    pub rebaseline: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,7 +450,6 @@ impl Notes {
             session: None,
             bound: None,
             at_ms: None,
-            rebaseline: None,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
         for entry in std::fs::read_dir(&self.state)

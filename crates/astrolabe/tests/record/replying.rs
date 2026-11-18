@@ -207,9 +207,6 @@ fn a_reply_in_the_notes_repo_does_not_manufacture_or_hide_a_save_nudge() {
         let mut before = session(&m);
         before["delivered_ms"] = (Machine::now_ms() - 2_000).into();
         save_session(&m, &before);
-        if dirty {
-            write(&m.notes.join("knowledge/pending.md"), "Unsaved findings");
-        }
         let mut input = input(&m, false);
         input["cwd"] = m.notes.to_str().unwrap().into();
         input["stop_hook_active"] = false.into();
@@ -219,6 +216,10 @@ fn a_reply_in_the_notes_repo_does_not_manufacture_or_hide_a_save_nudge() {
         // same-Stop case when identity cannot be observed, without changing deadlines.
         assert!(m.hook_json("pre-command", input.clone()).is_none());
         assert!(!m.effort_text(1).contains("owner: review the notes?"));
+        // What the session's command wrote, after the hook read the checkout.
+        if dirty {
+            write(&m.notes.join("knowledge/pending.md"), "Unsaved findings");
+        }
         let answer = m.hook_json("stop", input);
         assert_eq!(answer.is_some(), dirty, "{answer:?}");
         assert!(!m.effort_text(1).contains("owner: review the notes?"));
@@ -226,8 +227,6 @@ fn a_reply_in_the_notes_repo_does_not_manufacture_or_hide_a_save_nudge() {
         for field in ["last_save_ms", "saves"] {
             assert_eq!(after[field], before[field]);
         }
-        // RepoFacts already excludes the notes repo's HEAD: no special rebaseline needed.
-        assert_eq!(after["baseline"], before["baseline"]);
     }
 }
 
@@ -413,14 +412,15 @@ fn an_unknown_notes_identity_does_not_manufacture_a_save_nudge() {
             .1
         );
         let mut before = session(&m);
-        assert!(before["baseline"].is_string());
         before["delivered_ms"] = (Machine::now_ms() - 2_000).into();
         save_session(&m, &before);
+        let mut input = input(&m, false);
+        input["cwd"] = m.notes.to_str().unwrap().into();
+        // A command read the checkout and then wrote to it.
+        assert!(m.hook_json("pre-command", input.clone()).is_none());
         if dirty {
             write(&m.notes.join("knowledge/pending.md"), "Unsaved findings");
         }
-        let mut input = input(&m, false);
-        input["cwd"] = m.notes.to_str().unwrap().into();
         input["stop_hook_active"] = false.into();
         // Git status and diff have completed, but identity reads no longer fit. This
         // advances the existing test clock, without a sleep or changing real deadlines.
@@ -449,7 +449,6 @@ fn an_unknown_notes_identity_does_not_manufacture_a_save_nudge() {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        assert_eq!(session(&m)["baseline"], before["baseline"]);
         assert!(!m.effort_text(1).contains("owner: review the notes?"));
     }
 }
@@ -468,13 +467,14 @@ fn an_unreadable_registry_does_not_turn_notes_into_a_product_fingerprint() {
         )
         .1
     );
-    let before = session(&m);
-    assert!(before["baseline"].is_string());
     // Keep the notes registration in place but make the registry as a whole unreadable.
     write(&m.state().join("repos/broken.json"), "not a repo record");
+    // A command in the notes, then a commit there that moves their HEAD, as every save and
+    // pull does: read as a product's checkout, that would be a change.
     let mut input = input(&m, false);
     input["cwd"] = m.notes.to_str().unwrap().into();
+    assert!(m.hook_json("pre-command", input.clone()).is_none());
+    git(&m.notes, &["commit", "-q", "--allow-empty", "-m", "a save"]);
     input["stop_hook_active"] = false.into();
     assert!(m.hook_json("stop", input).is_none());
-    assert_eq!(session(&m)["baseline"], before["baseline"]);
 }

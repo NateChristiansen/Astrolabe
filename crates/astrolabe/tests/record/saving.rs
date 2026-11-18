@@ -58,7 +58,7 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("s1.json")).unwrap()).unwrap();
     assert_eq!(state["effort"], "1");
-    assert!(state["delivered"].is_string() && state["baseline"].is_string());
+    assert!(state["delivered"].is_string());
     // The same command typed again with no hook explains itself from the ticket.
     let (plain, ok) = mac.plain(NEW);
     assert!(ok, "{plain}");

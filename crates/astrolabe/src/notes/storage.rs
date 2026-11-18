@@ -1,6 +1,6 @@
 //! Recoverable note writes and their commit scope. Callers hold the notes lock.
 use super::{
-    EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RETRY_MS, RepoFacts, journal_file, now_ms,
+    EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RETRY_MS, journal_file, now_ms,
     tidy_journal, write_text,
 };
 use std::path::PathBuf;
@@ -505,16 +505,10 @@ impl Notes {
         self.write_states(&op)
     }
 
-    /// The session states, once the notes are committed; from the notes checkout with the
-    /// baseline as the tree is now.
+    /// The session states, once the notes are committed.
     fn write_states(&self, op: &Op) -> Result<(), String> {
-        let print = op
-            .rebaseline
-            .as_deref()
-            .map(|cwd| RepoFacts::read(cwd).map(|f| f.fingerprint));
         for (path, state) in &op.states {
-            let mut rebaseline = true;
-            let mut state = if let Some(after) = op.reply_after_ms {
+            let state = if let Some(after) = op.reply_after_ms {
                 // Other tools can mark work or switch efforts while git commits. A reply
                 // patches the latest matching checkpoint, never restores an old snapshot.
                 let Some(mut current) = std::fs::read(path)
@@ -531,16 +525,12 @@ impl Notes {
                 {
                     continue;
                 }
-                rebaseline = current["baseline"] == state["baseline"];
                 current["delivered"] = state["delivered"].clone();
                 current["delivered_ms"] = state["delivered_ms"].clone();
                 current
             } else {
                 state.clone()
             };
-            if rebaseline && let Some(print) = &print {
-                state["baseline"] = print.clone().into();
-            }
             write_text(path, &state.to_string())?;
         }
         Ok(())

@@ -1,8 +1,11 @@
 //! Detection, so the save instruction isn't advisory: the audit found agents asked once wrote
 //! well and skipped the save; "update memory" prompts stay advisory unless a missing write is
-//! detected. A mark is set when the session edits a file or commits; at turn end, the repo's
-//! fingerprint is compared with the last save's. Work moved without a save gets one bounded
-//! message, the same on both clients, never a requirement to save before finishing.
+//! detected. Only the session's own changes count: a mark is set when it edits a file or
+//! commits, and the repo's fingerprint is read before its first shell command of a turn and
+//! compared at the turn's end. Comparing with the print at the last save counted every other
+//! session's work in a shared checkout; a quarter to a third of nudges then led to no save
+//! (audit, 2026-11-18). Work moved without a save gets one bounded message, the same on both
+//! clients, never a requirement to save before finishing.
 use crate::activate::{read_state, state_dir, state_path};
 use crate::notes::{self, Notes, RepoFacts};
 use serde_json::{Value, json};
@@ -18,6 +21,28 @@ const LONG_ANSWER: usize = 600;
 fn mark_path(dir: &Path, session: &str) -> PathBuf {
     dir.join("marks")
         .join(state_path(dir, session).file_name().unwrap_or_default())
+}
+
+/// Where a bound session's repo print from before its first shell command goes: beside its
+/// state, not in it, since a pre-command hook writes it and its read-modify-write could put
+/// back a state a save in the same message had just replaced.
+fn shell_path(dir: &Path, session: &str) -> PathBuf {
+    mark_path(dir, session).with_extension("shell")
+}
+
+/// The print and the folder it was read in, as `before_shell` left them.
+fn read_shell(path: &Path) -> Option<(PathBuf, String)> {
+    let bytes = std::fs::read(path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let cwd = value["cwd"].as_str()?;
+    Some((PathBuf::from(cwd), value["print"].as_str()?.to_owned()))
+}
+
+/// The session's changes so far are covered: by a save, or a commit the plugin made for it.
+pub fn clear_shell(session: &str) {
+    if let Some(dir) = state_dir() {
+        let _ = std::fs::remove_file(shell_path(&dir, session));
+    }
 }
 
 /// Records that this session did work: in its state when bound, else in a mark file. `plan`
@@ -81,36 +106,42 @@ pub fn commits(command: &str) -> bool {
     words.windows(2).any(|w| w[0] == "git" && w[1] == "commit")
 }
 
-/// The Stop hook's answer, or None when nothing moved since the last save. `stop_hook_active`
-/// means this turn was already continued once: then nothing, so it can't loop.
+/// Before a shell command runs in `folder`, in a bound session: the first since the last
+/// turn end or save reads the repo as it is, so the turn end can tell what this session's
+/// commands changed. One read a turn, not one a command: each costs a few git calls.
+pub fn before_shell(dir: &Path, session: &str, folder: Option<&Path>) {
+    let path = shell_path(dir, session);
+    let Some(folder) = folder.filter(|_| !path.exists()) else {
+        return;
+    };
+    // Unreadable, nothing is stored and the next command tries again.
+    if let Some(facts) = RepoFacts::read(folder) {
+        let print = json!({"cwd": folder.to_string_lossy(), "print": facts.fingerprint});
+        let _ = notes::write_text(&path, &print.to_string());
+    }
+}
+
+/// The Stop hook's answer, or None when the session changed nothing since its last save.
+/// `stop_hook_active` means this turn was already continued once: then nothing, so it can't
+/// loop.
 pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
     if input["stop_hook_active"] == true {
         return None;
     }
     let dir = state_dir()?;
     push_due();
-    let cwd = input["cwd"]
-        .as_str()
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())?;
     let codex = crate::activate::provider(input) == "codex";
     let text = match read_state(&dir, session) {
         Ok(Some(mut state)) => {
-            let facts = RepoFacts::read(&cwd);
-            let print = facts.as_ref().map(|f| f.fingerprint.as_str());
-            let baseline = state.baseline.as_deref().map(str::to_owned);
-            let acknowledged = state.acknowledged.as_deref().map(str::to_owned);
-            // A claim that the repo moved needs both ends known. No fingerprint stored (the
-            // repo couldn't be read whole when the session was bound or last saved) is no
-            // claim either way: this turn end says nothing of it and takes the repo as it
-            // is now for the next one to compare with.
-            let moved = print.is_some_and(|p| {
-                baseline.as_deref().is_some_and(|b| b != p) && acknowledged.as_deref() != Some(p)
-            });
-            if let (None, Some(p)) = (&baseline, print) {
-                state.baseline.set(p.to_owned());
-                let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
-            }
+            // The repo now, in the folder the turn's first shell command ran in, against the
+            // print taken before it. Either end unknown is no claim either way.
+            let shell = shell_path(&dir, session);
+            let before = read_shell(&shell);
+            let facts = before.as_ref().and_then(|(cwd, _)| RepoFacts::read(cwd));
+            let moved =
+                matches!((&before, &facts), (Some((_, print)), Some(f)) if *print != f.fingerprint);
+            // The turn is over either way: the next one's commands are read afresh.
+            let _ = std::fs::remove_file(&shell);
             let marked = state.mark.is_true();
             let record = state.record_label();
             if !moved && !marked {
@@ -143,8 +174,8 @@ pub fn at_stop(input: &Value, session: &str) -> Option<Value> {
                 ),
                 _ => format!("files were edited or commits made since the last save of {record}"),
             };
-            // Said once per state: the print is acknowledged and the mark cleared.
-            state.acknowledge(print);
+            // Said once per change: the mark and the print are cleared.
+            state.acknowledge();
             let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
             format!(
                 "Astrolabe: {what}. If that's work worth remembering, replace Current state and run `astrolabe effort save` now (a closed window saves nothing); if nothing changed worth saving, say so and finish. This is the plugin's hook, not the owner: not a request, and no reason to start an effort."

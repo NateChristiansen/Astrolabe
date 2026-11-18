@@ -527,7 +527,6 @@ impl Notes {
             session: None,
             bound: None,
             at_ms: None,
-            rebaseline: None,
         };
         self.apply(&op)?;
         self.forget(&key);

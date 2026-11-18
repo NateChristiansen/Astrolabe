@@ -105,12 +105,6 @@ fn stamp(file: &mut EffortFile, session: &str, provider: &str, facts: Option<&Re
     }
 }
 
-/// From the notes checkout the save's own commit changes what the fingerprint sees (a journal
-/// edited by hand is committed with it), so the op takes the nudge's baseline again after it.
-fn rebaseline(cwd: &Path) -> Option<PathBuf> {
-    activate::in_notes(cwd).then(|| cwd.to_path_buf())
-}
-
 /// The facts for a stamp: none from the notes checkout.
 fn stamp_facts<'a>(cwd: &Path, facts: Option<&'a RepoFacts>) -> Option<&'a RepoFacts> {
     (!activate::in_notes(cwd)).then_some(facts).flatten()
@@ -400,10 +394,6 @@ fn new_inner(
         token: token.into(),
         delivered: notes::content_hash(&text).into(),
         delivered_ms: notes::now_ms().into(),
-        baseline: facts
-            .as_ref()
-            .map(|f| Field::Known(f.fingerprint.clone()))
-            .unwrap_or(Field::Other(Value::Null)),
         last_save_ms: notes::now_ms().into(),
         mark: false.into(),
         saves: 0.into(),
@@ -450,7 +440,6 @@ fn new_inner(
         session: Some(session.to_owned()),
         bound: Some(format!("effort {number}")),
         at_ms: Some(notes::now_ms()),
-        rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
     notes.spawn_sync();
@@ -615,7 +604,6 @@ pub fn take_up(
         session: None,
         bound: None,
         at_ms: None,
-        rebaseline: None,
     };
     notes.apply(&op)?;
     if starts {
@@ -894,7 +882,6 @@ fn initiative_inner(
         session: Some(session.to_owned()),
         bound: bound_label(&notes.state, session),
         at_ms: Some(notes::now_ms()),
-        rebaseline: rebaseline(cwd),
     };
     notes.apply(&op)?;
     let saved = saved_text(&pulled, notes.spawn_sync());
@@ -1088,11 +1075,7 @@ fn save_inner(
     };
     let now = notes::now_ms();
     let mut next_state = state.clone();
-    next_state.saved(
-        notes::content_hash(&text),
-        facts.as_ref().map(|f| f.fingerprint.clone()),
-        now,
-    );
+    next_state.saved(notes::content_hash(&text), now);
     let message = commit_message(req.page_binding, &req.number, status, &before);
     let op = Op {
         reply_after_ms: None,
@@ -1112,9 +1095,10 @@ fn save_inner(
         session: Some(session.to_owned()),
         bound: Some(state.record_label()),
         at_ms: Some(notes::now_ms()),
-        rebaseline: rebaseline(cwd),
     };
     apply_save(&notes, &op, record)?;
+    // The save covers what the session's commands changed up to now.
+    crate::nudge::clear_shell(session);
     // Every save, so the other machine's board follows it: a checkpoint held for a batching
     // window sat unpushed for as long as its session stayed quiet.
     let sync_started = notes.spawn_sync();
@@ -1507,7 +1491,6 @@ fn save_target(
         session: Some(session.to_owned()),
         bound: Some(state.record_label()),
         at_ms: Some(notes::now_ms()),
-        rebaseline: None,
     };
     apply_save(notes, &op, &format!("effort {target}"))?;
     let sync_started = notes.spawn_sync();
@@ -1674,7 +1657,6 @@ fn journal_inner(
         session: Some(session.to_owned()),
         bound: None,
         at_ms: Some(notes::now_ms()),
-        rebaseline: None,
     };
     notes.apply(&op)?;
     notes.spawn_sync();

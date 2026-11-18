@@ -110,7 +110,7 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
         "{text}"
     );
     assert!(mac.stop("s1", false, false).is_none(), "said once");
-    // Bound and saved: silence; a commit in the repo moves the fingerprint: one nudge.
+    // Bound: silence.
     assert!(mac.bash("s1", NEW).1);
     assert!(
         mac.stop("s1", false, false).is_none(),
@@ -129,9 +129,25 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     assert!(mac.hook_json("stop", long.clone()).is_none());
     assert!(mac.bash("s1", "astrolabe effort save --decision \"d0\"").1);
     assert!(mac.hook_json("stop", long).is_none(), "saved: no ask");
+    // Another session's commit in the shared checkout, made while this one waited: silence.
     write(&mac.demo.join("a.txt"), "a");
     git(&mac.demo, &["add", "a.txt"]);
     git(&mac.demo, &["commit", "-q", "-m", "a"]);
+    assert!(mac.stop("s1", false, true).is_none(), "not this session's");
+    // So is one made before this session's turn, which only reads.
+    write(&mac.demo.join("a.txt"), "theirs");
+    assert!(mac.bash("s1", "cat a.txt").1);
+    assert!(
+        mac.stop("s1", false, true).is_none(),
+        "a read changes nothing"
+    );
+    // Nor is one made between this session's turns, whatever its last turn read.
+    write(&mac.demo.join("a.txt"), "theirs again");
+    git(&mac.demo, &["commit", "-q", "-am", "theirs"]);
+    assert!(mac.bash("s1", "cat a.txt").1);
+    assert!(mac.stop("s1", false, true).is_none(), "between turns");
+    // This session's own shell change: one nudge.
+    assert!(mac.bash("s1", "printf b > b.txt").1);
     let nudge = mac.stop("s1", false, true).unwrap();
     assert_eq!(
         nudge["decision"], "block",
@@ -146,16 +162,18 @@ fn the_stop_nudge_fires_once_per_change_on_both_clients_and_never_loops() {
     assert!(mac.stop("s1", true, true).is_none(), "already continued");
     assert!(
         mac.stop("s1", false, true).is_none(),
-        "acknowledged: no second nudge for the same state"
+        "acknowledged: no second nudge for the same change"
     );
     // A second edit to a dirty file changes the print; a save clears everything.
-    write(&mac.demo.join("a.txt"), "aa");
+    assert!(mac.bash("s1", "printf bb > b.txt").1);
     assert!(mac.stop("s1", false, false).is_some());
-    write(&mac.demo.join("a.txt"), "aaa");
+    assert!(mac.bash("s1", "printf bbb > b.txt").1);
     assert!(
         mac.stop("s1", false, false).is_some(),
         "content, not file names"
     );
+    // A change made before a save in the same turn is covered by it.
+    assert!(mac.bash("s1", "printf c > b.txt").1);
     assert!(
         mac.bash(
             "s1",
@@ -246,10 +264,7 @@ fn a_pickup_records_the_delivered_hash_for_stale_save_detection() {
     assert!(ok, "{out}");
     let state: Value =
         serde_json::from_slice(&std::fs::read(mac.state().join("s2.json")).unwrap()).unwrap();
-    assert!(
-        state["delivered"].is_string() && state["baseline"].is_string(),
-        "{state}"
-    );
+    assert!(state["delivered"].is_string(), "{state}");
     assert!(
         mac.bash("s1", "astrolabe effort save --decision \"from s1\"")
             .1
@@ -304,11 +319,21 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         .1
     );
     assert!(mac.hook_json("stop", stop()).is_none(), "a save is no work");
-    // A journal edited by hand nudges once; the save that then commits it doesn't.
+    // Another session's hand edit there is not this one's work.
     let day = notes
         .join("journal")
         .join(format!("{}.md", chrono::Local::now().format("%Y-%m-%d")));
-    write(&day, "- Hand line.\n");
+    write(&day, "- Their line.\n");
+    assert!(mac.hook_json("stop", stop()).is_none(), "another's edit");
+    // A journal this session edits by hand nudges once; the save that then commits it doesn't.
+    let line = "printf -- '- Their line.\\n- Hand line.\\n' > journal/";
+    let (out, ok) = mac.bash_from(
+        "n1",
+        &notes,
+        &format!("{line}{}", day.file_name().unwrap().to_str().unwrap()),
+        None,
+    );
+    assert!(ok, "{out}");
     assert!(
         mac.hook_json("stop", stop()).is_some(),
         "a hand edit is work"
@@ -330,28 +355,13 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         mac.hook_json("stop", stop()).is_none(),
         "its own commit isn't work"
     );
-    // A save cut off between its commit and its state: the replay takes the baseline
-    // again too, so the commit it carried never nudges.
-    let state_path = mac.state().join("n1.json");
-    let mut stale: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
-    stale["baseline"] = "stale".into();
-    let intent = json!({
-        "key": "cut-key", "files": [], "renames": [], "journal": [], "message": "0001: checkpoint",
-        "base": null, "states": [[state_path, stale]], "committed": true, "rebaseline": notes,
-    });
-    write(&mac.state().join("ops/cut-key.json"), &intent.to_string());
-    let (out, ok) = mac.run(&notes, &["notes", "sync"], "");
+    let (out, ok) = mac.bash_from(
+        "n1",
+        &notes,
+        "printf 'OWNER-TEXT edited by hand' > knowledge/owner.md",
+        None,
+    );
     assert!(ok, "{out}");
-    let replayed: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
-    assert_ne!(replayed["baseline"], "stale", "{replayed}");
-    assert!(
-        mac.hook_json("stop", stop()).is_none(),
-        "the replayed save isn't work"
-    );
-    write(
-        &notes.join("knowledge/owner.md"),
-        "OWNER-TEXT edited by hand",
-    );
     assert!(
         mac.hook_json("stop", stop()).is_some(),
         "a hand edit in the notes is"
@@ -417,9 +427,9 @@ fn a_shell_edit_to_an_untracked_file_moves_the_print_with_spaces_and_from_a_subf
             json!({"session_id": "s1", "cwd": dir, "stop_hook_active": false, "last_assistant_message": "done"}),
         )
     };
-    write(&sub.join("x.txt"), "x");
+    assert!(mac.bash_from("s1", &sub, "printf x > x.txt", None).1);
     assert!(stop_in(&sub).is_some(), "new file in a subfolder");
-    write(&sub.join("x.txt"), "xx");
+    assert!(mac.bash_from("s1", &sub, "printf xx > x.txt", None).1);
     assert!(stop_in(&sub).is_some(), "second edit from the subfolder");
     assert!(stop_in(&sub).is_none(), "said once per change");
 }
@@ -734,4 +744,51 @@ fn the_hook_takes_an_astrolabe_command_wherever_it_sits_in_the_line() {
     ] {
         assert_eq!(hook(text), None, "{text}");
     }
+}
+
+/// Catches: the turn-end nudge firing on another session's commit in a shared checkout,
+/// which was most of the nudges that led to no save (audit, 2026-11-18), while the session
+/// that made the change, through either app's shell, is still nudged once.
+#[test]
+fn two_sessions_in_one_checkout_are_each_nudged_only_for_their_own_changes() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.bash("s2", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    // While s1 waits, s2's agent, on Codex, edits and commits by shell; then s1's turn reads.
+    assert!(mac.bash_codex("s2", "printf two > two.txt").1);
+    assert!(
+        mac.bash_codex("s2", "git add two.txt && git commit -q -m two")
+            .1
+    );
+    assert!(mac.bash("s1", "git status --short").1);
+    assert!(
+        mac.stop("s1", false, false).is_none(),
+        "s2's commit isn't s1's"
+    );
+    let nudge = mac.stop("s2", false, true).unwrap();
+    assert!(
+        nudge["reason"]
+            .as_str()
+            .unwrap()
+            .contains("since the last save of effort 1"),
+        "{nudge}"
+    );
+    assert!(mac.stop("s2", false, true).is_none(), "said once");
+    // The same in the notes checkout: s2's file there is not s1's to save.
+    let notes = mac.notes.clone();
+    assert!(
+        mac.bash_from("s2", &notes, "printf r > .handoffs-report.md", None)
+            .1
+    );
+    assert!(mac.bash_from("s1", &notes, "ls", None).1);
+    let stop = |session: &str| {
+        mac.hook_json(
+            "stop",
+            json!({"session_id": session, "cwd": notes, "stop_hook_active": false, "last_assistant_message": "done"}),
+        )
+    };
+    assert!(stop("s1").is_none(), "s2's report isn't s1's");
+    assert!(stop("s2").is_some(), "s2's own report is");
 }

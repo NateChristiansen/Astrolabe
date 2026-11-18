@@ -361,7 +361,6 @@ fn close_inner(
             session: None,
             bound: None,
             at_ms: None,
-            rebaseline: None,
         };
         notes.apply(&op)?;
     }

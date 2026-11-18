@@ -27,7 +27,7 @@ impl RepoFacts {
     /// Facts of the repo at `cwd`, or None when it isn't a git checkout or couldn't be
     /// read whole (a hook's time for reads ran out, or git failed partway). None is "not
     /// known", which is not the same as nothing having changed: no fingerprint is stored
-    /// from it, and a session with none stored is told nothing about its repo moving.
+    /// from it, and a turn with none stored is told nothing about its repo moving.
     pub fn read(cwd: &Path) -> Option<Self> {
         let args = ["rev-parse", "HEAD"].map(AsRef::as_ref);
         let head = crate::worktree::git(cwd, &args).ok()?.trim().to_owned();

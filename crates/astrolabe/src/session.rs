@@ -106,10 +106,6 @@ pub struct SessionState {
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub delivered_ms: Field<i64>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub baseline: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    pub acknowledged: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub reload_failed: Field<String>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub at_ms: Field<i64>,
@@ -187,22 +183,16 @@ impl SessionState {
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("session fields are JSON values")
     }
-    pub fn saved(&mut self, delivered: String, baseline: Option<String>, at_ms: i64) {
+    pub fn saved(&mut self, delivered: String, at_ms: i64) {
         self.delivered.set(delivered);
         self.delivered_ms.set(at_ms);
-        self.baseline = baseline
-            .map(Field::Known)
-            .unwrap_or(Field::Other(Value::Null));
         self.last_save_ms.set(at_ms);
         self.saves
             .set(self.saves.as_ref().copied().unwrap_or(0) + 1);
-        self.mark.set(false);
-        self.acknowledged.clear();
+        self.acknowledge();
     }
-    pub fn acknowledge(&mut self, fingerprint: Option<&str>) {
-        self.acknowledged = fingerprint
-            .map(|p| Field::Known(p.to_owned()))
-            .unwrap_or(Field::Other(Value::Null));
+    /// The work so far is covered, by a save or by the turn end that pointed it out.
+    pub fn acknowledge(&mut self) {
         self.mark.set(false);
     }
 }
@@ -261,7 +251,7 @@ mod tests {
         assert_eq!(state.initiative_key(), None);
         assert!(!state.worker.is_true());
         assert!(state.token.is_missing());
-        state.saved("hash".into(), None, 17);
+        state.saved("hash".into(), 17);
         let saved = state.to_value();
         for key in [
             "session",
@@ -274,7 +264,6 @@ mod tests {
             assert_eq!(saved[key], original[key]);
         }
         assert_eq!(saved["saves"], 1);
-        assert_eq!(saved["baseline"], Value::Null);
         assert!(saved.get("token").is_none());
     }
 }

@@ -722,14 +722,8 @@ fn switch_record(
     let at_ms = same
         .and_then(|p| p.at_ms.as_ref().copied())
         .unwrap_or_else(now_ms);
-    // The effort as delivered, so a save can tell whether it would overwrite another's, and
-    // the repo as it stands, so the Stop hook can tell whether work moved.
+    // The effort as delivered, so a save can tell whether it would overwrite another's.
     let delivered = Some(effort.hash.clone());
-    // A resumed session keeps its baseline, so changes made before it closed still count.
-    let baseline = match same.and_then(|p| p.baseline.as_deref()) {
-        Some(kept) => Some(kept.to_owned()),
-        None => crate::notes::RepoFacts::read(cwd).map(|f| f.fingerprint),
-    };
     let mut state = SessionState {
         session: session.to_owned().into(),
         provider: provider.to_owned().into(),
@@ -751,9 +745,6 @@ fn switch_record(
         token: token.clone().into(),
         delivered_ms: now_ms().into(),
         delivered: delivered
-            .map(Field::Known)
-            .unwrap_or(Field::Other(Value::Null)),
-        baseline: baseline
             .map(Field::Known)
             .unwrap_or(Field::Other(Value::Null)),
         mark: false.into(),
@@ -778,7 +769,6 @@ fn switch_record(
         if !previous.mark.is_missing() {
             state.mark = previous.mark.clone();
         }
-        state.acknowledged = previous.acknowledged.clone();
         state.last_save_ms = previous.last_save_ms.clone();
         state.saves = previous.saves.clone();
         state.read_efforts = previous.read_efforts.clone();
