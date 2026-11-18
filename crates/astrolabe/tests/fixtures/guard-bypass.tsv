@@ -546,10 +546,24 @@ deny	win	PowerShell	Remove-Item -Recurse -Force HKCU:\Software\Foo
 deny	win	PowerShell	Set-Location HKCU:\Software; Remove-Item -Recurse -Force Foo
 deny	win	PowerShell	Remove-Item -Recurse Env:\Foo
 deny	win	PowerShell	Remove-Item -Recurse -Force Cert:\CurrentUser\My
-# Stated limits: what the command doesn't show isn't seen (an alias, a changed PATH, a CDPATH
-# from the profile).
-miss	mac	Bash	alias mktemp="echo /etc"⏎rm -rf "$(mktemp -d)"
-miss	mac	Bash	PATH=/elsewhere/bin:$PATH; rm -rf "$(mktemp -d)"
+# An alias or a PATH change in the command stops a bare $(mktemp -d) counting. What the command
+# doesn't show isn't seen: an alias, PATH or CDPATH from the profile is a stated limit.
+deny	mac	Bash	alias mktemp="echo /etc"⏎rm -rf "$(mktemp -d)"
+deny	mac	Bash	PATH=/elsewhere/bin:$PATH; rm -rf "$(mktemp -d)"
+deny	mac	Bash	hash -p /elsewhere/x mktemp; rm -rf "$(mktemp -d)"
+# Round three (388): a ( glued to a word is still read as commands inside.
+deny	mac	Bash	!(git push --force origin main)
+deny	mac	Bash	time(git reset --hard HEAD~3)
+deny	mac	Bash	{(pkill node)}
+deny	mac	Bash	!(gh pr merge 5)
+deny	mac	Bash	if true; then(rm -rf /elsewhere/x); fi
+deny	mac	Bash	for x in 1; do(rm -rf /elsewhere/x); done
+deny	mac	Bash	echo x(git push --force)
+deny	mac	Bash	cdpath=(/elsewhere); cd sub && rm -rf x
+deny	mac	Bash	S=/work/repo/a; : ${S::=/etc}; rm -rf "$S"
+deny	mac	Bash	printf -v IFS /; S=/work/repo/a; rm -rf $S
+deny	win	PowerShell	Remove-Item -Recurse -Force Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\Software\Foo
+deny	win	PowerShell	Remove-Item -Recurse -Force Registry::HKCU\Software\Foo
 # mktemp -d: the bare folder it just made, nothing appended, never -u.
 allow	mac	Bash	T=$(mktemp -d); cp a.txt "$T"/; rm -rf "$T"
 allow	mac	Bash	S=$(mktemp -d) && cp -r state/repos "$S"/ && rm -rf "$S"

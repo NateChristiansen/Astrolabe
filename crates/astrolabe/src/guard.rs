@@ -195,30 +195,19 @@ impl Parser {
                         expect = Expect::Heredoc;
                     }
                 }
-                // A `(` glued to a word in zsh is a glob qualifier, `x(:h:h)`, which can rewrite
-                // the path; `name()` is still a function.
+                // A `(` glued to a word is a zsh glob qualifier, `x(:h:h)`, which can rewrite
+                // the path, so the word is unknown; bash runs it as a subshell after `!`,
+                // `time`, `then` or `do`, so what's inside is still read as commands, as in a
+                // substitution. `name()` is still a function.
                 '(' if self.dialect == Dialect::Sh
                     && word.is_some()
-                    && !self.chars[self.at..]
-                        .iter()
+                    && !(self.chars[self.at..].iter())
                         .take_while(|c| **c != ')')
                         .all(|c| c.is_whitespace()) =>
                 {
                     let open = word.get_or_insert_default();
-                    open.dynamic = true;
-                    open.opaque = true;
                     open.text.push('(');
-                    let mut depth = 1;
-                    while let Some(c) = self.peek() {
-                        self.at += 1;
-                        open.text.push(c);
-                        depth += usize::from(c == '(');
-                        depth -= usize::from(c == ')');
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    self.broken |= depth != 0;
+                    self.substitution(open, ')', depth);
                 }
                 c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
                     self.literal_error.get_or_insert(ONE_COMMAND);
@@ -832,7 +821,7 @@ fn forget_named(words: &[Word], context: &mut Context) {
     let named = |name: &str, word: &Word| {
         let text = word.text.as_str();
         let attached = text.starts_with('-') && text.ends_with(name);
-        let assigns = [":=", "="]
+        let assigns = ["::=", ":=", "="]
             .iter()
             .any(|op| text.contains(&format!("${{{name}{op}")));
         let rest = text.strip_prefix(name);
@@ -1018,14 +1007,25 @@ fn simple(
         }
     }
     forget_named(words, context);
+    // Set, or named at all (`printf -v IFS`, `read IFS`, `unset CDPATH`).
     let sets = |name: &str| {
         let all = assignments.iter().copied().chain(words.iter());
         all.map(|word| word.text.as_str()).any(|text| {
-            text.starts_with(&format!("{name}=")) || text.starts_with(&format!("{name}+="))
+            let rest = text.strip_prefix(name);
+            let attached = text.starts_with('-') && text.ends_with(name);
+            let changes = |r: &str| r.is_empty() || r.starts_with('=') || r.starts_with("+=");
+            attached || rest.is_some_and(changes)
         })
     };
     context.ifs |= sets("IFS");
-    context.cdpath |= sets("CDPATH");
+    // zsh's `cdpath` array is the same list.
+    context.cdpath |= sets("CDPATH") || sets("cdpath");
+    // An alias, a changed hash table or a new `PATH` can make `mktemp` anything.
+    let renames = ["alias", "hash", "enable", "unalias", "unhash"];
+    let first_word = words.first().map(|word| word.text.as_str());
+    if sets("PATH") || sets("path") || first_word.is_some_and(|w| renames.contains(&w)) {
+        context.loops = true;
+    }
     let first = words.first()?;
     if depth > MAX_DEPTH {
         return names_denied_program(&join(words)).then(unparsed);
@@ -1343,9 +1343,11 @@ fn resolve(text: &str, context: &Context) -> Option<Vec<String>> {
 /// provider such as `HKCU:`, `Env:` or `Cert:`.
 fn provider_path(text: &str) -> bool {
     let text = text.trim_start_matches(r"\\?\");
-    text.split_once(':').is_some_and(|(name, _)| {
-        name.len() > 1 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+    // Written in full, `Microsoft.PowerShell.Core\Registry::HKEY_CURRENT_USER\...`.
+    text.contains("::")
+        || text.split_once(':').is_some_and(|(name, _)| {
+            name.len() > 1 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 fn is_rooted(text: &str, context: &Context) -> bool {

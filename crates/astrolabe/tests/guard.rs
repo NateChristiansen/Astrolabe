@@ -7,11 +7,36 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 const TABLE: &str = include_str!("fixtures/guard-bypass.tsv");
+const MAIN: &str = include_str!("fixtures/guard-main-verdicts.tsv");
+
+/// Whether main's guard, before effort 388, denied this row, if the row was there then.
+fn main_denied(table: &str, line: &str) -> Option<bool> {
+    let row = |l: &'static str| {
+        let mut parts = l.splitn(3, '\t');
+        Some((parts.next()?, parts.next()?, parts.next()?))
+    };
+    (MAIN.lines().filter(|l| !l.starts_with('#')))
+        .filter_map(row)
+        // Matched without the expected verdict, so relabelling a row can't drop it.
+        .find(|(_, t, row)| {
+            *t == table && row.split_once('\t').map(|r| r.1) == line.split_once('\t').map(|r| r.1)
+        })
+        .map(|(verdict, _, _)| verdict == "deny")
+}
+
+/// Defect caught: each fix to the delete rule opened a hole somewhere else (reviews of 388).
+/// A row main denied and this build allows must be one a reviewer accepted, an `allow` row;
+/// a `deny` or `miss` row main denied may never get through.
+fn widened(table: &str, line: &str, expect: &str, denied: bool) -> Option<String> {
+    let was = main_denied(table, line)?;
+    (was && !denied && expect != "allow").then(|| format!("main denied, now allowed: {line}"))
+}
 
 #[test]
 fn the_bypass_table_holds() {
     let mut wrong = Vec::new();
     let mut rows = 0;
+    let mut compared = 0;
     for line in TABLE.lines().filter(|l| !l.starts_with('#')) {
         let [expect, machine, tool, command] = line.splitn(4, '\t').collect::<Vec<_>>()[..] else {
             panic!("bad row: {line}");
@@ -30,6 +55,8 @@ fn the_bypass_table_holds() {
         let command = command.replace('⏎', "\n");
         let verdict = decide(tool, &json!({ "command": command }), &scope);
         let denied = verdict.is_some();
+        compared += usize::from(main_denied("bypass", line).is_some());
+        wrong.extend(widened("bypass", line, expect, denied));
         if denied != (expect == "deny") {
             wrong.push(format!(
                 "{expect} {machine} {tool}: {command:?} got {verdict:?}"
@@ -37,6 +64,7 @@ fn the_bypass_table_holds() {
         }
     }
     assert!(rows > 200, "the table went missing: {rows}");
+    assert!(compared > 500, "main's verdicts went missing: {compared}");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
@@ -116,6 +144,7 @@ fn a_sessions_own_scratch_folder_can_be_deleted_and_nothing_beside_it() {
         if verdict.is_some() != (expect == "deny") {
             wrong.push(format!("{expect} {tool}: {command:?} got {verdict:?}"));
         }
+        wrong.extend(widened("scratch", line, expect, verdict.is_some()));
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     // A last name that doesn't exist yet: on Unix `rm` removes only that name, even if the
