@@ -107,24 +107,6 @@ pub(super) fn needs_you_note(record: &str, wait: &str) -> String {
     )
 }
 
-/// What a save says when it leaves a record in review without naming its wait: the board
-/// shows it under "Wait not named", and the forms that put it with a reviewer or a landing.
-/// A worker's effort never waits on the owner, so it isn't offered that one.
-pub(super) fn unnamed_review_note(record: &str, worker: bool) -> String {
-    let mut record = record.to_owned();
-    if let Some(first) = record.get_mut(..1) {
-        first.make_ascii_uppercase();
-    }
-    let owner = if worker {
-        ""
-    } else {
-        ", or \"owner: <what to decide>\" for the owner's look"
-    };
-    format!(
-        "{record} is in review without naming what it waits for, so the board shows it under \"Wait not named\". Name it with --waits-for: \"<who>: review\" for a reviewer, \"<who>: land\" for a landing{owner}."
-    )
-}
-
 /// Closing words that say where the work stands: the board shows that.
 pub(super) const STATUS_WORDS: [&str; 9] = [
     "merged",
