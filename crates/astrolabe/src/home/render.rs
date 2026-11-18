@@ -280,14 +280,12 @@ fn work_sections(columns: &Columns, at: At) -> String {
             }
             continue;
         }
-        sections += &fold(
-            key,
-            "",
-            title,
-            column.len(),
-            true,
-            &format!("<div class=\"cards\">{}</div>", cards_of(column, small, at)),
-        );
+        let body = if slot == REVIEW {
+            review_groups(column, small, at)
+        } else {
+            format!("<div class=\"cards\">{}</div>", cards_of(column, small, at))
+        };
+        sections += &fold(key, "", title, column.len(), true, &body);
     }
     let mut work = format!("<div class=\"work\">{sections}</div>\n");
     if !quiet.is_empty() {
@@ -298,6 +296,33 @@ fn work_sections(columns: &Columns, at: At) -> String {
         work += &format!("<p class=\"quiet\">{line}.</p>\n");
     }
     work
+}
+
+/// In review, split by what each card waits for, so a reviewer's queue, landings and a wait
+/// nobody named read apart. The owner's look isn't here: it waits under Needs you.
+fn review_groups(column: &[&Card], small: bool, at: At) -> String {
+    use crate::board::{ReviewWait, review_wait};
+    [
+        (ReviewWait::Reviewer, "reviewer", "Waiting for a reviewer"),
+        (ReviewWait::Landing, "landing", "Waiting to land"),
+        (ReviewWait::Unnamed, "unnamed", "Wait not named"),
+    ]
+    .iter()
+    .filter_map(|&(kind, key, title)| {
+        let group: Vec<&Card> = column
+            .iter()
+            .copied()
+            .filter(|c| review_wait(c.row.waits_for.as_deref().unwrap_or_default()) == kind)
+            .collect();
+        (!group.is_empty()).then(|| {
+            format!(
+                "<p class=\"group {key}\">{title} <span class=\"n\">{}</span></p><div class=\"cards\">{}</div>",
+                group.len(),
+                cards_of(&group, small, at)
+            )
+        })
+    })
+    .collect()
 }
 
 /// The notes' inboxes: lessons waiting for triage and drafts waiting on the owner. Each has

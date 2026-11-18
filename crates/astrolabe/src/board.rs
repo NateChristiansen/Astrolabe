@@ -135,6 +135,39 @@ fn waits_on_owner(file: &EffortFile) -> bool {
             .is_some_and(|w| w.starts_with("owner:"))
 }
 
+/// What an effort in review waits for, read from its wait. "Review" covered a reviewer, a
+/// landing and the owner's look alike, so the board showed the owner as needed when they
+/// weren't and hid what each item was waiting on (2026-11-18 audit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewWait {
+    /// An `owner:` wait: it goes under Needs you, as any wait on the owner does.
+    Owner,
+    Reviewer,
+    Landing,
+    /// Nothing, or words naming neither: shown apart so the gap is visible.
+    Unnamed,
+}
+
+/// The first review or landing word decides, wherever the who is put: "dispatcher: review
+/// and land" (the form workers are told) waits for a review first, "orchestrator: land
+/// branch x" and "landing: hosted checks" for a landing. "Reviewed" names a review already
+/// had and "landed" a landing already made, so neither counts.
+pub fn review_wait(wait: &str) -> ReviewWait {
+    if wait.starts_with("owner:") {
+        return ReviewWait::Owner;
+    }
+    wait.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .map(|w| w.trim_end_matches("'s").to_ascii_lowercase())
+        .find_map(|w| match w.as_str() {
+            "review" | "reviews" | "reviewer" | "reviewers" | "reviewing" => {
+                Some(ReviewWait::Reviewer)
+            }
+            "land" | "lands" | "landing" | "merge" | "merging" => Some(ReviewWait::Landing),
+            _ => None,
+        })
+        .unwrap_or(ReviewWait::Unnamed)
+}
+
 /// The same rows from a checkout already in hand: what the board is drawn from.
 pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
     let mut rows = Vec::new();
@@ -717,5 +750,49 @@ mod initiative_tests {
         assert_eq!(member.initiative_title.as_deref(), Some("Shared work"));
         assert_eq!(member.initiative.as_deref(), Some("[[shared-work]]"));
         std::fs::remove_dir_all(notes.root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod review_waits {
+    use super::{ReviewWait, review_wait};
+
+    /// Catches: a review wait filed under the wrong group, from the forms the notes held in
+    /// the audit's three weeks.
+    #[test]
+    fn the_first_review_or_landing_word_names_the_wait() {
+        for (wait, kind) in [
+            ("dispatcher: review and land", ReviewWait::Reviewer),
+            (
+                "review: source review and authorized landing",
+                ReviewWait::Reviewer,
+            ),
+            (
+                "dispatcher: confirm the static result, review and land",
+                ReviewWait::Reviewer,
+            ),
+            (
+                "the paired reviewer's verdict on the plan",
+                ReviewWait::Reviewer,
+            ),
+            ("orchestrator: land branch safe-update", ReviewWait::Landing),
+            ("landing: hosted checks", ReviewWait::Landing),
+            (
+                "the orchestrator's landing, once the checks pass",
+                ReviewWait::Landing,
+            ),
+            (
+                "dispatcher: obtain landing approval, then land the reviewed guide",
+                ReviewWait::Landing,
+            ),
+            ("owner: land it on main?", ReviewWait::Owner),
+            ("owner: play the new level", ReviewWait::Owner),
+            ("", ReviewWait::Unnamed),
+            ("dispatcher: reconciliation", ReviewWait::Unnamed),
+            ("reviewed and landed", ReviewWait::Unnamed),
+            ("the landscape pass", ReviewWait::Unnamed),
+        ] {
+            assert_eq!(review_wait(wait), kind, "{wait}");
+        }
     }
 }

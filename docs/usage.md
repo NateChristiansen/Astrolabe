@@ -40,7 +40,7 @@ The agent records these choices with the effort, so they carry over when you res
 
 Astrolabe starts the board automatically. Open your [local board](http://localhost:4747/) or ask an agent to open it for you. The address above is the default.
 
-The board shows what needs your attention, active work, what's in review or waiting, what you could pick up next, and parked ideas. Each is a grid of cards that fits your window, priority first and the latest updates next, and each section folds at its heading; your browser remembers which you folded. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it.
+The board shows what needs your attention, active work, what's in review (split into waiting for a reviewer, waiting to land, and a wait nobody named) or waiting, what you could pick up next, and parked ideas. Each is a grid of cards that fits your window, priority first and the latest updates next, and each section folds at its heading; your browser remembers which you folded. Open an effort to read its progress and decisions, or browse your other notes in the tree alongside it.
 
 The journal gives you a short history of what changed. Both the board and journal update as agents record their work, including work recorded on your other machines: an open board pulls their saves about once a minute.
 

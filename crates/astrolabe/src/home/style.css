@@ -664,6 +664,17 @@ h1, h2, h3, p {
   min-width: 0;
 }
 
+/* In review splits by what each card waits for. */
+.group {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--mute);
+}
+
+.cards+.group {
+  margin-top: 22px;
+}
+
 .card {
   position: relative;
   background: var(--card);
