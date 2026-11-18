@@ -110,38 +110,50 @@ pub(crate) fn session_token(session: &str) -> String {
     hash.iter().take(16).map(|b| format!("{b:02x}")).collect()
 }
 
-/// The proof steps at bind, unless this session's guard is already proven by the rule
-/// `--status` uses: a rebind or a second effort asked for the probe again (audit, 2026-11).
-pub(super) fn steps_unless_proven(session: &str, token: &str, shells: &[bool]) -> String {
-    let since = state_dir()
-        .and_then(|dir| switched_on(&dir))
-        .unwrap_or(i64::MAX);
-    if marker(token).exists() || proven_in(session, token, since).is_empty() {
-        return proof_steps(token, shells);
-    }
-    "The guard is already proven for this session; run `astrolabe activate --status` to confirm it, with no probe.".to_owned()
-}
-
-/// When Astrolabe was last switched on for the machine: proof counts only from then.
-fn switched_on(dir: &Path) -> Option<i64> {
-    let on = std::fs::read(dir.join(SWITCH)).ok()?;
-    serde_json::from_slice::<Value>(&on).ok()?["at_ms"].as_i64()
-}
-
 /// Whether this session's own hook (not a child's), of this build and plugin, denied the
 /// probe since `since_ms`, and the probe didn't run.
 pub(super) fn proof(session: &str, token: &str, since_ms: i64, powershell: bool) -> String {
     if marker(token).exists() {
         return "Guard FAILED: the probe ran (its marker file exists), so no hook stopped it. Claim no protection and tell the owner.".to_owned();
     }
-    let proven = proven_in(session, token, since_ms);
+    let log = state_dir().map(|dir| dir.join(hook::DENIAL_LOG));
+    let log = log
+        .and_then(|log| std::fs::read_to_string(log).ok())
+        .unwrap_or_default();
+    let program = hook_id();
+    // Each denial counts only for the shell it was sent to, and only in that shell's form.
+    let denied_in = |shell: bool| {
+        let name = if shell { "powershell" } else { "posix" };
+        let form = probe(token, shell);
+        (log.lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
+        .any(|l| {
+            l["session_id"] == session
+                && l["agent_id"].is_null()
+                && l["shell"] == name
+                && l["command"] == form.as_str()
+                && l["hook"] == program.as_str()
+                && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
+        })
+    };
+    let proven: Vec<&str> = [false, true]
+        .into_iter()
+        .filter(|&shell| denied_in(shell) && control_marker(token, shell).exists())
+        .map(|shell| {
+            if shell {
+                "PowerShell"
+            } else {
+                "the POSIX shell (Bash, zsh)"
+            }
+        })
+        .collect();
     if !proven.is_empty() {
         return format!(
             "Guard proven for this session in {}: the hook denied the probe there, its marker file wasn't made, and the allowed control in the same shell made its own. {GUARD_SCOPE}",
             proven.join(" and ")
         );
     }
-    let half = if denied_in(session, token, since_ms, powershell) {
+    let half = if denied_in(powershell) {
         " The hook denied the probe, but the allowed control's marker isn't there, so a missing probe marker doesn't yet show the deny held."
     } else {
         ""
@@ -152,48 +164,12 @@ pub(super) fn proof(session: &str, token: &str, since_ms: i64, powershell: bool)
     )
 }
 
-/// The shells this session's guard is proven in, by name.
-fn proven_in(session: &str, token: &str, since_ms: i64) -> Vec<&'static str> {
-    [false, true]
-        .into_iter()
-        .filter(|&shell| {
-            denied_in(session, token, since_ms, shell) && control_marker(token, shell).exists()
-        })
-        .map(|shell| {
-            if shell {
-                "PowerShell"
-            } else {
-                "the POSIX shell (Bash, zsh)"
-            }
-        })
-        .collect()
-}
-
-/// Whether this session's own hook denied the probe in that shell, in that shell's form.
-fn denied_in(session: &str, token: &str, since_ms: i64, shell: bool) -> bool {
-    let log = state_dir().map(|dir| dir.join(hook::DENIAL_LOG));
-    let log = log
-        .and_then(|log| std::fs::read_to_string(log).ok())
-        .unwrap_or_default();
-    let program = hook_id();
-    let name = if shell { "powershell" } else { "posix" };
-    let form = probe(token, shell);
-    (log.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok()))
-    .any(|l| {
-        l["session_id"] == session
-            && l["agent_id"].is_null()
-            && l["shell"] == name
-            && l["command"] == form.as_str()
-            && l["hook"] == program.as_str()
-            && l["at_ms"].as_i64().is_some_and(|at| at >= since_ms)
-    })
-}
-
 /// Whether the hook denied this activation's probe, by this build, and the probe didn't run.
 pub fn status(dir: &Path, session: &str, powershell: bool) -> String {
     // Proof counts only from the latest switch-on: off and on again starts it over.
-    let since = switched_on(dir).unwrap_or(i64::MAX);
+    let on = std::fs::read(dir.join(SWITCH)).ok();
+    let on = on.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let since = on.and_then(|on| on["at_ms"].as_i64()).unwrap_or(i64::MAX);
     let state = match read_state(dir, session) {
         Ok(None) => {
             return format!(
