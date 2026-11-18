@@ -200,11 +200,6 @@ pub(super) fn act(
                             Ok((notice, hash)) => {
                                 if let Some(hash) = hash {
                                     activation.state.delivered.set(hash);
-                                    // From the notes checkout the take-up's own commit moves
-                                    // what the Stop hook compares: the next command reads it.
-                                    if super::in_notes(cwd) {
-                                        crate::nudge::clear_shell(session);
-                                    }
                                 }
                                 if !notice.is_empty() {
                                     activation.head += &format!("\n\n{notice}");
@@ -497,8 +492,14 @@ fn answer(event: &str) {
                         // that will run, so the turn end can tell this session's changes.
                         if shell.is_some() && verdict.is_none() {
                             let folder = hook::folder(&input);
+                            let background = input["tool_input"]["run_in_background"] == true;
                             let _ = std::panic::catch_unwind(|| {
-                                crate::nudge::before_shell(dir, session, folder.as_deref())
+                                crate::nudge::before_shell(
+                                    dir,
+                                    session,
+                                    folder.as_deref(),
+                                    background,
+                                )
                             });
                         }
                         if let Some(denial) = verdict {
@@ -828,6 +829,13 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             if let Err(why) = commit(&dir, session, &change) {
                 let text = format!("{failed}: {why}.");
                 reissue(&dir, &ticket, &text).map_err(|_| text.clone())?;
+            }
+            // A rebind or switch-off starts the nudge's count afresh: a print an interrupted
+            // turn left would count other sessions' work since, and a take-up's own commit in
+            // the notes checkout moves what it compares. A reload at session start, which a
+            // compaction mid-turn also sends, keeps it.
+            if !matches!(change, Change::Keep) {
+                crate::nudge::clear_shell(session);
             }
             Ok(ticket)
         });

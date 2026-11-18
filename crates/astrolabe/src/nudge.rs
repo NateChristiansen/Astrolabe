@@ -38,7 +38,7 @@ fn read_shell(path: &Path) -> Option<(PathBuf, String)> {
     Some((PathBuf::from(cwd), value["print"].as_str()?.to_owned()))
 }
 
-/// The session's changes so far are covered: by a save, or a commit the plugin made for it.
+/// The session's changes so far are covered by a save, or its count starts afresh on a rebind.
 pub fn clear_shell(session: &str) {
     if let Some(dir) = state_dir() {
         let _ = std::fs::remove_file(shell_path(&dir, session));
@@ -108,8 +108,14 @@ pub fn commits(command: &str) -> bool {
 
 /// Before a shell command runs in `folder`, in a bound session: the first since the last
 /// turn end or save reads the repo as it is, so the turn end can tell what this session's
-/// commands changed. One read a turn, not one a command: each costs a few git calls.
-pub fn before_shell(dir: &Path, session: &str, folder: Option<&Path>) {
+/// commands changed. One read a turn, not one a command: each costs a few git calls. A
+/// command left running in the background (Claude's `run_in_background`) can write after
+/// the turn ends, where no turn's print sees it, so it marks the session instead. Codex
+/// names no such field, so its commands left running aren't seen.
+pub fn before_shell(dir: &Path, session: &str, folder: Option<&Path>, background: bool) {
+    if background {
+        mark(session, false);
+    }
     let path = shell_path(dir, session);
     let Some(folder) = folder.filter(|_| !path.exists()) else {
         return;
@@ -218,6 +224,8 @@ pub fn at_end(session: &str) {
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
     }
     let _ = std::fs::remove_file(mark_path(&dir, session));
+    // A print a turn left without reaching its end isn't the next session's to compare with.
+    let _ = std::fs::remove_file(shell_path(&dir, session));
     push_pending();
 }
 

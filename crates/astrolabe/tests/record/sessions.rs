@@ -792,3 +792,45 @@ fn two_sessions_in_one_checkout_are_each_nudged_only_for_their_own_changes() {
     assert!(stop("s1").is_none(), "s2's report isn't s1's");
     assert!(stop("s2").is_some(), "s2's own report is");
 }
+
+/// Catches: a command left running in the background writing after its turn ended, where no
+/// turn's print sees it, so the session's own unsaved work was never nudged; and a print an
+/// interrupted turn left behind, which made the next turn count other sessions' work again.
+#[test]
+fn a_backgrounded_command_is_nudged_and_an_interrupted_turn_leaves_no_print() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let other = |name: &str| {
+        write(&mac.demo.join(name), name);
+        git(&mac.demo, &["add", name]);
+        git(&mac.demo, &["commit", "-q", "-m", name]);
+    };
+    // Started in the background; the turn ends before its write lands.
+    let background = json!({"session_id": "s1", "cwd": mac.demo, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": "sleep 5 && printf late > late.txt", "run_in_background": true}});
+    assert!(mac.hook_json("pre-command", background).is_none());
+    assert!(
+        mac.stop("s1", false, false).is_some(),
+        "a backgrounded command"
+    );
+    assert!(mac.stop("s1", false, false).is_none(), "said once");
+    // A turn interrupted after its first command never reaches its turn end. The session
+    // closes; another session commits; the resumed session's next turn only reads.
+    assert!(mac.bash("s1", "git status --short").1);
+    let end = json!({"session_id": "s1", "cwd": mac.demo, "reason": "other"});
+    assert!(mac.hook_json("session-end", end).is_none());
+    other("one.txt");
+    mac.session_start("s1", "resume");
+    assert!(mac.bash("s1", "cat one.txt").1);
+    assert!(
+        mac.stop("s1", false, false).is_none(),
+        "after a session end"
+    );
+    // The same with a rebind instead of a session end.
+    assert!(mac.bash("s1", "git status --short").1);
+    let (out, ok) = mac.bash("s1", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    other("two.txt");
+    assert!(mac.bash("s1", "cat two.txt").1);
+    assert!(mac.stop("s1", false, false).is_none(), "after a rebind");
+}
