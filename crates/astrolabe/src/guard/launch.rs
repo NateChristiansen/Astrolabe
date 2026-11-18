@@ -22,9 +22,40 @@ pub fn launch_tool(tool: &str) -> bool {
     tool.ends_with("__start_session")
 }
 
+/// What a capped session start's denial starts with. The agent fixes this one too.
+pub const CAPPED: &str = "a session start above this session's own effort";
+
 /// Whether the hook should answer this denial as one the agent fixes itself.
 pub fn correctable(reason: &str) -> bool {
-    reason.starts_with(LAUNCH)
+    reason.starts_with(LAUNCH) || reason.starts_with(CAPPED)
+}
+
+/// The desktop app's session tool takes an effort "at or below yours", and a higher one
+/// starts at the caller's without saying so (`docs/hosts.md`). Activation refuses that
+/// worker only after its first turn, so a fresh start asking for more than `own`, the
+/// effort the hook input says this session runs at, is denied before it starts. An unknown
+/// level on either side passes. The model is capped too, but a tool call's hook input
+/// doesn't name the caller's model, so it isn't read.
+pub fn capped(tool: &str, input: &Value, own: Option<&str>) -> Option<String> {
+    const LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+    let rank = |level: &str| {
+        LEVELS
+            .iter()
+            .position(|l| l.eq_ignore_ascii_case(level.trim()))
+    };
+    if !launch_tool(tool)
+        || input["target"].as_str() == Some("cloud")
+        || input["proposal_id"].as_str().is_some_and(|p| !p.is_empty())
+    {
+        return None;
+    }
+    let (own, asked) = (own?.trim(), input["effort"].as_str()?.trim());
+    if rank(asked)? <= rank(own)? {
+        return None;
+    }
+    Some(format!(
+        "{CAPPED}: it asks for {asked} and this session runs at {own}. The app starts a session at or below its caller's effort, so this worker would start at {own} and be refused when it binds. Launch it at {own} or lower if that's enough for the work; or launch it with the CLI at {asked}, as Astrolabe's docs/claude-workers.md shows, which the app doesn't cap; or ask the owner to raise this session's effort, then launch again"
+    ))
 }
 
 fn denial(what: &str, fix: &str) -> String {

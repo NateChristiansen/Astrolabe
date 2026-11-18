@@ -10,7 +10,7 @@ use serde_json::Value;
 
 mod launch;
 mod scratch;
-pub use launch::{LAUNCH, correctable, launch_tool};
+pub use launch::{CAPPED, LAUNCH, capped, correctable, launch_tool};
 use std::collections::HashMap;
 
 /// How deep wrappers and substitutions nest before the text counts as unparsed.

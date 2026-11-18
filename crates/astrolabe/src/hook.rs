@@ -175,7 +175,12 @@ fn judge(bytes: &[u8]) -> Option<String> {
         session: input["session_id"].as_str().map(str::to_owned),
     };
     let powershell = crate::activate::powershell_input(&input);
+    // Claude sends this session's own effort as `effort.level`; a bare string is read too.
+    let own = input["effort"]["level"]
+        .as_str()
+        .or(input["effort"].as_str());
     crate::guard::decide_in(powershell, tool, &input["tool_input"], &scope)
+        .or_else(|| crate::guard::capped(tool, &input["tool_input"], own))
 }
 
 /// The nearest folder holding a `.git`.

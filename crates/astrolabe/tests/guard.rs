@@ -537,3 +537,68 @@ fn a_launch_denial_says_what_to_add_and_asks_no_one() {
         assert!(!stdout.contains("Ask the owner"), "{stdout}");
     }
 }
+
+/// Catches a session start the app would quietly run at the dispatcher's lower effort:
+/// before this check it started, and activation refused the worker after its first turn.
+#[test]
+fn a_session_start_above_the_dispatchers_effort_is_denied_before_it_starts() {
+    let data = temp("capped");
+    let start = |effort: &str| {
+        json!({"initiation": "user_asked", "context": "fresh", "title": "t", "prompt": "p",
+            "background": "b", "model": "claude-opus-5-5", "effort": effort})
+    };
+    let hook = |own: Value, tool: &str, tool_input: Value| {
+        let input = json!({"session_id": "s1", "cwd": data, "hook_event_name": "PreToolUse",
+            "effort": own, "tool_name": tool, "tool_input": tool_input});
+        run_hook(&data, input.to_string().as_bytes())
+    };
+    // Above: denied with the cause first and the ways forward, and no owner asked first.
+    for (own, asked) in [("medium", "high"), ("low", "max"), ("High", "xhigh")] {
+        let (stdout, code) = hook(json!({"level": own}), START, start(asked));
+        assert_eq!(code, 0);
+        let reason = format!(
+            "Astrolabe denied {}: it asks for {asked}",
+            astrolabe::guard::CAPPED
+        );
+        assert!(stdout.contains(&reason), "{stdout}");
+        assert!(
+            stdout.contains(&format!("Launch it at {own} or lower")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("docs/claude-workers.md"), "{stdout}");
+        assert!(!stdout.contains("Ask the owner if"), "{stdout}");
+    }
+    // At or below passes, and so does an effort this check doesn't know.
+    for (own, asked) in [
+        ("medium", "medium"),
+        ("high", "low"),
+        ("ultra", "high"),
+        ("medium", "auto"),
+    ] {
+        let (stdout, code) = hook(json!({"level": own}), START, start(asked));
+        assert_eq!((stdout.as_str(), code), ("", 0), "{own} {asked}");
+    }
+    // Routes with no known cap pass: the CLI, a cloud start, a proposal started as proposed,
+    // and a host whose hook input doesn't name this session's effort.
+    for (own, tool, tool_input) in [
+        (
+            json!({"level": "medium"}),
+            "Bash",
+            json!({"command": "claude -p 'x' --model opus --effort high < /dev/null"}),
+        ),
+        (
+            json!({"level": "medium"}),
+            START,
+            json!({"initiation": "user_asked", "target": "cloud", "title": "t", "prompt": "p", "effort": "high"}),
+        ),
+        (
+            json!({"level": "medium"}),
+            START,
+            json!({"proposal_id": "task_1", "effort": "high"}),
+        ),
+        (Value::Null, START, start("high")),
+    ] {
+        let (stdout, code) = hook(own, tool, tool_input.clone());
+        assert_eq!((stdout.as_str(), code), ("", 0), "{tool_input}");
+    }
+}

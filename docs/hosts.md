@@ -170,9 +170,9 @@ Enforced by the guard (`guard/launch.rs`), from the command or tool input only, 
 
 - **Codex CLI.** Any `codex` run that starts a turn (bare, a prompt, `exec`, `e`, `review`, `resume`, `fork`, `exec resume`) needs `-m`/`--model` or `-c model=…`, and `-c model_reasoning_effort=…`. Read through `.cmd`, `.ps1`, `npx`, `Start-Process`, `sh -c` and the other wrappers the guard reads. Management commands, `queue`, help and `cloud` pass.
 - **Claude CLI.** Any `claude` run that starts or resumes a session (bare, a prompt, `-p`, `--bg`, `-r`, `-c`, `--from-pr`) needs `--model` (not `default`) and `--effort`. Management subcommands, help, `--cloud` and the desktop handoff `claude --desktop --resume <id>` pass.
-- **Claude desktop's session tool** (`…__start_session`). A fresh local or SSH start, or a proposal of one, needs `model` and `effort`. `context: "fork"` is refused, since a fork can't take either and keeps the caller's.
+- **Claude desktop's session tool** (`…__start_session`). A fresh local or SSH start, or a proposal of one, needs `model` and `effort`. `context: "fork"` is refused, since a fork can't take either and keeps the caller's. One that asks for a higher effort than the hook input's `effort.level` for the calling session is refused too, because the app caps it (below).
 
-Checked at binding: `astrolabe activate --effort <n> --worker` needs `--model` and `--reasoning`, refuses either one when it differs from what the hook input names, and writes the pair to the effort's `runs_on`. Codex's hook input names the model and not the effort; Claude's names the effort as `effort.level` and not the model (its [hooks reference](https://code.claude.com/docs/en/hooks) puts `model` on SessionStart only). So each host checks one of the two, and the other is declared. This refuses the binding, not the launch: by then the worker has run a turn.
+Checked at binding: `astrolabe activate --effort <n> --worker` needs `--model` and `--reasoning`, refuses either one when it differs from what the hook input names, and writes the pair to the effort's `runs_on`. Codex's hook input names the model and not the effort; Claude's names the effort as `effort.level` and not the model (its [hooks reference](https://code.claude.com/docs/en/hooks) puts `model` on SessionStart only). So each host checks one of the two, and the other is declared. This refuses the binding, not the launch: by then the worker has run a turn. It stays as the backstop for a capped start the guard can't see.
 
 Probed on Windows on 2026-11-12 with the installed build: a bare `codex exec` was denied and the same launch with `-m gpt-6.1-sol -c model_reasoning_effort=low` ran on that model; the desktop app's `start_session` with no model or effort was denied in the hook, and with both it went through; a Codex worker on `gpt-6.1-sol` that declared `gpt-6-astra` was refused binding; a Claude session at medium that declared `ultra` was refused binding.
 
@@ -190,3 +190,13 @@ Not enforced, only documented:
 The [Codex worker workflow](codex-workers.md) covers a short CLI launch turn, opening that thread in the app, the brief and follow-ups by queue, and filing the chat under its project. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff. Both retain independent effort sessions and an explicit CLI fallback.
 
 These workflows were investigated on Windows and macOS on 2026-11-11. Their guides record the tested versions, the Mac hook-trust recovery and the host approvals needed there, and distinguish observed control from unverified app display. App restarts, concurrent writers and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.
+
+### The desktop app caps a session start at its caller's level
+
+**Claude desktop app** (docs, 2026-11-18). The session tool's own description says its `effort` is a "reasoning effort at or below yours", and its `model` "same family or cheaper than yours; anything higher is ignored". Observed the same day on Windows: a dispatcher that asked for a worker at high got one at medium, and activation refused the worker's binding after its first turn. The CLI's `--model` and `--effort` have no documented cap, but a CLI worker started from a Claude dispatcher's shell hasn't been tested ([Claude workers](claude-workers.md)).
+
+The guard reads only the effort: a tool call's hook input names the caller's effort and not its model, so a model above the caller's still starts on the caller's and is caught at binding.
+
+**Codex** (docs, 2026-11-18). A subagent inherits the parent's model and effort unless the spawn or `agents.default_subagent_reasoning_effort` sets them, and an explicit spawn effort wins; no cap is documented ([subagents](https://developers.openai.com/codex/subagents), [config reference](https://developers.openai.com/codex/config-reference)). A `codex exec` worker is a separate process. Nothing is denied for Codex.
+
+Not checked live: a start above the caller's model or effort in the desktop app, with the session it actually started.
