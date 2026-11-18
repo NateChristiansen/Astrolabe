@@ -423,6 +423,15 @@ impl EffortFile {
             .map(|(_, b)| b.as_str())
     }
 
+    /// What a merge kept from the earlier of two saves, until a save with a Current state.
+    pub fn unmerged(&self) -> Option<&str> {
+        self.other
+            .iter()
+            .find(|(h, _)| h == crate::notes::merge::UNMERGED)
+            .map(|(_, b)| b.as_str())
+            .filter(|b| !b.trim().is_empty())
+    }
+
     pub fn set_pieces(&mut self, text: &str) {
         let text = text.trim().to_owned();
         match self.other.iter_mut().find(|(h, _)| h == "Pieces") {
@@ -530,10 +539,7 @@ impl EffortFile {
     /// The new lines left over are tagged with `day`, or with nothing when there's none, as
     /// on a re-plan.
     pub fn with_added_tags(&self, new: &str, day: Option<&str>) -> String {
-        let key_of = |l: &str| match piece_box(l) {
-            Some(_) => Some(match_key(piece_label(l))),
-            None => struck_label(l).map(match_key),
-        };
+        let key_of = piece_key;
         let old: Vec<(String, String, bool)> = self
             .pieces()
             .unwrap_or_default()
@@ -763,7 +769,7 @@ pub fn plain_goal(text: &str) -> Option<String> {
 }
 
 /// Whether a line is a checklist item, and whether it's ticked.
-pub(super) fn piece_box(line: &str) -> Option<bool> {
+pub(crate) fn piece_box(line: &str) -> Option<bool> {
     let rest = line.trim_start().strip_prefix("- ")?;
     if rest.starts_with("[x] ") || rest.starts_with("[X] ") {
         Some(true)
@@ -844,6 +850,15 @@ fn with_added_suffix(line: &str, suffix: &str) -> String {
             format!("{indent}- [x] {label}{suffix}{stamp}")
         }
         _ => format!("{indent}- [ ] {label}{suffix}"),
+    }
+}
+
+/// The words a piece line is matched by, ticked, unticked or struck through; None for a line
+/// that isn't a piece.
+pub(crate) fn piece_key(line: &str) -> Option<String> {
+    match piece_box(line) {
+        Some(_) => Some(match_key(piece_label(line))),
+        None => struck_label(line).map(match_key),
     }
 }
 

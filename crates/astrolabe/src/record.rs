@@ -998,10 +998,16 @@ fn save_inner(
         state.delivered.set(on_disk_hash.clone());
         state.delivered_ms.set(notes::now_ms());
         let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
-        let pieces = file
+        let mut pieces = file
             .pieces()
             .map(|p| format!("\n\nIts Pieces now:\n\n{p}"))
             .unwrap_or_default();
+        if let Some(u) = file.unmerged() {
+            pieces += &format!(
+                "\n\nIts {} now, which a save with a Current state replaces, so fold in what still holds:\n\n{u}",
+                notes::merge::UNMERGED
+            );
+        }
         return Err(format!(
             "{record} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
             file.prop("saved_by").unwrap_or("?"),

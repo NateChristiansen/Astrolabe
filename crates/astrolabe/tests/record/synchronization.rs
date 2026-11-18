@@ -183,7 +183,7 @@ fn two_machines_saving_one_effort_apart_merge_without_diverging() {
         "the binding's own property: {text}"
     );
     assert!(
-        !text.contains("<<<<<<<") && !text.contains("unseen"),
+        !text.contains("<<<<<<<") && !text.contains("unseen") && !text.contains("Unmerged"),
         "{text}"
     );
     assert!(status(&mac).contains("nothing pending"), "{}", status(&mac));
@@ -191,44 +191,141 @@ fn two_machines_saving_one_effort_apart_merge_without_diverging() {
     assert_eq!(pc.effort_text(1), text);
 }
 
+/// The sync test's same-note case: `first` saves state, a decision and a tick and publishes;
+/// `second`, offline, saves the same note seconds later, then comes back and syncs. Returns
+/// the note both machines end with.
+fn same_note_from_both(world: &World, first: &Machine, second: &Machine) -> String {
+    let (f, s) = (session_of(first), session_of(second));
+    write(
+        &first.demo.join("pieces.md"),
+        "- [ ] first piece\n- [ ] second piece\n",
+    );
+    let (out, ok) = first.bash(f, "astrolabe effort save --pieces-file pieces.md");
+    assert!(ok, "{out}");
+    assert!(first.sync().1);
+    let (out, ok) = second.bash(s, "astrolabe effort read 1");
+    assert!(ok, "{out}");
+    save(
+        first,
+        f,
+        "--decision \"chose first: its reason\" --tick \"first piece\"",
+        "FIRST-STATE.\n\nFirst next.",
+    );
+    assert!(first.sync().1);
+    // Seconds apart, as in the sync test: within one second the stamps are equal and the
+    // machine name decides.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    offline_on(world, second, || {
+        save(
+            second,
+            s,
+            "--decision \"chose second: its reason\" --tick \"second piece\"",
+            "SECOND-STATE.\n\nSecond next.",
+        )
+    });
+    let (out, ok) = second.sync();
+    assert!(ok, "{out}");
+    assert!(first.sync().1);
+    let text = second.effort_text(1);
+    assert_eq!(
+        first.effort_text(1),
+        text,
+        "both machines hold the same bytes"
+    );
+    text
+}
+
+fn session_of(m: &Machine) -> &'static str {
+    if m.name == "pc" { "p1" } else { "s1" }
+}
+
 #[test]
-fn two_saves_of_one_section_keep_the_later_and_every_machine_hears_it() {
+fn the_same_note_saved_on_both_machines_keeps_both_sides() {
+    // Defects: the later save won a whole block, so the earlier save's decision and tick
+    // went with its state text; within a minute "later" was the larger machine name, so the
+    // PC's earlier save beat the Mac's; and the losing state text was only in git.
     let world = World::new();
     let (mac, pc) = both_on_one_effort(&world);
-    save(&pc, "p1", "", "PC view.\n\nPC next.");
-    assert!(pc.sync().1);
-    offline_on(&world, &mac, || {
-        save(&mac, "s1", "", "Mac view.\n\nMac next.")
-    });
-    // Both rewrote Current state: the later save's stays, the other is in git, and the
-    // record says so, so the pull doesn't strand the Mac.
-    let (out, ok) = mac.sync();
-    assert!(ok, "{out}");
-    let text = mac.effort_text(1);
+    let text = same_note_from_both(&world, &pc, &mac);
+    let file = astrolabe::effort::EffortFile::parse(&text).unwrap();
+    assert!(file.current.contains("SECOND-STATE."), "{text}");
     assert!(
-        text.contains("PC view.") != text.contains("Mac view."),
+        file.decisions.contains("chose first: its reason")
+            && file.decisions.contains("chose second: its reason"),
         "{text}"
     );
-    assert!(text.contains("unseen: "), "{text}");
-    assert!(pc.sync().1);
+    let pieces = file.pieces().unwrap();
+    assert!(
+        pieces.contains("- [x] first piece") && pieces.contains("- [x] second piece"),
+        "{text}"
+    );
+    let unmerged = file
+        .unmerged()
+        .expect("the earlier state is kept in the note");
+    assert!(
+        unmerged.contains("pc · ") && unmerged.contains("> FIRST-STATE."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("<<<<<<<") && !text.contains("unseen:"),
+        "{text}"
+    );
+    // Every machine's status and the board's warnings say so, and so does what a session is
+    // given when it loads the effort.
     for m in [&mac, &pc] {
         let status = status(m);
         assert!(
-            status.contains("Two machines saved the same record unseen"),
+            status.contains("Two machines saved the same record unseen")
+                && status.contains("Unmerged state")
+                && !status.contains("diverged"),
             "{status}"
         );
-        assert!(!status.contains("diverged"), "{status}");
     }
-    // A save of the record on either machine clears it on both, once it's read again.
+    let (out, ok) = pc.bash("p1", "astrolabe activate --effort 1");
+    assert!(
+        ok && out.contains("Unmerged state") && out.contains("> FIRST-STATE."),
+        "{out}"
+    );
+    // A save without a Current state leaves it; one with a Current state replaces it, on
+    // both machines.
     let (out, ok) = pc.bash("p1", "astrolabe effort read 1");
     assert!(ok, "{out}");
-    save(&pc, "p1", "", "Read both.\n\nNext.");
+    let (out, ok) = pc.bash(
+        "p1",
+        "astrolabe effort save --decision \"chose to wait: its reason\"",
+    );
+    assert!(ok, "{out}");
+    assert!(pc.effort_text(1).contains("## Unmerged state"));
+    save(&pc, "p1", "", "Folded both.\n\nNext.");
     assert!(pc.sync().1);
     assert!(mac.sync().1);
     for m in [&mac, &pc] {
         assert!(status(m).contains("nothing pending"), "{}", status(m));
-        assert!(!m.effort_text(1).contains("unseen"));
+        assert!(!m.effort_text(1).contains("## Unmerged state"));
     }
+}
+
+#[test]
+fn the_same_note_merges_alike_whichever_machine_merges() {
+    // Defect: what both sides added came out in the merging machine's order.
+    let world = World::new();
+    let (mac, pc) = both_on_one_effort(&world);
+    let text = same_note_from_both(&world, &mac, &pc);
+    let file = astrolabe::effort::EffortFile::parse(&text).unwrap();
+    assert!(file.current.contains("SECOND-STATE."), "{text}");
+    assert!(
+        file.decisions
+            .find("chose first")
+            .zip(file.decisions.find("chose second"))
+            .is_some_and(|(a, b)| a < b),
+        "earlier save's first: {text}"
+    );
+    let pieces = file.pieces().unwrap();
+    assert!(
+        pieces.contains("- [x] first piece") && pieces.contains("- [x] second piece"),
+        "{text}"
+    );
+    assert!(file.unmerged().unwrap().contains("mac · "), "{text}");
 }
 
 #[test]

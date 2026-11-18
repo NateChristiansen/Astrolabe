@@ -2,7 +2,6 @@
 use super::nav::tree_html;
 use super::settings::{Look, Palette, Theme};
 use crate::board::{BoardData, EffortRow, Lesson};
-use chrono::{DateTime, FixedOffset};
 use std::path::Path;
 
 /// The same vector is used in the page, browser tab and project artwork.
@@ -1006,11 +1005,10 @@ pub(super) fn percent(text: &str) -> String {
     out
 }
 
-/// `2026-11-04T16:30-07:00`, the stamp saves write, as epoch milliseconds.
+/// `2026-11-04T16:30:05-07:00`, the stamp saves write, or an older one to the minute, as epoch
+/// milliseconds.
 pub(super) fn stamp_ms(stamp: &str) -> Option<i64> {
-    DateTime::<FixedOffset>::parse_from_str(stamp, "%Y-%m-%dT%H:%M%:z")
-        .ok()
-        .map(|t| t.timestamp_millis())
+    crate::notes::stamp_time(stamp).map(|t| t.timestamp_millis())
 }
 
 pub(super) fn age(ms: i64) -> String {

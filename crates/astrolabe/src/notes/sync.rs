@@ -461,24 +461,36 @@ impl Notes {
         }
     }
 
-    /// Records whose two saves overlapped in a merge, by the `unseen` mark the merge committed
-    /// in them (see `merge`). Read from the records, so every machine says the same, and a
-    /// save of the record on either machine clears it.
+    /// Records holding what a merge kept from the earlier of two saves (see `merge`), or an
+    /// older build's `unseen` mark. Read from the records, so every machine says the same,
+    /// and a save of the record on either machine clears it.
     pub(crate) fn unseen(&self) -> Vec<String> {
-        let pattern = format!("^{}:", super::merge::UNSEEN);
-        self.git(&["grep", "-l", "-e", &pattern, "--", "efforts", "initiatives"])
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        let mark = format!("^{}:", super::merge::UNSEEN);
+        let section = format!("^## {}", super::merge::UNMERGED);
+        self.git(&[
+            "grep",
+            "-l",
+            "-e",
+            &mark,
+            "-e",
+            &section,
+            "--",
+            "efforts",
+            "initiatives",
+        ])
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
     }
 
-    /// A status-only reply transition cannot resolve an overlap the merge marked.
+    /// A status-only reply transition cannot resolve what a merge left unmerged.
     pub(crate) fn has_stale(&self, rel: &str) -> bool {
         std::fs::read_to_string(self.root.join(rel)).is_ok_and(|text| {
             crate::effort::frontmatter(&text)
                 .iter()
                 .any(|(k, v)| k == super::merge::UNSEEN && !v.is_empty())
+                || crate::effort::EffortFile::parse(&text).is_ok_and(|f| f.unmerged().is_some())
         })
     }
 
@@ -603,7 +615,7 @@ impl Notes {
         let unseen = self.unseen();
         if !unseen.is_empty() {
             lines.push(format!(
-                "Two machines saved the same record unseen: {}. The merge kept the later save where both changed the same lines; the other is in git. Read it and resave the record, which clears this.",
+                "Two machines saved the same record unseen: {}. The merge kept the later save, and what it replaced from the earlier one is in the record's Unmerged state section. Read it and save the record with a Current state that folds in what still holds, which clears this.",
                 unseen.join(", ")
             ));
         }

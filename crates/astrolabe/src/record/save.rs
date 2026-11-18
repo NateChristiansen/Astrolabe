@@ -300,6 +300,10 @@ pub(super) fn edit_bound(
 ) -> Result<String, String> {
     if let Some(current) = &req.current {
         file.current = current.clone();
+        // Written from the text the session was given, Unmerged state included: the new
+        // state has folded in what still holds of it, or dropped it on purpose.
+        file.other
+            .retain(|(h, _)| h != crate::notes::merge::UNMERGED);
     }
     if let Some(plan) = &req.plan {
         file.plan = Some(plan.trim().to_owned());

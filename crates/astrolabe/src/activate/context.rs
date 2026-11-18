@@ -682,6 +682,21 @@ fn switch_record(
                 )],
             });
         }
+        if let Some(unmerged) = file.unmerged() {
+            parts.push(Part {
+                title: format!(
+                    "{}, {} (another save the merge didn't keep; your next save with a Current state replaces it, so fold in what still holds)",
+                    effort.file,
+                    crate::notes::merge::UNMERGED
+                ),
+                body: unmerged.to_owned(),
+                files: vec![format!(
+                    "{}: only its `## {}` section, up to the next `## ` heading.",
+                    notes.join(&effort.file).display(),
+                    crate::notes::merge::UNMERGED
+                )],
+            });
+        }
         // Missing legacy pages or a broken catalog must not prevent effort activation.
         if let Some(name) = file.prop("initiative").filter(|n| !n.is_empty())
             && let Ok(pages) = crate::effort::initiative_catalog(&notes)

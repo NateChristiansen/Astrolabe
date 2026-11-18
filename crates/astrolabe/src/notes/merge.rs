@@ -8,20 +8,26 @@
 //!
 //! - properties merge one key at a time; the stamp keys move together from the later save;
 //! - the body merges three ways by line, and where both sides only added lines at one place,
-//!   both are kept;
-//! - only where both sides are program saves (each changed `updated`) and changed the same
-//!   lines does the later save win. The record then carries an `unseen` property naming the
-//!   other save, committed with it, so every machine reads the same warning until the record
-//!   is next saved. Both texts stay in git.
+//!   both are kept, the earlier save's first;
+//! - only where both sides are program saves (each changed `updated`) are both decided
+//!   between. Decisions and Pieces both rewrote merge entry by entry, keeping every entry and
+//!   every tick either side made. Elsewhere the later save wins where both changed the same
+//!   lines, and what it replaced from the earlier save goes in the record's `## Unmerged
+//!   state` section, committed with it, so every machine shows the same text until a save
+//!   with a Current state replaces it.
 //!
 //! Anything else (a hand edit, or an autostash restoring one, changing the same lines as a
 //! save) falls back to git's own line merge, conflict markers and all, as before.
-use chrono::DateTime;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// The property that marks a record whose two saves overlapped.
+/// The property older builds marked a record with when its two saves overlapped: still read,
+/// carried through a merge and dropped by a save, but never written now.
 pub const UNSEEN: &str = "unseen";
+
+/// The section that keeps what the later of two saves replaced from the earlier one, so it's
+/// in the note and not only in git. A save with a new Current state replaces it.
+pub const UNMERGED: &str = "Unmerged state";
 
 /// Who saved a record, when, and the work's facts then: where both saves changed one, the
 /// later save's stands, and that's no overlap.
@@ -203,7 +209,7 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
         Record::read(ours)?,
         Record::read(theirs)?,
     );
-    // A save rewrites the stamp; one made in the same minute as the base by the same session
+    // A save rewrites the stamp; one made in the same second as the base by the same session
     // doesn't change it, so the commit it came in is asked too.
     let restamped = |r: &Record| {
         r.value("updated")
@@ -212,7 +218,13 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
     // Only two program saves are ever decided between; a hand edit never loses.
     let decidable = (saves.ours || restamped(&o)) && (saves.theirs || restamped(&t));
     let later = later(&o, &t);
-    let mut overlap = false;
+    let earlier = match later {
+        Side::Ours => Side::Theirs,
+        Side::Theirs => Side::Ours,
+    };
+    // What the earlier save had where the later one won, kept in the note.
+    let mut lost: Vec<String> = Vec::new();
+    let mut lost_props: Vec<String> = Vec::new();
 
     let mut keys: Vec<&str> = o.props.iter().map(|(k, _)| k.as_str()).collect();
     for (k, _) in &t.props {
@@ -226,16 +238,17 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
             continue;
         }
         let (bv, ov, tv) = (b.prop(key), o.prop(key), t.prop(key));
-        // A key one side changed is that side's; one both changed is the later save's,
-        // which for the stamp is no overlap: it says who saved last.
-        let chosen = if ov == tv || tv == bv {
+        // A key one side changed is that side's; one both changed is the later save's. The
+        // stamp comes whole from the later save, even a key it left as the base had it, or a
+        // save after the base by its own machine would read as the other machine's.
+        let chosen = if decidable && STAMP.contains(&key) {
+            pick(later, ov, tv).or(pick(earlier, ov, tv))
+        } else if ov == tv || tv == bv {
             ov
         } else if ov == bv {
             tv
-        } else if decidable && STAMP.contains(&key) {
-            pick(later, ov, tv)
         } else if decidable {
-            overlap = true;
+            lost_props.extend(pick(earlier, ov, tv).into_iter().flatten().cloned());
             pick(later, ov, tv)
         } else {
             return None;
@@ -244,36 +257,47 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
             header.extend(lines.iter().cloned());
         }
     }
-
-    let (body, body_overlap) = merge_body(b.body, o.body, t.body, decidable.then_some(later))?;
-    overlap |= body_overlap;
-
-    // An earlier overlap's mark stays until a save drops it; a new one names this one.
-    let unseen = if overlap {
-        let lost = if later == Side::Ours { &t } else { &o };
-        let machine = lost
-            .value("saved_by")
-            .and_then(|s| s.split(" · ").next().map(str::to_owned))
-            .unwrap_or_else(|| "another machine".to_owned());
-        let when = lost.value("updated").unwrap_or_default();
-        Some(vec![format!(
-            "{UNSEEN}: \"{} {}; both are in git\"",
-            machine.replace('"', "'"),
-            when.replace('"', "'")
-        )])
+    if !lost_props.is_empty() {
+        lost.push(part("Its properties", &lost_props.join("\n")));
+    }
+    // An older build's overlap mark stays until a save drops it.
+    let (bv, ov, tv) = (b.prop(UNSEEN), o.prop(UNSEEN), t.prop(UNSEEN));
+    let kept = if ov == tv || tv == bv {
+        ov
+    } else if ov == bv {
+        tv
     } else {
-        let (bv, ov, tv) = (b.prop(UNSEEN), o.prop(UNSEEN), t.prop(UNSEEN));
-        let kept = if ov == tv || tv == bv {
-            ov
-        } else if ov == bv {
-            tv
-        } else {
-            pick(later, ov, tv)
-        };
-        kept.cloned()
+        pick(later, ov, tv)
     };
-    if let Some(lines) = unseen {
-        header.extend(lines);
+    header.extend(kept.into_iter().flatten().cloned());
+
+    let (ob, tb) = match decidable {
+        true => settle(b.body, o.body, t.body, later, &mut lost),
+        false => (o.body.to_owned(), t.body.to_owned()),
+    };
+    let (mut body, blocks) = merge_body(b.body, &ob, &tb, decidable.then_some(later))?;
+    for block in blocks {
+        lost.push(part("Its text the later save replaced", &block));
+    }
+    if !lost.is_empty() {
+        let who = |r: &Record| {
+            format!(
+                "{} at {}",
+                r.value("saved_by")
+                    .unwrap_or_else(|| "another save".to_owned()),
+                r.value("updated").unwrap_or_default()
+            )
+        };
+        let (e, l) = match later {
+            Side::Ours => (&t, &o),
+            Side::Theirs => (&o, &t),
+        };
+        let intro = format!(
+            "{} and {} saved this note without seeing each other's save. The later save stayed; below is what it replaced from the earlier one. The next save with a Current state replaces this section, so fold in what still holds.",
+            who(e),
+            who(l)
+        );
+        body = with_unmerged(&body, &intro, &lost);
     }
 
     let mut out = String::from("---\n");
@@ -307,12 +331,13 @@ fn pick<'a>(
     }
 }
 
-/// The later of two saves by `updated` with its offset; within the same minute, the larger
-/// `saved_by`, then the larger text, so every machine picks the same side.
+/// The later of two saves by `updated` with its offset, to the second (an older stamp to the
+/// minute reads as its minute's start); for equal stamps, the larger `saved_by`, then the
+/// larger text, so every machine picks the same side.
 fn later(o: &Record, t: &Record) -> Side {
     let at = |r: &Record| {
         r.value("updated")
-            .and_then(|u| DateTime::parse_from_str(&u, "%Y-%m-%dT%H:%M%:z").ok())
+            .and_then(|u| crate::notes::stamp_time(&u))
     };
     let key = |r: &Record| (at(r), r.value("saved_by"), r.body.to_owned());
     if key(t) > key(o) {
@@ -331,10 +356,294 @@ fn fences(text: &str) -> usize {
         .count()
 }
 
+/// The sections both saves rewrote, settled before the line merge and written into both sides
+/// alike, so the line merge takes them as they are. Decisions and Pieces are merged entry by
+/// entry; Current state is the later save's, and the earlier one's goes to `lost`.
+fn settle(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    later: Side,
+    lost: &mut Vec<String>,
+) -> (String, String) {
+    let (mut o, mut t) = (ours.to_owned(), theirs.to_owned());
+    for name in ["Current state", "Decisions", "Pieces"] {
+        let (Some(or), Some(tr)) = (section(&o, name), section(&t, name)) else {
+            continue;
+        };
+        let bs = section(base, name).map_or("", |r| &base[r]);
+        let (os, ts) = (o[or.clone()].to_owned(), t[tr.clone()].to_owned());
+        if os == ts || os == bs || ts == bs {
+            continue;
+        }
+        let (es, ls) = match later {
+            Side::Ours => (&ts, &os),
+            Side::Theirs => (&os, &ts),
+        };
+        let merged = if name == "Current state" {
+            lost.push(part("Its Current state", es));
+            ls.clone()
+        } else {
+            let Some((merged, dropped)) = merge_list(bs, es, ls, name == "Pieces") else {
+                continue;
+            };
+            if !dropped.is_empty() {
+                lost.push(part(
+                    &format!("Its {name} lines the later save replaced"),
+                    &dropped.join("\n"),
+                ));
+            }
+            merged
+        };
+        o.replace_range(or, &merged);
+        t.replace_range(tr, &merged);
+    }
+    (o, t)
+}
+
+/// Where a `## <name>` section's text lies in a body: after its heading, up to the next
+/// heading outside a fence.
+fn section(body: &str, name: &str) -> Option<std::ops::Range<usize>> {
+    let lines: Vec<&str> = body.split_inclusive('\n').collect();
+    let fenced = crate::effort::fence_mask(lines.iter().map(|l| l.trim_end_matches(['\r', '\n'])));
+    let (mut at, mut start) = (0, None);
+    for (line, fence) in lines.iter().zip(fenced) {
+        if !fence && let Some(heading) = line.strip_prefix("## ") {
+            if let Some(s) = start {
+                return Some(s..at);
+            }
+            if heading.trim() == name {
+                start = Some(at + line.len());
+            }
+        }
+        at += line.len();
+    }
+    start.map(|s| s..body.len())
+}
+
+/// What one save did to an entry of the base list.
+#[derive(Clone, PartialEq, Debug)]
+enum Fate {
+    Same,
+    Changed(String),
+    /// Gone, with a new entry in its place: the new one's key and text.
+    Reworded(String, String),
+    Gone,
+}
+
+/// Where an entry goes in the merged list: a base entry's place, or a new one's.
+#[derive(Clone, PartialEq, Debug)]
+enum Slot {
+    Base(usize),
+    Added(String),
+}
+
+/// A Decisions or Pieces list merged entry by entry, so neither save's entries go with a
+/// block the other won: every entry either side added is kept, earlier save's first; a piece
+/// ticked on either side stays ticked; where both changed one entry differently the later
+/// save's stands and the earlier's text comes back to be kept in the note. Entries are `- `
+/// lines with any lines indented under them, matched by their text, or a piece by its words.
+/// None for a list holding anything else, or one entry twice: the line merge takes those.
+fn merge_list(
+    base: &str,
+    earlier: &str,
+    later: &str,
+    pieces: bool,
+) -> Option<(String, Vec<String>)> {
+    let key = |item: &str| match pieces {
+        true => crate::effort::piece_key(item.lines().next()?),
+        false => Some(item.to_owned()),
+    };
+    let read = |text: &str| -> Option<Vec<(String, String)>> {
+        let mut items: Vec<String> = Vec::new();
+        for line in text.trim().lines() {
+            if line.starts_with("- ") {
+                items.push(line.to_owned());
+            } else if line.starts_with([' ', '\t']) && !line.trim().is_empty() {
+                let item = items.last_mut()?;
+                item.push('\n');
+                item.push_str(line);
+            } else {
+                return None;
+            }
+        }
+        let keyed: Vec<(String, String)> = items
+            .into_iter()
+            .map(|i| Some((key(&i)?, i)))
+            .collect::<Option<_>>()?;
+        let unique = keyed
+            .iter()
+            .enumerate()
+            .all(|(n, (k, _))| keyed[..n].iter().all(|(x, _)| x != k));
+        unique.then_some(keyed)
+    };
+    let (b, e, l) = (read(base)?, read(earlier)?, read(later)?);
+    let in_base = |k: &str| b.iter().position(|(x, _)| x == k);
+    // Each side's fate for each base entry, and the entries it added. A new entry in place
+    // of a base one that's gone is a rewording, paired in order.
+    let fates = |side: &[(String, String)]| {
+        let mut new: std::collections::VecDeque<&(String, String)> =
+            side.iter().filter(|(k, _)| in_base(k).is_none()).collect();
+        let fates: Vec<Fate> = b
+            .iter()
+            .map(|(k, text)| match side.iter().find(|(x, _)| x == k) {
+                Some((_, t)) if t == text => Fate::Same,
+                Some((_, t)) => Fate::Changed(t.clone()),
+                None => match new.pop_front() {
+                    Some((nk, nt)) => Fate::Reworded(nk.clone(), nt.clone()),
+                    None => Fate::Gone,
+                },
+            })
+            .collect();
+        (fates, new.into_iter().cloned().collect::<Vec<_>>())
+    };
+    let ((fe, added_e), (fl, added_l)) = (fates(&e), fates(&l));
+    let ticked = |text: &str| pieces && crate::effort::piece_box(text) == Some(true);
+    let mut dropped = Vec::new();
+    let mut resolved: Vec<(Slot, Option<String>)> = Vec::new();
+    for (i, (_, text)) in b.iter().enumerate() {
+        let text_of = |f: &Fate| match f {
+            Fate::Same => Some(text.clone()),
+            Fate::Changed(t) | Fate::Reworded(_, t) => Some(t.clone()),
+            Fate::Gone => None,
+        };
+        let (e, l) = (&fe[i], &fl[i]);
+        let won = if e == l || *e == Fate::Same {
+            l
+        } else if *l == Fate::Same {
+            e
+        } else {
+            // Both changed it, differently: a tick is never lost, and otherwise the later
+            // save's stands.
+            let tick = |f: &Fate| text_of(f).is_some_and(|t| ticked(&t));
+            let (won, other) = if tick(e) && !tick(l) { (e, l) } else { (l, e) };
+            dropped.push(text_of(other).unwrap_or_else(|| format!("removed: {text}")));
+            won
+        };
+        resolved.push((Slot::Base(i), text_of(won)));
+    }
+    for (k, lt) in &added_l {
+        let text = match added_e.iter().find(|(x, _)| x == k) {
+            Some((_, et)) if et != lt && ticked(et) && !ticked(lt) => {
+                dropped.push(lt.clone());
+                et
+            }
+            Some((_, et)) if et != lt => {
+                dropped.push(et.clone());
+                lt
+            }
+            _ => lt,
+        };
+        resolved.push((Slot::Added(k.clone()), Some(text.clone())));
+    }
+    for (k, et) in &added_e {
+        if !added_l.iter().any(|(x, _)| x == k) {
+            resolved.push((Slot::Added(k.clone()), Some(et.clone())));
+        }
+    }
+    let slot_of = |k: &str, fates: &[Fate]| match in_base(k) {
+        Some(i) => Slot::Base(i),
+        None => fates
+            .iter()
+            .position(|f| matches!(f, Fate::Reworded(nk, _) if nk == k))
+            .map_or(Slot::Added(k.to_owned()), Slot::Base),
+    };
+    let text_at = |s: &Slot| {
+        resolved
+            .iter()
+            .find(|(x, _)| x == s)
+            .and_then(|(_, t)| t.clone())
+    };
+    // The later save's order, with the earlier save's entries placed after the entry they
+    // followed there.
+    let mut out: Vec<(Slot, String)> = Vec::new();
+    for (k, _) in &l {
+        let slot = slot_of(k, &fl);
+        if let Some(text) = text_at(&slot)
+            && !out.iter().any(|(s, _)| *s == slot)
+        {
+            out.push((slot, text));
+        }
+    }
+    let mut at = 0;
+    for (k, _) in &e {
+        let slot = slot_of(k, &fe);
+        if let Some(n) = out.iter().position(|(s, _)| *s == slot) {
+            at = n + 1;
+        } else if let Some(text) = text_at(&slot) {
+            out.insert(at, (slot, text));
+            at += 1;
+        }
+    }
+    for (slot, text) in &resolved {
+        if let Some(text) = text
+            && !out.iter().any(|(s, _)| s == slot)
+        {
+            out.push((slot.clone(), text.clone()));
+        }
+    }
+    // One entry per key, where a rewording on one side matches an addition on the other.
+    let mut keys: Vec<String> = Vec::new();
+    out.retain(|(_, text)| {
+        let k = key(text).unwrap_or_else(|| text.clone());
+        let new = !keys.contains(&k);
+        keys.push(k);
+        new
+    });
+    let lead = &later[..later.len() - later.trim_start().len()];
+    let trail = &later[later.trim_end().len()..];
+    let items: Vec<String> = out.into_iter().map(|(_, t)| t).collect();
+    let trail = if trail.is_empty() && !items.is_empty() {
+        "\n"
+    } else {
+        trail
+    };
+    Some((format!("{lead}{}{trail}", items.join("\n")), dropped))
+}
+
+/// A titled part of the earlier save's text, quoted so its headings and fences stay text.
+fn part(title: &str, text: &str) -> String {
+    let quoted: Vec<String> = text
+        .trim()
+        .lines()
+        .map(|l| match l.trim().is_empty() {
+            true => ">".to_owned(),
+            false => format!("> {l}"),
+        })
+        .collect();
+    format!("{title}:\n{}", quoted.join("\n"))
+}
+
+/// The body with this merge's entry added to its Unmerged state section, made at the end if
+/// there's none yet.
+fn with_unmerged(body: &str, intro: &str, parts: &[String]) -> String {
+    let entry = format!("{intro}\n\n{}", parts.join("\n\n"));
+    let mut out = body.to_owned();
+    match section(&out, UNMERGED) {
+        Some(r) => {
+            let kept = out[r.clone()].trim_end().len();
+            let gap = if kept == 0 { "" } else { "\n\n" };
+            out.insert_str(r.start + kept, &format!("{gap}{entry}"));
+        }
+        None => {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("\n## {UNMERGED}\n{entry}\n"));
+        }
+    }
+    out
+}
+
 /// The body merged three ways by `git merge-file`. A conflict where both sides only added
-/// lines keeps both, ours first; one where both changed lines takes `later`'s, when given,
-/// and says so. None when a conflict is left with no side to take.
-fn merge_body(base: &str, ours: &str, theirs: &str, later: Option<Side>) -> Option<(String, bool)> {
+/// lines keeps both; one where both changed lines takes `later`'s, when given, and returns
+/// the earlier side's text there. None when a conflict is left with no side to take.
+fn merge_body(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    later: Option<Side>,
+) -> Option<(String, Vec<String>)> {
     let dir = scratch()?;
     let write = |name: &str, text: &str| {
         let path = dir.join(name);
@@ -367,19 +676,19 @@ fn merge_body(base: &str, ours: &str, theirs: &str, later: Option<Side>) -> Opti
     }
     let text = String::from_utf8(out.stdout).ok()?;
     if code == 0 {
-        return Some((text, false));
+        return Some((text, Vec::new()));
     }
     resolve(&text, later)
 }
 
 /// Settles the conflict blocks `git merge-file --diff3` left in `text`.
-fn resolve(text: &str, later: Option<Side>) -> Option<(String, bool)> {
+fn resolve(text: &str, later: Option<Side>) -> Option<(String, Vec<String>)> {
     let open = format!("{} ours", "<".repeat(MARKER));
     let mid = format!("{} base", "|".repeat(MARKER));
     let split = "=".repeat(MARKER);
     let close = format!("{} theirs", ">".repeat(MARKER));
     let mut out = String::new();
-    let mut overlap = false;
+    let mut lost = Vec::new();
     let mut lines = text.split_inclusive('\n');
     while let Some(line) = lines.next() {
         if line.trim_end_matches(['\n', '\r']) != open {
@@ -405,25 +714,30 @@ fn resolve(text: &str, later: Option<Side>) -> Option<(String, bool)> {
                 }
             }
         }
+        // The earlier save's side, then the later's; ours first when neither is known.
+        let (first, second) = match later {
+            Some(Side::Ours) => (&t, &o),
+            _ => (&o, &t),
+        };
         if o == t {
             out.push_str(&o);
         } else if b.trim().is_empty() {
             // Both only added here: what they added alike once (a new section's heading
-            // both wrote, say), then each one's own lines, ours first.
-            out.push_str(&both_added(&o, &t));
+            // both wrote, say), then each one's own lines.
+            out.push_str(&both_added(first, second));
         } else {
-            overlap = true;
-            match later? {
-                Side::Ours => out.push_str(&o),
-                Side::Theirs => out.push_str(&t),
+            later?;
+            out.push_str(second);
+            if !first.trim().is_empty() {
+                lost.push(first.clone());
             }
         }
     }
-    Some((out, overlap))
+    Some((out, lost))
 }
 
 /// Two additions at one place: their common first and last lines once, the rest of each
-/// between, ours first.
+/// between, `o`'s first.
 fn both_added(o: &str, t: &str) -> String {
     let (o, t): (Vec<&str>, Vec<&str>) = (
         o.split_inclusive('\n').collect(),
@@ -526,7 +840,10 @@ mod tests {
             merged.contains("saved_by: mac · codex") && merged.contains("session: s-mac · codex"),
             "{merged}"
         );
-        assert!(!merged.contains(UNSEEN), "{merged}");
+        assert!(
+            !merged.contains(UNSEEN) && !merged.contains(UNMERGED),
+            "{merged}"
+        );
     }
 
     #[test]
@@ -574,7 +891,8 @@ mod tests {
     }
 
     #[test]
-    fn two_saves_of_one_section_keep_the_later_and_mark_it_unseen() {
+    fn two_rewrites_of_current_state_keep_the_later_and_the_earlier_in_the_note() {
+        // Defect: the earlier save's state text was only in git, behind an `unseen` mark.
         let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
         let ours = record(
             "2026-11-14T10:05-07:00",
@@ -588,31 +906,195 @@ mod tests {
         );
         // 09:07 at -08:00 is 10:07 at -07:00: the Mac's is later.
         let merged = merge_record(&base, &ours, &theirs, Saves::default()).unwrap();
+        let file = crate::effort::EffortFile::parse(&merged).unwrap();
+        assert!(file.current.contains("Mac view."), "{merged}");
+        let unmerged = file.unmerged().unwrap();
         assert!(
-            merged.contains("Mac view.") && !merged.contains("PC view."),
+            unmerged.contains("pc · claude at 2026-11-14T10:05-07:00")
+                && unmerged.contains("Its Current state:\n> PC view.\n>\n> Base next."),
             "{merged}"
         );
-        assert!(
-            merged.contains("unseen: \"pc 2026-11-14T10:05-07:00; both are in git\""),
-            "{merged}"
-        );
-        assert!(crate::effort::EffortFile::parse(&merged).is_ok());
+        assert!(!merged.contains(UNSEEN), "{merged}");
     }
 
     #[test]
-    fn a_tick_and_an_untick_of_one_piece_are_an_overlap() {
+    fn a_tick_and_an_untick_of_different_pieces_both_stand() {
+        // Defect: Pieces was taken whole from the later save, losing the earlier's tick.
         let ticked = BODY.replace("- [ ] a", "- [x] a");
         let base = record("2026-11-14T10:00-07:00", "mac · claude", &ticked);
         let ours = record(
             "2026-11-14T10:05-07:00",
             "pc · claude",
-            &ticked.replace("- [ ] b", "- [x] b"),
+            &ticked.replace("- [ ] b", "- [x] b (2026-11-14)"),
         );
         let theirs = record("2026-11-14T10:07-07:00", "mac · claude", BODY);
         let merged = merge_record(&base, &ours, &theirs, Saves::default()).unwrap();
-        // The pieces lines sit together, so the later side's block wins whole.
-        assert!(merged.contains("- [ ] a\n- [ ] b"), "{merged}");
-        assert!(merged.contains(UNSEEN), "{merged}");
+        assert!(
+            merged.contains("- [ ] a\n- [x] b (2026-11-14)\n"),
+            "{merged}"
+        );
+        assert!(!merged.contains(UNMERGED), "{merged}");
+    }
+
+    /// Case 1 of the two-machine sync test, in neutral text: both saves change state, add a
+    /// decision and tick a piece; the later one is seconds later on the machine whose name
+    /// sorts first.
+    fn case_one() -> (String, String, String) {
+        let base = record("2026-11-14T10:05:02-07:00", "mac · claude", BODY);
+        let earlier = record(
+            "2026-11-14T10:05:10-07:00",
+            "pc · claude",
+            &BODY
+                .replace("Base view.", "PC view.")
+                .replace("- first\n", "- first\n- 2026-11-14: pc chose\n")
+                .replace("- [ ] a", "- [x] a (2026-11-14)"),
+        );
+        let later = record(
+            "2026-11-14T10:05:28-07:00",
+            "mac · claude",
+            &BODY
+                .replace("Base view.", "Mac view.")
+                .replace("- first\n", "- first\n- 2026-11-14: mac chose\n")
+                .replace("- [ ] b", "- [x] b (2026-11-14)"),
+        );
+        (base, earlier, later)
+    }
+
+    #[test]
+    fn decisions_from_both_saves_are_kept_with_the_state_both_rewrote() {
+        // Defect: the decisions sat in one changed block with Current state and went with it.
+        let (base, earlier, later) = case_one();
+        let merged = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        assert!(
+            merged.contains(
+                "## Decisions\n- first\n- 2026-11-14: pc chose\n- 2026-11-14: mac chose\n"
+            ),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn ticks_from_both_saves_are_kept_with_the_state_both_rewrote() {
+        // Defect: Pieces was taken whole with the later save's block.
+        let (base, earlier, later) = case_one();
+        let merged = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        assert!(
+            merged.contains("- [x] a (2026-11-14)\n- [x] b (2026-11-14)\n"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn the_later_save_by_seconds_wins_whatever_the_machine_names() {
+        // Defect: stamps to the minute left two saves seconds apart to the larger machine
+        // name, so the PC's earlier state won over the Mac's.
+        let (base, earlier, later) = case_one();
+        let merged = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        let file = crate::effort::EffortFile::parse(&merged).unwrap();
+        assert!(file.current.contains("Mac view."), "{merged}");
+        assert!(file.unmerged().unwrap().contains("> PC view."), "{merged}");
+        assert!(
+            merged.contains("updated: \"2026-11-14T10:05:28-07:00\"\nsaved_by: mac · claude\nsession: s-mac · claude\n"),
+            "the whole stamp is the later save's, though its machine made the base: {merged}"
+        );
+        // An older stamp to the minute reads as its minute's start.
+        let old = earlier.replace("10:05:10-07:00", "10:05-07:00");
+        let merged = merge_record(&base, &old, &later, Saves::default()).unwrap();
+        assert!(merged.contains("saved_by: mac · claude"), "{merged}");
+    }
+
+    #[test]
+    fn either_merge_order_gives_the_same_bytes() {
+        // Defect: both sides' additions came out ours first, so the machine that merged
+        // decided the order.
+        let (base, earlier, later) = case_one();
+        let one = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        let two = merge_record(&base, &later, &earlier, Saves::default()).unwrap();
+        assert_eq!(one, two);
+        let added = |n: &str| record("2026-11-14T10:05-07:00", n, &format!("{BODY}{n} note\n"));
+        let (a, b) = (added("pc · claude"), added("mac · claude"));
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        assert_eq!(
+            merge_record(&base, &a, &b, Saves::default()),
+            merge_record(&base, &b, &a, Saves::default())
+        );
+    }
+
+    #[test]
+    fn one_piece_reworded_two_ways_keeps_the_later_wording_and_the_other_in_the_note() {
+        // Defect: the earlier wording was only in git.
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        let earlier = record(
+            "2026-11-14T10:05-07:00",
+            "pc · claude",
+            &BODY.replace("- [ ] b\n", "- [ ] b two ways\n- [ ] c from pc\n"),
+        );
+        let later = record(
+            "2026-11-14T10:07-07:00",
+            "mac · claude",
+            &BODY.replace("- [ ] b\n", "- [ ] b the mac way\n- [ ] d from mac\n"),
+        );
+        let merged = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        let file = crate::effort::EffortFile::parse(&merged).unwrap();
+        let pieces = file.pieces().unwrap();
+        assert!(
+            pieces.contains("- [ ] b the mac way")
+                && !pieces.contains("b two ways")
+                && pieces.contains("- [ ] c from pc")
+                && pieces.contains("- [ ] d from mac"),
+            "{merged}"
+        );
+        assert!(
+            file.unmerged()
+                .unwrap()
+                .contains("Its Pieces lines the later save replaced:\n> - [ ] b two ways"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn a_property_both_saves_changed_keeps_the_earlier_value_in_the_note() {
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        let earlier = record("2026-11-14T10:05-07:00", "pc · claude", BODY)
+            .replace("status: active", "status: blocked");
+        let later = record("2026-11-14T10:07-07:00", "mac · claude", BODY)
+            .replace("status: active", "status: review");
+        let merged = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        assert!(merged.contains("status: review\n"), "{merged}");
+        assert!(
+            merged.contains("Its properties:\n> status: blocked"),
+            "{merged}"
+        );
+    }
+
+    #[test]
+    fn a_second_overlap_adds_to_the_unmerged_section_already_there() {
+        let (base, earlier, later) = case_one();
+        let first = merge_record(&base, &earlier, &later, Saves::default()).unwrap();
+        let again = |when: &str, by: &str, view: &str| {
+            first
+                .replace("2026-11-14T10:05:28-07:00", when)
+                .replace("saved_by: mac · claude", &format!("saved_by: {by}"))
+                .replace("Mac view.", view)
+        };
+        let merged = merge_record(
+            &first,
+            &again("2026-11-14T11:00:00-07:00", "pc · claude", "PC again."),
+            &again("2026-11-14T11:00:05-07:00", "mac · claude", "Mac again."),
+            Saves::default(),
+        )
+        .unwrap();
+        let file = crate::effort::EffortFile::parse(&merged).unwrap();
+        let unmerged = file.unmerged().unwrap();
+        assert!(
+            unmerged.contains("> PC view.") && unmerged.contains("> PC again."),
+            "{merged}"
+        );
+        assert_eq!(
+            merged.matches(&format!("## {UNMERGED}")).count(),
+            1,
+            "{merged}"
+        );
     }
 
     #[test]

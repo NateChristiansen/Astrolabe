@@ -627,8 +627,17 @@ pub fn local_day_time() -> (String, String) {
     )
 }
 
+/// A save's `updated`, to the second: two saves seconds apart on two machines are ordered by
+/// it when they merge.
 pub fn local_stamp() -> String {
-    Local::now().format("%Y-%m-%dT%H:%M%:z").to_string()
+    Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
+}
+
+/// A stamp as written now, or as older builds wrote it, to the minute.
+pub fn stamp_time(stamp: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    ["%Y-%m-%dT%H:%M:%S%:z", "%Y-%m-%dT%H:%M%:z"]
+        .iter()
+        .find_map(|f| chrono::DateTime::parse_from_str(stamp, f).ok())
 }
 
 pub fn now_ms() -> i64 {
