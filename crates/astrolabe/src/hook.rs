@@ -172,6 +172,7 @@ fn judge(bytes: &[u8]) -> Option<String> {
     let scope = crate::guard::Scope {
         root: worktree_root(cwd.as_deref()),
         cwd: cwd.as_deref().map(comparable),
+        session: input["session_id"].as_str().map(str::to_owned),
     };
     let powershell = crate::activate::powershell_input(&input);
     crate::guard::decide_in(powershell, tool, &input["tool_input"], &scope)

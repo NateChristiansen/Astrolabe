@@ -1,4 +1,5 @@
-//! The pre-command matcher, provider-neutral and pure: an accident guard, not a sandbox.
+//! The pre-command matcher, provider-neutral and pure apart from `guard/scratch.rs`: an
+//! accident guard, not a sandbox.
 //! Its target is a command a careless agent would plausibly write, with one wrapping layer,
 //! not one written to get past it. It reads what a command says, not what it would do. The
 //! limits are rows in `tests/fixtures/guard-bypass.tsv`. A command that names a denied
@@ -8,10 +9,16 @@
 use serde_json::Value;
 
 mod launch;
+mod scratch;
 pub use launch::{LAUNCH, correctable, launch_tool};
+use std::collections::HashMap;
 
 /// How deep wrappers and substitutions nest before the text counts as unparsed.
 const MAX_DEPTH: usize = 8;
+/// Marks a POSIX `$NAME` inside a word's text, around the name.
+const VAR: char = '\u{0}';
+/// The most values a variable or folder is tracked through before it counts as unknown.
+const MAX_VALUES: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Dialect {
@@ -22,10 +29,31 @@ pub(crate) enum Dialect {
 
 #[derive(Debug, Clone, Default)]
 struct Word {
-    /// What the shell would pass, as far as it can be told.
+    /// What the shell would pass, as far as it can be told. A POSIX `$NAME` is kept as the
+    /// name between two `VAR` marks.
     text: String,
     /// Holds a variable or a substitution, so `text` isn't the final value.
     dynamic: bool,
+    /// Holds what can't be expanded here: a substitution, a special parameter, or a
+    /// PowerShell or cmd expansion.
+    opaque: bool,
+    substitutions: usize,
+    /// `text`'s length when a `$(mktemp -d)` came, if one did.
+    fresh_at: Option<usize>,
+}
+
+/// One command as parsed, and whether it certainly runs in the shell that reads the next:
+/// at top level, not after `&&`, `||` or `|`, not in a subshell, block or substitution, and
+/// not piped or backgrounded.
+struct Command {
+    words: Vec<Word>,
+    definite: bool,
+    /// At top level, outside any subshell, block, substitution, pipeline or background.
+    top: bool,
+    /// Joined to the command before by `&&`, so it runs only if that one succeeded.
+    chained: bool,
+    /// From here on a loop or function has begun.
+    looped: bool,
 }
 
 /// What the next word is. A redirect's target or a here-string is only skipped.
@@ -40,9 +68,20 @@ struct Parser {
     at: usize,
     dialect: Dialect,
     escape: char,
-    commands: Vec<Vec<Word>>,
+    commands: Vec<Command>,
     broken: bool,
     literal_error: Option<&'static str>,
+    /// Open `if`, `case`, loop and `{` blocks.
+    block: usize,
+    /// A loop or a function: a back edge, so order in the text isn't order of running.
+    loops: bool,
+    /// The next command starts a list: after the start, `;` or a newline.
+    lead: bool,
+    /// The last separator was `&` or `|`, so a newline continues its list.
+    joined: bool,
+    /// The last separator was `&&`.
+    and: bool,
+    depth: usize,
 }
 
 fn parse(text: &str, dialect: Dialect, depth: usize) -> Parser {
@@ -59,6 +98,12 @@ fn parse(text: &str, dialect: Dialect, depth: usize) -> Parser {
         commands: Vec::new(),
         broken: false,
         literal_error: None,
+        block: 0,
+        loops: false,
+        lead: true,
+        joined: false,
+        and: false,
+        depth,
     };
     parser.list(None, depth);
     parser
@@ -77,13 +122,14 @@ pub(crate) fn literal_words(text: &str, dialect: Dialect) -> Result<Vec<String>,
     if parsed.broken {
         return Err("an unfinished quote".into());
     }
-    if parsed.commands.iter().flatten().any(|word| word.dynamic) {
+    let words = || parsed.commands.iter().flat_map(|command| &command.words);
+    if words().any(|word| word.dynamic) {
         return Err("shell expansion isn't a literal command".into());
     }
     let [command] = parsed.commands.as_slice() else {
         return Err(ONE_COMMAND.into());
     };
-    Ok(command.iter().map(|word| word.text.clone()).collect())
+    Ok(command.words.iter().map(|word| word.text.clone()).collect())
 }
 
 /// Everything flat: `&&`, `;`, pipes, subshells and substitutions all just separate
@@ -105,6 +151,7 @@ impl Parser {
         let mut expect = Expect::Word;
         let mut heredocs = Vec::new();
         let mut parens = 0usize;
+        let mut opened = None;
         while let Some(c) = self.peek() {
             self.at += 1;
             match c {
@@ -117,6 +164,9 @@ impl Parser {
                     if let Some(next) = next {
                         word.get_or_insert_default().text.push(next);
                     }
+                }
+                '@' if self.dialect == Dialect::Ps && word.is_none() && self.here_string() => {
+                    word = self.here_body(depth);
                 }
                 '\'' => self.single_quoted(word.get_or_insert_default()),
                 '"' => self.double_quoted(word.get_or_insert_default(), depth),
@@ -151,11 +201,30 @@ impl Parser {
                     // A redirect with no target word before this must not skip the next
                     // command's program, as in `cat <(git push --force)`.
                     expect = Expect::Word;
-                    self.finish(&mut command);
+                    let top = until.is_none() && parens == 0;
+                    // A lone `|` or `&`, not `||` or `&&`: a pipeline or the background.
+                    let doubled = |at: usize| self.chars.get(at) == Some(&c);
+                    let second = matches!(c, '|' | '&') && self.at >= 2 && doubled(self.at - 2);
+                    let apart = matches!(c, '|' | '&') && !doubled(self.at) && !second;
+                    let and = c == '&' && doubled(self.at);
+                    self.finish(&mut command, top, apart);
+                    self.lead = matches!(c, ';') || (c == '\n' && !self.joined);
+                    self.joined = matches!(c, '|' | '&') || (self.joined && c == '\n');
+                    if !second && !(c == '\n' && self.joined) {
+                        self.and = and;
+                    }
                     match c {
                         c if until == Some(c) && parens == 0 => return,
-                        '(' => parens += 1,
-                        ')' => parens = parens.saturating_sub(1),
+                        '(' => {
+                            parens += 1;
+                            opened = Some(self.at);
+                        }
+                        ')' => {
+                            // `name()`: a function, run later from wherever it's called.
+                            let body = opened.map(|at| &self.chars[at..self.at - 1]);
+                            self.loops |= body.is_some_and(|b| b.iter().all(|c| c.is_whitespace()));
+                            parens = parens.saturating_sub(1);
+                        }
                         '\n' => self.read_heredocs(&mut heredocs),
                         _ => {}
                     }
@@ -182,14 +251,79 @@ impl Parser {
             }
         }
         end_word(&mut word, &mut command, &mut expect, &mut heredocs);
-        self.finish(&mut command);
+        self.finish(&mut command, until.is_none() && parens == 0, false);
         self.broken |= until.is_some();
     }
 
-    fn finish(&mut self, command: &mut Vec<Word>) {
-        if !command.is_empty() {
-            self.commands.push(std::mem::take(command));
+    /// `top`: outside any subshell or substitution; `apart`: piped or backgrounded.
+    fn finish(&mut self, command: &mut Vec<Word>, top: bool, apart: bool) {
+        let Some(first) = command.first() else { return };
+        let top = top && self.depth == 0 && self.block == 0;
+        match first.text.as_str() {
+            "for" | "while" | "until" | "select" | "function" => {
+                self.loops = true;
+                self.block += 1;
+            }
+            "if" | "case" | "{" => self.block += 1,
+            "fi" | "esac" | "done" | "}" => self.block = self.block.saturating_sub(1),
+            _ => {}
         }
+        self.commands.push(Command {
+            words: std::mem::take(command),
+            definite: top && self.lead && !apart,
+            top: top && !apart,
+            chained: self.and,
+            looped: self.loops,
+        });
+        self.joined = false;
+        self.and = false;
+    }
+
+    /// Just past a PowerShell `@`: whether a here-string starts, `@'` or `@"` and then
+    /// nothing but the line's end.
+    fn here_string(&self) -> bool {
+        let rest = &self.chars[self.at..];
+        let Some((quote, rest)) = rest.split_first() else {
+            return false;
+        };
+        let end = rest.iter().position(|c| *c == '\n');
+        matches!(quote, '\'' | '"')
+            && end.is_some_and(|end| rest[..end].iter().all(|c| matches!(c, ' ' | '\t' | '\r')))
+    }
+
+    /// A here-string's body, as one word: text, so prose or a script in it isn't read as
+    /// commands, though a `@"` one's `$(...)` still is. It ends at a line starting `'@` or
+    /// `"@`.
+    fn here_body(&mut self, depth: usize) -> Option<Word> {
+        self.literal_error
+            .get_or_insert("shell expansion isn't a literal command");
+        let quote = self.chars[self.at];
+        while self.peek().is_some_and(|c| c != '\n') {
+            self.at += 1;
+        }
+        self.at += 1;
+        let mut word = Word::default();
+        let mut line_start = true;
+        while let Some(c) = self.peek() {
+            if line_start && c == quote && self.chars.get(self.at + 1) == Some(&'@') {
+                self.at += 2;
+                return Some(word);
+            }
+            self.at += 1;
+            line_start = c == '\n';
+            match c {
+                '`' if quote == '"' => {
+                    if let Some(next) = self.peek() {
+                        self.at += 1;
+                        word.text.push(next);
+                    }
+                }
+                '$' if quote == '"' => self.dollar(&mut word, depth),
+                _ => word.text.push(c),
+            }
+        }
+        self.broken = true;
+        Some(word)
     }
 
     /// A heredoc's body is text, skipped so that prose in it isn't read as commands. Tabs
@@ -258,14 +392,56 @@ impl Parser {
             self.substitution(word, ')', depth);
             return;
         }
-        word.dynamic |= (self.peek())
+        if self.dialect == Dialect::Sh
+            && let Some(name) = self.variable_name()
+        {
+            word.dynamic = true;
+            word.text
+                .extend([VAR].into_iter().chain(name.chars()).chain([VAR]));
+            return;
+        }
+        let dynamic = (self.peek())
             .is_some_and(|c| c.is_alphanumeric() || matches!(c, '{' | '_' | '?' | '@' | '*' | '!'));
+        word.dynamic |= dynamic;
+        word.opaque |= dynamic;
         word.text.push('$');
+    }
+
+    /// The `NAME` of a `$NAME` or `${NAME}` just past its `$`, consumed; None for anything
+    /// else, such as `$1`, `$?` or `${NAME:-x}`.
+    fn variable_name(&mut self) -> Option<String> {
+        let braced = self.peek() == Some('{');
+        let start = self.at + usize::from(braced);
+        let name_char = |c: &char| c.is_ascii_alphanumeric() || *c == '_';
+        let len = self.chars[start..]
+            .iter()
+            .take_while(|c| name_char(c))
+            .count();
+        let first = self.chars.get(start)?;
+        if len == 0
+            || first.is_ascii_digit()
+            || (braced && self.chars.get(start + len) != Some(&'}'))
+        {
+            return None;
+        }
+        self.at = start + len + usize::from(braced);
+        Some(self.chars[start..start + len].iter().collect())
     }
 
     fn substitution(&mut self, word: &mut Word, until: char, depth: usize) {
         word.dynamic = true;
+        word.opaque = true;
+        word.substitutions += 1;
+        let start = self.commands.len();
+        let (lead, joined, block, and) = (self.lead, self.joined, self.block, self.and);
+        self.lead = true;
         self.list(Some(until), depth + 1);
+        (self.lead, self.joined, self.block, self.and) = (lead, joined, block, and);
+        if let [inner] = &self.commands[start..]
+            && makes_temp_folder(&inner.words)
+        {
+            word.fresh_at = Some(word.text.len());
+        }
     }
 }
 
@@ -284,18 +460,45 @@ fn end_word(
 }
 
 /// Where a command runs. A missing root or cwd means no recursive delete can be judged
-/// to be inside, so it is denied.
+/// to be inside, so it is denied. `session` is the id the app gave the hook, which names
+/// the session's own scratch folder (`guard/scratch.rs`).
 #[derive(Debug, Clone, Default)]
 pub struct Scope {
     pub root: Option<String>,
     pub cwd: Option<String>,
+    pub session: Option<String>,
+}
+
+/// A variable's possible value: a path, or a folder `mktemp -d` just made.
+#[derive(Debug, Clone, PartialEq)]
+enum Possible {
+    Path(String),
+    Fresh,
 }
 
 struct Context {
     root: Option<String>,
-    /// None once a command has changed folder: not followed, so it stops being known.
-    cwd: Option<String>,
+    /// Every folder the command could be in by now, as a `cd` adds one rather than
+    /// replacing, so a failed or subshell `cd` is judged too. None once one can't be told.
+    cwds: Option<Vec<String>>,
     windows: bool,
+    session: Option<String>,
+    /// POSIX variables set in this command, each with every value it could hold; None for
+    /// one that could hold anything. Unset here means the environment's: unknown.
+    vars: HashMap<String, Option<Vec<Possible>>>,
+    /// A loop, a function or a `source` was seen: order stops meaning anything, so no
+    /// variable or `cd` is followed from here on.
+    loops: bool,
+    /// The folders a top-level `cd` led to, while the `&&` chain after it lasts: there it
+    /// must have succeeded.
+    chain: Option<Vec<String>>,
+    /// Variables set in the current top-level `&&` chain, which hold in the rest of it.
+    chain_vars: HashMap<String, Option<Vec<Possible>>>,
+    /// The command being read is at top level, and joined by `&&` to the one before.
+    top: bool,
+    chained: bool,
+    /// The folder the hook gave, before any `cd`.
+    start: Option<String>,
 }
 
 /// The name of the field a shell tool's command is in: `command` if the input has one at
@@ -377,23 +580,32 @@ pub fn decide_in(powershell: bool, tool: &str, input: &Value, scope: &Scope) -> 
     let windows = (scope.root.as_deref()).is_some_and(|r| has_drive(r) || r.starts_with(r"\\"));
     let mut context = Context {
         root: scope.root.as_deref().map(|root| normal(root, windows)),
-        cwd: scope.cwd.as_deref().map(|cwd| normal(cwd, windows)),
+        cwds: scope.cwd.as_deref().map(|cwd| vec![normal(cwd, windows)]),
         windows,
+        session: scope.session.clone(),
+        vars: HashMap::new(),
+        loops: false,
+        chain: None,
+        chain_vars: HashMap::new(),
+        top: false,
+        chained: false,
+        start: None,
     };
     // A tool's own working directory, which the hook's `cwd` doesn't reflect.
     if let Some(workdir) = tool_folder(input) {
-        context.cwd = resolve(workdir, &context);
+        context.cwds = resolve(workdir, &context);
     }
+    context.start = context.cwds.as_ref().and_then(|cwds| cwds.first().cloned());
     let dialect = if powershell { Dialect::Ps } else { Dialect::Sh };
     match command_field(input)? {
         Value::String(text) => script(text, dialect, &mut context, 0),
         Value::Array(parts) => {
             let word = |part: &Value| Word {
                 text: part.as_str().unwrap_or_default().to_owned(),
-                dynamic: false,
+                ..Default::default()
             };
             let words: Vec<Word> = parts.iter().map(word).collect();
-            simple(&words, dialect, &mut context, 0, false)
+            simple(&words, false, dialect, &mut context, 0, false)
         }
         _ => None,
     }
@@ -413,10 +625,221 @@ fn unparsed() -> String {
 
 fn script(text: &str, dialect: Dialect, context: &mut Context, depth: usize) -> Option<String> {
     let parsed = parse(text, dialect, depth);
+    // PowerShell's and cmd's loops and script blocks aren't parsed: any brace, or cmd at all,
+    // counts as one.
+    let blocks = match dialect {
+        Dialect::Sh => false,
+        Dialect::Ps => text.contains('{'),
+        Dialect::Cmd => true,
+    };
+    context.loops |= blocks;
+    // A `cd` anywhere in a loop can repeat before a command written above it, so once a loop
+    // begins with one in what follows, the folder is no longer known.
+    let looped = parsed.commands.iter().position(|command| command.looped);
+    let moves = looped.is_some_and(|at| {
+        let words = parsed.commands[at..]
+            .iter()
+            .flat_map(|command| &command.words);
+        words
+            .map(|word| program(&word.text))
+            .any(|name| CHANGES_FOLDER.contains(&name.as_str()))
+    });
+    if blocks
+        && text
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .any(|w| CHANGES_FOLDER.contains(&w))
+    {
+        context.cwds = None;
+    }
+    let run = |command: &Command| {
+        if command.looped && !context.loops && moves {
+            context.cwds = None;
+            context.chain = None;
+        }
+        context.loops |= command.looped;
+        // Only a `cd` earlier in the same `&&` chain at top level fixes the folder.
+        if !(command.top && command.chained) {
+            context.chain = None;
+        }
+        context.top = command.top;
+        context.chained = command.top && command.chained;
+        if !context.chained {
+            context.chain_vars.clear();
+        }
+        simple(
+            &command.words,
+            command.definite,
+            dialect,
+            context,
+            depth,
+            false,
+        )
+    };
     (parsed.commands.iter())
-        .find_map(|command| simple(command, dialect, context, depth, false))
+        .find_map(run)
         .or_else(|| (parsed.broken && names_denied_program(text)).then(unparsed))
 }
+
+/// `mktemp -d`, which makes a new folder, as against `-u`, which only names one.
+fn makes_temp_folder(words: &[Word]) -> bool {
+    let Some((first, args)) = words.split_first() else {
+        return false;
+    };
+    let flag = |short: char, long: &str| {
+        (args.iter())
+            .any(|a| short_flags(&a.text).is_some_and(|f| f.contains(short)) || a.text == long)
+    };
+    program(&first.text) == "mktemp"
+        && !words.iter().any(|w| w.dynamic)
+        && flag('d', "--directory")
+        && !flag('u', "--dry-run")
+}
+
+/// Every value a word could have, or None if that can't be told. A bare `$T` set from
+/// `$(mktemp -d)` is the folder it made; anything appended to it isn't, as a failed
+/// `mktemp` leaves `$T/x` as `/x`.
+fn expand(word: &Word, context: &Context) -> Option<Vec<Possible>> {
+    if word.substitutions == 1 && word.fresh_at == Some(0) && word.text.is_empty() {
+        return Some(vec![Possible::Fresh]);
+    }
+    if word.opaque {
+        return None;
+    }
+    if !word.dynamic {
+        return Some(vec![Possible::Path(word.text.clone())]);
+    }
+    if context.loops {
+        return None;
+    }
+    let parts: Vec<&str> = word.text.split(VAR).collect();
+    if parts.len().is_multiple_of(2) {
+        return None;
+    }
+    let lookup = |name: &str| {
+        let value = context.chain_vars.get(name).or(context.vars.get(name));
+        value.cloned().flatten()
+    };
+    if let ["", name, ""] = parts[..] {
+        return lookup(name);
+    }
+    let mut values = vec![String::new()];
+    for (at, part) in parts.iter().enumerate() {
+        if at % 2 == 0 {
+            values.iter_mut().for_each(|v| v.push_str(part));
+            continue;
+        }
+        let mut next = Vec::new();
+        for value in lookup(part)? {
+            let Possible::Path(path) = value else {
+                return None;
+            };
+            next.extend(values.iter().map(|v| format!("{v}{path}")));
+        }
+        values = next;
+        if values.len() > MAX_VALUES {
+            return None;
+        }
+    }
+    Some(values.into_iter().map(Possible::Path).collect())
+}
+
+/// `NAME=value`, run where the rest of the command sees it if `definite`; otherwise it may
+/// not have run, so the old values stay possible.
+fn assign(word: &Word, definite: bool, context: &mut Context) {
+    let Some((name, value)) = word.text.split_once('=') else {
+        return;
+    };
+    let prefix = name.len() + 1;
+    let value = Word {
+        text: value.to_owned(),
+        fresh_at: word.fresh_at.and_then(|at| at.checked_sub(prefix)),
+        ..word.clone()
+    };
+    let new = expand(&value, context);
+    if context.chained {
+        context.chain_vars.insert(name.to_owned(), new.clone());
+    }
+    let merged = match (definite, context.vars.get(name).cloned().flatten(), new) {
+        (true, _, new) => new,
+        (false, Some(mut old), Some(new)) => {
+            for value in new {
+                if !old.contains(&value) {
+                    old.push(value);
+                }
+            }
+            Some(old)
+        }
+        _ => None,
+    };
+    let merged = merged.filter(|values| values.len() <= MAX_VALUES);
+    context.vars.insert(name.to_owned(), merged);
+}
+
+/// A command that names a variable set here may change it (`read S`, `for S in`, `unset
+/// S`, `S+=x`), so it's unknown from then on.
+fn forget_named(words: &[Word], context: &mut Context) {
+    let named = |name: &str, word: &Word| {
+        let rest = word.text.strip_prefix(name);
+        rest.is_some_and(|rest| rest.is_empty() || rest.starts_with("+=") || rest.starts_with('['))
+    };
+    for (name, values) in context.vars.iter_mut().chain(context.chain_vars.iter_mut()) {
+        if words.iter().any(|word| named(name, word)) {
+            *values = None;
+        }
+    }
+}
+
+/// A `cd`: each folder it could lead to is added to those the command could be in.
+fn change_folder(name: &str, args: &[Word], dialect: Dialect, context: &mut Context) {
+    let mut iter = args.iter();
+    let mut target = None;
+    while let Some(arg) = iter.next() {
+        let text = arg.text.to_ascii_lowercase();
+        if matches!(text.as_str(), "-path" | "-literalpath" | "-lp" | "--") {
+            target = iter.next();
+            break;
+        }
+        // `-L`, `-P`; `-` alone is the last folder, which isn't known.
+        if !text.starts_with('-') {
+            target = Some(arg);
+            break;
+        }
+    }
+    let ends = |value: &Possible| match value {
+        Possible::Path(p) if !p.is_empty() && !p.starts_with('~') => resolve(p, context),
+        _ => None,
+    };
+    let leads = target
+        .filter(|_| !context.loops && dialect != Dialect::Cmd)
+        .filter(|_| !matches!(name, "popd" | "pop-location"))
+        .and_then(|target| expand(target, context))
+        .and_then(|values| values.iter().map(ends).collect::<Option<Vec<_>>>());
+    let leads: Option<Vec<String>> = leads.map(|leads| leads.into_iter().flatten().collect());
+    context.chain = leads.clone().filter(|_| context.top);
+    context.cwds = match (leads, context.cwds.take()) {
+        (Some(leads), Some(mut cwds)) => {
+            for folder in leads {
+                if !cwds.contains(&folder) {
+                    cwds.push(folder);
+                }
+            }
+            Some(cwds).filter(|cwds| cwds.len() <= MAX_VALUES)
+        }
+        _ => None,
+    };
+}
+
+const CHANGES_FOLDER: [&str; 8] = [
+    "cd",
+    "pushd",
+    "popd",
+    "chdir",
+    "set-location",
+    "sl",
+    "push-location",
+    "pop-location",
+];
 
 const KEYWORDS: [&str; 12] = [
     "if", "then", "elif", "else", "fi", "do", "done", "while", "until", "!", "{", "}",
@@ -479,18 +902,23 @@ fn wrapped<'a>(name: &str, args: &'a [Word]) -> Option<&'a [Word]> {
     Some(after_options(args, values))
 }
 
-/// One command. `piped` means more arguments arrive at run time, from `xargs` or `find`.
+/// One command. `piped` means more arguments arrive at run time, from `xargs` or `find`;
+/// `definite`, that the shell reading the next command sees what this one sets.
 fn simple(
     words: &[Word],
+    definite: bool,
     dialect: Dialect,
     context: &mut Context,
     depth: usize,
     piped: bool,
 ) -> Option<String> {
     let mut words = words;
+    let mut assignments = Vec::new();
     loop {
         match words {
-            [first, ..] if KEYWORDS.contains(&first.text.as_str()) || is_assignment(first) => {
+            [first, ..] if KEYWORDS.contains(&first.text.as_str()) => words = &words[1..],
+            [first, ..] if is_assignment(first) => {
+                assignments.push(first);
                 words = &words[1..];
             }
             // PowerShell's `$x = git ...`.
@@ -498,6 +926,13 @@ fn simple(
             _ => break,
         }
     }
+    // Only a command of assignments alone sets them for what follows.
+    if dialect == Dialect::Sh && words.is_empty() {
+        for word in assignments {
+            assign(word, definite, context);
+        }
+    }
+    forget_named(words, context);
     let first = words.first()?;
     if depth > MAX_DEPTH {
         return names_denied_program(&join(words)).then(unparsed);
@@ -512,14 +947,39 @@ fn simple(
             .any(|o| a.text.starts_with(o))
     };
     if matches!(name.as_str(), "env" | "sudo") && args.iter().any(moves) {
-        context.cwd = None;
+        context.cwds = None;
     }
     if let Some(rest) = wrapped(&name, args) {
-        return simple(rest, dialect, context, depth, piped || name == "xargs");
+        return simple(
+            rest,
+            false,
+            dialect,
+            context,
+            depth,
+            piped || name == "xargs",
+        );
     }
     let lowered = |arg: &Word| arg.text.to_ascii_lowercase();
     match name.as_str() {
-        "eval" | "iex" | "invoke-expression" => script(&join(args), dialect, context, depth),
+        "export" | "declare" | "local" | "readonly" | "typeset" if dialect == Dialect::Sh => {
+            for arg in args.iter().filter(|arg| is_assignment(arg)) {
+                assign(arg, definite, context);
+            }
+            None
+        }
+        // What runs isn't read here and could set anything.
+        "source" | "." => {
+            context.loops = true;
+            context.cwds = None;
+            None
+        }
+        "eval" | "iex" | "invoke-expression" => {
+            if args.iter().any(|arg| arg.dynamic) {
+                context.loops = true;
+                context.cwds = None;
+            }
+            script(&join(args), dialect, context, depth)
+        }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "ash" | "fish" => {
             let has_c = |a: &Word| short_flags(&a.text).is_some_and(|f| f.contains('c'));
             let flag = args.iter().position(has_c)?;
@@ -534,8 +994,8 @@ fn simple(
             let flag = args.iter().position(|a| flags.contains(&&*lowered(a)))?;
             script(&join(&args[flag + 1..]), inner, context, depth)
         }
-        "cd" | "pushd" | "popd" | "chdir" | "set-location" | "sl" | "pop-location" => {
-            context.cwd = None;
+        name if CHANGES_FOLDER.contains(&name) => {
+            change_folder(name, args, dialect, context);
             None
         }
         "pkill" | "killall" => Some(format!("machine-wide {name}")),
@@ -590,11 +1050,11 @@ fn started(
         for part in arg.text.split([',', ' ']).filter(|p| !p.is_empty()) {
             words.push(Word {
                 text: part.to_owned(),
-                dynamic: arg.dynamic,
+                ..arg.clone()
             });
         }
     }
-    simple(&words, dialect, context, depth, piped)
+    simple(&words, false, dialect, context, depth, piped)
 }
 
 fn unscoped(paths: &[Word]) -> bool {
@@ -693,7 +1153,7 @@ fn find(args: &[Word], dialect: Dialect, context: &mut Context, depth: usize) ->
     const EXEC: [&str; 4] = ["-exec", "-execdir", "-ok", "-okdir"];
     (args.iter().enumerate())
         .filter(|(_, arg)| EXEC.contains(&arg.text.as_str()))
-        .find_map(|(at, _)| simple(&args[at + 1..], dialect, context, depth, true))
+        .find_map(|(at, _)| simple(&args[at + 1..], false, dialect, context, depth, true))
 }
 
 fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<String> {
@@ -710,34 +1170,65 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
         !arg.text.starts_with('-') && !slash_option
     };
     let paths: Vec<&Word> = args.iter().filter(is_path).collect();
-    let inside = |part: &str| {
-        let resolved = resolve(part, context).zip(context.root.as_ref());
-        // `@(...)` is not read.
-        !part.ends_with('@')
-            && resolved.is_some_and(|(path, root)| path.starts_with(&format!("{root}/")))
+    // In the worktree, or in this session's own scratch folder by its real location; there
+    // a `..` could climb out of a link, so none is taken.
+    let in_reach = |path: &str| {
+        let root = context.root.as_ref();
+        let in_root = |p: &String| root.is_some_and(|r| p.starts_with(&format!("{r}/")));
+        let climbs = path.split(['/', '\\']).any(|part| part == "..");
+        let session = context.session.as_deref();
+        let own =
+            |p: &String| !climbs && session.is_some_and(|s| scratch::owned(p, s, context.windows));
+        // A `cd` may have gone through a link, which `..` then climbs out of for real.
+        let moved = || {
+            let cwds = context.chain.as_ref().or(context.cwds.as_ref());
+            cwds.is_some_and(|cwds| cwds.iter().any(|cwd| Some(cwd) != context.start.as_ref()))
+        };
+        if climbs && moved() && !is_rooted(path, context) {
+            return false;
+        }
+        resolve(path, context).is_some_and(|ends| ends.iter().all(|p| in_root(p) || own(p)))
     };
-    // PowerShell takes `a,b` as two paths.
+    // `@(...)` is not read. PowerShell takes `a,b` as two paths.
+    let inside = |part: &str| !part.ends_with('@') && in_reach(part);
+    // A variable's value is split and globbed if unquoted, so one holding a space or a
+    // pattern isn't taken as one path.
+    let plain = |path: &Word, value: &str| {
+        !path.dynamic || !value.contains(|c: char| c.is_whitespace() || "*?[".contains(c))
+    };
     let readable = |path: &&Word| {
-        !path.dynamic
-            && !path.text.contains('%')
-            && !path.text.starts_with('~')
-            && path.text.split(',').filter(|p| !p.is_empty()).all(inside)
+        expand(path, context).is_some_and(|values| {
+            values.iter().all(|value| match value {
+                Possible::Fresh => true,
+                Possible::Path(text) => {
+                    plain(path, text)
+                        && !text.contains('%')
+                        && !text.starts_with('~')
+                        && text.split(',').filter(|p| !p.is_empty()).all(inside)
+                }
+            })
+        })
     };
     let reason =
-        "a recursive delete not plainly inside the worktree; after a cd, use an absolute path";
+        "a recursive delete not plainly inside the worktree or this session's own scratch folder";
     let denied = piped || paths.is_empty() || !paths.iter().all(readable);
     (recursive && denied).then(|| reason.to_owned())
 }
 
-/// Lexical: an existing link isn't resolved. See the misses in the table.
-fn resolve(text: &str, context: &Context) -> Option<String> {
-    let rooted_windows = context.windows && (has_drive(text) || text.starts_with('\\'));
-    if text.starts_with('/') || rooted_windows {
-        Some(normal(text, context.windows))
+/// Where a path leads from each folder the command could be in. Lexical: an existing link
+/// isn't resolved. See the misses in the table.
+fn resolve(text: &str, context: &Context) -> Option<Vec<String>> {
+    if is_rooted(text, context) {
+        Some(vec![normal(text, context.windows)])
     } else {
-        let cwd = context.cwd.as_ref()?;
-        Some(normal(&format!("{cwd}/{text}"), context.windows))
+        let at = |cwd: &String| normal(&format!("{cwd}/{text}"), context.windows);
+        let cwds = context.chain.as_ref().or(context.cwds.as_ref())?;
+        Some(cwds.iter().map(at).collect())
     }
+}
+
+fn is_rooted(text: &str, context: &Context) -> bool {
+    text.starts_with('/') || (context.windows && (has_drive(text) || text.starts_with('\\')))
 }
 
 fn has_drive(text: &str) -> bool {

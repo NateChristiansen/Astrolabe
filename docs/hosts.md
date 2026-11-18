@@ -45,6 +45,14 @@ Not checked: the PowerShell tool's input on Windows, and Codex's desktop app.
 
 Codex states that the transcript format is not a stable interface for hooks.
 
+## A session's scratch folder
+
+The guard lets a recursive delete through inside a session's own scratch folder (`guard/scratch.rs`). What it relies on, checked 2026-11-18:
+
+- **Claude Code** gives each session a folder named for its session id, the same id its hooks receive as `session_id`: `/private/tmp/claude-<uid>/<project>/<session id>/` on the Mac, holding `scratchpad/` and `tasks/`, and `%TEMP%\claude\<hash>\<session id>\scratchpad` on Windows. Subagents share the session id, so they share the folder.
+- **Codex** names no temp folder for its session id: its folders in the Mac's temp folders carry random suffixes (`codex-artifact-session-…`, `com.openai.codex.…`), so the exception never matches it and its shared temp folder never qualifies. Windows isn't checked.
+- On the Mac, `/private/tmp/claude-<uid>` is mode 700 and owned by the user; the shared `/tmp` isn't, so the folder's owner is checked against the owner of `$HOME`. On Windows `%TEMP%` is under the user's profile and is already the user's alone, so being inside it is the check.
+
 ## Registering a marketplace at a different ref
 
 **Claude Code** (probe). With the marketplace `astrolabe` added at `#v0.5.0` and its plugin installed:

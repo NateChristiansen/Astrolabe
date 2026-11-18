@@ -1,0 +1,45 @@
+# A session's own scratch folder, with real folders made in the system temp folder on each
+# run. Columns, by tab: expect, tool, command. In a command:
+#   {S} this session's scratch folder: <temp>/<test>/project/<session id>/scratchpad
+#   {O} another session's, beside it; {P} their shared parent folder, <temp>/<test>/project
+#   {T} the system temp folder itself
+#   {L} a link inside {S} that leads out of the temp folder
+#   {D} a folder named for this session's id that is itself a link out of the temp folder
+#   {W} {S} with the system's own separators
+# The worktree is /work/repo, or C:\work\repo on Windows. The sign ⏎ stands for a newline.
+# The audit's false alarms (effort 388), allowed now.
+allow	Bash	S={S}/state && rm -rf "$S" && mkdir -p "$S"
+allow	Bash	S={S}/t1; rm -rf $S; mkdir -p $S/work $S/state
+allow	Bash	kill 13156; rm -rf {S}/home-state; lsof -nP -iTCP:47
+allow	Bash	rm -rf {S}
+allow	Bash	S={S}; R=$S/probe-a; rm -rf $R; mkdir -p $R/home $R/fix
+allow	Bash	cd {S} && rm -rf tpl && mkdir tpl
+allow	Bash	S={S} && cd $S && sed -n 1p a.txt; rm -rf build
+allow	Bash	cd /work/repo/sub && cargo build --locked && S={S}/preview && rm -rf "$S" && mkdir -p "$S"
+allow	Bash	D="{S}/rb"; rm -rf "$D"; mkdir -p "$D" && cd "$D" && for f in a b; do echo $f; done
+allow	Bash	S={S}/fmt; cd /work/repo && rm -rf $S/copy && for f in a b; do cp $f $S/copy/$f; done
+allow	Bash	cat {S}/../tasks/b1.output; S={S}/state; rm -rf "$S"; mkdir -p "$S"
+allow	Bash	S='{W}'; rm -rf "$S/i"; cat > "$S/notes.md" <<'EOF2'⏎text⏎EOF2
+allow	Bash	S="{S}/repro"⏎rm -rf "$S"
+allow	Bash	export S={S}/x; rm -rf "$S"
+allow	PowerShell	Remove-Item -Recurse -Force '{W}/old'
+# Still denied: another session's folder, the shared parent, shared temp, and links out.
+deny	Bash	rm -rf {O}/x
+deny	Bash	S={O}; rm -rf "$S"
+deny	Bash	rm -rf {P}/x
+deny	Bash	rm -rf {P}
+deny	Bash	rm -rf {T}/x
+deny	Bash	rm -rf {L}/victim
+deny	Bash	rm -rf {L}
+deny	Bash	cd {L} && rm -rf victim
+deny	Bash	rm -rf {D}/scratchpad
+deny	Bash	rm -rf {S}/sub/../../../x
+deny	Bash	S={S}; rm -rf "$S/.."
+deny	Bash	cd {S}/sub && rm -rf ../../x
+deny	Bash	S={S}/x; cd /elsewhere; S=y; rm -rf "$S"
+deny	Bash	S={S}/x; true && S=/etc; rm -rf "$S"
+deny	Bash	S={S}/x; S=/etc | cat; rm -rf "$S"
+deny	Bash	S={S}/x; unset S; rm -rf "$S/y"
+deny	Bash	S='{S}/a /etc'; rm -rf $S
+deny	Bash	S={S}; rm -rf $S/*
+deny	Bash	S={S}/x; while true; do rm -rf $S; S=/etc; done

@@ -130,7 +130,7 @@ allow	mac	Bash	rm -rf target
 allow	mac	Bash	rm -rf ./target/debug
 allow	mac	Bash	rm -rf /work/repo/target
 allow	mac	Bash	rm -rf *
-deny	mac	Bash	cd sub && rm -rf build
+allow	mac	Bash	cd sub && rm -rf build
 allow	mac	Bash	rm -rf -- target
 allow	mac	Bash	rm file.txt
 allow	mac	Bash	rm -f /tmp/x
@@ -255,10 +255,10 @@ deny	mac	Bash	cd sub | rm -rf ../outside
 deny	mac	Bash	true || cd sub; rm -rf ../outside
 deny	mac	Bash	if true; then cd sub; fi; rm -rf ../outside
 deny	mac	Bash	env cd sub; rm -rf ../outside
-deny	mac	Bash	(cd sub; rm -rf build)
+allow	mac	Bash	(cd sub; rm -rf build)
 deny	mac	Bash	cd sub && rm -rf ../build
-deny	mac	Bash	sh -c "cd sub && rm -rf build"
-deny	mac	Bash	sh -c "cd sub"; rm -rf build
+allow	mac	Bash	sh -c "cd sub && rm -rf build"
+allow	mac	Bash	sh -c "cd sub"; rm -rf build
 miss	mac	Bash	rm -rf link/../victim
 miss	mac	Bash	gh api repos/o/r/issues -ftitle=x
 miss	mac	Bash	gh api repos/o/r/issues -Ftitle=x
@@ -448,3 +448,106 @@ allow	mac	Bash	claude --help
 allow	mac	Bash	claude --cloud 'x'
 deny	win	PowerShell	'' | claude.exe --print 'x'
 allow	win	PowerShell	'' | claude.exe --print --model opus --effort medium 'x'
+# The 2026-11 audit's denial ledgers, rewritten with neutral paths (effort 388). Deletes in a
+# session's own scratch folder need a real folder: tests/fixtures/guard-scratch.tsv.
+# Followed now: a cd, at top level, through an && chain, or adding a folder the command may be in.
+allow	mac	Bash	cd /work/repo/sub; rm -rf build
+allow	mac	Bash	cd /work/repo/sub && git status --short | head; rm -rf logs/ab
+allow	mac	Bash	cd /work/other && git log -1 && cd /work/repo && git checkout -- docs/a.md && rm -r docs/runs/x
+allow	win	Bash	cd "C:/work/repo/sub" && rm -rf logs/ab; tasklist | grep -i game
+allow	win	Bash	cd /c/work/repo && rm -rf logs/mergetest && python3 dc build
+allow	win	PowerShell	Set-Location C:\work\repo\sub; Remove-Item -Recurse -Force docs\features\audit-final
+allow	mac	Bash	S=/work/repo/build/t1; rm -rf $S; mkdir -p $S/work
+allow	mac	Bash	cd sub && W=/work/repo/sub/out && rm -rf "$W"
+# Still denied: a cd that could have failed or run apart, away from the worktree, or through a link.
+deny	mac	Bash	cd /work/other && rm -rf evidence/runs
+deny	mac	Bash	cd /work/other && git status --short | head; git commit -q -m x && rm -r evidence/winch
+deny	mac	Bash	cd /notes/.handoffs/eval && rm -rf e154 && mkdir e154
+deny	mac	Bash	cd sub | cat && rm -rf ../x
+deny	mac	Bash	cd sub & rm -rf ../x
+deny	mac	Bash	cd sub && rm -rf ../../x
+deny	mac	Bash	cd sub; for i in 1 2 3; do rm -rf x; cd ..; done
+deny	mac	Bash	for d in a b; do cd $d; rm -rf x; done
+deny	mac	Bash	f() { cd ..; }; f; rm -rf x
+deny	mac	Bash	cd /work/repo/sub && echo $(cd /work/repo && pwd) && cd /elsewhere; rm -rf x
+deny	mac	Bash	cd /elsewhere && echo $(cd /work/repo && pwd) && rm -rf x
+deny	mac	Bash	pushd /elsewhere; popd; rm -rf x
+deny	mac	Bash	cd -; rm -rf x
+deny	mac	Bash	source env.sh; rm -rf x
+deny	win	Bash	rm -rf /c/Users/me/Projects/other.worktrees/feat/evidence/progress-runtime && echo removed
+deny	win	PowerShell	Remove-Item -Recurse -Force C:\Users\me\Projects\other.worktrees\feat\docs\features\x
+deny	win	Bash	rm -rf /c/Users/me/workspace/remote-probe && echo removed
+deny	win	PowerShell	Set-Location C:\work\repo\sub; foreach ($d in 'a','b') { Set-Location ..; Remove-Item -Recurse x }
+# Variables: set to a literal earlier in the same command, followed only where that's certain.
+deny	mac	Bash	S=/work/repo/x; cd /elsewhere; S=y; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; true && S=/etc; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; true || S=/etc; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; if true; then S=/etc; fi; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; (S=/etc); rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; S=/etc | cat; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; sh -c 'S=/etc'; rm -rf "$S"
+deny	mac	Bash	cd sub && S=/work/repo/x | cat && rm -rf "$S"
+deny	mac	Bash	true && S=/work/repo/x; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x; unset S; rm -rf "$S/y"
+deny	mac	Bash	S=/work/repo/x; read S; rm -rf $S
+deny	mac	Bash	S=/work/repo/x; S+=/../../etc; rm -rf $S
+deny	mac	Bash	S=/work/repo/x; for S in /etc; do :; done; rm -rf $S
+deny	mac	Bash	S=/work/repo/x; while true; do rm -rf $S; S=/etc; done
+deny	mac	Bash	S=/work/repo/x; f() { rm -rf "$S"; }; S=/etc; f
+deny	mac	Bash	S=/work/repo/x; eval "$CMD"; rm -rf "$S"
+deny	mac	Bash	S='/work/repo/a /etc'; rm -rf $S
+deny	mac	Bash	S='/work/repo/*'; rm -rf $S
+deny	mac	Bash	S=; rm -rf $S/etc
+deny	mac	Bash	rm -rf $S; S=/work/repo/x
+deny	mac	Bash	S=/work/repo/x rm -rf $S
+deny	mac	Bash	S=/work/repo/x; rm -rf "${S:-/etc}"
+# mktemp -d: the bare folder it just made, nothing appended, never -u.
+allow	mac	Bash	T=$(mktemp -d); cp a.txt "$T"/; rm -rf "$T"
+allow	mac	Bash	S=$(mktemp -d) && cp -r state/repos "$S"/ && rm -rf "$S"
+allow	mac	Bash	T="$(mktemp -d -t probe)"; rm -rf $T
+deny	mac	Bash	T=$(mktemp -d); rm -rf "$T/x"
+deny	mac	Bash	T=$(mktemp -d); rm -rf "$T"/*
+deny	mac	Bash	T=$(mktemp -u -d); rm -rf "$T"
+deny	mac	Bash	T=$(mktemp -d --dry-run); rm -rf "$T"
+deny	mac	Bash	T=$(mktemp -d)/x; rm -rf "$T"
+deny	mac	Bash	T=x$(mktemp -d); rm -rf "$T"
+deny	mac	Bash	T=$(mktemp -d; echo /etc); rm -rf "$T"
+deny	mac	Bash	T=$(mktemp -d $D); rm -rf "$T"
+deny	mac	Bash	T=$(mktemp -d); T=/etc; rm -rf "$T"
+# PowerShell here-strings are one quoted word: prose or a script in them isn't read as commands.
+allow	win	PowerShell	git add -A; git commit -q -m @'⏎feat(ui): the gallery's moving target⏎⏎Don't rm -rf anything; gh pr create comes later.⏎'@
+allow	win	PowerShell	git reset --soft abc123; $msg = @'⏎feat(bench): it's the boiler's flame⏎'@⏎git commit -q -m $msg
+allow	win	PowerShell	@'⏎from pathlib import Path⏎p = Path('scripts/x.gd'); s = p.read_text()⏎print("git push --force")⏎'@ | python -
+allow	win	PowerShell	Add-Content -LiteralPath 'notes.md' -Value @'⏎The dispatcher's note: don't run gh issue create.⏎'@
+allow	win	PowerShell	[IO.File]::WriteAllText('report.md', @'⏎# Report⏎It's done; rm -rf wasn't needed.⏎'@)
+allow	win	PowerShell	$review = @"⏎Reviewed $sha: it's fine, and gh pr merge waits.⏎"@
+allow	win	PowerShell	Remove-Item -Recurse -Force docs/features/bench-launch; git commit -q -m @'⏎feat(bench): the suite's launch⏎'@
+deny	win	PowerShell	$msg = @"⏎$(git push --force)⏎"@
+deny	win	PowerShell	@'⏎text⏎'@; git push --force
+deny	win	PowerShell	git commit -m @'⏎msg⏎'@⏎Stop-Process -Name node
+deny	win	PowerShell	@'⏎it's unfinished⏎git push --force
+deny	win	PowerShell	@'⏎Review the change.⏎'@ | claude -p --output-format stream-json
+# Correct blocks from the ledgers, still denied.
+deny	mac	Bash	pkill -f 'http.server 4798'; git status --short
+deny	mac	Bash	kill 7196 2>/dev/null; pkill -f "sleep 2700"; W=/work/repo
+deny	mac	Bash	git -c filter.lfs.smudge= -c filter.lfs.required=false restore --source=HEAD --staged --worktree .
+deny	mac	Bash	env GIT_LFS_SKIP_SMUDGE=1 git restore --worktree .
+deny	win	Bash	git restore --pathspec-from-file=logs/generated-imports.txt
+deny	mac	Bash	rm -r /work/other.worktrees/feat/evidence/winch
+deny	mac	Bash	D=/work/other/target/debug/deps; rm -f $D/tool; rm -r $D/.backup
+deny	mac	Bash	set -e; N=/notes/.handoffs; cd $N/eval/harness; rm -rf __pycache__
+deny	mac	Bash	cd /work/other && gh repo rename other --repo owner/other --yes 2>&1
+deny	mac	Bash	id=$(gh api repos/owner/repo/rulesets --jq '.[0].id'); gh api -X PUT repos/owner/repo/rulesets/$id -f enforcement=active
+deny	mac	Bash	cd /work/other && gh run cancel 42 >/dev/null 2>&1
+deny	win	Bash	gh issue create --repo owner/tool --title 'Sidebar only groups sessions by repo' --body-file body.md
+deny	win	Bash	gh pr edit 7 --repo owner/repo --title 'Fix a flaky test' --body-file target/pr-body.md
+deny	win	Bash	gh api repos/owner/repo/pulls/7 --method PATCH --input target/pr-update.json --jq .html_url
+deny	mac	Bash	cd /work/other && git rebase main && git push -q --force-with-lease origin HEAD
+deny	win	Bash	W="C:/work/other"; git -C "$W" log --oneline -3; git -C "$W" reset --hard HEAD~1
+deny	win	Bash	cd /c/work/repo && taskkill //IM Game.exe //F
+deny	win	Bash	codex exec 'Reply with the word ok and nothing else.' < /dev/null
+# The PC ledger's 4 unknowns, still denied.
+deny	win	Bash	cd /c/Users/me/Projects/other/footage/day; rm -f */moments.md; rm -rf */stills; ls *
+deny	win	Bash	cd /c/Users/me/Projects/other/clips && rm -rf 2026-11-11-surfaces-v2 2>&1 | head -5
+deny	win	PowerShell	$testsRoot = (Resolve-Path -LiteralPath './tests').Path; foreach ($name in @('PIL','pillow')) { $target = Join-Path $testsRoot $name; Remove-Item -Recurse -Force $target }
+deny	win	PowerShell	$taskRoot = (Resolve-Path '.').Path; $taskTargets = @('exports/bench-cache/abc'); foreach ($t in $taskTargets) { Remove-Item -Recurse -Force (Join-Path $taskRoot $t) }

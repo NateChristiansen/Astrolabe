@@ -25,6 +25,7 @@ fn the_bypass_table_holds() {
         let scope = Scope {
             root: Some(root.to_owned()),
             cwd: Some(root.to_owned()),
+            session: None,
         };
         let command = command.replace('⏎', "\n");
         let verdict = decide(tool, &json!({ "command": command }), &scope);
@@ -37,6 +38,92 @@ fn the_bypass_table_holds() {
     }
     assert!(rows > 200, "the table went missing: {rows}");
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+const SCRATCH: &str = include_str!("fixtures/guard-scratch.tsv");
+
+/// Real folders, so links and ownership are checked as the hook would. Defect caught: a
+/// recursive delete in this session's own scratch folder was denied, and the exception must
+/// not reach another session's, their parent, shared temp or a link out.
+#[test]
+fn a_sessions_own_scratch_folder_can_be_deleted_and_nothing_beside_it() {
+    let unique = format!(
+        "{}-{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let base = std::env::temp_dir().join(format!("astrolabe-guard-{unique}"));
+    let session = format!("5e55{unique}");
+    let project = base.join("project");
+    let own = project.join(&session).join("scratchpad");
+    let other = project.join(format!("0the{unique}")).join("scratchpad");
+    let outside = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("guard-out-{unique}"));
+    for folder in [&own, &other, &outside, &base.join("links")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    // A junction's target is made first, as Windows links to a folder that exists.
+    std::fs::create_dir_all(outside.join(&session).join("scratchpad")).unwrap();
+    link(&outside, &own.join("out"));
+    link(&outside.join(&session), &base.join("links").join(&session));
+    let slash = |path: &Path| path.display().to_string().replace('\\', "/");
+    let root = if cfg!(windows) {
+        r"C:\work\repo"
+    } else {
+        "/work/repo"
+    };
+    let scope = Scope {
+        root: Some(root.to_owned()),
+        cwd: Some(root.to_owned()),
+        session: Some(session.clone()),
+    };
+    let mut wrong = Vec::new();
+    for line in SCRATCH.lines().filter(|l| !l.starts_with('#')) {
+        let [expect, tool, command] = line.splitn(3, '\t').collect::<Vec<_>>()[..] else {
+            panic!("bad row: {line}");
+        };
+        let command = (command.replace('⏎', "\n"))
+            .replace("{S}", &slash(&own))
+            .replace("{W}", &own.display().to_string())
+            .replace("{O}", &slash(&other))
+            .replace("{P}", &slash(&project))
+            .replace("{T}", &slash(&std::env::temp_dir()))
+            .replace("{L}", &slash(&own.join("out")))
+            .replace("{D}", &slash(&base.join("links").join(&session)));
+        let verdict = decide(tool, &json!({ "command": command }), &scope);
+        if verdict.is_some() != (expect == "deny") {
+            wrong.push(format!("{expect} {tool}: {command:?} got {verdict:?}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&outside);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // Without the session's id, its folder is like any other.
+    let unbound = Scope {
+        session: None,
+        ..scope
+    };
+    let command = format!("rm -rf {}/x", slash(&own));
+    assert!(decide("Bash", &json!({ "command": command }), &unbound).is_some());
+}
+
+/// A link to a folder: a symlink on Unix; a junction on Windows, which needs no privilege.
+fn link(target: &Path, at: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, at).unwrap();
+    #[cfg(windows)]
+    {
+        let status = Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(at)
+            .arg(target)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink /J {}", at.display());
+    }
 }
 
 #[test]
@@ -53,6 +140,7 @@ fn a_tools_own_working_directory_counts() {
     let scope = Scope {
         root: Some("/work/repo".to_owned()),
         cwd: Some("/work/repo".to_owned()),
+        session: None,
     };
     let outside = json!({ "cmd": "rm -rf target", "workdir": "/tmp" });
     assert!(decide("exec_command", &outside, &scope).is_some());

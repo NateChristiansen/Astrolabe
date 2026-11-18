@@ -122,6 +122,7 @@ pub(super) fn mint(
     let scope = guard::Scope {
         root: None,
         cwd: Some(hook::comparable(&cwd)),
+        session: None,
     };
     let reason = guard::decide_in(
         powershell,
