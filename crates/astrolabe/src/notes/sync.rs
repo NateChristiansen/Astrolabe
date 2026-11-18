@@ -217,8 +217,8 @@ impl Notes {
     /// Untracked files where the incoming commits add one. A rebase won't write over them and
     /// `--autostash` doesn't keep them, so one would stop every pull here: a hand-off file a
     /// save committed on the other machine can sit untracked here too, copied across or
-    /// written again. One that is byte for byte the incoming file goes, since the pull puts
-    /// the same bytes back. Any other is named and nothing is pulled, because only the owner
+    /// written again. One git would store exactly as the incoming file goes, since the pull
+    /// puts that content back, line endings as the notes check them out. Any other is named and nothing is pulled, because only the owner
     /// can say which copy to keep.
     fn clear_the_way(&self) -> Result<(), String> {
         let added = self.git(&[
@@ -247,7 +247,9 @@ impl Notes {
         if untracked.is_empty() {
             return Ok(());
         }
-        let mut local = vec!["hash-object", "--no-filters", "--"];
+        // Hashed as git would store it, through the path's attributes: a copy written with
+        // CRLF on Windows is the same text as one committed with LF, and checks out as it.
+        let mut local = vec!["hash-object", "--"];
         local.extend(&untracked);
         let local = self.git(&local)?;
         let wanted: Vec<String> = untracked

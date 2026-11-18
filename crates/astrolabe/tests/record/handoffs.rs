@@ -231,7 +231,8 @@ fn an_effort_with_no_initiative_carries_the_folders_named_for_its_number() {
 }
 
 /// Catches: the other machine's pull stopping for good on an untracked copy of a hand-off
-/// file this save committed, which `rebase --autostash` doesn't keep.
+/// file this save committed, which `rebase --autostash` doesn't keep, including a copy that
+/// differs only in line endings; and a copy with other text being discarded.
 #[test]
 fn an_identical_untracked_copy_on_the_other_machine_gives_way_and_a_different_one_is_named() {
     let world = World::new();
@@ -241,9 +242,16 @@ fn an_identical_untracked_copy_on_the_other_machine_gives_way_and_a_different_on
     assert!(mac.sync().1);
     assert!(pc.sync().1);
     // The same brief copied across by hand, and one that differs.
-    write(&mac.notes.join(".handoffs/quill/1-brief.md"), "# Brief\n");
+    write(
+        &mac.notes.join(".handoffs/quill/1-brief.md"),
+        "# Brief\n\nDo it.\n",
+    );
     write(&mac.notes.join(".handoffs/quill/1-report.md"), "# Report\n");
-    write(&pc.notes.join(".handoffs/quill/1-brief.md"), "# Brief\n");
+    // Windows' PowerShell writes CRLF: the same text as the LF the Mac committed.
+    write(
+        &pc.notes.join(".handoffs/quill/1-brief.md"),
+        "# Brief\r\n\r\nDo it.\r\n",
+    );
     write(
         &pc.notes.join(".handoffs/quill/1-report.md"),
         "# Report, the PC's\n",
