@@ -535,6 +535,15 @@ deny	bypass	deny	mac	Bash	!(gh pr merge 5)
 deny	bypass	deny	mac	Bash	if true; then(rm -rf /elsewhere/x); fi
 deny	bypass	deny	mac	Bash	for x in 1; do(rm -rf /elsewhere/x); done
 deny	bypass	deny	mac	Bash	echo x(git push --force)
+deny	bypass	deny	mac	Bash	!(case x in x) git push --force;; esac)
+deny	bypass	deny	mac	Bash	!(case x in a) true;; x) git reset --hard;; *) pkill node;; esac)
+deny	bypass	deny	mac	Bash	time(case $1 in *) gh pr merge 5;; esac)
+deny	bypass	deny	mac	Bash	!(if true; then git push --force; fi)
+deny	bypass	deny	mac	Bash	!(while true; do pkill node; done)
+deny	bypass	deny	mac	Bash	x(for i in 1; do rm -rf /elsewhere/x; done)
+deny	bypass	deny	mac	Bash	{(case x in x) rm -rf /elsewhere/x;; esac)}
+allow	bypass	deny	mac	Bash	echo $(case x in x) git push --force;; esac)
+allow	bypass	allow	mac	Bash	echo $(case x in x) echo hi;; esac)
 deny	bypass	deny	mac	Bash	cdpath=(/elsewhere); cd sub && rm -rf x
 deny	bypass	deny	mac	Bash	S=/work/repo/a; : ${S::=/etc}; rm -rf "$S"
 deny	bypass	deny	mac	Bash	printf -v IFS /; S=/work/repo/a; rm -rf $S

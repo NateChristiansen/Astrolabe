@@ -195,21 +195,20 @@ impl Parser {
                         expect = Expect::Heredoc;
                     }
                 }
-                // A `(` glued to a word is a zsh glob qualifier, `x(:h:h)`, which can rewrite
-                // the path, so the word is unknown; bash runs it as a subshell after `!`,
-                // `time`, `then` or `do`, so what's inside is still read as commands, as in a
-                // substitution. `name()` is still a function.
-                '(' if self.dialect == Dialect::Sh
-                    && word.is_some()
-                    && !(self.chars[self.at..].iter())
-                        .take_while(|c| **c != ')')
-                        .all(|c| c.is_whitespace()) =>
-                {
-                    let open = word.get_or_insert_default();
-                    open.text.push('(');
-                    self.substitution(open, ')', depth);
-                }
                 c if matches!(c, '\n' | ';' | '|' | '&' | '(' | ')') || until == Some(c) => {
+                    // A `(` glued to a word is a zsh glob qualifier, `x(:h:h)`, which can
+                    // rewrite the path, so that word is unknown. The `(` is still parsed as
+                    // main parses it, so what follows is read the same. `name()` is a function.
+                    let rest = self.chars[self.at..].iter().take_while(|c| **c != ')');
+                    let function = rest.clone().all(|c| c.is_whitespace());
+                    if c == '('
+                        && self.dialect == Dialect::Sh
+                        && !function
+                        && let Some(open) = word.as_mut()
+                    {
+                        open.dynamic = true;
+                        open.opaque = true;
+                    }
                     self.literal_error.get_or_insert(ONE_COMMAND);
                     end_word(&mut word, &mut command, &mut expect, &mut heredocs);
                     // A redirect with no target word before this must not skip the next
@@ -464,6 +463,9 @@ impl Parser {
         let (lead, joined, block, and) = (self.lead, self.joined, self.block, self.and);
         self.lead = true;
         self.list(Some(until), depth + 1);
+        // A `case` pattern's `)` ends it early, `$(case x in x) ...;; esac)`, leaving its
+        // block open: where it ends isn't known, so the text counts as unparsed.
+        self.broken |= self.block > block;
         (self.lead, self.joined, self.block, self.and) = (lead, joined, block, and);
         if let [inner] = &self.commands[start..]
             && makes_temp_folder(&inner.words)
