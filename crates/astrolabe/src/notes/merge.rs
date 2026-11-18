@@ -293,7 +293,7 @@ pub fn merge_record(base: &str, ours: &str, theirs: &str, saves: Saves) -> Optio
             Side::Theirs => (&o, &t),
         };
         let intro = format!(
-            "{} and {} saved this note without seeing each other's save. The later save stayed; below is what it replaced from the earlier one. The next save with a Current state replaces this section, so fold in what still holds.",
+            "{} and {} saved this note without seeing each other's save. The later save stayed; below is what the merge didn't keep, the earlier save's unless a part says otherwise. The next save with a Current state replaces this section, so fold in what still holds.",
             who(e),
             who(l)
         );
@@ -387,11 +387,25 @@ fn settle(
             let Some((merged, dropped)) = merge_list(bs, es, ls, name == "Pieces") else {
                 continue;
             };
-            if !dropped.is_empty() {
-                lost.push(part(
-                    &format!("Its {name} lines the later save replaced"),
-                    &dropped.join("\n"),
-                ));
+            let lines = |later: bool| {
+                let lines: Vec<&str> = dropped
+                    .iter()
+                    .filter(|(l, _)| *l == later)
+                    .map(|(_, t)| t.as_str())
+                    .collect();
+                lines.join("\n")
+            };
+            for (later, title) in [
+                (false, format!("Its {name} lines the later save replaced")),
+                (
+                    true,
+                    format!("The later save's {name} lines a tick from the earlier save kept out"),
+                ),
+            ] {
+                let text = lines(later);
+                if !text.is_empty() {
+                    lost.push(part(&title, &text));
+                }
             }
             merged
         };
@@ -441,7 +455,8 @@ enum Slot {
 /// A Decisions or Pieces list merged entry by entry, so neither save's entries go with a
 /// block the other won: every entry either side added is kept, earlier save's first; a piece
 /// ticked on either side stays ticked; where both changed one entry differently the later
-/// save's stands and the earlier's text comes back to be kept in the note. Entries are `- `
+/// save's stands. What either side loses comes back, with whether it was the later save's (a
+/// tick from the earlier save kept it out), to be kept in the note. Entries are `- `
 /// lines with any lines indented under them, matched by their text, or a piece by its words.
 /// None for a list holding anything else, or one entry twice: the line merge takes those.
 fn merge_list(
@@ -449,7 +464,7 @@ fn merge_list(
     earlier: &str,
     later: &str,
     pieces: bool,
-) -> Option<(String, Vec<String>)> {
+) -> Option<(String, Vec<(bool, String)>)> {
     let key = |item: &str| match pieces {
         true => crate::effort::piece_key(item.lines().next()?),
         false => Some(item.to_owned()),
@@ -516,8 +531,12 @@ fn merge_list(
             // Both changed it, differently: a tick is never lost, and otherwise the later
             // save's stands.
             let tick = |f: &Fate| text_of(f).is_some_and(|t| ticked(&t));
-            let (won, other) = if tick(e) && !tick(l) { (e, l) } else { (l, e) };
-            dropped.push(text_of(other).unwrap_or_else(|| format!("removed: {text}")));
+            let (won, other, later) = match tick(e) && !tick(l) {
+                true => (e, l, true),
+                false => (l, e, false),
+            };
+            let lost = text_of(other).unwrap_or_else(|| format!("removed: {text}"));
+            dropped.push((later, lost));
             won
         };
         resolved.push((Slot::Base(i), text_of(won)));
@@ -525,11 +544,11 @@ fn merge_list(
     for (k, lt) in &added_l {
         let text = match added_e.iter().find(|(x, _)| x == k) {
             Some((_, et)) if et != lt && ticked(et) && !ticked(lt) => {
-                dropped.push(lt.clone());
+                dropped.push((true, lt.clone()));
                 et
             }
             Some((_, et)) if et != lt => {
-                dropped.push(et.clone());
+                dropped.push((false, et.clone()));
                 lt
             }
             _ => lt,
@@ -1050,6 +1069,71 @@ mod tests {
                 .contains("Its Pieces lines the later save replaced:\n> - [ ] b two ways"),
             "{merged}"
         );
+    }
+
+    /// The merged note, checked to be the same bytes in either merge order, and its
+    /// Unmerged state section.
+    fn both_ways(base: &str, earlier: &str, later: &str) -> (String, String) {
+        let one = merge_record(base, earlier, later, Saves::default()).unwrap();
+        let two = merge_record(base, later, earlier, Saves::default()).unwrap();
+        assert_eq!(one, two);
+        let file = crate::effort::EffortFile::parse(&one).unwrap();
+        let unmerged = file.unmerged().unwrap_or_default().to_owned();
+        (one, unmerged)
+    }
+
+    const KEPT_OUT: &str = "The later save's Pieces lines a tick from the earlier save kept out:";
+
+    #[test]
+    fn a_later_replace_a_tick_kept_out_is_quoted_as_the_later_saves() {
+        // Defect: the later save's line was quoted as the earlier save's wording.
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        let earlier = record(
+            "2026-11-14T10:05:10-07:00",
+            "pc · claude",
+            &BODY.replace("- [ ] b", "- [x] b (2026-11-14)"),
+        );
+        // A `--pieces-file` replace: b is gone, c is new in its place.
+        let later = record(
+            "2026-11-14T10:05:28-07:00",
+            "mac · claude",
+            &BODY.replace("- [ ] b", "- [ ] c new"),
+        );
+        let (merged, unmerged) = both_ways(&base, &earlier, &later);
+        let file = crate::effort::EffortFile::parse(&merged).unwrap();
+        let pieces = file.pieces().unwrap();
+        assert!(
+            pieces.contains("- [x] b (2026-11-14)") && !pieces.contains("c new"),
+            "{merged}"
+        );
+        assert!(
+            unmerged.contains(&format!("{KEPT_OUT}\n> - [ ] c new")),
+            "{merged}"
+        );
+        assert!(!unmerged.contains("Its Pieces lines"), "{merged}");
+    }
+
+    #[test]
+    fn a_piece_both_added_and_only_the_earlier_ticked_quotes_the_later_line() {
+        // Defect: the later save's unticked line was quoted as the earlier save's.
+        let base = record("2026-11-14T10:00-07:00", "mac · claude", BODY);
+        let earlier = record(
+            "2026-11-14T10:05:10-07:00",
+            "pc · claude",
+            &format!("{BODY}- [x] z (2026-11-14)\n"),
+        );
+        let later = record(
+            "2026-11-14T10:05:28-07:00",
+            "mac · claude",
+            &format!("{BODY}- [ ] z\n"),
+        );
+        let (merged, unmerged) = both_ways(&base, &earlier, &later);
+        assert!(merged.contains("- [x] z (2026-11-14)\n"), "{merged}");
+        assert!(
+            unmerged.contains(&format!("{KEPT_OUT}\n> - [ ] z")),
+            "{merged}"
+        );
+        assert!(!unmerged.contains("Its Pieces lines"), "{merged}");
     }
 
     #[test]
