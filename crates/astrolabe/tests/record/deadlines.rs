@@ -26,6 +26,10 @@ fn answer_in(out: &str) -> Answer {
         return Answer::Denied(why.to_owned());
     }
     let shown = inner["updatedInput"]["command"].as_str().unwrap();
+    // A refused command's read fails too.
+    let shown = (shown.strip_suffix("; false"))
+        .or_else(|| shown.strip_suffix("; exit 1"))
+        .unwrap_or(shown);
     let path = (shown.strip_prefix("cat '"))
         .or_else(|| shown.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))
         .and_then(|p| p.strip_suffix('\''))

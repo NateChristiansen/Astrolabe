@@ -236,7 +236,7 @@ impl EffortCommand {
     }
 }
 
-/// The accepted forms, for a refusal.
+/// The accepted forms, printed when an effort command asks for --help.
 pub const FORMS: &str = "Accepted forms, each run alone as one command:\n\
 POSIX shell:\n  astrolabe effort save --status active --decision \"chose X over Y: reason\" <<'ASTROLABE'\n  <where it stands>\n\n  <what was decided and why>\n\n  <what's next; what isn't checked>\n  ASTROLABE\n\
 PowerShell (the here-string as the last argument, or piped in):\n  astrolabe effort save --status active @'\n  <the same three paragraphs>\n  '@\n  or:  @'\n  …\n  '@ | astrolabe effort save --status active\n\
@@ -283,6 +283,21 @@ pub(crate) fn is_assignment(word: &str) -> bool {
 /// `)` and backtick outside quotes end a command. It's only for deciding what to claim:
 /// `parse` reads the claimed command strictly.
 pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
+    split_commands(text).into_iter().map(|c| c.words).collect()
+}
+
+/// One simple command as `split_commands` reads it, with what a refusal needs to say what
+/// was wrong with the line around it.
+pub(crate) struct Simple {
+    pub(crate) words: Vec<String>,
+    /// It opened a heredoc or a here-string.
+    pub(crate) body: bool,
+    /// The operator that ended it: `|`, `||`, `&&`, `;`, `&`, a newline or a bracket.
+    pub(crate) ended_by: Option<String>,
+}
+
+/// `simple_commands`, keeping each command's body and the operator after it.
+pub(crate) fn split_commands(text: &str) -> Vec<Simple> {
     let text = text.replace("\r\n", "\n");
     let chars: Vec<char> = text.chars().collect();
     let mut commands = Vec::new();
@@ -290,6 +305,7 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
     let mut word = String::new();
     // A word that was quoted, even empty (`''`), is still a word.
     let mut started = false;
+    let mut body = false;
     // Heredoc delimiters opened on this line, skipped in order once it ends.
     let mut heredocs: Vec<(String, bool)> = Vec::new();
     let mut i = 0;
@@ -300,10 +316,20 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
         }
         *started = false;
     }
-    fn end_command(commands: &mut Vec<Vec<String>>, words: &mut Vec<String>) {
+    fn end_command(
+        commands: &mut Vec<Simple>,
+        words: &mut Vec<String>,
+        body: &mut bool,
+        ended_by: Option<String>,
+    ) {
         if !words.is_empty() {
-            commands.push(std::mem::take(words));
+            commands.push(Simple {
+                words: std::mem::take(words),
+                body: *body,
+                ended_by,
+            });
         }
+        *body = false;
     }
     // The index just past the line that starts at `from`, or the end.
     fn next_line(chars: &[char], from: usize) -> usize {
@@ -375,6 +401,7 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
                     at = next_line(&chars, at);
                 }
                 started = true;
+                body = true;
             }
             '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
                 end_word(&mut words, &mut word, &mut started);
@@ -395,11 +422,12 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
                 }
                 if !delimiter.is_empty() {
                     heredocs.push((delimiter, strip_tabs));
+                    body = true;
                 }
             }
             '\n' => {
                 end_word(&mut words, &mut word, &mut started);
-                end_command(&mut commands, &mut words);
+                end_command(&mut commands, &mut words, &mut body, Some("\n".into()));
                 i += 1;
                 for (delimiter, strip_tabs) in std::mem::take(&mut heredocs) {
                     while i < chars.len() {
@@ -420,8 +448,15 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
             }
             '|' | ';' | '&' | '(' | ')' | '`' => {
                 end_word(&mut words, &mut word, &mut started);
-                end_command(&mut commands, &mut words);
-                i += 1;
+                // `&&` and `||` are one operator, so no empty command sits between.
+                let doubled = matches!(c, '|' | '&') && chars.get(i + 1) == Some(&c);
+                let op: String = if doubled {
+                    [c, c].iter().collect()
+                } else {
+                    c.into()
+                };
+                end_command(&mut commands, &mut words, &mut body, Some(op));
+                i += if doubled { 2 } else { 1 };
             }
             c if c.is_whitespace() => {
                 end_word(&mut words, &mut word, &mut started);
@@ -434,7 +469,7 @@ pub(crate) fn simple_commands(text: &str) -> Vec<Vec<String>> {
         }
     }
     end_word(&mut words, &mut word, &mut started);
-    end_command(&mut commands, &mut words);
+    end_command(&mut commands, &mut words, &mut body, None);
     commands
 }
 

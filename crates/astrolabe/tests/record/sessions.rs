@@ -542,10 +542,13 @@ fn a_command_that_only_names_an_effort_command_runs_as_itself() {
     }
     assert_eq!(mac.effort_text(1), before);
     assert_eq!(mac.journal_today(), journal);
-    // Chained after another command, it's still claimed and refused with the forms rather
-    // than run by whatever `astrolabe` is on PATH.
+    // Chained after another command, it's still claimed and refused, naming the chaining,
+    // rather than run by whatever `astrolabe` is on PATH.
     let (out, ok) = mac.bash("s1", "true && astrolabe effort save --status done");
-    assert!(!ok && out.contains("Accepted forms"), "{out}");
+    assert!(
+        !ok && out.starts_with("Effort command refused: it runs after `true` in the same call"),
+        "{out}"
+    );
 }
 
 /// Catches: a Codex agent asked again, on loading its new effort once more, to undo a rename

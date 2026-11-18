@@ -5,7 +5,7 @@ use super::validation::{
     STATUSES, as_current, check_journal, check_wait, one_of, shift_plan_headings, split_plan,
 };
 use super::{Change, apply_ticks, line_id, saved_text};
-use crate::effort::{EffortCommand, EffortFile, FORMS};
+use crate::effort::{EffortCommand, EffortFile};
 use crate::notes::{JournalLine, Pull};
 use crate::session::SessionState;
 use std::path::{Path, PathBuf};
@@ -136,15 +136,17 @@ impl<'a> SaveRequest<'a> {
             && lessons.is_empty()
         {
             return Err(format!(
-                "nothing to save: give a Current state body, or a flag.\n{FORMS}"
+                "nothing to save: give a Current state body, or a flag. The form: {}",
+                crate::effort::form(&[])
             ));
         }
         if target.is_some()
             && (body_plan.is_some() || plan_file.is_some() || journal_text.is_some())
         {
-            return Err(format!(
-                "with --effort <n>, --journal and --plan-file are unavailable. Nothing was written.\n{FORMS}"
-            ));
+            return Err(
+                "with --effort <n>, --journal and --plan-file are unavailable. Nothing was written."
+                    .to_owned(),
+            );
         }
         if target.is_some() && state.worker.is_true() {
             return Err(format!(

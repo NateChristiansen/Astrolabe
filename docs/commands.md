@@ -293,6 +293,8 @@ Flag values refuse `$`, backticks and inner double quotes. For a piece such as `
 astrolabe effort save --tick "First repo note"
 ```
 
+A refused effort command writes nothing. The reply's first line names the cause, such as running after another command in the same call, a pipe or a redirect. The second line is the one line to run instead, or the verb's form when no line can be offered; `--help` prints every accepted form. The shell's status follows the reply: a refused or failed effort or notes command exits 1. A save whose commit failed after it was planned says it isn't saved yet: the write is kept, the next notes write tries it again, and running the same command again shows whether it landed.
+
 Alternatively, put the plan below Current state after a line containing `## Plan`. Use that or `--plan-file`, not both. The plan's headings are adjusted to fit inside the effort note. A plan with its own Pieces checklist, at any heading level, has it lifted out: it becomes the effort's Pieces when the save gives no `--pieces-file`, and is dropped as a copy when it does. The effort's page draws the plan folded, as the record of what was approved, beside the live Pieces list; the note keeps it whole.
 
 `save` has no flags for changing the title, repo, involvement, authority, priority or issue. Edit those in the effort note with the owner’s approval, then reload the effort to refresh its session context.

@@ -593,18 +593,29 @@ fn inline_code_pieces_can_be_ticked_without_changing_their_text() {
             .1
     );
     let before = mac.effort_text(1);
-    // The hook refuses shell-sensitive values and tells the agent a usable alternative.
-    for value in [piece, "First $repo note", "First \"repo\" note"] {
+    // The hook refuses shell-sensitive values and offers the prefix up to what the shell
+    // would read, which ticks the piece.
+    for (value, offered) in [
+        (piece, "--tick \"First repo note\""),
+        ("First $repo note", "--tick First"),
+        ("First \"repo\" note", "--tick \"First repo note\""),
+    ] {
         let (out, ok) = mac.bash("s1", &format!("astrolabe effort save --tick \"{value}\""));
         assert!(!ok, "{out}");
+        let mut lines = out.lines();
         assert!(
-            out.contains("no $, backtick or inner double quote"),
+            lines
+                .next()
+                .unwrap()
+                .starts_with("Effort command refused: "),
             "{out}"
         );
-        assert!(
-            out.contains("unambiguous prefix") && out.contains("--tick \"First repo note\""),
+        assert_eq!(
+            lines.next().unwrap(),
+            format!("Run instead: astrolabe effort save {offered}"),
             "{out}"
         );
+        assert!(!out.contains("Accepted forms"), "{out}");
         assert_eq!(mac.effort_text(1), before);
     }
     let (out, ok) = mac.bash("s1", "astrolabe effort save --tick \"first repo note\"");
@@ -1063,7 +1074,9 @@ fn status_transitions_need_text_but_repeated_statuses_do_not() {
         let before = m.effort_text(1);
         let (out, ok) = m.bash("s1", &format!("astrolabe effort save {flags}"));
         assert!(
-            !ok && out.contains("needs a Current state body") && out.contains("Accepted forms"),
+            !ok && out.contains("needs a Current state body")
+                && out.contains("The form: astrolabe effort save --status")
+                && !out.contains("Accepted forms"),
             "{out}"
         );
         assert_eq!(m.effort_text(1), before);

@@ -673,7 +673,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 Ok(ticket)
             });
         return Some(match result {
-            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+            Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell, true),
             Err(why) => hook::deny(&format!(
                 "Astrolabe couldn't record or show the approval: {why}."
             )),
@@ -737,12 +737,10 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 };
                 (done.text, done.ok, Some(parsed.digest()), Some(op_key))
             }
-            Err(why) => (
-                format!("Effort command refused: {why}.\n{}", crate::effort::FORMS),
-                false,
-                None,
-                None,
-            ),
+            Err(why) => {
+                let (text, ok) = crate::effort::refusal(command, powershell, &why);
+                (text, ok, None, None)
+            }
         };
         crate::deadline::stall("ticket");
         let left = state_dir()
@@ -756,7 +754,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
                 if let (Some(op_key), true) = (op_key, ok) {
                     crate::record::answers(&op_key);
                 }
-                rewrite_to_show(tool_input, key, &ticket, powershell)
+                rewrite_to_show(tool_input, key, &ticket, powershell, ok)
             }
             Err(why) => hook::deny(&format!(
                 "Astrolabe couldn't show this effort command's result ({why}); run `astrolabe notes status`."
@@ -840,7 +838,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             Ok(ticket)
         });
     Some(match left {
-        Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell),
+        Ok(ticket) => rewrite_to_show(tool_input, key, &ticket, powershell, true),
         Err(why) => hook::deny(&format!(
             "Astrolabe couldn't finish this ({why}). Run `astrolabe activate --status` to see where this session stands; claim no new protection."
         )),
@@ -852,16 +850,22 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
 /// and its classifier denied this program's own print; the hook has written by then, so a
 /// denied print would hide a write that happened. This program's `--show` is the fallback
 /// when there's no state folder to name.
+/// The app runs a read of the result in place of the command. `worked` false makes that read
+/// fail too, so the shell's status says what the reply says: both apps still show a failed
+/// command's output to the agent (Claude probed, Codex seen in its transcripts, 2026-11-18).
+/// Effort and notes commands pass whether they worked; activation and approvals keep the
+/// read's own status.
 pub(super) fn rewrite_to_show(
     tool_input: &Value,
     key: &str,
     ticket: &str,
     powershell: bool,
+    worked: bool,
 ) -> Value {
     let text = state_dir().map(|dir| ticket_text(&dir.join("shown"), ticket));
     let text = text.map(|p| p.display().to_string());
     let print = match text {
-        Some(path) => print_command(&path, powershell),
+        Some(path) => print_command(&path, powershell, worked),
         None => {
             // This program by its full path: a login shell's PATH can find another copy.
             let exe = std::env::current_exe().map(|exe| exe.display().to_string());

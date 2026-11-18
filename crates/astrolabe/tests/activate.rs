@@ -61,6 +61,10 @@ fn rewritten(command: &str) -> Vec<&str> {
 
 /// The ticket a rewritten read names: `cat '<state>/shown/<ticket>.txt'`, or PowerShell's.
 fn read_ticket(command: &str) -> Option<&str> {
+    // A refused command's read fails too: `; false`, or PowerShell's `; exit 1`.
+    let command = (command.strip_suffix("; false"))
+        .or_else(|| command.strip_suffix("; exit 1"))
+        .unwrap_or(command);
     let path = command
         .strip_prefix("cat '")
         .or_else(|| command.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))?;

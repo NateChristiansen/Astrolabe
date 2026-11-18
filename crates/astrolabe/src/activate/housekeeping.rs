@@ -60,7 +60,7 @@ pub(super) fn command(input: &Value, session: Option<&str>, child: bool) -> Opti
             if let (Some(key), true) = (op_key, ok) {
                 crate::record::forget(&key);
             }
-            routing::rewrite_to_show(tool_input, key, &ticket, powershell)
+            routing::rewrite_to_show(tool_input, key, &ticket, powershell, ok)
         }
         Err(why) => crate::hook::deny(&format!(
             "Astrolabe couldn't show the notes command's result ({why}); run astrolabe notes status."

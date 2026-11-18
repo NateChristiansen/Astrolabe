@@ -2,12 +2,14 @@
 pub(crate) mod command;
 mod file;
 mod initiative;
+mod refusal;
 pub mod roster;
 pub use command::{DELIMITER, EffortCommand, FORMS, INITIATIVE_FLAGS, NEW_FLAGS, SAVE_FLAGS};
 pub use file::{EffortFile, plain_goal, slug};
 pub(crate) use file::{
     fence_mask, frontmatter, header_bounds, piece_box, piece_key, split_frontmatter,
 };
+pub use refusal::{form, refusal};
 
 /// What an effort's `involvement` may be: how often the owner wants to be asked.
 pub(crate) const INVOLVEMENTS: [&str; 3] = ["autonomous", "check in at plan", "each step"];

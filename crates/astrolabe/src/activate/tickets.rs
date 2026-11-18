@@ -84,12 +84,13 @@ pub(crate) fn quoted(path: &str, powershell: bool) -> String {
 /// The read the app runs: `cat` is in Claude's built-in read-only set; PowerShell's
 /// `-LiteralPath` keeps `[` and `]` in a path from being read as wildcards, and `-Encoding
 /// UTF8` keeps Windows PowerShell 5.1 from reading the UTF-8 text as ANSI.
-pub(super) fn print_command(path: &str, powershell: bool) -> String {
+pub(super) fn print_command(path: &str, powershell: bool, worked: bool) -> String {
     let path = quoted(path, powershell);
-    if powershell {
-        format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}")
-    } else {
-        format!("cat {path}")
+    match (powershell, worked) {
+        (true, true) => format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}"),
+        (true, false) => format!("Get-Content -Raw -Encoding UTF8 -LiteralPath {path}; exit 1"),
+        (false, true) => format!("cat {path}"),
+        (false, false) => format!("cat {path}; false"),
     }
 }
 
@@ -221,12 +222,21 @@ mod print_tests {
             "'C:\\Users\\O''Brien\\x'"
         );
         assert_eq!(
-            print_command("/s/[work]/t.txt", false),
+            print_command("/s/[work]/t.txt", false, true),
             "cat '/s/[work]/t.txt'"
         );
         assert_eq!(
-            print_command("C:\\s\\[work]\\t.txt", true),
+            print_command("C:\\s\\[work]\\t.txt", true, true),
             "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\s\\[work]\\t.txt'"
+        );
+        // A refused command's read fails as well, so the shell doesn't report success.
+        assert_eq!(
+            print_command("/s/t.txt", false, false),
+            "cat '/s/t.txt'; false"
+        );
+        assert_eq!(
+            print_command("C:\\s\\t.txt", true, false),
+            "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\s\\t.txt'; exit 1"
         );
     }
 }

@@ -25,6 +25,16 @@ So in both apps a guard hook that runs out of time or fails lets the command thr
 
 Astrolabe's hook answers inside that timeout once it's running, and denies when it fails partway. What's left is a program that's missing or dies as it starts: it gives no answer, so the command runs. A hook that is still writing the notes when its answer is due answers, waits for that git until just inside the timeout, and exits; a git still running then finishes without the hook, which is the same exposure as when the app ends a hook. `onFailure` is not set in the plugin's manifest, because with no matcher it would block every tool call in every session on a machine where the program is missing, and it is unprobed from a plugin.
 
+## What the agent sees of a command that fails
+
+The hook hands back a read of an effort command's reply in place of the command, and makes that read fail when the command did, so the shell's status matches the reply.
+
+**Claude Code** (probe, Mac, 2026-11-18). A Bash command that prints a line and then exits 1 comes back to the model as `Exit code 1` followed by the full output.
+
+**Codex** (its own transcripts, Mac, 2026-11-18). A shell command's result carries `exit_code` beside its full `output`, as for a failed `kill` with exit code 1. No live probe was run.
+
+Not checked: either app's PowerShell tool with the `; exit 1` the hook appends there.
+
 ## How much hook text reaches the model
 
 **Claude Code** (docs). A hook's `additionalContext`, `systemMessage` and plain output are capped at 10,000 characters, with no setting to raise it. Past the cap the text goes to a file and the model gets the path and a preview of up to 2,000 characters.

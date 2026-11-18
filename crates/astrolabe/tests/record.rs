@@ -248,9 +248,12 @@ impl Machine {
         }
         let command = hso["updatedInput"]["command"].as_str().unwrap();
         // The app runs a read of the ticket's text; the ticket's own `--show` says the same
-        // and carries whether it worked.
-        let path = (command.strip_prefix("cat '"))
-            .or_else(|| command.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))
+        // and carries whether it worked. A refused command's read fails too.
+        let failing =
+            (command.strip_suffix("; false")).or_else(|| command.strip_suffix("; exit 1"));
+        let read = failing.unwrap_or(command);
+        let path = (read.strip_prefix("cat '"))
+            .or_else(|| read.strip_prefix("Get-Content -Raw -Encoding UTF8 -LiteralPath '"))
             .and_then(|p| p.strip_suffix('\''))
             .unwrap_or_else(|| panic!("{command}"));
         let printed = std::fs::read_to_string(path).unwrap();
@@ -262,7 +265,17 @@ impl Machine {
             ticket["text"].as_str().unwrap().trim_end(),
             printed.trim_end()
         );
-        (printed, ticket["ok"] == true)
+        let ok = ticket["ok"] == true;
+        // A read that fails never carries a reply that worked. Effort and notes commands
+        // also fail when they didn't work; activation keeps its read's own status.
+        assert!(failing.is_none() || !ok, "{command}: {printed}");
+        #[cfg(unix)]
+        if command.starts_with("cat '") {
+            let ran = Command::new("sh").arg("-c").arg(command).output().unwrap();
+            assert_eq!(ran.status.success(), failing.is_none(), "{command}");
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), printed);
+        }
+        (printed, ok)
     }
 
     /// The command run with no hook: the shell feeds the heredoc body on stdin.
@@ -447,6 +460,8 @@ mod initiatives;
 mod lessons;
 #[path = "record/recovery.rs"]
 mod recovery;
+#[path = "record/refusals.rs"]
+mod refusals;
 #[path = "record/results.rs"]
 mod results;
 #[path = "record/saving.rs"]

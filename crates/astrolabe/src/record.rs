@@ -2,7 +2,7 @@
 //! words become an effort note, at most one journal line and a commit; the session is bound to the effort; code stamps what it
 //! can observe (time, machine, provider, session, branch, head, unpushed, dirty), without asking the agent to reconstruct them.
 use crate::activate::{self, Repos, read_state, state_dir, state_path};
-use crate::effort::{EffortCommand, EffortFile, FORMS, InitiativePage, slug};
+use crate::effort::{EffortCommand, EffortFile, InitiativePage, slug};
 use crate::notes::{self, JournalLine, Notes, Op, Pull, RECENT_MS, RepoFacts};
 use crate::session::{Binding, Field, SessionState};
 use serde_json::Value;
@@ -256,7 +256,12 @@ fn new_inner(
         .as_deref()
         .map(str::trim)
         .filter(|b| !b.is_empty())
-        .ok_or_else(|| format!("the goal goes in the body, one line is enough.\n{FORMS}"))?;
+        .ok_or_else(|| {
+            format!(
+                "the goal goes in the body, one line is enough: {}",
+                crate::effort::form(&["effort".into(), "new".into()])
+            )
+        })?;
     // Refused before the lock, reconcile and pull: a refused goal changes nothing.
     let current = as_current(goal)?;
     let status = one_of("status", cmd.flag("status").unwrap_or("active"), &STATUSES)?;
@@ -702,7 +707,10 @@ fn initiative_inner(
         .map(str::trim)
         .filter(|b| !b.is_empty())
         .ok_or_else(|| {
-            format!("the page goes in the body, with its `## Efforts` section.\n{FORMS}")
+            format!(
+                "the page goes in the body, with its `## Efforts` section: {}",
+                crate::effort::form(&["initiative".into()])
+            )
         })?;
     // Refused before the lock, reconcile and pull: a refused body changes nothing.
     let page = InitiativePage::parse(body)?;
@@ -921,6 +929,10 @@ pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: 
         Ok(text) => Done { text, ok: true },
         Err(why) if why.contains(LESSONS_UNFINISHED) => Done {
             text: why,
+            ok: false,
+        },
+        Err(why) if why.contains(KEPT) => Done {
+            text: why[..1].to_uppercase() + &why[1..],
             ok: false,
         },
         Err(why) => Done {
@@ -1183,6 +1195,15 @@ fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<Vec<String>, Strin
                 "Saved {record}{LESSONS_UNFINISHED}{why}. Don't save it again: the next notes write, or `astrolabe notes sync`, finishes the close without repeating a disposition."
             ))
         }
+        // The intent outlived the failure, so the next notes write tries it again: "NOT
+        // saved" here was read as final while the write landed moments later (2026-11-18).
+        Err(why) if notes.intent_path(&op.key).exists() => {
+            let why = why.trim().lines().next().unwrap_or("git refused a commit");
+            Err(format!(
+                "{record}{KEPT}{}. The write is kept, and the next notes write tries it again: run the same command again to see whether it landed, changing nothing in it.",
+                why.trim_end_matches('.')
+            ))
+        }
         Err(why) => Err(why),
     }
 }
@@ -1208,6 +1229,8 @@ fn handoff_scope(
             .map(|slug| notes::Handoffs::effort(number, Some(&slug))),
     }
 }
+
+const KEPT: &str = " not saved yet: ";
 
 /// A save that moves the effort to done from any other status: the one that closes its lessons.
 fn marks_done(status: Option<&str>, before: &str) -> bool {
@@ -1261,7 +1284,7 @@ fn require_transition_body(
         && body.is_none_or(|b| b.trim().is_empty())
     {
         return Err(format!(
-            "changing status to {status} needs a Current state body so status moves with its text. Nothing was written.\n{FORMS}"
+            "changing status to {status} needs a Current state body so status moves with its text. Nothing was written. The form: astrolabe effort save --status {status} <<'ASTROLABE' (in PowerShell @'), then the body, then a line holding only ASTROLABE ('@)"
         ));
     }
     Ok(())
@@ -1458,7 +1481,7 @@ fn save_target(
         && delivered.is_none()
     {
         return Err(format!(
-            "run `astrolabe effort read {target}` first: a body, pieces list or tick needs the note delivered in this session. Nothing was written.\n{FORMS}"
+            "run `astrolabe effort read {target}` first: a body, pieces list or tick needs the note delivered in this session. Nothing was written."
         ));
     }
     if delivered.is_some_and(|hash| hash != &on_disk_hash) {
@@ -1748,7 +1771,8 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
     // double-quoted path holding an apostrophe keeps its backslashes.
     let parsed = match EffortCommand::parse_in(&text, true) {
         Ok(p) => p,
-        Err(why) => return (format!("Effort command refused: {why}.\n{FORMS}"), false),
+        // No hook named the shell; the line offered uses this system's usual one.
+        Err(why) => return crate::effort::refusal(&text, cfg!(windows), &why),
     };
     let digest = parsed.digest();
     let Some(dir) = state_dir() else {
@@ -1785,9 +1809,8 @@ pub fn plain(first: &str, args: &[&str], body: Option<&str>) -> (String, bool) {
         };
     }
     (
-        format!(
-            "NOT recorded: the plugin's hook didn't take this command, so nothing was written. Run it alone, exactly as written. If it fails again while `astrolabe activate --status` says this session is on for an effort, the hook most likely ran out of the time the app gives it: stop retrying and tell the owner. Otherwise Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled.\n{FORMS}"
-        ),
+        "NOT recorded: the plugin's hook didn't take this command, so nothing was written. Run it alone, exactly as written. If it fails again while `astrolabe activate --status` says this session is on for an effort, the hook most likely ran out of the time the app gives it: stop retrying and tell the owner. Otherwise Astrolabe may be off for this machine (the owner runs `astrolabe on` in a terminal); on Codex, review and trust the plugin's hooks with /hooks; on Claude, check the plugin is enabled."
+            .to_owned(),
         false,
     )
 }
