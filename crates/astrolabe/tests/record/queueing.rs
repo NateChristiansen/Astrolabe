@@ -305,3 +305,57 @@ fn another_machines_push_between_a_queued_save_and_its_sync_still_merges() {
     assert!(pushed.contains("a queued line"), "{pushed}");
     assert_eq!(astrolabe::notes::effort_files(&mac.notes).len(), 2);
 }
+
+/// The defect: a save queued while a sync rebased planned from the folder as the rebase left
+/// it, origin's older copy, so it was refused as changed since delivered and had that older
+/// copy delivered, which refused the session's next save too. Planned without the lock, a
+/// note that reads as changed sends the save to wait for the lock and plan again under it.
+#[test]
+fn a_save_queued_during_a_rebase_waits_for_the_lock_instead_of_reading_it_as_changed() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.run(&mac.notes, &["notes", "sync"], "").1);
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nSECOND TEXT\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    let rel = astrolabe::notes::effort_files(&mac.notes)[0].1.clone();
+    let path = mac.notes.join(&rel);
+    let mine = std::fs::read_to_string(&path).unwrap();
+    let origin = git(&mac.notes, &["show", &format!("origin/main:{rel}")]);
+    assert!(
+        !origin.contains("SECOND TEXT"),
+        "origin already has the second save"
+    );
+    let notes = mac.notes_lib();
+    let held = notes.lock().unwrap();
+    // A rebase's first checkout: the effort reads as origin has it.
+    write(&path, &origin);
+    let (out, ok) = std::thread::scope(|scope| {
+        let mac = &mac;
+        let save = scope.spawn(move || {
+            mac.bash(
+                "s1",
+                "astrolabe effort save <<'ASTROLABE'\nTHIRD TEXT\nASTROLABE",
+            )
+        });
+        std::thread::sleep(Duration::from_millis(1500));
+        // The rebase replays the local commit and lets go.
+        write(&path, &mine);
+        drop(held);
+        save.join().unwrap()
+    });
+    assert!(ok && out.starts_with("Saved"), "{out}");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("THIRD TEXT")
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save <<'ASTROLABE'\nFOURTH TEXT\nASTROLABE",
+    );
+    assert!(ok && out.starts_with("Saved"), "{out}");
+}

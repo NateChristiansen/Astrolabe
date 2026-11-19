@@ -5,12 +5,14 @@
 //! a reconcile of its own: each save held the lock about 3 s on Windows, so of 24 sessions
 //! saving in the same minute there, 3 were refused on every try (2026-11-18).
 //!
-//! It isn't pulled first. Its note is checked again when it's committed, and one that changed
-//! while it waited is left out. Another machine's saves reach it as they reach any local
+//! It isn't pulled first, and its reply says so. Its note is checked again when it's committed,
+//! and one that changed while it waited is left out. A note that reads as changed when it's
+//! planned may be a sync's rebase under way, so that save waits for the lock and is planned
+//! again under it, refused there if it's really stale. Another machine's saves reach it as they reach any local
 //! commit, through the sync's merge.
 use super::{
-    Attempt, KEPT, Plan, Reply, SaveRequest, attempt, bound_label, canonical_membership, now_reads,
-    plan, saved_reply, told, unfinished_pieces,
+    Attempt, KEPT, PLAN_UNDER_LOCK, Plan, Reply, SaveRequest, attempt, bound_label,
+    canonical_membership, now_reads, plan, saved_reply, told, unfinished_pieces,
 };
 use crate::activate::{read_state, state_path};
 use crate::effort::{EffortCommand, EffortFile};
@@ -50,7 +52,9 @@ pub(super) fn pending(
         .map(|op| op.key)
 }
 
-/// The save, waiting its turn.
+/// The save, waiting its turn. None when its note read as changed since it was delivered:
+/// read without the lock, that may be a sync's rebase under way, so the save is planned
+/// again under the lock instead of refused.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn save(
     notes: &Notes,
@@ -62,16 +66,16 @@ pub(super) fn save(
     provider: &str,
     cwd: &Path,
     waiting: Waiting,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let record = &req.record;
     let key = match attempt(notes, cmd, key, session, cwd) {
-        Attempt::Answered(reply) => return Ok(reply),
+        Attempt::Answered(reply) => return Ok(Some(reply)),
         Attempt::Key(key) => key,
     };
     if notes.already_applied(&key) {
-        return Ok(format!(
+        return Ok(Some(format!(
             "Already saved: this same tool call was done before (a retry), so nothing new was written to {record}."
-        ));
+        )));
     }
     let mut notes_lines = Vec::new();
     let (op, file) = match pending(notes, cmd, session, cwd) {
@@ -90,8 +94,9 @@ pub(super) fn save(
             let initiative = (req.initiative)
                 .map(|name| canonical_membership(&notes.root, name))
                 .transpose()?;
-            let Plan { mut op, file, .. } = plan(
+            let planned = plan(
                 notes,
+                false,
                 cmd,
                 req,
                 state,
@@ -101,7 +106,11 @@ pub(super) fn save(
                 cwd,
                 initiative.as_deref(),
                 &mut notes_lines,
-            )?;
+            );
+            let Plan { mut op, file, .. } = match planned {
+                Err(why) if why == PLAN_UNDER_LOCK => return Ok(None),
+                planned => planned?,
+            };
             op.queued = true;
             notes.save_intent(&op)?;
             (op, file)
@@ -113,10 +122,10 @@ pub(super) fn save(
     match turn {
         Turn::Saved => {
             crate::nudge::clear_shell(session);
-            let pulled = match notes.has_remote() {
-                true => Pull::Pulled,
-                false => Pull::Offline("no remote".to_owned()),
-            };
+            let pulled = Pull::Offline(match notes.has_remote() {
+                true => "queued behind other saves on this machine, so not pulled first".to_owned(),
+                false => "no remote".to_owned(),
+            });
             let head = saved_reply(&Reply {
                 record,
                 status: file.prop("status").unwrap_or("?"),
@@ -130,7 +139,7 @@ pub(super) fn save(
                 unfinished: &unfinished_pieces(&file),
             });
             notes.finish(&op.key, &head);
-            Ok(head)
+            Ok(Some(head))
         }
         Turn::LeftOut => Err(left_out(notes, cmd, session, cwd, record)),
         Turn::Gone => Err(
@@ -186,6 +195,12 @@ fn left_out(notes: &Notes, cmd: &EffortCommand, session: &str, cwd: &Path, recor
     let why = format!(
         "{record} changed while this save waited its turn behind other saves on this machine, so this save was left out and nothing was overwritten."
     );
+    // Read under the lock, or with no rebase under way: mid-rebase the note reads as origin's
+    // older copy, and delivering that would refuse the session's next save for nothing.
+    let held = notes.try_lock();
+    if held.is_none() && notes.rebase_dir().ok().flatten().is_some() {
+        return format!("{why} Save again: that save's reply shows the effort as it is now.");
+    }
     let dir = &notes.state;
     let now = read_state(dir, session)
         .ok()

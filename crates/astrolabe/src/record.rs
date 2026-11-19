@@ -973,9 +973,14 @@ fn save_inner(
         true => match notes.lock_or_wait()? {
             Ok(held) => held,
             Err(waiting) => {
-                return queue::save(
+                match queue::save(
                     &notes, cmd, &req, &state, key, session, provider, cwd, waiting,
-                );
+                )? {
+                    Some(reply) => return Ok(reply),
+                    // Read as changed without the lock: this save waits for it, as one that
+                    // doesn't queue, and is planned again under it.
+                    None => notes.lock()?,
+                }
             }
         },
         false => notes.lock()?,
@@ -1027,6 +1032,7 @@ fn save_inner(
     }
     let Plan { op, file, before } = plan(
         &notes,
+        true,
         cmd,
         &req,
         &state,
@@ -1125,13 +1131,19 @@ struct Plan {
     before: String,
 }
 
+/// What `plan` says, planning without the lock, of a note that reads as changed since it was
+/// delivered: plan again under the lock. A sync partway through its rebase holds the lock with
+/// origin's older copy on disk, so only a read under the lock can tell a stale save.
+const PLAN_UNDER_LOCK: &str = "the note read as changed without the lock; plan again under it";
+
 /// Plans a save of the session's own record: refused when the note changed since it was
-/// delivered, or when the request doesn't fit the note. Under the notes lock, or without
-/// it for a save that waits its turn (see `queue`): it reads files, and writes nothing but
-/// the session's state when it refuses a stale save.
+/// delivered, or when the request doesn't fit the note. Under the notes lock (`locked`), or
+/// without it for a save that waits its turn (see `queue`): it reads files, and writes nothing
+/// but the session's state when it refuses a stale save, which it does only under the lock.
 #[allow(clippy::too_many_arguments)]
 fn plan(
     notes: &Notes,
+    locked: bool,
     cmd: &EffortCommand,
     req: &SaveRequest,
     state: &SessionState,
@@ -1155,6 +1167,9 @@ fn plan(
         return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
     };
     if delivered != on_disk_hash {
+        if !locked {
+            return Err(PLAN_UNDER_LOCK.to_owned());
+        }
         // Delivered anew, so the next save from this text goes through.
         state.delivered.set(on_disk_hash.clone());
         state.delivered_ms.set(notes::now_ms());
