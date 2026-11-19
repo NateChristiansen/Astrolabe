@@ -431,6 +431,9 @@ pub(crate) enum Step {
     Rebase,
     /// Writing the notes: refused before anything is planned or touched.
     Write,
+    /// Committing another session's queued save: left for the next writer, with room kept
+    /// for the holder's own write.
+    Queued,
 }
 
 /// How much time a hook has for `step` when that's too little to start it; None when it
@@ -444,6 +447,7 @@ fn short_of_on(clock: &Clock, step: Step) -> Option<Duration> {
         Step::Pull => (clock.pull(), clock.rebase() * 2),
         Step::Rebase => (clock.pull(), clock.rebase()),
         Step::Write => (clock.work(), clock.write()),
+        Step::Queued => (clock.work(), clock.write() * 2),
     };
     let left = clock.left(until);
     (left < need).then_some(left)

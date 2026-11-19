@@ -462,6 +462,8 @@ mod home;
 mod initiatives;
 #[path = "record/lessons.rs"]
 mod lessons;
+#[path = "record/queueing.rs"]
+mod queueing;
 #[path = "record/recovery.rs"]
 mod recovery;
 #[path = "record/refusals.rs"]

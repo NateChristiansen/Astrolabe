@@ -95,6 +95,7 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         bound: None,
         at_ms: None,
         handoffs: None,
+        queued: false,
     };
     notes.apply(&op).ok()?;
     crate::application::finish(&notes, &op.key, "Owner wait cleared");

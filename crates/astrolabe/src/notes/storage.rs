@@ -269,11 +269,23 @@ impl Notes {
     /// ticket never got written is dropped once it's old; nothing is applied twice. An intent
     /// that can't be read fails here every time, so nothing new lands over it until it's
     /// repaired.
+    ///
+    /// Saves queued while another writer held the lock are committed here too, in the order
+    /// they were planned, each in its own commit. In a hook, another session's queued save is
+    /// left for the next writer once committing it would cut into the time the holder's own
+    /// write needs; the save named `first`, the caller's own, goes before the rest and has a
+    /// write's time.
     pub fn reconcile(&self) -> Vec<String> {
+        self.reconcile_first(None)
+    }
+
+    pub fn reconcile_first(&self, first: Option<&str>) -> Vec<String> {
         let mut failed: Vec<String> = (self.broken_intents().into_iter())
             .map(|b| format!("{b} (kept for repair)"))
             .collect();
-        for op in self.intents() {
+        let mut ops = self.intents();
+        ops.sort_by_key(|op| (Some(op.key.as_str()) != first, op.at_ms.unwrap_or(0)));
+        for op in ops {
             // Finished and its session told: nothing waits on it.
             if op.result.is_some() && self.is_answered(&op.key) {
                 self.forget(&op.key);
@@ -291,6 +303,29 @@ impl Notes {
                     let _ = std::fs::remove_file(self.intent_path(&op.key));
                 }
                 continue;
+            }
+            if op.queued && !op.committed {
+                let own = first == Some(op.key.as_str());
+                if !own && crate::deadline::short_of(crate::deadline::Step::Queued).is_some() {
+                    continue;
+                }
+                match self.still_fits(&op) {
+                    Some(true) => {}
+                    // Unbegun: no commit of it can have landed, so none is looked for.
+                    Some(false) => {
+                        match self.apply(&op) {
+                            Ok(()) => self.finish(&op.key, RECOVERED),
+                            Err(why) => failed.push(format!("{}: {why}", op.key)),
+                        }
+                        continue;
+                    }
+                    None => {
+                        let mut op = op;
+                        op.result = Some(super::QUEUED_STALE.to_owned());
+                        let _ = self.save_intent(&op);
+                        continue;
+                    }
+                }
             }
             // A renumber planned but not begun, its file still where it was: the note may
             // have been saved since, at that path, and replaying the plan would write the
@@ -328,6 +363,26 @@ impl Notes {
             }
         }
         failed
+    }
+
+    /// Whether a queued save can still be committed: its note reads as it did when the save
+    /// was planned, or as the save leaves it, which is a commit begun and not recorded. A
+    /// note that reads as neither changed while the save waited, unless the save's own
+    /// commit landed and a later save changed it since.
+    ///
+    /// Some(false) when it's unbegun, Some(true) when it may have begun, None when it no
+    /// longer fits.
+    fn still_fits(&self, op: &Op) -> Option<bool> {
+        let [(rel, text)] = op.files.as_slice() else {
+            return None;
+        };
+        match std::fs::read_to_string(self.root.join(rel)) {
+            Ok(have) if have == *text => Some(true),
+            Ok(have) if op.base.as_deref() == Some(super::content_hash(&have).as_str()) => {
+                Some(false)
+            }
+            _ => self.already_applied(&op.key).then_some(true),
+        }
     }
 
     /// Records what the hook showed for this op; the caller removes the intent once the

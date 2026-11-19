@@ -362,6 +362,7 @@ fn close_inner(
             bound: None,
             at_ms: None,
             handoffs: None,
+            queued: false,
         };
         notes.apply(&op)?;
     }

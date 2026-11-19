@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 pub mod lesson;
+mod queue;
 mod save;
 mod validation;
 use save::{
@@ -450,6 +451,7 @@ fn new_inner(
         bound: Some(format!("effort {number}")),
         at_ms: Some(notes::now_ms()),
         handoffs: None,
+        queued: false,
     };
     apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
     notes.spawn_sync();
@@ -615,6 +617,7 @@ pub fn take_up(
         bound: None,
         at_ms: None,
         handoffs: None,
+        queued: false,
     };
     notes.apply(&op)?;
     if starts {
@@ -901,6 +904,7 @@ fn initiative_inner(
         bound: bound_label(&notes.state, session),
         at_ms: Some(notes::now_ms()),
         handoffs: None,
+        queued: false,
     };
     apply_kept(&notes, &op, &format!("initiative {page_slug}"), "filed")?;
     let saved = saved_text(&pulled, notes.spawn_sync());
@@ -965,8 +969,20 @@ fn save_inner(
         "no effort is bound to this session. Start one with `astrolabe effort new`, or load the one the owner named with `astrolabe activate --effort <n>`",
     )?;
     let mut req = SaveRequest::parse(cmd, &state, cwd)?;
-    let _held = notes.lock()?;
-    let leftovers = crate::application::reconcile(&notes);
+    let _held = match queue::queues(&req) {
+        true => match notes.lock_or_wait()? {
+            Ok(held) => held,
+            Err(waiting) => {
+                return queue::save(
+                    &notes, cmd, &req, &state, key, session, provider, cwd, waiting,
+                );
+            }
+        },
+        false => notes.lock()?,
+    };
+    // A retry of a save still queued is committed first, so it's matched below as landed.
+    let pending = queue::pending(&notes, cmd, session, cwd);
+    let leftovers = crate::application::reconcile_first(&notes, pending.as_deref());
     if !leftovers.is_empty() {
         return Err(format!(
             "earlier notes writes are still unfinished and failed again, so nothing new is written until they're repaired: {}",
@@ -1009,126 +1025,22 @@ fn save_inner(
             &notes, cmd, &req, key, session, provider, cwd, &state, target, initiative, &pulled,
         );
     }
-    let rel = &req.rel;
-    let path = notes.root.join(rel);
-    let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
-    closed_header(record, &on_disk)?;
-    let on_disk_hash = notes::content_hash(&on_disk);
-    let mut file = EffortFile::parse(&on_disk)?;
-    let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
-        return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
-    };
-    if delivered != on_disk_hash {
-        // Delivered anew, so the next save from this text goes through.
-        state.delivered.set(on_disk_hash.clone());
-        state.delivered_ms.set(notes::now_ms());
-        let _ = notes::write_text(&state_path(&dir, session), &state.to_string());
-        let mut pieces = file
-            .pieces()
-            .map(|p| format!("\n\nIts Pieces now:\n\n{p}"))
-            .unwrap_or_default();
-        if let Some(u) = file.unmerged() {
-            pieces += &format!(
-                "\n\nIts {} now, which a save with a Current state replaces, so fold in what still holds:\n\n{u}",
-                notes::merge::UNMERGED
-            );
-        }
-        return Err(format!(
-            "{record} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
-            file.prop("saved_by").unwrap_or("?"),
-            file.prop("updated").unwrap_or("?"),
-            file.current
-        ));
-    }
-    let status = req.status.as_deref();
-    require_transition_body(&file, status, req.current.as_deref())?;
-    if req.page_binding && status == Some("done") {
-        let pages = crate::effort::initiative_catalog(&notes.root)?;
-        let page = crate::effort::resolve_initiative(&pages, &req.number)?;
-        let open: Vec<_> = crate::effort::initiative_members(&notes.root, page)?
-            .into_iter()
-            .filter(|(_, f)| !matches!(f.prop("status"), Some("done" | "abandoned")))
-            .map(|(_, f)| f.title)
-            .collect();
-        if !open.is_empty() {
-            return Err(format!(
-                "initiative cannot be done while members are open: {}. Nothing was written",
-                open.join(", ")
-            ));
-        }
-    }
-    let facts = RepoFacts::read(cwd);
-    let (day, _) = notes::local_day_time();
-    if req.plan_shifted {
-        notes_lines.push(
-            "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."
-                .to_owned(),
-        );
-    }
-    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
-    lesson::require_open(&notes, &newly_named(&file, &req))?;
-    let before = edit_bound(&mut file, &req, initiative, &day)?;
-    if let Some(wait) = newly_needs_owner(&file, &before, &waited) {
-        notes_lines.push(validation::needs_you_note(record, wait));
-    }
-    let lesson_closes = match !req.page_binding && marks_done(status, &before) {
-        true => {
-            let number = req.number.parse().unwrap_or(0);
-            let (closes, lines) = lesson::closes(&notes, &file, number, &day);
-            notes_lines.extend(lines);
-            closes
-        }
-        false => Vec::new(),
-    };
-    let machine = notes::machine_name();
-    let journal = req
-        .journal_line(key, &machine, notes::now_ms(), &day)
-        .into_iter()
-        .collect();
-    let now = notes::local_stamp();
-    let saver = Saver {
-        now: &now,
-        machine: &machine,
-        provider,
+    let Plan { op, file, before } = plan(
+        &notes,
+        cmd,
+        &req,
+        &state,
+        key,
         session,
-    };
-    let text = if req.page_binding {
-        stamp_initiative(&mut file, state.repo.as_deref().unwrap_or(""), &day, &saver);
-        file.render_initiative()
-    } else {
-        stamp(
-            &mut file,
-            session,
-            provider,
-            stamp_facts(cwd, facts.as_ref()),
-        );
-        file.render()
-    };
-    let now = notes::now_ms();
-    let mut next_state = state.clone();
-    next_state.saved(notes::content_hash(&text), now);
-    let message = commit_message(req.page_binding, &req.number, status, &before);
-    let op = Op {
-        reply_after_ms: None,
-        lesson_close: None,
-        lesson_closes,
-        key: key.to_owned(),
-        files: vec![(rel.clone(), text)],
-        renames: Vec::new(),
-        journal,
-        message,
-        base: Some(on_disk_hash),
-        states: vec![(state_path(&dir, session), next_state.to_value())],
-        committed: false,
-        digest: Some(cmd.digest()),
-        result: None,
-        cwd: Some(crate::hook::comparable(cwd)),
-        session: Some(session.to_owned()),
-        bound: Some(state.record_label()),
-        at_ms: Some(notes::now_ms()),
-        handoffs: handoff_scope(&notes.root, rel, req.page_binding, &req.number, &file),
-    };
+        provider,
+        cwd,
+        initiative,
+        &mut notes_lines,
+    )?;
+    let status = req.status.as_deref();
     notes_lines.extend(apply_save(&notes, &op, record)?);
+    // Saves queued behind this one while it wrote, as many as its time allows.
+    crate::application::reconcile(&notes);
     // The save covers what the session's commands changed up to now.
     crate::nudge::clear_shell(session);
     // Every save, so the other machine's board follows it: a checkpoint held for a batching
@@ -1185,6 +1097,165 @@ fn save_inner(
     }
     crate::application::finish(&notes, key, &head);
     Ok(head)
+}
+
+/// How a refused stale save shows the note as it is now, to save again from.
+fn now_reads(file: &EffortFile) -> String {
+    let mut pieces = file
+        .pieces()
+        .map(|p| format!("\n\nIts Pieces now:\n\n{p}"))
+        .unwrap_or_default();
+    if let Some(u) = file.unmerged() {
+        pieces += &format!(
+            "\n\nIts {} now, which a save with a Current state replaces, so fold in what still holds:\n\n{u}",
+            notes::merge::UNMERGED
+        );
+    }
+    format!(
+        "Its Current state now:\n\n{}{pieces}\n\nSave again from this.",
+        file.current
+    )
+}
+
+/// A bound save's write, planned whole, and the effort as it will read once written.
+struct Plan {
+    op: Op,
+    file: EffortFile,
+    /// The status before this save.
+    before: String,
+}
+
+/// Plans a save of the session's own record: refused when the note changed since it was
+/// delivered, or when the request doesn't fit the note. Under the notes lock, or without
+/// it for a save that waits its turn (see `queue`): it reads files, and writes nothing but
+/// the session's state when it refuses a stale save.
+#[allow(clippy::too_many_arguments)]
+fn plan(
+    notes: &Notes,
+    cmd: &EffortCommand,
+    req: &SaveRequest,
+    state: &SessionState,
+    key: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    initiative: Option<&str>,
+    notes_lines: &mut Vec<String>,
+) -> Result<Plan, String> {
+    let dir = &notes.state;
+    let record = &req.record;
+    let mut state = state.clone();
+    let rel = &req.rel;
+    let path = notes.root.join(rel);
+    let on_disk = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
+    closed_header(record, &on_disk)?;
+    let on_disk_hash = notes::content_hash(&on_disk);
+    let mut file = EffortFile::parse(&on_disk)?;
+    let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
+        return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
+    };
+    if delivered != on_disk_hash {
+        // Delivered anew, so the next save from this text goes through.
+        state.delivered.set(on_disk_hash.clone());
+        state.delivered_ms.set(notes::now_ms());
+        let _ = notes::write_text(&state_path(dir, session), &state.to_string());
+        return Err(format!(
+            "{record} changed since it was delivered to this session (saved by {} at {}). Nothing was overwritten. {}",
+            file.prop("saved_by").unwrap_or("?"),
+            file.prop("updated").unwrap_or("?"),
+            now_reads(&file)
+        ));
+    }
+    let status = req.status.as_deref();
+    require_transition_body(&file, status, req.current.as_deref())?;
+    if req.page_binding && status == Some("done") {
+        let pages = crate::effort::initiative_catalog(&notes.root)?;
+        let page = crate::effort::resolve_initiative(&pages, &req.number)?;
+        let open: Vec<_> = crate::effort::initiative_members(&notes.root, page)?
+            .into_iter()
+            .filter(|(_, f)| !matches!(f.prop("status"), Some("done" | "abandoned")))
+            .map(|(_, f)| f.title)
+            .collect();
+        if !open.is_empty() {
+            return Err(format!(
+                "initiative cannot be done while members are open: {}. Nothing was written",
+                open.join(", ")
+            ));
+        }
+    }
+    let facts = RepoFacts::read(cwd);
+    let (day, _) = notes::local_day_time();
+    if req.plan_shifted {
+        notes_lines.push(
+            "The plan's headings were shifted so its top level is `###`, because the effort file's sections are read by `## `."
+                .to_owned(),
+        );
+    }
+    let waited = file.prop("waits_for").unwrap_or_default().to_owned();
+    lesson::require_open(notes, &newly_named(&file, req))?;
+    let before = edit_bound(&mut file, req, initiative, &day)?;
+    if let Some(wait) = newly_needs_owner(&file, &before, &waited) {
+        notes_lines.push(validation::needs_you_note(record, wait));
+    }
+    let lesson_closes = match !req.page_binding && marks_done(status, &before) {
+        true => {
+            let number = req.number.parse().unwrap_or(0);
+            let (closes, lines) = lesson::closes(notes, &file, number, &day);
+            notes_lines.extend(lines);
+            closes
+        }
+        false => Vec::new(),
+    };
+    let machine = notes::machine_name();
+    let journal = req
+        .journal_line(key, &machine, notes::now_ms(), &day)
+        .into_iter()
+        .collect();
+    let now = notes::local_stamp();
+    let saver = Saver {
+        now: &now,
+        machine: &machine,
+        provider,
+        session,
+    };
+    let text = if req.page_binding {
+        stamp_initiative(&mut file, state.repo.as_deref().unwrap_or(""), &day, &saver);
+        file.render_initiative()
+    } else {
+        stamp(
+            &mut file,
+            session,
+            provider,
+            stamp_facts(cwd, facts.as_ref()),
+        );
+        file.render()
+    };
+    let now = notes::now_ms();
+    let mut next_state = state.clone();
+    next_state.saved(notes::content_hash(&text), now);
+    let message = commit_message(req.page_binding, &req.number, status, &before);
+    let op = Op {
+        reply_after_ms: None,
+        lesson_close: None,
+        lesson_closes,
+        key: key.to_owned(),
+        files: vec![(rel.clone(), text)],
+        renames: Vec::new(),
+        journal,
+        message,
+        base: Some(on_disk_hash),
+        states: vec![(state_path(dir, session), next_state.to_value())],
+        committed: false,
+        digest: Some(cmd.digest()),
+        result: None,
+        cwd: Some(crate::hook::comparable(cwd)),
+        session: Some(session.to_owned()),
+        bound: Some(state.record_label()),
+        at_ms: Some(notes::now_ms()),
+        handoffs: handoff_scope(&notes.root, rel, req.page_binding, &req.number, &file),
+        queued: false,
+    };
+    Ok(Plan { op, file, before })
 }
 
 /// How a done save's reply starts when its own commit landed and a lesson close after it
@@ -1577,6 +1648,7 @@ fn save_target(
         bound: Some(state.record_label()),
         at_ms: Some(notes::now_ms()),
         handoffs: handoff_scope(&notes.root, "", false, &target.to_string(), &file),
+        queued: false,
     };
     needs_you.extend(apply_save(notes, &op, &format!("effort {target}"))?);
     let sync_started = notes.spawn_sync();
@@ -1748,6 +1820,7 @@ fn journal_inner(
         bound: None,
         at_ms: Some(notes::now_ms()),
         handoffs: None,
+        queued: false,
     };
     apply_kept(&notes, &op, &format!("journal line for {day}"), "written")?;
     notes.spawn_sync();

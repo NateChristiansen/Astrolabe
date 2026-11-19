@@ -636,6 +636,7 @@ impl Notes {
             bound: None,
             at_ms: None,
             handoffs: None,
+            queued: false,
         };
         self.apply(&op)?;
         self.forget(&key);

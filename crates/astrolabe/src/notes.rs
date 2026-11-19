@@ -53,6 +53,12 @@ pub struct Notes {
 /// also holds its share of `WRITERS`, when it got one.
 pub struct Held(#[allow(dead_code)] File, #[allow(dead_code)] Option<File>);
 
+/// A save waiting its turn for the notes lock, holding its share of `WRITERS` while it does.
+pub struct Waiting(#[allow(dead_code)] Option<File>);
+
+/// How long a save in a hook waits for the notes lock before it waits its turn instead.
+const TURN_AFTER: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// A planned write, applied whole and idempotently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Op {
@@ -109,7 +115,15 @@ pub struct Op {
     /// The hand-off files a save owns, committed with it when they changed.
     #[serde(default)]
     pub handoffs: Option<Handoffs>,
+    /// Planned without the notes lock by a save that found another writer holding it, and
+    /// committed by whoever holds the lock next, only if its note still reads as it did
+    /// when planned (`base`). One that doesn't is left out, with `QUEUED_STALE` for result.
+    #[serde(default)]
+    pub queued: bool,
 }
+
+/// The result of a queued save left out because its note changed while it waited.
+pub const QUEUED_STALE: &str = "Effort NOT saved: it changed while this save waited its turn behind other saves on this machine, so nothing was written. Save again: that save's reply shows the effort as it is now.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LessonClose {
@@ -179,6 +193,24 @@ impl Notes {
     /// which the write is refused with nothing touched.
     pub fn lock(&self) -> Result<Held, String> {
         self.take_lock().map_err(Locked::said)
+    }
+
+    /// The notes lock for a save in a hook, unless another writer has it: then the save
+    /// waits its turn instead (see `record::queue`), keeping its share of `WRITERS` so a
+    /// sync still goes after it. Each save held the lock about 3 s on Windows, so 24 saves
+    /// in a minute queued past the time their hooks had (2026-11-18).
+    pub fn lock_or_wait(&self) -> Result<Result<Held, Waiting>, String> {
+        let file = self.lock_file(LOCK)?;
+        let share = (self.lock_file(WRITERS).ok()).filter(share_soon);
+        let started = std::time::Instant::now();
+        match crate::deadline::lock_within(&file, TURN_AFTER) {
+            Ok(crate::deadline::Wait::Held) => (self
+                .after_git_left_running(Held(file, share), started))
+            .map(Ok)
+            .map_err(Locked::said),
+            Ok(crate::deadline::Wait::Busy(_)) => Ok(Err(Waiting(share))),
+            Err(e) => Err(format!("notes lock: {e}")),
+        }
     }
 
     fn take_lock(&self) -> Result<Held, Locked> {
@@ -510,6 +542,7 @@ impl Notes {
             bound: None,
             at_ms: None,
             handoffs: None,
+            queued: false,
         };
         // Every session bound to the old path follows, inside the same recoverable op.
         for entry in std::fs::read_dir(&self.state)

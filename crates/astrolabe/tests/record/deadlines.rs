@@ -144,8 +144,10 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+/// A save of the session's own effort under a held lock waits its turn (see `queueing`);
+/// one that doesn't queue, such as a done save, is refused with nothing planned or written.
 #[test]
-fn a_held_notes_lock_refuses_a_save_with_a_reply() {
+fn a_held_notes_lock_refuses_a_save_that_doesnt_queue_with_a_reply() {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
@@ -155,7 +157,8 @@ fn a_held_notes_lock_refuses_a_save_with_a_reply() {
     // The lock wait ends a little past half the hook's time; the rest is room for a slow
     // machine to start the program and its git calls.
     let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
-    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
+    let done = "astrolabe effort save --status done <<'ASTROLABE'\nDone. It works.\nASTROLABE";
+    let (answer, took) = mac.timed("s1", "call-2", done, &env, Duration::from_secs(25));
     let Answer::Shown(text, ok) = answer else {
         panic!("a reply through the ticket, not a denial or silence");
     };
@@ -171,10 +174,23 @@ fn a_held_notes_lock_refuses_a_save_with_a_reply() {
     assert_eq!(mac.effort_text(1), before);
     assert_eq!(mac.log(), log);
     assert!(mac.unfinished().is_empty(), "nothing was planned or left");
+    // A checkpoint queues instead, and says it isn't saved yet when its hook's time is up.
+    let (answer, took) = mac.timed("s1", "call-3", SAVE, &env, Duration::from_secs(25));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort 1 not saved yet: ") && text.contains("queued behind them"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(mac.effort_text(1), before);
+    assert_eq!(mac.log(), log);
+    assert_eq!(mac.unfinished().len(), 1, "the queued save is kept");
     drop(held);
     let (out, ok) = mac.bash("s1", SAVE);
-    assert!(ok, "{out}");
-    assert!(mac.journal_today().contains("a line for the day"));
+    assert!(ok && out.starts_with("Already saved"), "{out}");
+    assert_eq!(mac.journal_today().matches("a line for the day").count(), 1);
 }
 
 #[test]

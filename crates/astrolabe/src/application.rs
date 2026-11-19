@@ -86,7 +86,12 @@ fn refresh_views(notes: &Notes) {
 }
 
 pub fn reconcile(notes: &Notes) -> Vec<String> {
-    let result = notes.reconcile();
+    reconcile_first(notes, None)
+}
+
+/// `reconcile`, with the caller's own queued save, if any, committed first.
+pub fn reconcile_first(notes: &Notes, first: Option<&str>) -> Vec<String> {
+    let result = notes.reconcile_first(first);
     refresh_views(notes);
     result
 }
