@@ -20,6 +20,15 @@ const INTENTS: &str = "ops";
 const ASKED: &str = "sync-asked";
 const SYNC: &str = "sync.json";
 const LOCK: &str = "notes.lock";
+/// Held shared by every writer while it waits for the notes lock and holds it, and
+/// exclusively by a sync for the moment it takes the notes lock: a sync, which can wait,
+/// goes only when no writer is waiting. Every save starts a sync, and with those taking
+/// turns with the saves, half of 24 saves at once on one machine were refused for time
+/// (2026-11-18).
+const WRITERS: &str = "writers.lock";
+/// Held by the one sync waiting for the notes lock. A sync that finds it held has nothing
+/// to do: the waiting one pushes every commit made before it gets the lock.
+const QUEUED: &str = "sync-queued.lock";
 /// A finished intent or a ticket older than this no longer explains a plain command.
 pub const RECENT_MS: i64 = 60_000;
 /// How long after a write was first attempted the same command is taken for its retry, when
@@ -40,8 +49,9 @@ pub struct Notes {
     changed: std::sync::atomic::AtomicBool,
 }
 
-/// Held while writing. Dropped, the lock is released; killed, the OS releases it.
-pub struct Held(#[allow(dead_code)] File);
+/// Held while writing. Dropped, the lock is released; killed, the OS releases it. A writer
+/// also holds its share of `WRITERS`, when it got one.
+pub struct Held(#[allow(dead_code)] File, #[allow(dead_code)] Option<File>);
 
 /// A planned write, applied whole and idempotently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +122,9 @@ pub struct LessonClose {
 enum Locked {
     /// Another process held it for all the time this hook could wait.
     Busy(std::time::Duration),
+    /// Git's own index lock in the checkout was held, by no git this program left running,
+    /// for all the time this hook could wait.
+    Index(std::time::Duration),
     /// The lock file couldn't be opened or locked at all.
     Failed(String),
 }
@@ -165,31 +178,57 @@ impl Notes {
     /// and inside one for the share of its time a hook can wait (see `deadline`), after
     /// which the write is refused with nothing touched.
     pub fn lock(&self) -> Result<Held, String> {
-        self.take_lock().map_err(|locked| match locked {
-            Locked::Busy(waited) => format!(
-                "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
-                crate::deadline::seconds(waited)
-            ),
-            Locked::Failed(why) => why,
-        })
+        self.take_lock().map_err(Locked::said)
     }
 
     fn take_lock(&self) -> Result<Held, Locked> {
-        std::fs::create_dir_all(&self.state)
-            .map_err(|e| Locked::Failed(format!("{}: {e}", self.state.display())))?;
-        let path = self.state.join(LOCK);
-        let file = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|e| Locked::Failed(format!("{}: {e}", path.display())))?;
+        let file = self.lock_file(LOCK).map_err(Locked::Failed)?;
+        // Without its share a writer still writes, only with no claim to go before a sync.
+        let share = (self.lock_file(WRITERS).ok()).filter(share_soon);
         let started = std::time::Instant::now();
         match crate::deadline::lock(&file) {
-            Ok(crate::deadline::Wait::Held) => self.after_git_left_running(Held(file), started),
+            Ok(crate::deadline::Wait::Held) => {
+                self.after_git_left_running(Held(file, share), started)
+            }
             Ok(crate::deadline::Wait::Busy(waited)) => Err(Locked::Busy(waited)),
             Err(e) => Err(Locked::Failed(format!("notes lock: {e}"))),
         }
+    }
+
+    /// The notes lock for a sync, taken only when no writer is waiting for it. None when
+    /// another sync is already waiting for it, since that one pushes what this one would.
+    fn lock_for_sync(&self) -> Result<Option<Held>, String> {
+        let queued = self.lock_file(QUEUED)?;
+        let failed = |e: std::io::Error| format!("notes lock: {e}");
+        if !FileExt::try_lock_exclusive(&queued).map_err(failed)? {
+            return Ok(None);
+        }
+        let (writers, file) = (self.lock_file(WRITERS)?, self.lock_file(LOCK)?);
+        let started = std::time::Instant::now();
+        loop {
+            FileExt::lock_exclusive(&writers).map_err(failed)?;
+            let free = FileExt::try_lock_exclusive(&file).map_err(failed)?;
+            FileExt::unlock(&writers).map_err(failed)?;
+            if free {
+                break;
+            }
+            // Held by something that isn't a writer, such as the board server's pull.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        drop(queued);
+        (self.after_git_left_running(Held(file, None), started))
+            .map(Some)
+            .map_err(Locked::said)
+    }
+
+    /// One of the lock files in the state folder, opened.
+    fn lock_file(&self, name: &str) -> Result<File, String> {
+        std::fs::create_dir_all(&self.state)
+            .map_err(|e| format!("{}: {e}", self.state.display()))?;
+        let path = self.state.join(name);
+        (File::options().create(true).truncate(false).write(true))
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// The lock is this process's, but a hook that ran out of time may have left git
@@ -203,6 +242,12 @@ impl Notes {
     /// refuses if it is still in the way. A process waits its time out once: until it
     /// finds nothing held, its later locks go on at once, so a command that takes the lock
     /// several times isn't held up each time by something that isn't ending.
+    ///
+    /// Git's index lock held by some other program (the owner's git, an editor's) is waited
+    /// for the same way: a write that went ahead would fail at its first `git add` with its
+    /// text already written, to be committed later by whoever next held the lock, after a
+    /// reply that said it wasn't saved (2026-11-18). A hook still facing it is refused
+    /// before anything is written.
     fn after_git_left_running(
         &self,
         held: Held,
@@ -215,14 +260,23 @@ impl Notes {
             true => std::time::Duration::ZERO,
             false => crate::deadline::wait_for_git(),
         };
+        let index = self.git_dir().ok().map(|dir| dir.join("index.lock"));
         let from = std::time::Instant::now();
         let mut pause = std::time::Duration::from_millis(5);
-        while crate::worktree::left_running(&self.state) {
+        loop {
+            let ours = crate::worktree::left_running(&self.state);
+            let theirs = !ours && index.as_ref().is_some_and(|lock| lock.exists());
+            if !ours && !theirs {
+                break;
+            }
             let waited = from.elapsed();
             if waited >= wait {
                 WAITED_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
-                if crate::deadline::in_hook() && self.git_in_the_way() {
+                if crate::deadline::in_hook() && ours && self.git_in_the_way() {
                     return Err(Locked::Busy(started.elapsed()));
+                }
+                if crate::deadline::in_hook() && theirs {
+                    return Err(Locked::Index(waited));
                 }
                 return Ok(held);
             }
@@ -245,6 +299,12 @@ impl Notes {
         })
     }
 
+    /// Whether git's index lock is there in the checkout.
+    fn index_held(&self) -> bool {
+        self.git_dir()
+            .is_ok_and(|dir| dir.join("index.lock").exists())
+    }
+
     /// Where git keeps this checkout's own state.
     fn git_dir(&self) -> Result<PathBuf, String> {
         let dot = self.root.join(".git");
@@ -261,16 +321,10 @@ impl Notes {
     /// left running is still in the checkout, so a background caller skips a turn instead
     /// of queueing behind a save.
     pub fn try_lock(&self) -> Option<Held> {
-        std::fs::create_dir_all(&self.state).ok()?;
-        let file = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.state.join(LOCK))
-            .ok()?;
+        let file = self.lock_file(LOCK).ok()?;
         let free =
             FileExt::try_lock_exclusive(&file).ok()? && !crate::worktree::left_running(&self.state);
-        free.then_some(Held(file))
+        free.then_some(Held(file, None))
     }
 
     /// The folder git keeps for a rebase under way in the checkout, if there is one; an
@@ -521,7 +575,44 @@ impl Notes {
                 Vec::new(),
                 Pull::Offline("another session held the notes".to_owned()),
             ),
+            Err(Locked::Index(_)) => (Vec::new(), Pull::Offline(INDEX_HELD.to_owned())),
             Err(Locked::Failed(why)) => (vec![why], Pull::Offline("no lock".to_owned())),
+        }
+    }
+}
+
+/// Why a pull didn't run, when git's index lock was held by another program.
+const INDEX_HELD: &str = "another git command held the notes checkout's index lock";
+
+impl Locked {
+    fn said(self) -> String {
+        let seconds = crate::deadline::seconds;
+        match self {
+            Locked::Busy(waited) => format!(
+                "the notes are busy: another session's write or a sync held them for the {} s this hook could wait, so nothing was written. Run the same command again",
+                seconds(waited)
+            ),
+            Locked::Index(waited) => format!(
+                "{INDEX_HELD} (`.git/index.lock`) for the {} s this hook could wait, so nothing was written. Run the same command again once that git is done. If this keeps happening with no git running there, a git that crashed left the file behind: tell the owner",
+                seconds(waited)
+            ),
+            Locked::Failed(why) => why,
+        }
+    }
+}
+
+/// A writer's share of `WRITERS`. A sync holds it exclusively only for the moment it takes
+/// the notes lock, so a share that doesn't come soon means something else holds it, and
+/// the writer goes on without.
+fn share_soon(writers: &File) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        match FileExt::try_lock_shared(writers) {
+            Ok(true) => return true,
+            Ok(false) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            _ => return false,
         }
     }
 }

@@ -1196,3 +1196,77 @@ fn a_rebase_the_pull_couldnt_abort_is_finished_by_the_next_pull() {
         "OURS"
     );
 }
+
+/// Another program's git holding the index (the owner's, an editor's) is waited out: a
+/// save made while it holds the lock goes through once it lets go, instead of failing at
+/// its first `git add`.
+#[test]
+fn a_save_waits_out_another_programs_index_lock() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let index = mac.notes.join(".git/index.lock");
+    write(&index, "");
+    let held = index.clone();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        std::fs::remove_file(held).unwrap();
+    });
+    let started = Instant::now();
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    assert!(started.elapsed() >= Duration::from_millis(1400));
+    release.join().unwrap();
+    assert!(mac.journal_today().contains("a line for the day"));
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "");
+}
+
+/// An index lock held past the wait refuses the save before anything is written, saying
+/// so: on 2026-11-18 the save wrote its text, failed at `git add`, said "NOT saved", and
+/// was committed later from its intent, on a copy its pull hadn't refreshed, which left the
+/// notes diverged once it was released. Here nothing is written or kept, and once the lock
+/// goes an ordinary save lands and its sync pushes it over the other machine's work.
+#[test]
+fn an_index_lock_held_past_the_wait_refuses_the_save_with_nothing_written() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.sync().1);
+    // The other machine's commit is on origin, waiting for the Mac's next pull.
+    let pc = world.machine("pc");
+    write(
+        &pc.notes.join("knowledge/other.md"),
+        "FROM THE OTHER MACHINE",
+    );
+    git(&pc.notes, &["add", "-A"]);
+    git(&pc.notes, &["commit", "-q", "-m", "theirs"]);
+    git(&pc.notes, &["push", "-q", "origin", "main"]);
+    let (before, log) = (mac.effort_text(1), mac.log());
+    let index = mac.notes.join(".git/index.lock");
+    write(&index, "");
+    let env = [("ASTROLABE_HOOK_BUDGET_MS", "8000")];
+    let (answer, took) = mac.timed("s1", "call-2", SAVE, &env, Duration::from_secs(25));
+    let Answer::Shown(text, ok) = answer else {
+        panic!("a reply through the ticket, not a denial or silence");
+    };
+    assert!(
+        !ok && text.starts_with("Effort NOT saved: another git command held the notes checkout's index lock (`.git/index.lock`) for the ")
+            && text.contains("so nothing was written"),
+        "{text}"
+    );
+    assert!(took < Duration::from_secs(8), "{took:?}");
+    assert_eq!(mac.effort_text(1), before);
+    assert!(!mac.journal_today().contains("a line for the day"));
+    assert_eq!(mac.log(), log);
+    assert!(mac.unfinished().is_empty(), "nothing was planned or kept");
+    std::fs::remove_file(index).unwrap();
+    let (out, ok) = mac.bash("s1", SAVE);
+    assert!(ok, "{out}");
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("pushed"), "{out}");
+    let origin = world.origin.0.join("notes.git");
+    let pushed = git(&origin, &["log", "-p", "--format=%s", "main"]);
+    assert!(pushed.contains("+- a line for the day") && pushed.contains("theirs"));
+    let status = mac.run(&mac.notes, &["notes", "status"], "").0;
+    assert!(!status.contains("diverged"), "{status}");
+}

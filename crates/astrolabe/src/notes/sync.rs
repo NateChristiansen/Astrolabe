@@ -154,6 +154,11 @@ impl Notes {
         {
             return self.settle(&before, &self.stashes());
         }
+        // Another program's git holding the index stops the rebase before it starts, and
+        // is no divergence: the next pull goes through.
+        if self.index_held() {
+            return Pull::Offline(super::INDEX_HELD.to_owned());
+        }
         // The backstop waits for a rebase and what follows it, after it answers.
         let _under_way = crate::deadline::under_way();
         let onto = self.git(&["rev-parse", "@{upstream}"]).unwrap_or_default();
@@ -194,7 +199,11 @@ impl Notes {
                 // Only this call's own rebase is put back: one it started, which then
                 // failed. Never one that was already there, which is why it failed.
                 let mut why = why;
-                if let Ok(Some(dir)) = self.rebase_dir()
+                let dir = self.rebase_dir();
+                if matches!(dir, Ok(None)) && self.index_held() {
+                    return Pull::Offline(super::INDEX_HELD.to_owned());
+                }
+                if let Ok(Some(dir)) = dir
                     && began_here(&dir, code, &before, &onto)
                 {
                     // Marked as this program's first, inside git's own folder for it, so a
@@ -488,7 +497,9 @@ impl Notes {
 
     /// Pull, then push, under the lock; what happened is recorded for every session to read.
     pub fn sync(&self) -> Result<String, String> {
-        let _held = self.lock()?;
+        let Some(_held) = self.lock_for_sync()? else {
+            return Ok("another sync is waiting for the notes, and it pushes these too".to_owned());
+        };
         let leftovers = self.reconcile();
         if !leftovers.is_empty() {
             return Err(format!(
@@ -505,11 +516,14 @@ impl Notes {
             Pull::Pulled => {}
         }
         let mut pushed = self.git_timed(&["push", "--quiet"]);
-        // Another machine's push can land between our pull and push: once more, fresh.
-        if pushed
-            .as_ref()
-            .is_err_and(|why| why.contains("fetch first") || why.contains("non-fast-forward"))
-        {
+        // Another machine's push can land between our pull and push: once more, fresh. The
+        // remote's "cannot lock ref" is that race seen from its side, mid-update.
+        let raced = |why: &String| {
+            ["fetch first", "non-fast-forward", "cannot lock ref"]
+                .iter()
+                .any(|said| why.contains(said))
+        };
+        if pushed.as_ref().is_err_and(raced) {
             if let Pull::Diverged(why) = self.pull() {
                 return Err(format!("diverged: {why}"));
             }

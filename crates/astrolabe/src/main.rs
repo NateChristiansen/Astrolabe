@@ -232,10 +232,14 @@ fn main() {
             }
             Err(why) => fail(&why),
         },
+        // Its output is the sync log: every line starts with when it was said.
         ["notes", "sync"] => match notes_here() {
             Ok(notes) => match astrolabe::application::sync(&notes) {
-                Ok(text) => println!("{text}"),
-                Err(why) => fail(&why),
+                Ok(text) => println!("{}", dated(&text)),
+                Err(why) => {
+                    eprintln!("{}", dated(&format!("astrolabe: {why}")));
+                    std::process::exit(1);
+                }
             },
             Err(why) => fail(&why),
         },
@@ -297,6 +301,13 @@ fn add_repo(name: &str, checkout: Option<&str>) -> std::result::Result<(), Strin
         );
     }
     Ok(())
+}
+
+/// Each line of `text` after the local time, to the second.
+fn dated(text: &str) -> String {
+    let now = astrolabe::notes::local_stamp();
+    let lines: Vec<String> = text.lines().map(|line| format!("{now} {line}")).collect();
+    lines.join("\n")
 }
 
 fn fail(message: &str) {

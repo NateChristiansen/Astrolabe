@@ -1210,3 +1210,166 @@ fn a_renumber_doesnt_carry_a_session_past_text_it_hadnt_seen() {
         "{out}"
     );
 }
+
+/// GitHub answers a push that races another with "cannot lock ref", which the push retry
+/// didn't know: the push failed until something else synced (2026-11-18). It's retried
+/// after a fresh pull like any rejected push.
+#[test]
+fn a_push_refused_with_cannot_lock_ref_is_pulled_and_retried() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let origin = world.origin.0.join("notes.git");
+    let once = world.origin.0.join("refused-once");
+    let hook = origin.join("hooks/pre-receive");
+    write(
+        &hook,
+        &format!(
+            "#!/bin/sh\nif [ ! -e '{once}' ]; then : > '{once}'; echo \"error: cannot lock ref 'refs/heads/main': is at 1111 but expected 2222\" >&2; exit 1; fi\nexit 0\n",
+            once = once.display().to_string().replace('\\', "/")
+        ),
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("pushed"), "{out}");
+    assert!(once.exists(), "the first push was refused");
+    assert!(git(&origin, &["log", "--format=%s", "main"]).contains("0001"));
+}
+
+/// The sync log is `notes sync`'s output, and had no times, so its failures could only be
+/// dated by joining it with other records. Every line now starts with the local time.
+#[test]
+fn every_line_a_sync_says_starts_with_its_time() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let dated = |out: &str| {
+        out.lines()
+            .filter(|l| !l.is_empty() && !l.starts_with("exit "))
+            .all(|line| {
+                let stamp = line.split(' ').next().unwrap_or("");
+                chrono::DateTime::parse_from_str(stamp, "%Y-%m-%dT%H:%M:%S%:z").is_ok()
+            })
+    };
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains(" pushed") && dated(&out), "{out}");
+    // A failure, many lines of git's own among them.
+    git(
+        &mac.notes,
+        &["remote", "set-url", "origin", "/nonexistent/notes.git"],
+    );
+    let (out, ok) = mac.sync();
+    assert!(!ok && out.lines().count() > 2 && dated(&out), "{out}");
+}
+
+impl Machine {
+    /// The machine's notes lock, held by this test as another writer would hold it.
+    fn hold_notes(&self) -> std::fs::File {
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.state().join("notes.lock"))
+            .unwrap();
+        fs4::fs_std::FileExt::lock_exclusive(&lock).unwrap();
+        lock
+    }
+
+    /// A detached sync as a save starts one, waiting now for the notes lock.
+    fn waiting_sync(&self) -> std::process::Child {
+        let child = (self.command(&self.notes, &["notes", "sync"]))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The sync makes its queue's lock file and takes it at once. Asking for that lock
+        // here could take it from the sync in that moment, so its file is enough.
+        let queued = self.state().join("sync-queued.lock");
+        let started = std::time::Instant::now();
+        while !queued.exists() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        child
+    }
+}
+
+fn output_of(child: std::process::Child) -> (String, bool) {
+    let out = child.wait_with_output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    (text, out.status.success())
+}
+
+/// Every save starts a sync, and each sync waited for the notes lock and then fetched and
+/// pushed: 24 saves at once queued 24 syncs, all taking turns with the saves. One waiting
+/// sync now stands for the rest, since it pushes whatever was committed before it gets in.
+#[test]
+fn a_sync_with_another_already_waiting_leaves_the_push_to_that_one() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let held = mac.hold_notes();
+    let first = mac.waiting_sync();
+    let started = std::time::Instant::now();
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("another sync is waiting"), "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    drop(held);
+    let (out, ok) = output_of(first);
+    assert!(ok && out.contains("pushed"), "{out}");
+    let origin = world.origin.0.join("notes.git");
+    assert!(git(&origin, &["log", "--format=%s", "main"]).contains("0001"));
+}
+
+/// A sync can wait and a hook can't, so a save waiting for the notes goes before a sync
+/// waiting for them: the sync then pushes the save too.
+#[test]
+fn a_save_waiting_for_the_notes_goes_before_a_waiting_sync() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let held = mac.hold_notes();
+    let sync = mac.waiting_sync();
+    std::thread::scope(|scope| {
+        let save = scope.spawn(|| {
+            mac.bash(
+                "s1",
+                "astrolabe effort save --journal \"saved while a sync waited\"",
+            )
+        });
+        // The save has its share once a sync can't get the writers' lock for a while.
+        let writers = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(mac.state().join("writers.lock"))
+            .unwrap();
+        let mut refused = 0;
+        let started = std::time::Instant::now();
+        while refused < 10 {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            match fs4::fs_std::FileExt::try_lock_exclusive(&writers).unwrap() {
+                true => {
+                    fs4::fs_std::FileExt::unlock(&writers).unwrap();
+                    refused = 0;
+                }
+                false => refused += 1,
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(held);
+        let (out, ok) = save.join().unwrap();
+        assert!(ok, "{out}");
+    });
+    let (out, ok) = output_of(sync);
+    assert!(ok && out.contains("pushed"), "{out}");
+    let origin = world.origin.0.join("notes.git");
+    let pushed = git(&origin, &["log", "-p", "--format=%s", "main"]);
+    assert!(pushed.contains("saved while a sync waited"), "{pushed}");
+}
