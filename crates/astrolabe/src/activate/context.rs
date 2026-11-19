@@ -301,6 +301,9 @@ pub struct Activation {
     /// What a mid-session bind says last, after every note: the ask to rename the session,
     /// which an orchestrator skipped twice when it sat ahead of the notes (2026-11-09).
     pub(super) last: Option<String>,
+    /// The role's standing rules as the head carries them, and the role they're for, so a
+    /// binding can leave them out where this session already has them. None says nothing.
+    pub(super) standing: Option<(Role, String)>,
 }
 
 /// One of the owner's notes, whole. Owner goes to every session at its start; whole voice to one
@@ -354,7 +357,8 @@ impl Activation {
     /// For an effort loaded or created mid-session: the session already has the owner note and
     /// the guard's scope from its start, so they aren't sent again. The repo's page is sent
     /// again: nothing records which pages a start sent, and the session may have started in the
-    /// notes checkout or another repo, so a repeat is the safe side of not knowing.
+    /// notes checkout or another repo, so a repeat is the safe side of not knowing. A later
+    /// rebind in the same session leaves out what this one sent (`short`).
     pub fn mid_session(mut self) -> Self {
         self.parts.retain(|p| p.title != "knowledge/owner.md");
         self.head = self.head.replace(&format!("{GUARD_SCOPE}\n\n"), "");
@@ -372,6 +376,92 @@ impl Activation {
             let name = name.to_owned();
             self.state.told.set(name);
         }
+        self
+    }
+
+    /// The standing text this delivery carries, block by block: its key in the session's
+    /// record, the name a session is told it by, and a hash of the text. The rest (settings,
+    /// state, pieces, notices) is the binding's own and always goes.
+    fn blocks(&self) -> Vec<(String, String, String)> {
+        let hash = crate::notes::content_hash;
+        let mut blocks = Vec::new();
+        if let Some((role, rules)) = &self.standing {
+            let who = match role {
+                Role::Effort => "an effort's",
+                Role::Worker => "a worker's",
+                Role::Initiative => "an orchestrator's",
+            };
+            let key = role.key();
+            blocks.push((format!("rules:{key}"), format!("{who} rules"), hash(rules)));
+            if !self.closing.is_empty() {
+                let name = format!("{who} closing rule");
+                blocks.push((format!("closing:{key}"), name, hash(self.closing)));
+            }
+        }
+        // The owner's and the repo's notes, by file. The effort's own sections aren't
+        // standing text: they're what a binding is for.
+        for part in self
+            .parts
+            .iter()
+            .filter(|p| p.title.starts_with("knowledge/"))
+        {
+            blocks.push((part.title.clone(), part.title.clone(), hash(&part.body)));
+        }
+        blocks
+    }
+
+    /// For a rebind or a filing: leaves out each block of standing text this session was
+    /// sent unchanged since its start, says which and how to get them back, and records what
+    /// it now holds. With nothing on record, as after any session start, all of it goes.
+    pub fn short(mut self) -> Self {
+        let before = self.state.sent.as_ref().cloned();
+        let blocks = self.blocks();
+        self = self.full();
+        let Some(before) = before else {
+            return self;
+        };
+        let (same, changed): (Vec<_>, Vec<_>) =
+            (blocks.into_iter()).partition(|(key, _, hash)| before.get(key) == Some(hash));
+        if same.is_empty() {
+            return self;
+        }
+        let left_out = |key: &str| same.iter().any(|b| b.0 == key);
+        let names = |blocks: &[(String, String, String)]| -> String {
+            let names: Vec<&str> = blocks.iter().map(|b| b.1.as_str()).collect();
+            names.join(", ")
+        };
+        let mut line = format!(
+            "Sent to this session in full earlier and unchanged since, so left out here: {}.",
+            names(&same)
+        );
+        if !changed.is_empty() {
+            line += &format!(
+                " Changed or new since, so below in full: {}.",
+                names(&changed)
+            );
+        }
+        line += " The settings above are this binding's own and replace any earlier ones. If that earlier text isn't in your context any more, run `astrolabe activate --full` alone before anything else: it prints the whole text and changes nothing else.";
+        let rules_out = (self.standing.as_ref())
+            .filter(|(role, _)| left_out(&format!("rules:{}", role.key())))
+            .map(|(_, rules)| rules.clone());
+        match rules_out.and_then(|rules| Some((self.head.rfind(&rules)?, rules.len()))) {
+            Some((at, len)) => self.head.replace_range(at..at + len, &line),
+            None => self.head += &format!("\n\n{line}"),
+        }
+        if same.iter().any(|b| b.0.starts_with("closing:")) {
+            self.closing = "";
+        }
+        self.parts.retain(|p| !left_out(&p.title));
+        self
+    }
+
+    /// Records every block this delivery carries as sent, for a text that goes out whole.
+    pub fn full(mut self) -> Self {
+        let mut sent = self.state.sent.as_ref().cloned().unwrap_or_default();
+        for (key, _, hash) in self.blocks() {
+            sent.insert(key, hash);
+        }
+        self.state.sent.set(sent);
         self
     }
 
@@ -785,6 +875,8 @@ fn switch_record(
         // Whatever effort it was on: the name the session carries is the same one.
         named: previous.map(|p| p.named.clone()).unwrap_or_default(),
         told: previous.map(|p| p.told.clone()).unwrap_or_default(),
+        // Whatever it was bound to: what this session holds doesn't change with the record.
+        sent: previous.map(|p| p.sent.clone()).unwrap_or_default(),
         // Unknown fields survive a resume, so a newer writer can share the record.
         extra: same.map(|p| p.extra.clone()).unwrap_or_default(),
         ..Default::default()
@@ -871,6 +963,7 @@ fn switch_record(
         parts,
         picked,
         last: None,
+        standing: Some((role, rules(role, &handoffs))),
     })
 }
 
@@ -881,6 +974,17 @@ pub(super) enum Role {
     Effort,
     Worker,
     Initiative,
+}
+
+impl Role {
+    /// Its name in a session's record of what it was sent.
+    fn key(self) -> &'static str {
+        match self {
+            Role::Effort => "effort",
+            Role::Worker => "worker",
+            Role::Initiative => "initiative",
+        }
+    }
 }
 
 /// What the instructions name, all read before rendering, so rendering itself is pure.
@@ -1335,6 +1439,7 @@ pub(super) fn fresh(cwd: &Path, provider: &str) -> String {
         parts,
         picked: String::new(),
         last: None,
+        standing: None,
     }
     .fitted()
 }
@@ -1713,6 +1818,7 @@ mod tests {
             parts,
             picked: String::new(),
             last: None,
+            standing: None,
         }
     }
 

@@ -452,3 +452,5 @@ mod repositories;
 mod sessions;
 #[path = "activate/setup.rs"]
 mod setup;
+#[path = "activate/short_form.rs"]
+mod short_form;

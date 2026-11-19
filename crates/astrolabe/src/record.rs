@@ -431,6 +431,11 @@ fn new_inner(
             .as_ref()
             .map(|p| p.told.clone())
             .unwrap_or_default(),
+        // What the session was already sent, so the binding below can leave it out.
+        sent: previous
+            .as_ref()
+            .map(|p| p.sent.clone())
+            .unwrap_or_default(),
         ..Default::default()
     };
     let op = Op {
@@ -468,13 +473,16 @@ fn new_inner(
         shells,
         false,
     )?
-    .mid_session();
+    .mid_session()
+    .short();
     // The agent was just told to rename its session: recorded, so loading this effort again
-    // doesn't ask it to undo a rename the owner makes after.
-    if activation.state.told != state.told
+    // doesn't ask it to undo a rename the owner makes after. What it was sent, so the next
+    // binding leaves out what this one gave.
+    if (activation.state.told != state.told || activation.state.sent != state.sent)
         && let Ok(Some(mut saved)) = read_state(&dir, session)
     {
         saved.told = activation.state.told.clone();
+        saved.sent = activation.state.sent.clone();
         let _ = notes::write_text(&state_path(&dir, session), &saved.to_string());
     }
     let mut head = format!(

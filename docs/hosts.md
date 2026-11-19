@@ -45,6 +45,12 @@ The hook hands back a read of an effort command's reply in place of the command.
 
 The two limits use different units, so one byte budget does not describe both.
 
+## A compaction
+
+**Claude Code** (docs). `SessionStart` runs after a compaction, automatic or `/compact`, with `source: "compact"`; the other sources are `startup`, `resume`, `clear` and `fork`. `PreCompact` and `PostCompact` exist too. The page doesn't say in so many words that a session-start hook's added context reaches the model after a compaction. Source: [hooks reference](https://code.claude.com/docs/en/hooks).
+
+**Codex** (docs). After it compacts a root session, `SessionStart` hooks matching `source: "compact"` run before the next model request, and their added context reaches the continuation, mid-turn included. The sources are the same five. `PreCompact` and `PostCompact` exist too. Source: [hooks](https://learn.chatgpt.com/docs/hooks).
+
 ## What a hook receives for a shell command
 
 Both apps document the command as the string `tool_input.command` and the session's working folder as top-level `cwd` (docs). Neither documents a command given as a list, a `cmd` field, or a working-folder field inside `tool_input`.

@@ -140,6 +140,12 @@ pub struct SessionState {
     /// Whether the session took up its effort's work, or only filed it for later.
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub taken: Field<bool>,
+    /// The standing text sent to this session in full since it last started, block by block,
+    /// as a hash of each: a rebind or filing leaves out a block whose hash still matches.
+    /// Every session start clears it, a compaction's included, since what's left in the
+    /// session's context then isn't known.
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub sent: Field<std::collections::BTreeMap<String, String>>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

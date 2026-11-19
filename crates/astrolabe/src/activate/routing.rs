@@ -4,7 +4,7 @@ use super::proof::{session_shells, status};
 use super::tickets::{leave, leave_with, print_command, reissue, ticket_text, write_json};
 use super::{EFFORT_VAR, machine_on, now_ms, random_hex, read_state, state_dir, state_path};
 use crate::hook::{self};
-use crate::session::SessionState;
+use crate::session::{Field, SessionState};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -12,17 +12,20 @@ use std::path::{Path, PathBuf};
 pub(super) enum Change {
     Keep,
     Write(Box<SessionState>),
+    /// The same binding, with only what the session was sent changed: no rebind, so a
+    /// reload block stays and the nudge keeps its count.
+    Record(Box<SessionState>),
     Remove,
 }
 
 pub(super) fn commit(dir: &Path, session: &str, change: &Change) -> Result<(), String> {
     let path = state_path(dir, session);
-    if !matches!(change, Change::Keep) {
+    if matches!(change, Change::Write(_) | Change::Remove) {
         let _ = std::fs::remove_file(fallback_block(dir, session));
     }
     match change {
         Change::Keep => Ok(()),
-        Change::Write(state) => write_json(&path, state),
+        Change::Write(state) | Change::Record(state) => write_json(&path, state),
         Change::Remove => {
             super::allow::cancel(dir, session)?;
             std::fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))
@@ -73,6 +76,7 @@ pub(super) fn act(
                 "Astrolabe could NOT drop this session's effort, so it stays as it was".to_owned(),
             ),
         },
+        ["--full"] => full(dir, previous, session, provider, cwd, powershell),
         ["--initiative", name] => {
             let previous = previous.ok().flatten();
             let refreshed = crate::record::refresh_notes();
@@ -86,6 +90,7 @@ pub(super) fn act(
             )
             .map(Activation::picked_up)
             .map(Activation::mid_session)
+            .map(Activation::short)
             {
                 Ok(activation) => {
                     let mut text = activation.text();
@@ -162,6 +167,7 @@ pub(super) fn act(
             )
             .map(Activation::picked_up)
             .map(Activation::mid_session)
+            .map(Activation::short)
             {
                 Ok(mut activation) => {
                     let failed = refused(
@@ -245,8 +251,77 @@ pub(super) fn act(
     }
 }
 
+/// `activate --full`: the bound record's whole text, as a session start gives it with the
+/// owner's note and the guard's scope, for a session that no longer has what a short form
+/// left out. Nothing but the record of what was sent changes.
+fn full(
+    dir: &Path,
+    previous: Result<Option<SessionState>, String>,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    powershell: bool,
+) -> (String, bool, Change, String) {
+    let state = match previous {
+        Ok(Some(state)) if state.bound_key().is_some() => state,
+        Ok(_) => {
+            return (
+                "This session has no effort or initiative loaded, so there's no text to print. Load one with `astrolabe activate --effort <n>` or `--initiative <slug>`.".to_owned(),
+                false,
+                Change::Keep,
+                String::new(),
+            );
+        }
+        Err(why) => {
+            return (
+                format!("This session's state can't be read ({why}), so there's no text to print."),
+                false,
+                Change::Keep,
+                String::new(),
+            );
+        }
+    };
+    let key = state.bound_key().unwrap_or_default().to_owned();
+    let refreshed = crate::record::refresh_notes();
+    let built = match state.initiative_key() {
+        Some(_) => switch_initiative(&key, session, provider, cwd, Some(&state), &[powershell]),
+        None => switch_on(
+            dir,
+            &key,
+            session,
+            provider,
+            cwd,
+            Some(&state),
+            &[powershell],
+            false,
+        ),
+    };
+    match built.map(Activation::full) {
+        Ok(activation) => {
+            let mut text = activation.text();
+            if let Some(note) = refreshed {
+                text = after_first_paragraph(&text, &note);
+            }
+            let mut kept = state;
+            kept.sent = activation.state.sent;
+            (
+                text,
+                true,
+                Change::Record(Box::new(kept)),
+                "Astrolabe printed the whole text but couldn't record it, so the next rebind sends it whole again".to_owned(),
+            )
+        }
+        Err(why) => (
+            format!("The whole text couldn't be built: {why}. The binding is unchanged."),
+            false,
+            Change::Keep,
+            String::new(),
+        ),
+    }
+}
+
 fn usage() -> (String, bool, Change, String) {
-    ("Usage: astrolabe activate <--effort <n> [--worker --model <model> --reasoning <effort>]|--initiative <slug or title>|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new())
+    ("Usage: astrolabe activate <--effort <n> [--worker --model <model> --reasoning <effort>]|--initiative <slug or title>|--full|--status|--off>, run alone so the hook can bind it.".to_owned(), false, Change::Keep, String::new())
 }
 
 /// What a worker binding declares after `--effort <n>`: `--worker`, and the model and
@@ -838,7 +913,7 @@ pub(super) fn switch_command(input: &Value, session: Option<&str>, child: bool) 
             // turn left would count other sessions' work since, and a take-up's own commit in
             // the notes checkout moves what it compares. A reload at session start, which a
             // compaction mid-turn also sends, keeps it.
-            if !matches!(change, Change::Keep) {
+            if matches!(change, Change::Write(_) | Change::Remove) {
                 crate::nudge::clear_shell(session);
             }
             Ok(ticket)
@@ -952,7 +1027,10 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
                         false,
                     )
                 } {
-                    Ok(activation) => {
+                    Ok(mut activation) => {
+                        // What the session holds after a start, a compaction's included,
+                        // isn't known: the next rebind or filing sends everything again.
+                        activation.state.sent = Field::Missing;
                         match commit(
                             &dir,
                             session,
