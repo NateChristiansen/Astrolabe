@@ -995,7 +995,16 @@ pub(super) fn session_start(input: &Value, session: &str) -> Option<String> {
     let Some(dir) = state_dir() else {
         return launched.map(|e| refused(&e, "no home folder for its state", None));
     };
-    let state = read_state(&dir, session);
+    let mut state = read_state(&dir, session);
+    // What the session holds after a start, a compaction's included, isn't known, so the
+    // record of what it was sent goes first, before anything slow: a reload that fails or
+    // runs out of time leaves the next rebind, the repair, to send everything.
+    if let Ok(Some(held)) = &mut state
+        && !held.sent.is_missing()
+    {
+        held.sent = Field::Missing;
+        let _ = write_json(&state_path(&dir, session), held);
+    }
     // Another machine may have saved since: the published checkpoint, not a stale copy. The
     // refresh may renumber this session's effort, so the state is read again after it.
     let refreshed = match &state {

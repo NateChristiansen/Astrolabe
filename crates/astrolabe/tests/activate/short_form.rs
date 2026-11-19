@@ -248,3 +248,25 @@ fn an_orchestrator_rebinding_its_initiative_gets_the_short_form_and_an_effort_bi
     assert!(effort.contains(RULES) && effort.contains(SHORT), "{effort}");
     assert!(!effort.contains("VOICE-RULE"), "{effort}");
 }
+
+#[test]
+fn a_reload_that_fails_after_a_compaction_leaves_the_repair_rebind_whole() {
+    // Catches a record cleared only when the reload works: the session is told to repair and
+    // bind again, and that bind would leave out what the compaction took.
+    let f = Fixture::new();
+    bind(&f, "s1", "70");
+    bind(&f, "s1", "75");
+    let machines = f.notes().join("knowledge/machines.md");
+    std::fs::remove_file(&machines).unwrap();
+    let input = json!({"session_id": "s1", "cwd": f.demo, "source": "compact"});
+    let (out, _) = f.run(
+        &f.demo,
+        &["hook", "session-start", "--if-active"],
+        &input.to_string(),
+        &[],
+    );
+    assert!(out.contains("blocked"), "the reload failed: {out}");
+    std::fs::write(&machines, "MACHINE-TEXT").unwrap();
+    let repaired = bind(&f, "s1", "75");
+    assert!(has_all_standing_text(&repaired), "{repaired}");
+}
