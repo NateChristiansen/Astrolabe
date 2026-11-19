@@ -144,7 +144,7 @@ These commands run through the plugin in an agent session with Astrolabe on. Nor
 | --- | --- |
 | `astrolabe activate --effort <number>` | Load the effort and bind it to this session. |
 | `astrolabe activate --effort <number> --worker --model <model> --reasoning <effort>` | Load the effort for a dispatched worker, naming the model and reasoning effort it was launched with. Without both it's refused; a model or effort other than the one the app's hook input reports is refused too, and the pair is written to the effort's `runs_on`. The worker saves that effort's state, decisions and pieces, and nothing else: no journal line, no new effort or initiative, no other effort's record, no lesson close. Its dispatcher does those. Whoever sees the effort's finish line met marks it done: the worker with its own save, or another session after `effort read <number>` with `effort save --effort <number> --status done` and a Current state body. While the worker is live, only it saves the note, apart from the close. Once another session closes it, the worker's saves to it are refused, so a copy from before the close can't reopen it. |
-| `astrolabe activate --initiative <slug>` | Bind to an initiative page. A quoted title also resolves; workers and subagents cannot bind. Missing involvement and authority default to `check in at plan` and `edit`. |
+| `astrolabe activate --initiative <slug>` | Bind to an initiative page. A quoted title also resolves; workers and subagents cannot bind. Missing involvement and authority default to `check in on bigger plans` and `edit`. |
 | `astrolabe activate --status` | Show the loaded effort or initiative and this session's guard proof. |
 | `astrolabe activate --off` | Unload the effort or initiative; the machine switch and guard stay on. |
 
@@ -173,7 +173,7 @@ The goal is the note's first Current state, and it's also kept under the title, 
 | `--title "<title>"` | Required, nonempty title. |
 | `--repo <name>` | Required from the notes checkout. In a project checkout, omit it: the project is inferred and an override is refused. |
 | `--status <state>` | `proposed`, `ready` or `active`; default `active`. |
-| `--involvement "<value>"` | `each step`, `check in at plan` or `autonomous`; default `check in at plan`. |
+| `--involvement "<value>"` | `each step`, `check in at plan`, `check in on bigger plans` or `autonomous`; default `check in on bigger plans`. |
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
 | `--finish "<form>"` | The event that finishes the effort, stored as its `finish` property: `merged` (the default, `done when merged`), `look: <what>` (done when merged and the owner has looked at what's named), or, with nothing to land, `findings` (done when the findings are written) or `accepted` (done when the owner accepts them). A session gets it beside Current state, and a board card shows it when it isn't the default. A note without the property reads as the default. |
 | `--initiative "<name>"` | Optional grouping; default empty. Existing page titles and aliases are stored as their canonical slug. A name without a page is refused; file it with `astrolabe initiative new` first. |
@@ -209,7 +209,7 @@ ASTROLABE
 | --- | --- |
 | `--title "<name>"` | Required. The initiative's title; its filename slug under `initiatives/` becomes canonical membership. |
 | `--repo <name>` | As for `effort new`: required from the notes checkout, refused elsewhere. |
-| `--involvement "<value>"` | Applied to the page and every new effort; default `check in at plan`. |
+| `--involvement "<value>"` | Applied to the page and every new effort; default `check in on bigger plans`. |
 | `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
 The page is the orchestrator's record: state, cross-effort decisions, owner questions and the daily journal line live there, never in a separate orchestrate effort. Membership comes from efforts whose `initiative` property names the page; progress is derived from their statuses, never a checklist of efforts. Worker briefs and reports live under `.handoffs/<initiative slug>/` in the notes. A worker starts in a folder of its effort's repo, in a worktree of its own, and the orchestrator's text gives that folder of briefs as a full path.

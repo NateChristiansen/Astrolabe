@@ -5,7 +5,7 @@ use super::validation::{
     STATUSES, as_current, check_journal, check_wait, one_of, shift_plan_headings, split_plan,
 };
 use super::{Change, apply_ticks, line_id, saved_text};
-use crate::effort::{EffortCommand, EffortFile};
+use crate::effort::{DEFAULT_INVOLVEMENT, EffortCommand, EffortFile};
 use crate::notes::{JournalLine, Pull};
 use crate::session::SessionState;
 use std::path::{Path, PathBuf};
@@ -447,7 +447,7 @@ pub(super) fn stamp_initiative(file: &mut EffortFile, repo: &str, day: &str, sav
     for (key, value) in [
         ("status", "ready"),
         ("repo", repo),
-        ("involvement", "check in at plan"),
+        ("involvement", DEFAULT_INVOLVEMENT),
         ("authority", "edit"),
         ("created", day),
     ] {
@@ -580,7 +580,7 @@ mod tests {
             ("status", "active"),
             ("authority", "push"),
             ("repo", "demo"),
-            ("involvement", "check in at plan"),
+            ("involvement", "check in on bigger plans"),
             ("created", "2026-11-08"),
             ("updated", "2026-11-08T10:00-07:00"),
             ("saved_by", "mac · agent"),

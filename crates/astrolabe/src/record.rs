@@ -17,7 +17,8 @@ use save::{
     stamp_saver,
 };
 use validation::{
-    AUTHORITIES, INVOLVEMENTS, STATUSES, as_current, check_journal, closes, issues, one_of,
+    AUTHORITIES, DEFAULT_INVOLVEMENT, INVOLVEMENTS, STATUSES, as_current, check_journal, closes,
+    issues, one_of,
 };
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
@@ -274,10 +275,10 @@ fn new_inner(
         return Err(format!("a new effort can't start {status}"));
     }
     // Defaults are owner.md's default dispatch: a branch and local commits, a plan shown first
-    // when the work needs one. Never push unless the owner said so.
+    // on work of several steps or repos. Never push unless the owner said so.
     let involvement = one_of(
         "involvement",
-        cmd.flag("involvement").unwrap_or("check in at plan"),
+        cmd.flag("involvement").unwrap_or(DEFAULT_INVOLVEMENT),
         &INVOLVEMENTS,
     )?;
     let authority = one_of(
@@ -738,7 +739,7 @@ fn initiative_inner(
         .collect::<Result<_, _>>()?;
     let involvement = one_of(
         "involvement",
-        cmd.flag("involvement").unwrap_or("check in at plan"),
+        cmd.flag("involvement").unwrap_or(DEFAULT_INVOLVEMENT),
         &INVOLVEMENTS,
     )?;
     let authority = one_of(

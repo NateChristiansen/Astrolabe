@@ -24,7 +24,7 @@ fn an_initiative_and_its_efforts_are_filed_in_one_step() {
         "status: proposed",
         "repo: demo",
         "initiative: smooth-ink",
-        "involvement: check in at plan",
+        "involvement: check in on bigger plans",
         "authority: edit",
         "saved_by: mac · claude",
         "session: s1",

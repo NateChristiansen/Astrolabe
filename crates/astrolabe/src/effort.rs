@@ -12,7 +12,16 @@ pub(crate) use file::{
 pub use refusal::{form, refusal};
 
 /// What an effort's `involvement` may be: how often the owner wants to be asked.
-pub(crate) const INVOLVEMENTS: [&str; 3] = ["autonomous", "check in at plan", "each step"];
+pub(crate) const INVOLVEMENTS: [&str; 4] = [
+    "autonomous",
+    "check in on bigger plans",
+    "check in at plan",
+    "each step",
+];
+
+/// The involvement a new effort or initiative gets when the owner names none: the owner chose
+/// a plan first on bigger work only (2026-11-18). Notes keep whatever value is written on them.
+pub(crate) const DEFAULT_INVOLVEMENT: &str = INVOLVEMENTS[1];
 
 /// What an effort's `authority` may be: how far an agent's changes may go.
 pub(crate) const AUTHORITIES: [&str; 3] = ["read", "edit", "push"];

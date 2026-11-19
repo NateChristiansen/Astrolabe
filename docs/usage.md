@@ -22,7 +22,8 @@ For app visibility when an agent dispatches an independent worker, see the [app-
 
 Tell the agent how involved you want to be:
 
-- **Approve a plan:** review the approach before it changes files. This is the default.
+- **Approve bigger plans:** review the approach to work of several steps or repos before it changes files, then let it run without stopping; a one-step change in one repo goes ahead. This is the default.
+- **Approve every plan:** review the approach before it changes files, however small the work.
 - **Check each step:** review each part before it moves on.
 - **Work autonomously:** let it finish and report back.
 

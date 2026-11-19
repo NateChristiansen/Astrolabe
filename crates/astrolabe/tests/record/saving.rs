@@ -1,5 +1,35 @@
 use super::*;
 
+/// Catches a default change that leaks into notes already written: a new effort gets the
+/// plan check-in on bigger work only, while one set to check in at the plan keeps that value
+/// and its old meaning, because a one-step task there must still check in.
+#[test]
+fn the_default_asks_only_on_bigger_plans_and_a_set_check_in_keeps_its_meaning() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("- involvement: check in on bigger plans: show a plan of several steps or repos, wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead."),
+        "{out}"
+    );
+    let (out, ok) = mac.bash(
+        "s2",
+        "astrolabe effort new --title \"Fix a link\" --involvement \"check in at plan\" <<'ASTROLABE'\nfix one broken link\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("- involvement: check in at plan: show the plan and wait for the owner's go before changing files, because a plan is cheap to redirect and changed files aren't."),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(2)
+            .contains("involvement: check in at plan\n"),
+        "{}",
+        mac.effort_text(2)
+    );
+}
+
 #[test]
 fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     let world = World::new();
@@ -25,7 +55,7 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
         "{out}"
     );
     assert!(
-        out.contains("involvement check in at plan · authority edit"),
+        out.contains("involvement check in on bigger plans · authority edit"),
         "{out}"
     );
     assert!(
@@ -36,7 +66,7 @@ fn a_new_effort_is_numbered_stamped_journaled_committed_and_bound() {
     for line in [
         "status: active",
         "repo: demo",
-        "involvement: check in at plan",
+        "involvement: check in on bigger plans",
         "authority: edit",
         "saved_by: mac · claude",
         "branch: main",

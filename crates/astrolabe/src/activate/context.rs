@@ -7,7 +7,7 @@ use super::repos::{
 use super::routing::after_first_paragraph;
 use super::{now_ms, state_dir};
 use crate::effort::frontmatter;
-use crate::effort::{AUTHORITIES, INVOLVEMENTS};
+use crate::effort::{AUTHORITIES, DEFAULT_INVOLVEMENT, INVOLVEMENTS};
 use crate::hook::comparable;
 use crate::registry::AGENT;
 use crate::session::{Binding, Field, SessionState};
@@ -19,8 +19,9 @@ use std::path::Path;
 pub(super) const HOOK_LIMIT: usize = 9800;
 
 /// What each of `INVOLVEMENTS` asks of an agent, in that list's order.
-const INVOLVEMENT_MEANINGS: [&str; 3] = [
+const INVOLVEMENT_MEANINGS: [&str; 4] = [
     "run to the end within authority, then report, because the owner chose to stay out of the loop for this effort",
+    "show a plan of several steps or repos, wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead",
     "show the plan and wait for the owner's go before changing files, because a plan is cheap to redirect and changed files aren't",
     "report after each step and wait before the next, because the owner wants to steer each one",
 ];
@@ -626,7 +627,7 @@ pub fn switch_initiative(
             .split(',')
             .map(|r| r.trim().to_owned())
             .collect(),
-        involvement: setting("involvement", "check in at plan", &INVOLVEMENTS)?,
+        involvement: setting("involvement", DEFAULT_INVOLVEMENT, &INVOLVEMENTS)?,
         authority: setting("authority", "edit", &AUTHORITIES)?,
         issues: Vec::new(),
         current: page.file.current.clone(),
@@ -903,7 +904,12 @@ pub(super) struct Facts<'a> {
     pub handoffs: &'a str,
 }
 
-fn meaning(names: &[&str; 3], meanings: &[&'static str; 3], value: &str) -> &'static str {
+/// Each list pairs with its meanings by length, so a value added without one won't build.
+fn meaning<const N: usize>(
+    names: &[&str; N],
+    meanings: &[&'static str; N],
+    value: &str,
+) -> &'static str {
     names
         .iter()
         .zip(meanings)
@@ -2158,7 +2164,7 @@ mod tests {
             provider: "claude",
             session: "0b6f1c7e-58a1-4c9e-9d55-3f2a7e1c4b90",
             repo: "astrolabe",
-            involvement: "check in at plan",
+            involvement: DEFAULT_INVOLVEMENT,
             authority: "edit",
             issues: "",
             proof,
