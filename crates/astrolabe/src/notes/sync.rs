@@ -498,8 +498,19 @@ impl Notes {
     /// Pull, then push, under the lock; what happened is recorded for every session to read.
     pub fn sync(&self) -> Result<String, String> {
         let Some(_held) = self.lock_for_sync()? else {
-            return Ok("another sync is waiting for the notes, and it pushes these too".to_owned());
+            return Ok("another sync is waiting for the notes; it takes these".to_owned());
         };
+        let synced = self.sync_held();
+        // Syncs that stood aside for this one stamped the last ask, which holds back a turn
+        // end's push for a minute; with this one failed, nothing else is coming for their
+        // commits, so the next turn end asks again.
+        if synced.is_err() {
+            let _ = std::fs::remove_file(self.state.join(ASKED));
+        }
+        synced
+    }
+
+    fn sync_held(&self) -> Result<String, String> {
         let leftovers = self.reconcile();
         if !leftovers.is_empty() {
             return Err(format!(

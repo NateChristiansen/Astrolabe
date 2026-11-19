@@ -1327,6 +1327,48 @@ fn a_sync_with_another_already_waiting_leaves_the_push_to_that_one() {
     assert!(git(&origin, &["log", "--format=%s", "main"]).contains("0001"));
 }
 
+/// A sync that stood aside left its push to the waiting one. When that one failed, the
+/// last ask was still recent, so a turn end didn't push for a minute: the stood-aside
+/// commits waited for a later save. A failed sync now lets the next turn end ask.
+#[test]
+fn a_waiting_sync_that_fails_leaves_the_next_turn_end_to_push() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let _ = mac.sync_requested();
+    let origin = world.origin.0.join("notes.git");
+    let hook = origin.join("hooks/pre-receive");
+    write(
+        &hook,
+        "#!/bin/sh\necho 'error: refusing for this test' >&2\nexit 1\n",
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let held = mac.hold_notes();
+    let first = mac.waiting_sync();
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("another sync is waiting"), "{out}");
+    assert!(
+        !out.contains("push"),
+        "standing aside promises no push: {out}"
+    );
+    drop(held);
+    let (out, ok) = output_of(first);
+    assert!(!ok && out.contains("push failed"), "{out}");
+    std::fs::remove_file(&hook).unwrap();
+    assert!(mac.stop("s1", false, false).is_none());
+    assert!(
+        mac.sync_requested(),
+        "the turn end after a failed sync asks again"
+    );
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("pushed"), "{out}");
+    assert!(git(&origin, &["log", "--format=%s", "main"]).contains("0001"));
+}
+
 /// A sync can wait and a hook can't, so a save waiting for the notes goes before a sync
 /// waiting for them: the sync then pushes the save too.
 #[test]
