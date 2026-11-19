@@ -14,7 +14,7 @@ A larger piece of work that you plan as several efforts becomes an **initiative*
 
 When you ask an agent to implement the initiative, it starts a separate worker session for each independent ready effort and runs them in parallel. A worker waits for a prerequisite before starting the step that needs it. Workers that need exclusive use of the same runtime take turns there. You can ask for serial work or choose another workflow. A request to plan or file the initiative ends at filing.
 
-The orchestrator keeps its state, decisions, questions and daily journal line on the page. Workers keep their own effort records. Each agent works within its authority, and the orchestrator lands reviewed changes when you have authorized landing.
+The orchestrator keeps its state, decisions, questions and daily journal line on the page. Workers keep their own effort records. Whoever sees an effort's finish line met, the merge by default, marks it done then, never before. Each agent works within its authority, and the orchestrator lands reviewed changes when you have authorized landing.
 
 For app visibility when an agent dispatches an independent worker, see the [app-specific worker workflows](hosts.md#independent-workers-in-desktop-apps). Opening a worker, placing it in the sidebar and retaining follow-up control are separate capabilities; the guides distinguish what was observed from what remains unchecked.
 

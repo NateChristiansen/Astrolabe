@@ -201,3 +201,52 @@ fn a_finish_line_ending_in_a_quote_reads_back_as_filed() {
         "done when merged and the owner has looked at \"the board card\""
     );
 }
+
+/// Catches a worker reopening an effort another session closed under it: its save from the
+/// copy it had before the close, and its retry once the refusal showed it the closed note,
+/// must both leave the note done. Any session may close on the finish line now, so a close
+/// can land while the worker is still live.
+#[test]
+fn a_save_from_a_copy_older_than_the_close_cant_reopen_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe activate --effort 1 --worker --model opus --reasoning medium",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe effort save <<'ASTROLABE'\nBuilding.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    // Another session sees the merge and closes it.
+    assert!(
+        mac.bash(
+            "lead",
+            "astrolabe effort new --title \"Lead\" <<'ASTROLABE'\nlead the work\nASTROLABE\n"
+        )
+        .1
+    );
+    assert!(mac.bash("lead", "astrolabe effort read 1").1);
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort save --effort 1 --status done <<'ASTROLABE'\nDone and merged.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let closed = mac.effort_text(1);
+    let before = mac.log().lines().count();
+    for save in [
+        "astrolabe effort save --status review --waits-for \"dispatcher: review and land\" <<'ASTROLABE'\nIn review: built.\nASTROLABE\n",
+        "astrolabe effort save --status active <<'ASTROLABE'\nActive again.\nASTROLABE\n",
+        "astrolabe effort save <<'ASTROLABE'\nStill building.\nASTROLABE\n",
+    ] {
+        let (out, ok) = mac.bash("w1", save);
+        assert!(!ok && out.contains("Nothing was written"), "{save}: {out}");
+        assert!(out.contains("is done"), "{save}: {out}");
+        assert!(!out.contains("Save again from this"), "{save}: {out}");
+        assert_eq!(mac.effort_text(1), closed, "{save}");
+    }
+    assert_eq!(mac.log().lines().count(), before);
+}

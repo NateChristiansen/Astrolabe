@@ -293,28 +293,28 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
     let want = [
         (
             "an owner's effort in a lone checkout",
-            7491,
-            "74d171202c985a7923973aa8566b7ef53f1c2f8b8b157617e1696044c6a5a6b5",
+            7489,
+            "cfe06baf3c718c7ca58cf9d0c8fb9280cca5dd059cd97dcef77ef745a7717996",
         ),
         (
             "that effort resumed",
-            8023,
-            "979156c6e37ddbed79acaaf03e166237462dda023067c128137d02ad00211c9d",
+            8021,
+            "a4efbb2ac9abf85c37acf9a092987813fa82609c635a878ceec285c160b0b755",
         ),
         (
             "a worker in a lone checkout",
-            6059,
-            "f65ba68cebc7d5d18a7f22eba30f9ccaaae84f5389af61136471efb8c14f0cfa",
+            6108,
+            "6d50613dbee4bff7d502d953ddbf43f8618f88ecec8a70a3ae02610e08f51857",
         ),
         (
             "an owner's effort in the notes",
-            7491,
-            "030766cc22e97170406e205ef8f7201704dbf0146715560204436a33159d1233",
+            7489,
+            "91b4d7d51f3f3a678c8e6c353f0a1477354a19be6c56cf15865daa6342fad4f0",
         ),
         (
             "an owner's effort in a worktree",
-            7491,
-            "ed4a672f9eec6f1302b7d840577a948a7c3c9f5760b359f54af79bdd2fb62cc7",
+            7489,
+            "c5de7c6eede4557124bdae8cdf8d294913351dfef56cc04a64ffc2780b7e8f8a",
         ),
     ];
     let got: Vec<(&str, usize, &str)> = (got.iter())

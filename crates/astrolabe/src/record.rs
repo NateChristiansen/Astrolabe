@@ -1173,6 +1173,20 @@ fn plan(
     closed_header(record, &on_disk)?;
     let on_disk_hash = notes::content_hash(&on_disk);
     let mut file = EffortFile::parse(&on_disk)?;
+    // Any session may close an effort once its finish line is met, so a close can land while
+    // its worker is live; the worker's next save, stale or not, mustn't reopen it.
+    if state.worker.is_true()
+        && let Some(status @ ("done" | "abandoned")) = file.prop("status")
+    {
+        if !locked {
+            return Err(PLAN_UNDER_LOCK.to_owned());
+        }
+        return Err(format!(
+            "{record} is {status}, closed by {} at {}, and a worker's save doesn't reopen it. Nothing was written. Tell the session that dispatched you; if the work goes on, it reopens the effort or names the one that holds it",
+            file.prop("saved_by").unwrap_or("?"),
+            file.prop("updated").unwrap_or("?"),
+        ));
+    }
     let Some(delivered) = state.delivered.as_deref().map(str::to_owned) else {
         return Err("this session's state has no record of the effort as delivered to it, so a save can't tell whether it would overwrite another's. Load the effort again with `astrolabe activate --effort <n>`".to_owned());
     };

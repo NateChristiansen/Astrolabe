@@ -20,7 +20,7 @@ Replace the paths with yours. Every launch names its model and effort: Opus at m
 - Start the brief with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` as its own first command, naming the model and effort it was launched with, then have the worker prove its own guard with the probe that activation prints. The proof is per session: the dispatcher's proof doesn't cover the worker, and the worker's doesn't cover a subagent.
 - Remember the folder you launched from. Sessions are stored per project folder, and every later resume or handoff runs from that same folder.
 
-The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews, journals and closes, as in [usage](usage.md).
+The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews and journals, as in [usage](usage.md). Whoever sees the effort's finish line met closes it, the worker included, never before that event.
 
 ### When the launch says it isn't logged in
 

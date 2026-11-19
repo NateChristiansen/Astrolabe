@@ -35,7 +35,7 @@ const AUTHORITY_MEANINGS: [&str; 3] = [
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
 /// What every session needs: when work gets an effort, and how to start one.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Filing alone grants no authority to start. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. Add --lesson lessons/<name>.md when it fixes a lesson, so marking the effort done closes the lesson. Add --finish, or a `finish:` line in an initiative member's paragraph, when the merge alone doesn't finish it: `look: <what the owner checks>`, or `findings` or `accepted` with nothing to land; it names the event that makes the effort done. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it.\nWorkers first run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` with their launch settings. Workers save; dispatchers file, journal and close. To implement an initiative, bind with `astrolabe activate --initiative <slug>`. Parallelize independent ready efforts unless directed otherwise. Sequence dependencies and exclusive runtime use. Start each worker, reviewers included, in a separate session per Astrolabe's docs/hosts.md. Subagents can't bind.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Filing alone grants no authority to start. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. Add --lesson lessons/<name>.md when it fixes a lesson, so marking the effort done closes the lesson. Add --finish, or a `finish:` line in an initiative member's paragraph, when the merge alone doesn't finish it: `look: <what the owner checks>`, or `findings` or `accepted` with nothing to land; it names the event that makes the effort done. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it.\nWorkers first run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` with their launch settings. Workers save and dispatchers file and journal; whoever sees an effort's finish line met closes it, never before its event. To implement an initiative, bind with `astrolabe activate --initiative <slug>`. Parallelize independent ready efforts unless directed otherwise. Sequence dependencies and exclusive runtime use. Start each worker, reviewers included, in a separate session per Astrolabe's docs/hosts.md. Subagents can't bind.";
 
 /// How and when to save, for every effort binding; `{journal}` holds the journal flag where
 /// the role may write one.
@@ -61,17 +61,17 @@ const STALE: &str = "A stale save is refused with the current text.";
 
 /// An owner's effort keeps today's orchestration, states and journal text: the eval found the
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
-const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Workers save their state, decisions and pieces and journal nothing. Review and land only when authorized to land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with Current state and any ticks. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
+const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Workers save their state, decisions and pieces and journal nothing; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
 
-const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Once built, checked and landed, or with nothing to land, mark it done at any involvement; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
+const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
 
 /// Where an owner's effort journals, a member of an initiative included: today's "per
 /// standalone effort" left Codex writing none on a member it picked up (effort 127's eval).
 const JOURNAL_EFFORT: &str = "The journal is the owner's history: one line a day for the effort you're on, on the effort, including one in an initiative; an orchestrator writes its initiative's line on the page instead, and workers write none.";
 
-const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused. A question goes to your dispatcher, with --waits-for \"dispatcher: <question>\" only if it blocks the work; a follow-up goes in Current state's last paragraph. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review with --waits-for \"dispatcher: review and land\" when built and checked; the dispatcher marks it done.";
+const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused. A question goes to your dispatcher, with --waits-for \"dispatcher: <question>\" only if it blocks the work; a follow-up goes in Current state's last paragraph. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review with --waits-for \"dispatcher: review and land\" when built and checked. Whoever sees its finish line met marks it done then, you included, never before its event.";
 
-const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Needs you is --waits-for \"owner: <what to decide or do, and where to see it>\" on this page, only for something they can act on now; a worker's question for the owner comes to you and goes here. A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Mark a member done once it's reviewed and landed, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.";
+const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Needs you is --waits-for \"owner: <what to decide or do, and where to see it>\" on this page, only for something they can act on now; a worker's question for the owner comes to you and goes here. A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.";
 
 const JOURNAL_INITIATIVE: &str = "The journal is the owner's history: one line a day for this initiative, on its page; its workers write none.";
 
@@ -80,7 +80,7 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing. Review each result and land when authorized to land, then run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing; while one is live, only it saves its note, except the close. Review each result and land when authorized to land. Whoever sees a member's finish line met marks it done then, you or its worker, never before its event: run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
@@ -158,7 +158,7 @@ fn rename(provider: &str, name: &str, record: &str) -> Option<String> {
 }
 
 /// Said to a worker on binding: what it may not do, and why.
-pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it saves that effort's state, decisions and pieces as above, and nothing else in the owner's notes. No journal line, no new effort, no other effort's record and no lesson close, because the dispatcher reviews, lands and marks it done, writes the one journal line a day for its initiative, and triages lessons. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
+pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it saves that effort's state, decisions and pieces as above, and nothing else in the owner's notes. No journal line, no new effort, no other effort's record and no lesson close, because the dispatcher reviews and lands it, writes the one journal line a day for its initiative, and triages lessons. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
 
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone; an owner-approved force push or GitHub write can be let through once with `astrolabe allow`. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
 
@@ -1529,7 +1529,7 @@ mod tests {
             &[
                 "--pieces-file",
                 "--plan-file",
-                "the dispatcher marks it done",
+                "Whoever sees its finish line met marks it done then, you included, never before its event.",
                 "Stop-hook",
                 "a worker saves its own effort the same way",
                 "No journal line, no new effort",
@@ -1976,7 +1976,7 @@ mod tests {
         // a time across the place the limit falls.
         let (mut whole, mut gone) = (0, 0);
         for provider in APPS {
-            for lead in 6110..6610 {
+            for lead in 6038..6538 {
                 let fresh = format!("{} {link} {}", "x".repeat(lead), "y ".repeat(2500));
                 let mut f = facts("check in at plan", "edit");
                 f.freshness = &fresh;
@@ -2302,38 +2302,38 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7480,
-                "19af751b4239d4f0b063b76bef59272f63e285588aceb8376a847b86ab8928b9",
+                7478,
+                "6a5da73df4369c2ecd3d3523c706c047a64c44c17dffd7f602340161a4718255",
             ),
             (
                 Role::Effort,
                 "edit",
-                7483,
-                "26d451821d2fa6719f72d29ab5253885289de6e098529b571b1d0234fc2d0319",
+                7481,
+                "93b988006350faf7d68d1b350fee5cf1dc58089d5ae2d8d2ff9bc9ae4884dae6",
             ),
             (
                 Role::Effort,
                 "push",
-                7500,
-                "c5a88eb9a41b30c3e12337521a2ab300b23c3ce095ee4ceb0d1eeda374544280",
+                7498,
+                "920b7dc0038f20e3c812f76bee855e6ddb65e65ff76637eb0edb9246f457d46b",
             ),
             (
                 Role::Worker,
                 "read",
-                6048,
-                "ff33aaa73eb139dc2b1741cb78c256bb48e1b7f52eebaafce2c354c82c4fec50",
+                6097,
+                "17077e9dc2f7a721f0fb61c8414905c5cc072c0fedb0c1d89674e65b4bc29c3e",
             ),
             (
                 Role::Worker,
                 "edit",
-                6051,
-                "70070afb322f5283dceb93ca00840788123bf79f6a44da859374e93c5b96cbd7",
+                6100,
+                "63d3b8a01a4c7e71d940738bbafaa9affc476a28a96dae99fe5361abdfd7ab7d",
             ),
             (
                 Role::Worker,
                 "push",
-                6068,
-                "d3197202634ca4ef75e619e84fdc4f1887d793eb3a614776f99c910b7f780404",
+                6117,
+                "dc02de0dcc620fd9fd54ab29aa53def39aea1b887e4236138562470c6ec22cb2",
             ),
         ] {
             let t = instructions(role, &facts("check in at plan", authority));
@@ -2359,7 +2359,7 @@ mod tests {
             Role::Effort,
             &[
                 "Use \"owner: <the decision or action, and where to see it>\" for Needs you.",
-                "Once built, checked and landed, or with nothing to land, mark it done at any involvement; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.",
+                "Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.",
             ],
             &[],
         );
@@ -2368,7 +2368,7 @@ mod tests {
             &[
                 "Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused.",
                 "with --waits-for \"dispatcher: <question>\" only if it blocks the work",
-                "Save in review with --waits-for \"dispatcher: review and land\" when built and checked; the dispatcher marks it done.",
+                "Save in review with --waits-for \"dispatcher: review and land\" when built and checked.",
             ],
             &[],
         );
@@ -2377,10 +2377,53 @@ mod tests {
             &[
                 "a worker's question for the owner comes to you and goes here.",
                 "A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state.",
-                "Mark a member done once it's reviewed and landed, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.",
+                "Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.",
             ],
             &[],
         );
+    }
+
+    /// Catches a role still told the dispatcher closes, so merged work waits on it, or told it
+    /// may close before the finish line's event, or a dispatcher saving over a live worker.
+    #[test]
+    fn every_role_closes_on_the_finish_line_and_never_before() {
+        for role in [Role::Effort, Role::Worker, Role::Initiative] {
+            let t = text(role);
+            for gone in [
+                "the dispatcher marks it done",
+                "lands and marks it done",
+                "reviewed and landed, at any",
+            ] {
+                assert!(!t.contains(gone), "{role:?} still says {gone:?}");
+            }
+            assert!(t.contains("finish line"), "{role:?}");
+        }
+        check(
+            Role::Effort,
+            &[
+                "marks it done then, never before",
+                "while one is live, only it saves its note, except the close",
+            ],
+            &[],
+        );
+        check(
+            Role::Worker,
+            &["marks it done then, you included, never before its event"],
+            &[],
+        );
+        check(
+            Role::Initiative,
+            &[
+                "Whoever sees a member's finish line met marks it done then, you or its worker, never before its event",
+                "while one is live, only it saves its note, except the close",
+                "never before, at any involvement",
+            ],
+            &[],
+        );
+        assert!(RECORD_RULE.contains(
+            "whoever sees an effort's finish line met closes it, never before its event"
+        ));
+        assert!(!RECORD_RULE.contains("journal and close"));
     }
 
     #[test]
