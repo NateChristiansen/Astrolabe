@@ -52,16 +52,16 @@ const DECISIONS: &str = "A choice leaving Current state goes to Decisions first:
 
 const PLAN: &str = "Save the approved plan with --plan-file <path>, or where the app keeps no plan file, in the body after `## Plan`.";
 
-const PIECES: &str = "Pieces are a living list: a `## Pieces` checklist of landable outcomes, one independently checkable outcome per line. Save it with the plan, the same save; with no plan to show, such as a worker's brief, save it with your first save. It's your best current guess, revised on any save as you learn. A one-step fix or spike needs none. --pieces-file <path> sets the list, also with --effort <n>. Add, reword or drop unticked lines; strike a dropped line as `- ~~<outcome>~~ dropped <date>: <why>`, never delete it. --tick \"<piece>\" marks its outcome met and stamps the date, which can be on a branch; --untick reverses it; a list that loses a ticked line is refused. If landing is a deliverable, make it a piece. At done, leave unticked lines with a dated explanation of where deferred or why dropped.";
+const PIECES: &str = "Pieces are a living list: a `## Pieces` checklist of landable outcomes, one independently checkable outcome per line. Save it with the plan, the same save, else with your first save. It's your best current guess, revised on any save as you learn; a list you're handed is yours to keep and revise, not replace. A one-step fix or spike needs none. --pieces-file <path> sets the list. Add, reword or drop unticked lines; strike a dropped line as `- ~~<outcome>~~ dropped <date>: <why>`, never delete it. --tick \"<piece>\" marks its outcome met and stamps the date, which can be on a branch; --untick reverses it; a list that loses a ticked line is refused. If landing is a deliverable, make it a piece. At done, leave unticked lines with a dated explanation of where deferred or why dropped.";
 
 /// Filing a plan that names efforts as an initiative.
-const FILING: &str = "File a multi-effort plan with `astrolabe initiative new --title \"<name>\"` and the page in its body, alone or with new efforts or existing efforts joined by number. Filing alone grants no authority to start. A member's `initiative:` names the initiative it helps deliver. A planning-only spike closes without --initiative; link it from the page. Progress comes from member statuses. An initiative has no Pieces.";
+const FILING: &str = "File a multi-effort plan with `astrolabe initiative new --title \"<name>\"` and the page in its body, alone or with new efforts or existing efforts joined by number. Filing alone grants no authority to start. A member's `initiative:` names the initiative it helps deliver. A planning-only spike closes without --initiative; link it from the page. Progress comes from member statuses.";
 
 const STALE: &str = "A stale save is refused with the current text.";
 
 /// An owner's effort keeps today's orchestration, states and journal text: the eval found the
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
-const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Workers save their state, decisions and pieces and journal nothing; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
+const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Save a member by number after `astrolabe effort read <n>`: as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan. Its worker revises those pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
 
 const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
 
@@ -80,7 +80,7 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Workers save their own state, decisions and pieces, and journal nothing; while one is live, only it saves its note, except the close. Review each result and land when authorized to land. Whoever sees a member's finish line met marks it done then, you or its worker, never before its event: run `astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done` with a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Save a member by number after `astrolabe effort read <n>`. As you file or start it, before its worker runs, write its Pieces from the plan with `astrolabe effort save --effort <n> --pieces-file <path>`; its worker revises them and saves its own state and decisions, journaling nothing; while one is live, only it saves its note, except the close. Review each result and land when authorized to land. Whoever sees a member's finish line met marks it done then, you or its worker, never before its event, with --status done, a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
@@ -1510,6 +1510,9 @@ mod tests {
                 "dispatch independent ready efforts in parallel",
                 "astrolabe activate --initiative <slug>",
                 "`astrolabe effort read <n>`",
+                // A dispatcher that filed members without lists left them empty until review.
+                "as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan",
+                "a list you're handed is yours to keep and revise, not replace",
                 "`.handoffs/<initiative slug>/`",
                 "Stop-hook",
                 "PROOF\n\nReport the effort",
@@ -1530,6 +1533,8 @@ mod tests {
                 "--pieces-file",
                 "--plan-file",
                 "Whoever sees its finish line met marks it done then, you included, never before its event.",
+                // A worker handed a list once wrote its own over it at its first save.
+                "a list you're handed is yours to keep and revise, not replace",
                 "Stop-hook",
                 "a worker saves its own effort the same way",
                 "No journal line, no new effort",
@@ -1572,13 +1577,16 @@ mod tests {
                 "That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't.",
                 "names its brief by full path",
                 "under `/home/sam/notes/.handoffs/7/` so another session can resume",
-                "`astrolabe effort read <n>` before `astrolabe effort save --effort <n> --status done`",
+                "Save a member by number after `astrolabe effort read <n>`",
+                // An orchestrator that started members without lists left them empty until review.
+                "As you file or start it, before its worker runs, write its Pieces from the plan with `astrolabe effort save --effort <n> --pieces-file <path>`",
+                "with --status done, a Current state body and any ticks",
                 "Done requires an acceptance statement",
                 "PROOF\nReport the initiative",
                 "FRESH",
             ],
             &[
-                "--pieces-file",
+                "Pieces are a living list",
                 "--plan-file",
                 "astrolabe initiative new",
                 "This session is a worker",
@@ -2302,38 +2310,38 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7478,
-                "6a5da73df4369c2ecd3d3523c706c047a64c44c17dffd7f602340161a4718255",
+                7588,
+                "71f89b54887841fa4551bd39510e5542c4b0c708e31f957703efd97a172f44da",
             ),
             (
                 Role::Effort,
                 "edit",
-                7481,
-                "93b988006350faf7d68d1b350fee5cf1dc58089d5ae2d8d2ff9bc9ae4884dae6",
+                7591,
+                "0bf1705ae35115f8bc43ea8835a737562fbe44f2ff686f5fb6f12890395750b8",
             ),
             (
                 Role::Effort,
                 "push",
-                7498,
-                "920b7dc0038f20e3c812f76bee855e6ddb65e65ff76637eb0edb9246f457d46b",
+                7608,
+                "527dd90170519f07323531e91107afc26c44e2e677134c08ca6e31bbcab6b359",
             ),
             (
                 Role::Worker,
                 "read",
-                6097,
-                "17077e9dc2f7a721f0fb61c8414905c5cc072c0fedb0c1d89674e65b4bc29c3e",
+                6085,
+                "6321b5f5d0540cddac9e7731df753b0d779084ae72a9854f8d7ddc85159b5c28",
             ),
             (
                 Role::Worker,
                 "edit",
-                6100,
-                "63d3b8a01a4c7e71d940738bbafaa9affc476a28a96dae99fe5361abdfd7ab7d",
+                6088,
+                "0d31de74200c849d7bff14a2e74e122586dfc7204910bc57a41b545db1f53fbc",
             ),
             (
                 Role::Worker,
                 "push",
-                6117,
-                "dc02de0dcc620fd9fd54ab29aa53def39aea1b887e4236138562470c6ec22cb2",
+                6105,
+                "a06fbfe40ce67755d96f2a557315d96656942bb4981c18bc7200f94ce4d796c7",
             ),
         ] {
             let t = instructions(role, &facts("check in at plan", authority));
