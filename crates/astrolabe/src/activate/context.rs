@@ -1,5 +1,5 @@
 //! Effort loading and the text delivered to a session.
-use super::proof::{proof_steps, session_token};
+use super::proof::{session_token, steps_unless_proven};
 use super::repos::{
     Repos, common_dir, folder_remotes, in_notes, normalize_remote, notes_and_repos, repo_names,
     session_repo,
@@ -823,7 +823,7 @@ fn switch_record(
         involvement: &effort.involvement,
         authority: &effort.authority,
         issues: &issue_line(&effort.issues),
-        proof: &proof_steps(&token, shells),
+        proof: &steps_unless_proven(session, &token, shells),
         freshness: &freshness(&notes, &effort, cwd),
         status: page
             .as_ref()

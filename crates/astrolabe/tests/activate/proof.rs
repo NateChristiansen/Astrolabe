@@ -62,7 +62,23 @@ fn the_guard_is_proven_only_by_a_hook_denial_of_this_activations_probe() {
         "{}",
         status()
     );
-    assert_eq!(f.probe(&text), probe, "one probe per session");
+    // Defect caught: every rebind asked for the probe again though the session had proven
+    // it (audit, 2026-11). Proven, a bind names no probe; the session's one probe still holds.
+    assert!(
+        !text.contains("astrolabe-guard-probe") && text.contains("already proven for this session"),
+        "{text}"
+    );
+    f.machine("off");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    f.machine("on");
+    let (text, _) = f.bash("s1", &f.demo, "astrolabe activate --effort 70");
+    assert_eq!(
+        f.probe(&text),
+        probe,
+        "unproven again, the same probe is asked for"
+    );
+    assert!(f.denies("s1", &probe));
+    assert!(status().contains("Guard proven"));
     // A probe that did run is a failure whenever it's found.
     std::fs::write(&marker, "").unwrap();
     assert!(status().contains("Guard FAILED"));
