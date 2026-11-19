@@ -62,9 +62,9 @@ const STALE: &str = "A stale save is refused with the current text.";
 
 /// An owner's effort keeps today's orchestration, states and journal text: the eval found the
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
-const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Save a member by number after `astrolabe effort read <n>`: as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan. Its worker revises those pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
+const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Save a member's Pieces as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan. Its worker revises those pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
 
-const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Initiatives use the same states except review; done requires an acceptance sentence and no open members. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
+const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
 
 /// Where an owner's effort journals, a member of an initiative included: today's "per
 /// standalone effort" left Codex writing none on a member it picked up (effort 127's eval).
@@ -2316,20 +2316,20 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7588,
-                "71f89b54887841fa4551bd39510e5542c4b0c708e31f957703efd97a172f44da",
+                7447,
+                "5e8acaf5c356d890d806e2c12aaf3cdd1bec729a6137a62f6598e1ed46bf12ac",
             ),
             (
                 Role::Effort,
                 "edit",
-                7591,
-                "0bf1705ae35115f8bc43ea8835a737562fbe44f2ff686f5fb6f12890395750b8",
+                7450,
+                "5cc979723ad21a35ac05b9516d0ff86e3506999b2b4d0eb8c34bbf80984febc1",
             ),
             (
                 Role::Effort,
                 "push",
-                7608,
-                "527dd90170519f07323531e91107afc26c44e2e677134c08ca6e31bbcab6b359",
+                7467,
+                "03da696d627a672a2acd6aeaeb1317c29ace512d0ace6c613e2d4a79af439f45",
             ),
             (
                 Role::Worker,
