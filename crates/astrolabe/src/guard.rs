@@ -795,7 +795,7 @@ fn assign(word: &Word, definite: bool, context: &mut Context) {
         ..word.clone()
     };
     // `S=a:~/x` holds the home folder.
-    let new = expand(&value, context).filter(|_| !value.text.contains('~'));
+    let new = expand(&value, context).filter(|_| !tilde(&value.text));
     if context.chained {
         context.chain_vars.insert(name.to_owned(), new.clone());
     }
@@ -877,9 +877,7 @@ fn change_folder(
         target = None;
     }
     let ends = |value: &Possible| match value {
-        Possible::Path(p) if !p.is_empty() && !p.contains('~') && !provider_path(p) => {
-            resolve(p, context)
-        }
+        Possible::Path(p) if !p.is_empty() && !tilde(p) && !provider_path(p) => resolve(p, context),
         _ => None,
     };
     let leads = target
@@ -1317,7 +1315,7 @@ fn remove(name: &str, args: &[Word], context: &Context, piped: bool) -> Option<S
                     plain(path, text)
                         && !text.contains('%')
                         // Bash expands a `~` after `=` or `:` too.
-                        && !text.contains('~')
+                        && !tilde(text)
                         && text.split(',').filter(|p| !p.is_empty()).all(inside)
                 }
             })
@@ -1339,6 +1337,13 @@ fn resolve(text: &str, context: &Context) -> Option<Vec<String>> {
         let cwds = context.chain.as_ref().or(context.cwds.as_ref())?;
         Some(cwds.iter().map(at).collect())
     }
+}
+
+/// Whether a shell could expand a `~` in this text to a home folder: at its start, or after
+/// a `:` or `=` as bash does in an assignment or an assignment-like word. One elsewhere, as
+/// in Windows' short name `RUNNER~1`, is a plain character.
+fn tilde(text: &str) -> bool {
+    text.starts_with('~') || text.contains(":~") || text.contains("=~")
 }
 
 /// `name:` before anything else, with a name longer than a drive letter: a PowerShell

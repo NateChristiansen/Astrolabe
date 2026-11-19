@@ -517,6 +517,11 @@ deny	mac	Bash	local -n S=HOME; rm -rf "$S"
 deny	mac	Bash	S=/work/repo/a/b; rm -rf $S:h:h:h
 deny	mac	Bash	S=/work/repo/a; rm -rf $S[1]
 deny	mac	Bash	S=a:~/x; rm -rf $S
+# A ~ inside a name, like Windows' short name RUNNER~1, isn't expanded (CI, 388).
+allow	mac	Bash	rm -rf /work/repo/RUNNER~1/x
+allow	win	Bash	rm -rf C:/work/repo/RUNNER~1/x
+allow	mac	Bash	S=/work/repo/RUNNER~1/x; rm -rf "$S"
+deny	mac	Bash	S=/work/repo/x:~/y; rm -rf "$S"
 deny	mac	Bash	rm -rf a=~/x
 deny	mac	Bash	cd -P sub/link/.. && rm -rf x
 deny	win	PowerShell	$m = @'⏎x⏎  '@⏎Remove-Item -Recurse -Force C:\other⏎$n = @'⏎'@
