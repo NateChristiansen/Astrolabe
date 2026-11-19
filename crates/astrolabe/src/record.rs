@@ -231,6 +231,10 @@ pub fn new(
 ) -> Done {
     match new_inner(cmd, key, session, provider, cwd, shells) {
         Ok(text) => Done { text, ok: true },
+        Err(why) if why.contains(KEPT) => Done {
+            text: format!("{why} {}", activate::STILL_ON),
+            ok: false,
+        },
         Err(why) => Done {
             text: format!("Effort NOT created: {why}. {}", activate::STILL_ON),
             ok: false,
@@ -447,7 +451,7 @@ fn new_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
     };
-    notes.apply(&op)?;
+    apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
     notes.spawn_sync();
     let activation = activate::switch_on(
         &dir,
@@ -679,6 +683,10 @@ pub fn initiative(
 ) -> Done {
     match initiative_inner(cmd, key, session, provider, cwd) {
         Ok(text) => Done { text, ok: true },
+        Err(why) if why.contains(KEPT) => Done {
+            text: format!("{why} {}", activate::STILL_ON),
+            ok: false,
+        },
         Err(why) => Done {
             text: format!("Initiative NOT filed: {why}. {}", activate::STILL_ON),
             ok: false,
@@ -894,7 +902,7 @@ fn initiative_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
     };
-    notes.apply(&op)?;
+    apply_kept(&notes, &op, &format!("initiative {page_slug}"), "filed")?;
     let saved = saved_text(&pulled, notes.spawn_sync());
     let bound = read_state(&notes.state, session)
         .ok()
@@ -934,7 +942,7 @@ pub fn save(cmd: &EffortCommand, key: &str, session: &str, provider: &str, cwd: 
             ok: false,
         },
         Err(why) if why.contains(KEPT) => Done {
-            text: why[..1].to_uppercase() + &why[1..],
+            text: why,
             ok: false,
         },
         Err(why) => Done {
@@ -1197,17 +1205,33 @@ fn apply_save(notes: &Notes, op: &Op, record: &str) -> Result<Vec<String>, Strin
                 "Saved {record}{LESSONS_UNFINISHED}{why}. Don't save it again: the next notes write, or `astrolabe notes sync`, finishes the close without repeating a disposition."
             ))
         }
-        // The intent outlived the failure, so the next notes write tries it again: "NOT
-        // saved" here was read as final while the write landed moments later (2026-11-18).
-        Err(why) if notes.intent_path(&op.key).exists() => {
-            let why = why.trim().lines().next().unwrap_or("git refused a commit");
-            Err(format!(
-                "{record}{KEPT}{}. The write is kept, and the next notes write tries it again: run the same command again to see whether it landed, changing nothing in it.",
-                why.trim_end_matches('.')
-            ))
-        }
-        Err(why) => Err(why),
+        Err(why) => Err(kept_or(notes, op, why, record, "saved")),
     }
+}
+
+/// A write's failure, said as not done yet when its intent outlived it: the next notes write
+/// tries it again, and a retry of the same command is matched to it, so "NOT saved" there
+/// was read as final while the write landed moments later (2026-11-18).
+fn kept_or(notes: &Notes, op: &Op, why: String, subject: &str, done: &str) -> String {
+    if !notes.intent_path(&op.key).exists() {
+        return why;
+    }
+    let why = why.trim().lines().next().unwrap_or("git refused a commit");
+    let why = why.trim_end_matches('.');
+    let subject = subject[..1].to_uppercase() + &subject[1..];
+    format!(
+        "{subject} not {done} yet: {why}. {KEPT}: run the same command again to see whether it landed, changing nothing in it."
+    )
+}
+
+/// The reply a write gives as is, without the "NOT …" its command puts before a failure.
+const KEPT: &str = "The write is kept, and the next notes write tries it again";
+
+/// `notes.apply`, for a write whose failure may leave it kept.
+fn apply_kept(notes: &Notes, op: &Op, subject: &str, done: &str) -> Result<(), String> {
+    notes
+        .apply(op)
+        .map_err(|why| kept_or(notes, op, why, subject, done))
 }
 
 /// The hand-off files a save carries, as `notes::handoffs` says: an initiative's page its
@@ -1231,8 +1255,6 @@ fn handoff_scope(
             .map(|slug| notes::Handoffs::effort(number, Some(&slug))),
     }
 }
-
-const KEPT: &str = " not saved yet: ";
 
 /// A reply for a save that landed with only its lesson closes left: the shell is told it
 /// worked, while the write stays kept for the closes.
@@ -1651,6 +1673,10 @@ pub fn forget(key: &str) {
 pub fn journal(cmd: &EffortCommand, key: &str, session: &str, cwd: &Path) -> Done {
     match journal_inner(cmd, key, session, cwd) {
         Ok(text) => Done { text, ok: true },
+        Err(why) if why.contains(KEPT) => Done {
+            text: why,
+            ok: false,
+        },
         Err(why) => Done {
             text: format!("Journal line NOT written: {why}"),
             ok: false,
@@ -1723,7 +1749,7 @@ fn journal_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
     };
-    notes.apply(&op)?;
+    apply_kept(&notes, &op, &format!("journal line for {day}"), "written")?;
     notes.spawn_sync();
     let mut head = format!("Journal line written for {day} and committed.");
     if matches!(pulled, Pull::Diverged(_)) {

@@ -357,6 +357,66 @@ fn a_kept_write_says_not_saved_yet_and_the_retry_shows_it_landed() {
     );
 }
 
+/// The same for a new effort, an initiative and a standalone journal line: each said "NOT
+/// created/filed/written" for a write that then landed (the lock fix's report). Each retry is
+/// matched to the kept write, so it lands once.
+#[cfg(unix)]
+#[test]
+fn a_kept_new_effort_initiative_or_journal_line_says_not_done_yet() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let once = mac.notes.join(".git/fail-once");
+    let hook = mac.notes.join(".git/hooks/pre-commit");
+    write(
+        &hook,
+        &format!(
+            "#!/bin/sh\nif [ -e '{}' ]; then rm '{}'; echo \"fatal: Unable to create '.git/index.lock': File exists.\" >&2; exit 1; fi\n",
+            once.display(),
+            once.display()
+        ),
+    );
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (session, command, said) in [
+        (
+            "s2",
+            NEW,
+            "Effort 1 not created yet: fatal: Unable to create",
+        ),
+        (
+            "s3",
+            "astrolabe initiative new --title \"Ink work\" <<'ASTROLABE'\nMake the ink feel right.\nASTROLABE\n",
+            "Initiative ink-work not filed yet: fatal: Unable to create",
+        ),
+        (
+            "s4",
+            "astrolabe journal \"Found the ink preset in the settings.\"",
+            " not written yet: fatal: Unable to create",
+        ),
+    ] {
+        write(&once, "");
+        let before = mac.log().lines().count();
+        let (out, ok) = mac.bash(session, command);
+        assert!(!ok, "{out}");
+        assert!(out.starts_with(said) || out.contains(said), "{out}");
+        assert!(
+            out.contains("The write is kept") && !out.contains(" NOT "),
+            "{out}"
+        );
+        let (out, ok) = mac.bash(session, command);
+        assert!(ok, "{out}");
+        assert_eq!(
+            mac.log().lines().count(),
+            before + 1,
+            "it landed once: {out}"
+        );
+    }
+    assert_eq!(
+        mac.journal_today().matches("Found the ink preset").count(),
+        1
+    );
+}
+
 /// Catches a push claimed with no remote: every write's reply says what happened locally
 /// and never that a sync or push started.
 #[test]
