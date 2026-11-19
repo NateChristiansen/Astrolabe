@@ -214,3 +214,37 @@ fn full_prints_the_whole_text_and_changes_only_the_record() {
     // And the next rebind is short again.
     assert!(bind(&f, "s1", "70").contains(SHORT));
 }
+
+#[test]
+fn an_orchestrator_rebinding_its_initiative_gets_the_short_form_and_an_effort_bind_after_it_the_effort_rules()
+ {
+    // Catches the initiative route missed by the short form, and an orchestrator's rules
+    // taken for an effort's when it then binds an effort.
+    let f = Fixture::new();
+    write(
+        &f.notes().join("initiatives/one-repo.md"),
+        "---\nstatus: active\nrepo: demo\n---\n# One repo\n\n## Current state\n\nPAGE-TEXT\n",
+    );
+    let bind_page = || {
+        let (text, ok) = f.bash("o1", &f.demo, "astrolabe activate --initiative one-repo");
+        assert!(ok, "{text}");
+        text
+    };
+    let first = bind_page();
+    assert!(
+        first.contains("Start each worker as its own separate session") && !first.contains(SHORT)
+    );
+    let again = bind_page();
+    assert!(
+        again.contains("PAGE-TEXT") && again.contains(SHORT),
+        "{again}"
+    );
+    assert!(
+        !again.contains("Start each worker as its own separate session"),
+        "{again}"
+    );
+    assert!(again.contains("an orchestrator's rules"), "{again}");
+    let effort = bind(&f, "o1", "70");
+    assert!(effort.contains(RULES) && effort.contains(SHORT), "{effort}");
+    assert!(!effort.contains("VOICE-RULE"), "{effort}");
+}
