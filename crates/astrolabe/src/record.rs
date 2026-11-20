@@ -460,6 +460,7 @@ fn new_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
         queued: false,
+        noted: Vec::new(),
     };
     apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
     notes.spawn_sync();
@@ -629,6 +630,7 @@ pub fn take_up(
         at_ms: None,
         handoffs: None,
         queued: false,
+        noted: Vec::new(),
     };
     notes.apply(&op)?;
     if starts {
@@ -924,6 +926,7 @@ fn initiative_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
         queued: false,
+        noted: Vec::new(),
     };
     apply_kept(&notes, &op, &format!("initiative {page_slug}"), "filed")?;
     let saved = saved_text(&pulled, notes.spawn_sync());
@@ -1308,6 +1311,7 @@ fn plan(
         at_ms: Some(notes::now_ms()),
         handoffs: handoff_scope(&notes.root, rel, req.page_binding, &req.number, &file),
         queued: false,
+        noted: Vec::new(),
     };
     Ok(Plan { op, file, before })
 }
@@ -1728,6 +1732,7 @@ fn save_target(
         at_ms: Some(notes::now_ms()),
         handoffs: handoff_scope(&notes.root, "", false, &target.to_string(), &file),
         queued: false,
+        noted: Vec::new(),
     };
     needs_you.extend(apply_save(notes, &op, &format!("effort {target}"))?);
     let sync_started = notes.spawn_sync();
@@ -1900,6 +1905,7 @@ fn journal_inner(
         at_ms: Some(notes::now_ms()),
         handoffs: None,
         queued: false,
+        noted: Vec::new(),
     };
     apply_kept(&notes, &op, &format!("journal line for {day}"), "written")?;
     notes.spawn_sync();

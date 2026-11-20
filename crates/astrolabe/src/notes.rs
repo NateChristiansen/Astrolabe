@@ -120,6 +120,10 @@ pub struct Op {
     /// when planned (`base`). One that doesn't is left out, with `QUEUED_STALE` for result.
     #[serde(default)]
     pub queued: bool,
+    /// What the commit said about hand-off files, for a queued save's reply: whoever
+    /// committed it, its own session is the one told.
+    #[serde(default)]
+    pub noted: Vec<String>,
 }
 
 /// The result of a queued save left out because its note changed while it waited.
@@ -543,6 +547,7 @@ impl Notes {
             at_ms: None,
             handoffs: None,
             queued: false,
+            noted: Vec::new(),
         };
         // Every session bound to the old path follows, inside the same recoverable op.
         for entry in std::fs::read_dir(&self.state)

@@ -96,6 +96,7 @@ pub(crate) fn check(input: &Value, session: &str) -> Option<()> {
         at_ms: None,
         handoffs: None,
         queued: false,
+        noted: Vec::new(),
     };
     notes.apply(&op).ok()?;
     crate::application::finish(&notes, &op.key, "Owner wait cleared");

@@ -606,8 +606,9 @@ impl Notes {
             // A batch after the first starts only with a write's time left in a hook; the
             // rest wait for a sync, which no clock bounds.
             if !carried.is_empty() && crate::deadline::short_of(Step::Write).is_some() {
+                // Unrecorded, the files are still carried by the effort's next save.
                 if let Some(scope) = scope {
-                    self.leave_handoffs(scope)?;
+                    let _ = self.leave_handoffs(scope);
                 }
                 notes.push(format!(
                     "{} hand-off files wait for the next notes sync to commit them: this hook ran short of time for more.",
@@ -659,6 +660,7 @@ impl Notes {
             self.git_paths(&op.key, &commit, &paths)?;
         }
         op.committed = true;
+        op.noted = notes.clone();
         self.save_intent(&op)?;
         self.apply_closes(&op)?;
         self.write_states(&op)?;
@@ -733,7 +735,6 @@ impl Notes {
         if !paths.is_empty() {
             let specs: Vec<&str> = paths.iter().map(String::as_str).collect();
             let key = "handoffs-left";
-            self.git_paths(key, &["add", "-A"], &specs)?;
             let commit = [
                 "-c",
                 "user.useConfigOnly=false",
@@ -743,7 +744,13 @@ impl Notes {
                 "-m",
                 "Hand-off files a save had no time to commit",
             ];
-            self.git_paths(key, &commit, &specs)?;
+            let committed = (self.git_paths(key, &["add", "-A"], &specs))
+                .and_then(|_| self.git_paths(key, &commit, &specs));
+            if let Err(why) = committed {
+                // Nothing of them stays staged for another write to sweep in.
+                let _ = self.git_paths(key, &["reset", "-q"], &specs);
+                return Err(why);
+            }
         }
         let _ = std::fs::remove_file(self.state.join(HANDOFFS_LEFT));
         Ok(())

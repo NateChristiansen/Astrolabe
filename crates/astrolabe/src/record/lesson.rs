@@ -363,6 +363,7 @@ fn close_inner(
             at_ms: None,
             handoffs: None,
             queued: false,
+            noted: Vec::new(),
         };
         notes.apply(&op)?;
     }

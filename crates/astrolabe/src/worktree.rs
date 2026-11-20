@@ -167,9 +167,9 @@ mod remembered {
 
 /// Keeps git's own upkeep out of a hook. After a commit, fetch or rebase git runs
 /// `maintenance run --auto --detach`, and on Windows, where git can't detach, that repack
-/// runs inside the call and inside the hook's time. Outside a hook (the sync each save
-/// starts, a terminal command) git keeps it, so the notes are still packed. Added to any
-/// config the caller's environment already passes the same way.
+/// runs inside the call and inside the hook's time. Outside a hook git keeps it, and the
+/// sync each save starts runs it itself (`Notes::sync`), remote or not, so the notes are
+/// still packed. Added to any config the caller's environment already passes the same way.
 fn no_upkeep(command: &mut Command) {
     let count: usize = (std::env::var("GIT_CONFIG_COUNT").ok())
         .and_then(|n| n.parse().ok())

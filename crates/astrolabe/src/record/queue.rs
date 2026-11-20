@@ -122,6 +122,12 @@ pub(super) fn save(
     match turn {
         Turn::Saved => {
             crate::nudge::clear_shell(session);
+            // Whoever committed it, what its commit said about hand-off files is this
+            // session's to hear.
+            let committed = std::fs::read(notes.intent_path(&op.key)).ok();
+            if let Some(saved) = committed.and_then(|b| serde_json::from_slice::<Op>(&b).ok()) {
+                notes_lines.extend(saved.noted);
+            }
             let pulled = Pull::Offline(match notes.has_remote() {
                 true => "queued behind other saves on this machine, so not pulled first".to_owned(),
                 false => "no remote".to_owned(),

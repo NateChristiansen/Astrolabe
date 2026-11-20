@@ -330,25 +330,30 @@ fn tracked(m: &Machine) -> usize {
 }
 
 /// Catches: a first save over a big hand-off folder passing Windows' 32,767-character
-/// command line, which would fail that save on every replay.
+/// command line, which would fail that save on every replay. The hook stops before its first
+/// add, so the save is finished by the sync, where no clock splits it: its own commit names
+/// all 700 paths on every machine, however slow.
 #[test]
 fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
     let world = World::new();
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);
-    let (out, ok) = mac.bash(
+    let env = [
+        ("ASTROLABE_HOOK_TEST_STALL", "add:60000"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
+    ];
+    let (out, ok) = mac.bash_env(
         "s1",
         "astrolabe effort save --decision \"chose all over some: complete\"",
+        &env,
     );
+    assert!(!ok && out.contains("ran out of time"), "{out}");
+    assert_eq!(tracked(&mac), 0);
+    let (out, ok) = mac.sync();
     assert!(ok, "{out}");
-    // A machine too slow to add them all in the hook's time leaves the rest to the sync,
-    // which names them all at once again.
-    match out.contains("wait for the next notes sync") {
-        true => assert!(mac.sync().1),
-        false => assert_eq!(committed(&mac).len(), 701, "{out}"),
-    }
-    assert_eq!(tracked(&mac), 700);
+    assert_eq!(committed(&mac).len(), 701, "{out}");
+    assert!(mac.effort_text(1).contains("chose all over some: complete"));
     assert!(!status(&mac).contains("sample-number"));
 }
 
@@ -385,4 +390,96 @@ fn a_hook_short_of_time_commits_the_save_and_leaves_the_rest_to_the_sync() {
     let log = mac.log();
     assert!(mac.sync().1);
     assert_eq!(mac.log(), log);
+}
+
+/// Catches: a hand-off file git won't take holding back every push from this machine, with
+/// the reason only in a log; and the files staying staged, or never tried again.
+#[test]
+fn leftover_hand_off_files_that_wont_commit_hold_back_no_push_and_are_said() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    member(&mac);
+    evidence(&mac);
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "handoffs:=11000")];
+    let (out, ok) = mac.bash_env(
+        "s1",
+        "astrolabe effort save --decision \"chose all over some: complete\"",
+        &env,
+    );
+    assert!(ok && out.contains("600 hand-off files wait"), "{out}");
+    // A commit hook in the notes that refuses every commit: the sync's own leftover commit
+    // fails, and nothing else of the sync makes one.
+    let hook = mac.notes.join(".git/hooks/pre-commit");
+    write(&hook, "#!/bin/sh\nexit 1\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (out, ok) = mac.sync();
+    assert!(ok && out.contains("pushed"), "{out}");
+    assert_eq!(
+        git(&mac.notes, &["rev-list", "--count", "@{upstream}..HEAD"]).trim(),
+        "0"
+    );
+    assert_eq!(tracked(&mac), 100);
+    assert!(!git(&mac.notes, &["diff", "--cached", "--name-only"]).contains("sample-number"));
+    let (said, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(
+        said.contains("Hand-off files a save left for the sync weren't committed"),
+        "{said}"
+    );
+    // Once git takes them, the next sync commits them and the warning goes.
+    std::fs::remove_file(&hook).unwrap();
+    assert!(mac.sync().1);
+    assert_eq!(tracked(&mac), 700);
+    let (said, _) = mac.run(&mac.notes, &["notes", "status"], "");
+    assert!(!said.contains("Hand-off files"), "{said}");
+}
+
+/// Catches: a queued save's reply saying it was saved and nothing of the hand-off files its
+/// commit left for the sync.
+#[test]
+fn a_queued_saves_reply_counts_the_hand_off_files_it_left() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    member(&mac);
+    evidence(&mac);
+    let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
+    let held = notes.lock().unwrap();
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "handoffs:=11000")];
+    let (out, ok) = std::thread::scope(|scope| {
+        let save = scope.spawn(|| {
+            mac.bash_env(
+                "s1",
+                "astrolabe effort save --decision \"chose all over some: complete\"",
+                &env,
+            )
+        });
+        // Let go once the save has queued, so its own hook commits it.
+        let queued = || {
+            (std::fs::read_dir(mac.state().join("ops")).into_iter())
+                .flatten()
+                .flatten()
+                .filter_map(|e| std::fs::read(e.path()).ok())
+                .filter_map(|b| serde_json::from_slice::<Value>(&b).ok())
+                .any(|op| op["queued"] == true)
+        };
+        let started = std::time::Instant::now();
+        while !queued() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "never queued"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(held);
+        save.join().unwrap()
+    });
+    assert!(
+        ok && out.starts_with("Saved effort 1")
+            && out.contains("600 hand-off files wait for the next notes sync to commit them"),
+        "{out}"
+    );
+    assert_eq!(tracked(&mac), 100);
 }

@@ -28,6 +28,9 @@ const OWN_MARK: &str = "astrolabe-own";
 /// that same moment makes this call's rebase die without starting, which is another
 /// status, so theirs is never taken for this call's, even from the same commit onto the
 /// same one.
+/// The sync record's entry for leftover hand-off files a sync couldn't commit.
+const HANDOFFS_FAILED: &str = "handoffs-left";
+
 fn began_here(dir: &std::path::Path, code: Option<i32>, before: &str, onto: &str) -> bool {
     let recorded = |name: &str| {
         std::fs::read_to_string(dir.join(name))
@@ -501,6 +504,12 @@ impl Notes {
             return Ok("another sync is waiting for the notes; it takes these".to_owned());
         };
         let synced = self.sync_held();
+        // Git's own upkeep, which hooks leave out (see `worktree::no_upkeep`). Here, and not
+        // only as a side effect of a fetch, so a checkout with no remote or backing off is
+        // still packed. `--auto` does nothing until git's own thresholds say so.
+        if !crate::deadline::in_hook() {
+            let _ = self.git(&["maintenance", "run", "--auto", "--quiet"]);
+        }
         // Syncs that stood aside for this one stamped the last ask, which holds back a turn
         // end's push for a minute; with this one failed, nothing else is coming for their
         // commits, so the next turn end asks again.
@@ -518,11 +527,11 @@ impl Notes {
                 leftovers.join("; ")
             ));
         }
-        if let Err(why) = self.commit_left_handoffs() {
-            return Err(format!(
-                "hand-off files a save left for later weren't committed, so nothing was pulled or pushed: {}",
-                why.trim()
-            ));
+        // A hand-off file is never why notes stay unpushed: the files wait, said in
+        // `notes status`, and the saves' own commits go on.
+        match self.commit_left_handoffs() {
+            Ok(()) => self.clear_sync(HANDOFFS_FAILED),
+            Err(why) => self.record_sync(HANDOFFS_FAILED, &why),
         }
         if !self.has_remote() {
             return Ok("no remote: nothing to push".to_owned());
@@ -643,6 +652,7 @@ impl Notes {
             at_ms: None,
             handoffs: None,
             queued: false,
+            noted: Vec::new(),
         };
         self.apply(&op)?;
         self.forget(&key);
@@ -741,6 +751,12 @@ impl Notes {
             let short: String = id.chars().take(7).collect();
             lines.push(format!(
                 "Hand edits in the notes checkout ({files}) didn't reapply after a pull and sit in stash {short}; `git stash apply {short}` there brings them back, and `git stash list` shows which entry to drop once they're in.",
+            ));
+        }
+        if let Some(h) = record.get(HANDOFFS_FAILED) {
+            lines.push(format!(
+                "Hand-off files a save left for the sync weren't committed ({}); they stay on this machine, and each sync tries them again.",
+                h["why"].as_str().unwrap_or_default().lines().next().unwrap_or_default()
             ));
         }
         if let Some(t) = record.get("tidy-failed") {
