@@ -47,7 +47,7 @@ const AUTHORITY_MEANINGS: [&str; 3] = [
 /// Why and when work gets recorded, told at session start. Every rule says its reason, so a
 /// newer model can judge the edge cases and a dead rule is easy to spot.
 /// What every session needs: when work gets an effort, and how to start one.
-pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Filing alone grants no authority to start. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, so the commit that lands it can close it. Add --lesson lessons/<name>.md when it fixes a lesson, so marking the effort done closes the lesson. Add --finish, or a `finish:` line in an initiative member's paragraph, when the merge alone doesn't finish it: `look: <what the owner checks>`, or `findings` or `accepted` with nothing to land; it names the event that makes the effort done. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it.\nWorkers first run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` with their launch settings. Workers save and dispatchers file and journal; whoever sees an effort's finish line met closes it, never before its event. To implement an initiative, bind with `astrolabe activate --initiative <slug>`. Parallelize independent ready efforts unless directed otherwise. Sequence dependencies and exclusive runtime use. Start each worker, reviewers included, in a separate session per Astrolabe's docs/hosts.md. Subagents can't bind.";
+pub const RECORD_RULE: &str = "Work in this session gets an effort in the owner's notes, because those notes are the record of what's in flight and no app's memory carries across machines or providers. An effort is something the owner asked for: a change, a plan, or findings that take more than this session. When their request means one, first run one command alone, with the goal in its body (in PowerShell, the body as a here-string: `@'` … `'@` as the last argument):\n  astrolabe effort new --title \"<short title>\" <<'ASTROLABE'\n  <the goal, one line>\n  ASTROLABE\nIts output says how to save, journal and record decisions. A plan spanning efforts becomes an initiative, filed with `astrolabe initiative new`. Filing alone grants no authority to start. Plan mode doesn't block this command, `astrolabe activate` or `astrolabe journal`, and is no reason to leave it: the hook writes the owner's notes, never the repo, and the app runs only a read of the result. So in plan mode, create the effort before writing the plan. Add --involvement, --authority or --initiative only when the owner's words say so. Add --issue <n> when the work answers a GitHub issue, or --issue <ID> for a Linear one such as ROU-12, so the commit that lands it can close it. Add --lesson lessons/<name>.md when it fixes a lesson, so marking the effort done closes the lesson. Add --finish, or a `finish:` line in an initiative member's paragraph, when the merge alone doesn't finish it: `look: <what the owner checks>`, or `findings` or `accepted` with nothing to land; it names the event that makes the effort done. A question answered now needs no effort, even with some digging; if the finding is worth keeping, run `astrolabe journal \"<one sentence>\"` alone, for work no effort covers: past tense, about 25 words, as the owner would say it.\nWorkers first run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` with their launch settings. Workers save and dispatchers file and journal; whoever sees an effort's finish line met closes it, never before its event. To implement an initiative, bind with `astrolabe activate --initiative <slug>`. Parallelize independent ready efforts unless directed otherwise. Sequence dependencies and exclusive runtime use. Start each worker, reviewers included, in a separate session per Astrolabe's docs/hosts.md. Subagents can't bind.";
 
 /// How and when to save, for every effort binding; `{journal}` holds the journal flag where
 /// the role may write one.
@@ -186,7 +186,7 @@ pub struct Effort {
     pub repos: Vec<String>,
     pub involvement: String,
     pub authority: String,
-    /// The GitHub issues it answers, as numbers; empty for most.
+    /// The issues it answers: GitHub numbers and Linear IDs such as `ROU-12`; empty for most.
     pub issues: Vec<String>,
     pub current: String,
     /// The file as read, hashed: what a save compares against, from the same read.
@@ -1318,19 +1318,33 @@ fn lead(role: Role, f: &Facts) -> String {
     }
 }
 
-/// The effort's GitHub issues, and the keyword that closes each when its commit reaches main.
-/// Nothing else closes them: the landing script pushes straight to main, with no pull request.
+/// The effort's issues and what closes each. A GitHub issue closes when its keyword reaches
+/// main, since the landing script pushes straight to main with no pull request. A Linear issue
+/// (an ID such as `ROU-12`) closes when a merge request with the ID in its title merges, so
+/// the ID goes in the landing commit's subject, which becomes that title.
 fn issue_line(issues: &[String]) -> String {
-    if issues.is_empty() {
-        return String::new();
+    let (linear, github): (Vec<&String>, Vec<&String>) = issues
+        .iter()
+        .partition(|n| crate::record::linear_id(n).is_some());
+    let mut lines = String::new();
+    if !github.is_empty() {
+        let tags: Vec<String> = github.iter().map(|n| format!("#{n}")).collect();
+        let fixes: Vec<String> = github.iter().map(|n| format!("`Fixes #{n}`")).collect();
+        lines += &format!(
+            "- issue: {}: this work answers it on GitHub. The commit that lands it says {} on a line of its own, because only that keyword reaching main closes the issue; marking the effort done reports any it hasn't.\n",
+            tags.join(", "),
+            fixes.join(" and ")
+        );
     }
-    let tags: Vec<String> = issues.iter().map(|n| format!("#{n}")).collect();
-    let fixes: Vec<String> = issues.iter().map(|n| format!("`Fixes #{n}`")).collect();
-    format!(
-        "- issue: {}: this work answers it on GitHub. The commit that lands it says {} on a line of its own, because only that keyword reaching main closes the issue; marking the effort done reports any it hasn't.\n",
-        tags.join(", "),
-        fixes.join(" and ")
-    )
+    if !linear.is_empty() {
+        let ids: Vec<&str> = linear.iter().map(|n| n.as_str()).collect();
+        lines += &format!(
+            "- issue: {}: this work answers it in Linear. The landing commit's subject names {}, because it becomes the merge request's title and Linear closes the issue when a merge request with its ID in the title merges; marking the effort done reports any main doesn't name.\n",
+            ids.join(", "),
+            ids.join(" and ")
+        );
+    }
+    lines
 }
 
 /// What the stamp says against the repo here: who saved last and when, and what moved since.

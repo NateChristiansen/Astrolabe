@@ -335,22 +335,58 @@ mod plan_heading_tests {
     }
 }
 
-/// `--issue 5` or `--issue "5, 7"`: the GitHub issues this effort answers, kept as `5, 7`.
+/// `--issue 5`, `--issue ROU-12` or `--issue "5, ROU-12"`: the GitHub issues (by number) and
+/// Linear issues (by ID) this effort answers, kept as `5, ROU-12`.
 pub(super) fn issues(value: &str) -> Result<String, String> {
-    let mut numbers = Vec::new();
+    let mut kept = Vec::new();
     for part in value.split(',') {
-        let n = part.trim().trim_start_matches('#');
+        let part = part.trim();
+        if let Some(id) = linear_id(part) {
+            kept.push(id);
+            continue;
+        }
+        let n = part.trim_start_matches('#');
         if n.is_empty()
             || !n.bytes().all(|b| b.is_ascii_digit())
             || n.trim_start_matches('0').is_empty()
         {
             return Err(format!(
-                "--issue {value:?} isn't a list of issue numbers, as in `--issue 5` or `--issue \"5, 7\"`"
+                "--issue {value:?} isn't a list of issue numbers or Linear IDs, as in `--issue 5`, `--issue ROU-12` or `--issue \"5, ROU-12\"`"
             ));
         }
-        numbers.push(n.trim_start_matches('0').to_owned());
+        kept.push(n.trim_start_matches('0').to_owned());
     }
-    Ok(numbers.join(", "))
+    Ok(kept.join(", "))
+}
+
+/// A Linear issue ID such as `ROU-12`, the way Linear prints it: a team key (a letter, then
+/// letters or digits), a hyphen, and the issue's number. Upper-cased, with the number's
+/// leading zeros dropped; `None` for anything else, a GitHub number included.
+pub(crate) fn linear_id(s: &str) -> Option<String> {
+    let (key, n) = s.split_once('-')?;
+    let key_ok = key.starts_with(|c: char| c.is_ascii_alphabetic())
+        && key.bytes().all(|b| b.is_ascii_alphanumeric());
+    let n_ok = n.bytes().all(|b| b.is_ascii_digit()) && !n.trim_start_matches('0').is_empty();
+    (key_ok && n_ok).then(|| format!("{}-{}", key.to_ascii_uppercase(), n.trim_start_matches('0')))
+}
+
+/// Whether a commit message names Linear issue `id` as a whole word, in any case. Linear
+/// links a merge request by the ID in its title and closes the issue when it merges; a
+/// squash or merge commit carries that title, so naming the ID is what reaching main means.
+pub(crate) fn names(message: &str, id: &str) -> bool {
+    let text = message.to_ascii_uppercase();
+    let mark = id.to_ascii_uppercase();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(&mark).map(|i| i + from) {
+        from = at + mark.len();
+        let before = text[..at].chars().next_back();
+        let after = text[from..].chars().next();
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !word(before) && !word(after) {
+            return true;
+        }
+    }
+    false
 }
 
 /// GitHub's closing keywords: one of these, an optional colon, then `#N`, closes issue N
@@ -495,6 +531,33 @@ mod tests {
         assert_eq!(issues("#3, 07").unwrap(), "3, 7");
         for bad in ["", "five", "5,", "0", "5 7", "-1"] {
             assert!(issues(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn issue_lists_take_linear_ids_beside_numbers() {
+        assert_eq!(issues("ROU-12").unwrap(), "ROU-12");
+        assert_eq!(issues("rou-012, #5").unwrap(), "ROU-12, 5");
+        for bad in [
+            "ROU-", "-12", "ROU-0", "R OU-12", "1RO-12", "ROU-12a", "ROU_12",
+        ] {
+            assert!(issues(bad).is_err(), "{bad}");
+        }
+        assert_eq!(linear_id("5"), None);
+    }
+
+    #[test]
+    fn a_linear_id_is_named_as_a_whole_word() {
+        for yes in [
+            "ROU-12 Smooth ink",
+            "feat: rou-12 smooth ink",
+            "Merge branch 'feat/ROU-12-ink' into 'main'",
+            "Smooth ink (ROU-12)",
+        ] {
+            assert!(names(yes, "ROU-12"), "{yes}");
+        }
+        for no in ["ROU-123 Smooth ink", "XROU-12", "ROU-1 and ROU-2", "ROU12"] {
+            assert!(!names(no, "ROU-12"), "{no}");
         }
     }
 

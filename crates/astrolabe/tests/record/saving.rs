@@ -1030,6 +1030,51 @@ fn an_effort_for_an_issue_says_how_to_close_it_and_reports_it_when_done() {
 }
 
 #[test]
+fn an_effort_for_a_linear_issue_says_to_name_it_and_reports_it_when_done() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" --issue \"rou-12, ROU-13, 5\" <<'ASTROLABE'\ngoal\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("- issue: #5: this work answers it on GitHub.")
+            && out.contains("- issue: ROU-12, ROU-13: this work answers it in Linear. The landing commit's subject names ROU-12 and ROU-13"),
+        "{out}"
+    );
+    assert!(
+        mac.effort_text(1).contains("issue: ROU-12, ROU-13, 5\n"),
+        "{}",
+        mac.effort_text(1)
+    );
+    // Main here, as last fetched, names ROU-12 in a squash's subject but not ROU-13.
+    git(
+        &mac.demo,
+        &["commit", "-q", "--allow-empty", "-m", "ROU-12 Smooth ink"],
+    );
+    git(
+        &mac.demo,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort save --status done <<'ASTROLABE'\nDone and checked.\nASTROLABE",
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("Main here has a commit that names ROU-12."),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "No commit on main here, as of the last fetch, names ROU-13, so Linear won't close it"
+        ) && out.contains("No commit on main here, as of the last fetch, closes #5"),
+        "{out}"
+    );
+}
+
+#[test]
 fn an_effort_with_no_issue_says_nothing_about_issues() {
     let world = World::new();
     let mac = world.machine("mac");
