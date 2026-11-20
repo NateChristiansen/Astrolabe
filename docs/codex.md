@@ -33,15 +33,15 @@ Start a fresh session after applying. In the desktop app select **Custom (config
 
 ## Launch and resume
 
-Create a worker's branch worktree before starting it. With setup selected, launch from that worktree as usual. For a one-off CLI launch without persistent setup:
+A worker bound to an effort starts only by the [split launch](codex-workers.md), never by sending its whole brief to `codex exec`. A one-shot review or consult that binds no effort runs `codex exec` directly:
 
 ```sh
-codex exec -m gpt-6.2-sol -c model_reasoning_effort=medium --approve-for-me --cd /path/to/worktree --add-dir /path/to/notes "<task>"
+codex exec -m gpt-6.2-sol -c model_reasoning_effort=medium --approve-for-me --cd '/path/to/worktree' --add-dir '/path/to/notes' 'Read /path/to/notes/.handoffs/<initiative>/<brief>.md and follow it.' < /dev/null
 ```
 
-Replace the paths with yours. Use GPT-6.2 Sol at medium for routine work. For demanding work, choose `-m gpt-6.2-astra` and give the reason in the brief. The guard requires both model and reasoning effort because an omitted setting can come from `config.toml` ([worker model and effort](hosts.md#worker-model-and-effort)). The same flags work in PowerShell with Windows paths. `--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`. Close stdin when dispatching from a shell tool (`< /dev/null` in Bash or zsh).
+Replace the paths with yours; in PowerShell close stdin with `'' |` in front instead of `< /dev/null`. Use GPT-6.2 Sol at medium for routine work. For demanding work, choose `-m gpt-6.2-astra` and give the reason in the brief. The guard requires both model and reasoning effort because an omitted setting can come from `config.toml` ([worker model and effort](hosts.md#worker-model-and-effort)). `--approve-for-me` selects workspace-write and automatic approval review; don't combine it with `--sandbox`.
 
-Resume from the same worktree and retain its permission settings. A different working directory can leave the worker's files outside its writable workspace. An explicit `--sandbox` selects the legacy sandbox settings instead of the named profile, so use `--add-dir` as well if overriding it.
+Resume a one-shot run from the same worktree and retain its permission settings. A different working directory can leave the worker's files outside its writable workspace. An explicit `--sandbox` selects the legacy sandbox settings instead of the named profile, so use `--add-dir` as well if overriding it.
 
 ## Briefs, reports and Git
 

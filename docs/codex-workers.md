@@ -1,105 +1,93 @@
-# Independent Codex workers in the app
+# Codex workers in the app
 
-A worker dispatched from outside the Codex app, such as by a Claude orchestrator, can run in the app from its first real turn and sit under the project it works in. The dispatcher starts it with a short CLI launch turn, opens that thread in the app, and sends the brief with `codex queue`. The app then runs the work where the owner can watch it. This uses existing commands; it needs no Astrolabe service or RPC adapter.
+An agent outside the Codex app, such as a Claude orchestrator, starts a Codex worker in four steps: a short CLI launch turn that only binds the effort, opening that thread in the app, queueing one sentence that points at the brief, and collecting the result. The app then runs the work where the owner can watch it and files the chat under its project. This is the one launch form; it passed first try twice on macOS and once on Windows on 2026-11-17, with CLI 0.166.0.
 
-## Why the launch is split
+## Why it's split
 
-`codex exec` runs the thread on a server of its own. On Windows the desktop app only uses its built-in server, so it doesn't show a thread while an exec run still holds it, and nothing outside the app can start a turn on the app's server. The app's new-chat link only fills in the composer; it doesn't send. So the CLI runs one short turn, the app takes the thread once that turn ends, and every later turn runs in the app.
+`codex exec` runs a thread on a server of its own, and the desktop app doesn't show a thread while an exec run holds it. Nothing outside the app can start a turn on the app's server, and the app's new-chat link only fills in the composer. So the CLI runs one short turn, the app takes the thread when that turn ends, and every later turn runs in the app.
 
-The launch turn is the step a worker does first anyway: bind to its effort. The guard proof and the brief move to the queued turn, so the proof is made by the app's runtime.
+The launch turn only binds. The guard proof is made in the first queued turn, so it proves the app's hooks, not the CLI's: proof is recorded per session, and a proof from the launch turn would still read as proven in the app.
 
-## What was checked
+## Before you start
 
-On Windows on 2026-11-12, with CLI 0.166.0 and app package 26.1106.6628.0:
+- Write the brief under the notes' `.handoffs/<initiative>/` folder. Its path must have no spaces and no quote characters, because the queued sentence carries it unquoted inside single quotes. If it can't, copy the brief to such a path in the hand-off folder.
+- Begin the brief with the app-side steps, then the work:
 
-- A launch turn in a plain repository ended in 9 seconds. Opening its link made the app take the thread at once, and a queued task started 10 seconds after it was sent. The queued turn kept the launch's workspace sandbox, write folders, `on-request` approval and automatic review.
-- A launch with `--worktree` from the folder of a saved app project made a worktree managed by Codex in about 100 seconds, mostly checkout time. The app recorded the project folder it came from. It did not file the chat in the project by itself. The queued turn named the chat and moved it into the project, and the sidebar then listed it under that project.
-- Both chats showed in the app while their queued turns ran, and the end of each turn appeared in the thread's saved session log.
+  > Run the allowed control and the denied probe that activation printed, each alone, then `astrolabe activate --status`. If it doesn't name your effort and say the guard is proven, stop and report that; do no other work. Set this chat's title to "<number and effort title>". Use `list_projects` to find "<project>" on this host and `move_thread_to_project` to file this chat there; report the exact error if the move fails. Then carry out the scope below, save your effort and write the requested report.
 
-On Windows on 2026-11-11, an earlier worker was opened only after its exec run ended. The app named and pinned it and completed a follow-up sent by `codex queue` without `--resume`. A later `codex exec resume` against the app-owned thread failed with an active-writer conflict.
+  The brief is a file the worker reads, so its quotes and newlines arrive as written in every shell.
+- Use the [sandbox and notes setup](codex.md) for permissions.
 
-On macOS on 2026-11-11, with CLI 0.166.0 and app 26.1103.60933 (bundled runtime 0.167.0-alpha.3.2), launch and same-thread queue completion worked. Hooks initially did not run. After the owner reviewed the refreshed plugin's hooks, the first app-originated turn bound the same thread to its effort and proved its guard; a later queued turn kept the binding and proof.
+## 1. Run the launch turn
 
-Not checked: the split launch on macOS, app restarts mid-task, several workers launched at once, and a missing or signed-out app. An installed app package version does not establish which runtime served every turn.
-
-## Start a worker from the Codex app
-
-When dispatching a new chat from the app, use `list_projects` to match the effort's repository to its saved project on the execution host. Check the project's folder before starting work. Pass that project and the effort's number and title to `create_thread`, and pass the model in `model` and the reasoning effort in `thinking`. Hook enforcement on this path is unverified. Once creation finishes, check the title, project and working folder of the new chat. Select the worktree environment when the assignment calls for a new managed worktree. That path needs no launch turn.
-
-On pickup in an existing desktop chat, activation asks the agent to call `set_thread_title`. Make the call on first pickup even when the effort is still being planned. The app can shorten long titles. A later pickup of the same effort preserves a manual rename.
-
-## Start a worker from another agent
-
-Each step below has a check. Wait for the check, not for a fixed time; the timings above are one machine's.
-
-### 1. Run the launch turn
-
-Start from the saved project's registered repository folder and let Codex make the worktree with `--worktree`, so the app can file the chat under that project. Put the brief under the notes' `.handoffs/<initiative>/` folder first. Use the [sandbox and notes setup](codex.md) for permissions. In PowerShell, replace every placeholder:
-
-```powershell
-$launch = 'Run astrolabe activate --effort <effort-number> --worker --model gpt-6.2-sol --reasoning medium alone. Reply with the first line of its output and stop. Do not run the guard proof yet and do no other work.'
-'' | codex exec -m gpt-6.2-sol -c model_reasoning_effort=medium --worktree -C '<saved-project-repository-path>' --add-dir '<absolute-notes-path>' --approve-for-me --json $launch
-```
-
-For routine workers, launch GPT-6.2 Sol at medium as shown above. For demanding work, use `-m gpt-6.2-astra`, give the reason in the brief, and use the same model and reasoning effort in the activation command. Astrolabe's guard requires both settings because a worker could otherwise inherit an expensive default from `config.toml` ([worker model and effort](hosts.md#worker-model-and-effort)). A profile alone (`-p`) doesn't count, since what it sets can't be read from the command. The activate line names the same two, and binding is refused when Codex reports a different model.
-
-In one Windows check on 2026-11-17, CLI 0.166.0 bound a worker to a real effort in a prepared worktree on its first attempt. The saved effort recorded GPT-6.2 Sol at medium. The first queued desktop turn proved the PowerShell guard. The session log recorded the same model and reasoning effort for both turns. Other model choices, clients and later queued turns still need checking.
-
-The empty pipeline closes stdin; in Bash or zsh use `< /dev/null`. `--approve-for-me` selects automatic approval review with the workspace sandbox; use it only within the approved authority. It does not bypass approvals or hook trust. See the official [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
-
-Check: the process exits 0 and the JSON stream holds `thread.started` with the thread identifier and a completed turn whose reply says the effort is bound. Keep the identifier, effort and report location in the dispatch record. If activation says the hook didn't take the command, stop: see [when hooks need review](#when-hooks-need-review).
-
-If the dispatcher's sandbox prevents initialization of normal session storage, request host approval for the launch itself. Keep the worker's workspace sandbox and normal approval review; do not bypass them to make the launch succeed.
-
-A worker that needs an already prepared checkout can take `-C <prepared-worktree>` without `--worktree`. It keeps its branch and files and shows in the app the same way, but the app can't place it under a project: a move returns `The task's source project could not be safely determined.` In the PC check a chat outside any project showed under the app's recent chats; a prepared worktree's chat is expected to do the same, but that wasn't checked. The owner can move it by hand. Prefer doing the preparation inside a worktree that Codex made. Don't run in the main checkout just to get the grouping.
-
-### 2. Open it in the app
-
-```powershell
-Start-Process -FilePath 'codex://threads/<real-thread-id>'
-```
-
-The official [deep-link reference](https://learn.chatgpt.com/docs/reference/commands#deep-links) documents this link for an existing local chat. Open it only after the launch process has exited; an exec run and the app must never write the same thread at once. An accepted opening request alone proves nothing. The next step's check covers it.
-
-### 3. Queue the brief
+Run it from the saved app project's registered repository folder with `--worktree`, so Codex makes the worktree and the app can file the chat under that project. Replace every placeholder. In Bash or zsh:
 
 ```sh
-codex queue --thread <real-thread-id> --message "<queued brief>"
+codex exec -m gpt-6.2-sol -c model_reasoning_effort=medium --worktree -C '<project-folder>' --add-dir '<notes-folder>' --approve-for-me --json 'Run astrolabe activate --effort <n> --worker --model gpt-6.2-sol --reasoning medium alone. Reply with the first line of its output and stop. Do not run the guard proof yet and do no other work.' < /dev/null
 ```
 
-Start the queued brief with the app-side steps, then the work:
+In PowerShell (5.1 or 7), the same command with stdin closed by an empty pipeline instead:
 
-> Run the allowed control and the denied probe that activation printed, each alone, then astrolabe activate --status. If it doesn't name your effort and say the guard is proven, stop and report that; do no other work. Set this chat's title to "<number and effort title>". Use `list_projects` to find "<project>" on this host and `move_thread_to_project` to file this chat there; report the exact error if the move fails. Then read <absolute-brief-path> and carry out its approved scope. Save your effort and write the requested report.
+```powershell
+'' | codex exec -m gpt-6.2-sol -c model_reasoning_effort=medium --worktree -C '<project-folder>' --add-dir '<notes-folder>' --approve-for-me --json 'Run astrolabe activate --effort <n> --worker --model gpt-6.2-sol --reasoning medium alone. Reply with the first line of its output and stop. Do not run the guard proof yet and do no other work.'
+```
 
-Proof is recorded per session, so a proof made in the launch turn would still read as proven in the app and wouldn't test the app's hooks. That's why the launch turn only binds.
+Keep stdin closed: an open stdin leaves `codex exec` waiting forever. It may still print "Reading additional input from stdin..."; that's harmless. Every argument is in single quotes and none holds a double quote, so no shell splits it.
 
-Check: the thread's session log gains a turn start after the launch turn's end. Find the log by the thread identifier under the Codex home's `sessions` folder (`rollout-*-<thread-id>.jsonl`). If no new turn starts within a few minutes, open the link once more. If still nothing starts, report it with the queued message's identifier; the app may not own the thread or the queue may have stalled. Don't queue the brief again or start a replacement worker, since the queued message can still run later.
+GPT-6.2 Sol at medium is for routine work. For demanding work use `-m gpt-6.2-astra`, give the reason in the brief, and name the same model and effort in the activate line. The guard refuses a launch that doesn't name both, and binding is refused when Codex reports a different model ([worker model and effort](hosts.md#worker-model-and-effort)). A profile (`-p`) alone doesn't count. `--approve-for-me` selects automatic approval review with the workspace sandbox; use it only within the approved authority. If the dispatcher's own sandbox blocks the launch from starting its session storage, request host approval for that one launch.
 
-The session log is Codex's saved transcript, not a documented interface for other tools. Read it for these two events only, and treat a format change as a reason to fall back to the report.
+With `--worktree` the turn can take a few minutes, mostly checkout time.
 
-### 4. Collect the result
+Check: the process exits 0, and the JSON stream holds `thread.started` with the thread id and a completed turn whose reply says the effort is bound. Record the thread id, effort and report location. If activation says the hook didn't take the command, stop: see [when hooks need review](#when-hooks-need-review).
 
-The worker's turn has ended when the log records a turn end after the queued turn's start; the launch turn's end comes earlier and doesn't count. Then read the worker's report and check the work itself. A completed turn proves the turn ran, not that the work is right.
+## 2. Open it in the app
+
+Only after the launch process has exited, since an exec run and the app must never write one thread at once. On macOS:
+
+```sh
+open 'codex://threads/<thread-id>'
+```
+
+In PowerShell:
+
+```powershell
+Start-Process 'codex://threads/<thread-id>'
+```
+
+In Git Bash on Windows:
+
+```sh
+start 'codex://threads/<thread-id>'
+```
+
+The [deep-link reference](https://learn.chatgpt.com/docs/reference/commands#deep-links) documents this link. An accepted open proves nothing; step 3's check covers it.
+
+## 3. Queue the brief
+
+The same line in every shell:
+
+```sh
+codex queue --thread '<thread-id>' --message 'Read <absolute-brief-path> and follow it.'
+```
+
+Don't put the brief's text in `--message`. The command takes no file or stdin, and Windows PowerShell 5.1 passes an argument's inner double quotes to a program unescaped, which split a brief on 2026-11-17.
+
+Check: the thread's session log gains a turn start after the launch turn's end. Find it by thread id under the Codex home's `sessions` folder (`rollout-*-<thread-id>.jsonl`). If no turn starts within a few minutes, open the link once more. If still nothing starts, report it with the queued message's id. Don't queue again or start a replacement: the queued message can still run later. The session log is Codex's transcript, not a documented interface; read it for these two events only.
+
+## 4. Collect the result
+
+The worker's turn has ended when the log records a turn end after the queued turn's start. Then read its report and check the work itself; a finished turn proves the turn ran, not that the work is right.
+
+## Follow-ups
+
+Send them with `codex queue` to the same thread, in the form of step 3, and check them the same way. Don't add `--resume`, whose failure still exits 0, and never run `codex exec resume` against a thread the app owns: that gave an active-writer conflict on Windows. Report a conflict instead of starting another worker.
 
 ## When hooks need review
 
-Treat activation and guard proof as a gate before ordinary task work. If activation says the plugin's hook did not take the command, stop and report an unbound worker. An installed, enabled plugin or a returned thread identifier is not proof that its hooks ran.
+Activation and the guard proof are a gate before any task work. If activation says the plugin's hook didn't take the command, stop and report an unbound worker. An installed plugin or a returned thread id doesn't prove its hooks ran.
 
-A plugin refresh can invalidate hook content trust. In the Mac check, unattended execution supplied no warning while hooks were skipped, despite saved trust entries. The same thread recovered after the owner reviewed the current hooks in the app. Use the normal review flow, including `/hooks` in the CLI; do not rewrite trust entries or bypass review. See the official [hook trust reference](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+A plugin refresh can invalidate hook trust, and an unattended run gives no warning when hooks are skipped. The owner reviews the current hooks in the app, or with `/hooks` in the CLI; don't rewrite trust entries or bypass review ([hook trust reference](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)). Then queue to the same thread and require binding and the guard proof again. A failed activation isn't a reason to start a duplicate.
 
-After review, continue the retained thread and require binding and guard proof again before work. A failed activation is not a reason to duplicate the task.
+## Not checked
 
-## Follow up
-
-While the app owns the worker, send follow-ups to its identifier with `codex queue`, as in step 3, and check them the same way. The official [queue reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-queue) distinguishes queueing from optional `--resume`, whose failure can still exit successfully. Queue success proves acceptance only.
-
-Do not run `codex exec resume` against an app-owned thread. That produced an active-writer conflict in the PC check. Report the conflict and use the queue; do not retry by starting another worker.
-
-If the app isn't available, the worker can stay CLI-only: send the brief in the launch run itself and follow up with sequential resume from its original worktree, as in [launch and resume](codex.md#launch-and-resume). It then shows in the app only after it exits and its link is opened. For example, in PowerShell:
-
-```powershell
-Set-Location '<original-absolute-worktree-path>'
-'' | codex exec resume -m gpt-6.2-sol -c model_reasoning_effort=medium '<real-thread-id>' 'Run the remaining approved checks and update your report.' --json
-```
-
-These are independent sessions. Filing under a project or pinning doesn't establish native parent-child nesting. Do not fabricate source, origin or parent metadata, or edit provider databases or app state to force grouping.
+App restarts mid-task, several workers launched at once, a missing or signed-out app, and opening the link from Git Bash. Workers filed under one project are independent sessions, not nested ones; don't edit app state to force grouping.

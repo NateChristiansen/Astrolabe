@@ -205,9 +205,7 @@ Not enforced, only documented:
 - a child started with `--bare` or `--safe-mode`, whose hooks are off, so activation can't check it
 - anything when the hook didn't run (see [a hook that times out or fails](#a-hook-that-times-out-or-fails))
 
-The [Codex worker workflow](codex-workers.md) covers a short CLI launch turn, opening that thread in the app, the brief and follow-ups by queue, and filing the chat under its project. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff. Both retain independent effort sessions and an explicit CLI fallback.
-
-These workflows were investigated on Windows and macOS on 2026-11-11. Their guides record the tested versions, the Mac hook-trust recovery and the host approvals needed there, and distinguish observed control from unverified app display. App restarts, concurrent writers and missing-app acceptance remain unchecked. Neither establishes native nesting for independently bound workers.
+The [Codex worker workflow](codex-workers.md) is the one way to start a Codex worker from another agent: a short CLI launch turn, opening that thread in the app, then the brief and follow-ups by queue. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff, with the CLI kept as its fallback. Each guide records what was checked and what wasn't, including app restarts and concurrent writers. Neither establishes native nesting for independently bound workers.
 
 ### The desktop app caps a session start at its caller's level
 
