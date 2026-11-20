@@ -11,13 +11,16 @@ use std::process::Command;
 /// reproduced Codex's stored value on a real installation. Codex hashes relative paths in the
 /// platform's form, so Windows, with backslashes, gets a different value.
 const PRINT: &str = if cfg!(windows) {
-    "sha256:2d8c47b29f67ee2a2fdbb6a7bc9d37762ea5e5016575db93135df35d65c90931"
+    "sha256:0b26da3ee8daccbf7639517e2d21bd53dd5f72fa908b6db19b8ce6e96cbb58c9"
 } else {
-    "sha256:ba7e4c124861cafc462d3bb75f6c37c85e88abc2633dd0179377afd330a60c53"
+    "sha256:1af4f7e3a926392e567ca2f31bff2d59c3ca61c20568edd20e682ac51dc3eaae"
 };
 const OTHER: &str = "sha256:a4c0f900a52fc59e47e2d60eed1a8a8d2ea6aef05c861e39cd5013af122f15fe";
 const ID: &str = "astrolabe@market";
-const EVENTS: [&str; 3] = ["session_start", "pre_tool_use", "stop"];
+/// The fixture's hooks, one handler each, as Codex keys them.
+const EVENTS: [&str; 4] = ["session_start", "pre_tool_use", "stop", "session_end"];
+const HOOKS: &str = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"a"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"b"}]}],"Stop":[{"hooks":[{"type":"command","command":"c"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"d"}]}]}}
+"#;
 
 struct Codex {
     _dir: TempDir,
@@ -39,7 +42,15 @@ impl Codex {
     }
 
     fn trusted() -> Self {
-        Self::new(true, &[&state(PRINT); 3].map(String::as_str))
+        Self::new(true, &every(&state(PRINT)))
+    }
+
+    /// Adds a state entry for a key Codex wouldn't look up for this copy.
+    fn add_state(&self, key: &str, state: &str) {
+        let config = self.home.join("config.toml");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text += &format!("\n[hooks.state.\"{ID}:hooks/hooks.json:{key}\"]\n{state}\n");
+        fs::write(config, text).unwrap();
     }
 
     fn check(&self, extra: &[&str]) -> (String, bool) {
@@ -55,6 +66,10 @@ impl Codex {
             out.status.success(),
         )
     }
+}
+
+fn every(state: &str) -> [&str; 4] {
+    [state; 4]
 }
 
 fn state(content: &str) -> String {
@@ -73,7 +88,7 @@ fn copy_dir(home: &Path, version: &str) -> PathBuf {
 fn write_plugin(root: &Path) {
     for (rel, text) in [
         (".claude-plugin/plugin.json", "{\"name\":\"astrolabe\"}\n"),
-        ("hooks/hooks.json", "{\"hooks\":{}}\n"),
+        ("hooks/hooks.json", HOOKS),
         ("skills/effort/SKILL.md", "skill\n"),
         ("README.md", "readme\n"),
         // Skipped by Codex's walk, so a cache here doesn't change the fingerprint.
@@ -117,7 +132,10 @@ fn a_changed_skill_file_is_a_confirmed_loss() {
 #[test]
 fn one_hook_trusted_on_an_older_copy_is_a_loss() {
     // Catches a check that stops at the first matching hook.
-    let c = Codex::new(true, &[&state(PRINT), &state(OTHER), &state(PRINT)]);
+    let c = Codex::new(
+        true,
+        &[&state(PRINT), &state(OTHER), &state(PRINT), &state(PRINT)],
+    );
     assert!(c.check(&[]).0.contains("stopped running"));
 }
 
@@ -125,15 +143,43 @@ fn one_hook_trusted_on_an_older_copy_is_a_loss() {
 fn hooks_never_trusted_say_so_and_ask_nothing() {
     let (text, runs) = Codex::new(true, &[]).check(&[]);
     assert!(!runs);
-    assert!(text.contains("they've never been trusted"), "{text}");
+    assert!(
+        text.contains("at least one has never been trusted"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_entry_for_a_hook_since_removed_is_ignored() {
+    // Codex never prunes old entries and reads only the installed hooks' keys, so a hook a
+    // release dropped would otherwise show "lost" for good, re-trusting or not.
+    let c = Codex::trusted();
+    c.add_state("user_prompt_submit:0:0", &state(OTHER));
+    c.add_state("pre_tool_use:0:1", &state(OTHER));
+    let (text, runs) = c.check(&[]);
+    assert!(runs, "{text}");
+}
+
+#[test]
+fn a_new_hook_nobody_trusted_is_not_read_as_running() {
+    // A release adds a hook and the owner trusts the others: Codex skips the new one.
+    let p = state(PRINT);
+    let c = Codex::new(true, &[&p, &p, &p]);
+    let (text, runs) = c.check(&[]);
+    assert!(!runs);
+    assert!(
+        text.contains("at least one has never been trusted"),
+        "{text}"
+    );
 }
 
 #[test]
 fn hooks_or_the_plugin_turned_off_are_the_owner_s_choice() {
     let hook_off = format!("enabled = false\n{}", state(PRINT));
-    let c = Codex::new(true, &[&state(PRINT), &hook_off, &state(PRINT)]);
+    let p = state(PRINT);
+    let c = Codex::new(true, &[&p, &hook_off, &p, &p]);
     assert!(c.check(&[]).0.contains("turned off"));
-    let c = Codex::new(false, &[&state(PRINT); 3].map(String::as_str));
+    let c = Codex::new(false, &every(&p));
     assert!(c.check(&[]).0.contains("turned off"));
 }
 
@@ -141,7 +187,7 @@ fn hooks_or_the_plugin_turned_off_are_the_owner_s_choice() {
 fn a_stored_form_this_build_does_not_know_is_unverified_not_lost() {
     // A future Codex that stores its trust differently mustn't raise a false alarm.
     let odd = state("sha512:abc");
-    let c = Codex::new(true, &[&odd, &odd, &odd]);
+    let c = Codex::new(true, &every(&odd));
     let (text, runs) = c.check(&[]);
     assert!(!runs);
     assert!(text.contains("Can't tell"), "{text}");
@@ -151,7 +197,7 @@ fn a_stored_form_this_build_does_not_know_is_unverified_not_lost() {
 fn trust_from_before_content_checks_uses_codex_s_baseline() {
     // Codex pins a one-time baseline beside its config for trust given before 0.164.0.
     let legacy = format!("trusted_hash = \"sha256:{}\"", "1".repeat(64));
-    let c = Codex::new(true, &[&legacy, &legacy, &legacy]);
+    let c = Codex::new(true, &every(&legacy));
     assert!(c.check(&[]).0.contains("Can't tell"), "no baseline yet");
     let config = c.home.join("config.toml");
     let mut identity = Sha256::new();
@@ -174,11 +220,21 @@ fn trust_from_before_content_checks_uses_codex_s_baseline() {
 }
 
 #[test]
-fn two_installed_copies_are_unverified() {
-    // Which copy Codex runs isn't in its files, so neither is assumed.
+fn the_copy_codex_runs_is_judged_by_its_own_version_rule() {
+    // Codex runs `local` if present, else the highest version, so a stale copy left behind
+    // by a failed delete mustn't hide a loss behind "can't tell" or be judged instead.
     let c = Codex::trusted();
-    write_plugin(&copy_dir(&c.home, "0.5.0"));
-    assert!(c.check(&[]).0.contains("more than one installed copy"));
+    let base = c.home.join("plugins/cache/market/astrolabe");
+    fs::rename(base.join("0.6.0"), base.join("0.10.0")).unwrap();
+    for stale in ["0.9.0", "0.10.0-rc.1", "not a version"] {
+        write_plugin(&copy_dir(&c.home, stale));
+        fs::write(base.join(stale).join("README.md"), "stale\n").unwrap();
+    }
+    let (text, runs) = c.check(&[]);
+    assert!(runs, "0.10.0 is the highest by semantic version: {text}");
+    write_plugin(&copy_dir(&c.home, "local"));
+    fs::write(base.join("local/README.md"), "local\n").unwrap();
+    assert!(c.check(&[]).0.contains("stopped running"), "local wins");
 }
 
 #[test]
@@ -190,24 +246,6 @@ fn no_codex_or_no_plugin_is_not_a_lapse() {
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains("isn't installed in Codex here"));
-}
-
-#[test]
-fn a_folder_about_to_be_installed_is_checked_against_the_stored_trust() {
-    // The eval harness's case: refuse an arm before a session starts, not after it spent.
-    let c = Codex::trusted();
-    let arm = c.home.parent().unwrap().join("arm");
-    write_plugin(&arm);
-    let arm_arg = arm.to_str().unwrap();
-    assert!(
-        c.check(&["--plugin", arm_arg]).1,
-        "identical files keep trust"
-    );
-    fs::write(arm.join("skills/effort/SKILL.md"), "other\n").unwrap();
-    assert!(
-        !c.check(&["--plugin", arm_arg]).1,
-        "a changed file loses it"
-    );
 }
 
 #[test]

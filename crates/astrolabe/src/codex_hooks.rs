@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item};
 
 const PLUGIN: &str = "astrolabe";
-const USAGE: &str = "usage: astrolabe codex-hooks [--codex-home <folder>] [--plugin <folder>]";
+const USAGE: &str = "usage: astrolabe codex-hooks [--codex-home <folder>]";
 
 /// What Codex's stored trust says about Astrolabe's hooks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,7 @@ impl Trust {
         match self {
             Trust::Trusted => "Codex runs Astrolabe's hooks here: their trust matches the installed plugin.".to_owned(),
             Trust::Lost => "Codex has stopped running Astrolabe's hooks here, guard included: the plugin changed since you trusted them. Review them in Codex (/hooks in the CLI, Settings → Hooks in the app).".to_owned(),
-            Trust::NotTrusted => "Codex doesn't run Astrolabe's hooks here: they've never been trusted. Review them in Codex to turn them on.".to_owned(),
+            Trust::NotTrusted => "Codex doesn't run all of Astrolabe's hooks here: at least one has never been trusted. Review them in Codex to turn them on.".to_owned(),
             Trust::Off => "Astrolabe's hooks are turned off in Codex here.".to_owned(),
             Trust::Unverified(why) => format!("Can't tell whether Codex runs Astrolabe's hooks here: {why}."),
         }
@@ -56,29 +56,17 @@ pub fn home() -> Option<PathBuf> {
 
 /// This machine's answer, or None when Codex or Astrolabe's plugin isn't installed here.
 pub fn here() -> Option<Trust> {
-    read(&home()?, None)
+    read(&home()?)
 }
 
-/// `astrolabe codex-hooks`: the answer, and whether hooks run. `--plugin` names a folder to
-/// check in place of the installed copy, as one about to be installed would be.
+/// `astrolabe codex-hooks`: the answer, and whether hooks run.
 pub fn command(args: &[&str]) -> Result<(String, bool), String> {
-    let (mut codex_home, mut plugin) = (None, None);
-    let mut words = args.iter();
-    while let Some(word) = words.next() {
-        let target = match *word {
-            "--codex-home" => &mut codex_home,
-            "--plugin" => &mut plugin,
-            _ => return Err(USAGE.to_owned()),
-        };
-        match words.next() {
-            Some(v) if !v.is_empty() && !v.starts_with("--") => *target = Some(PathBuf::from(v)),
-            _ => return Err(USAGE.to_owned()),
-        }
-    }
-    let codex_home = codex_home
-        .or_else(home)
-        .ok_or("no home folder; pass --codex-home <folder>")?;
-    Ok(match read(&codex_home, plugin.as_deref()) {
+    let codex_home = match args {
+        [] => home().ok_or("no home folder; pass --codex-home <folder>")?,
+        ["--codex-home", dir] if !dir.is_empty() && !dir.starts_with("--") => PathBuf::from(dir),
+        _ => return Err(USAGE.to_owned()),
+    };
+    Ok(match read(&codex_home) {
         Some(trust) => (trust.sentence(), trust == Trust::Trusted),
         None => (
             "Astrolabe's plugin isn't installed in Codex here.".to_owned(),
@@ -87,9 +75,9 @@ pub fn command(args: &[&str]) -> Result<(String, bool), String> {
     })
 }
 
-/// The answer for the Codex folder `codex_home`, checking `plugin` in place of the installed
-/// copy when given. None when Codex keeps no config there or doesn't list the plugin.
-pub fn read(codex_home: &Path, plugin: Option<&Path>) -> Option<Trust> {
+/// The answer for the Codex folder `codex_home`. None when Codex keeps no config there or
+/// doesn't list the plugin.
+pub fn read(codex_home: &Path) -> Option<Trust> {
     let config = codex_home.join("config.toml");
     let text = match fs::read_to_string(&config) {
         Ok(text) => text,
@@ -117,15 +105,16 @@ pub fn read(codex_home: &Path, plugin: Option<&Path>) -> Option<Trust> {
         _ => return Some(unverified("more than one Astrolabe plugin is listed")),
     };
     let marketplace = id.split_once('@').map_or("", |(_, m)| m);
-    let root = match plugin {
-        Some(folder) => folder.to_path_buf(),
-        None => match installed(codex_home, marketplace) {
-            Ok(root) => root,
-            Err(why) => return Some(unverified(why)),
-        },
+    let root = match installed(codex_home, marketplace) {
+        Ok(root) => root,
+        Err(why) => return Some(unverified(why)),
     };
-    let entries = hook_states(&doc, &id);
-    if entries.is_empty() {
+    let hooks = match current_hooks(&root) {
+        Ok(hooks) => hooks,
+        Err(why) => return Some(unverified(why)),
+    };
+    let entries = hook_states(&doc, &id, &hooks);
+    if entries.iter().all(|e| matches!(e, Entry::Untrusted)) {
         return Some(Trust::NotTrusted);
     }
     let current = match fingerprint(&root) {
@@ -161,12 +150,13 @@ fn unverified(why: impl Into<String>) -> Trust {
     Trust::Unverified(why.into())
 }
 
-/// The worst finding across hooks wins: one skipped hook is a loss.
+/// The worst finding across hooks wins: one skipped hook is a loss, and one never trusted
+/// beside trusted ones still isn't run.
 fn rank(trust: &Trust) -> u8 {
     match trust {
         Trust::Trusted => 0,
-        Trust::NotTrusted => 1,
-        Trust::Off => 2,
+        Trust::Off => 1,
+        Trust::NotTrusted => 2,
         Trust::Unverified(_) => 3,
         Trust::Lost => 4,
     }
@@ -194,20 +184,60 @@ enum Entry {
     Odd,
 }
 
-/// Each of the plugin's hooks Codex keeps a state for, keyed `<id>:<hooks file>:<event>:…`.
-fn hook_states(doc: &DocumentMut, id: &str) -> Vec<Entry> {
+/// The ends of the state keys Codex looks up for the installed copy's hooks:
+/// `:<event>:<group>:<handler>` for each command handler in `hooks/hooks.json`. Codex reads
+/// only these and never prunes others, so an entry for a hook since removed is ignored.
+fn current_hooks(root: &Path) -> Result<Vec<String>, String> {
+    let text = fs::read_to_string(root.join("hooks").join("hooks.json"))
+        .map_err(|_| "the installed plugin's hooks.json can't be read".to_owned())?;
+    let doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| "the installed plugin's hooks.json isn't valid JSON".to_owned())?;
+    let mut keys = Vec::new();
+    for (event, groups) in doc["hooks"].as_object().into_iter().flatten() {
+        // Codex's own labels for the events it runs; any other it skips.
+        let label = match event.as_str() {
+            "PreToolUse" => "pre_tool_use",
+            "PermissionRequest" => "permission_request",
+            "PostToolUse" => "post_tool_use",
+            "PreCompact" => "pre_compact",
+            "PostCompact" => "post_compact",
+            "SessionStart" => "session_start",
+            "SessionEnd" => "session_end",
+            "UserPromptSubmit" => "user_prompt_submit",
+            "SubagentStart" => "subagent_start",
+            "SubagentStop" => "subagent_stop",
+            "Stop" => "stop",
+            _ => continue,
+        };
+        for (g, group) in groups.as_array().into_iter().flatten().enumerate() {
+            for (h, handler) in group["hooks"].as_array().into_iter().flatten().enumerate() {
+                if handler["type"] == "command" {
+                    keys.push(format!(":{label}:{g}:{h}"));
+                }
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// What Codex keeps for each current hook, matched by key end, since the hooks file's
+/// segment of the key is Codex's own spelling of the path.
+fn hook_states(doc: &DocumentMut, id: &str, hooks: &[String]) -> Vec<Entry> {
     let prefix = format!("{id}:");
-    let Some(states) = doc
+    let states = doc
         .get("hooks")
         .and_then(|h| h.get("state"))
-        .and_then(Item::as_table_like)
-    else {
-        return Vec::new();
-    };
-    states
+        .and_then(Item::as_table_like);
+    hooks
         .iter()
-        .filter(|(key, _)| key.starts_with(&prefix))
-        .map(|(_, item)| {
+        .map(|end| {
+            let Some(item) = states.and_then(|s| {
+                s.iter()
+                    .find(|(key, _)| key.starts_with(&prefix) && key.ends_with(end.as_str()))
+                    .map(|(_, item)| item)
+            }) else {
+                return Entry::Untrusted;
+            };
             let Some(state) = item.as_table_like() else {
                 return Entry::Odd;
             };
@@ -227,25 +257,64 @@ fn hook_states(doc: &DocumentMut, id: &str) -> Vec<Entry> {
         .collect()
 }
 
-/// The one installed copy: `plugins/cache/<marketplace>/astrolabe/<version>`.
+/// The copy Codex runs, by its own rule (`active_plugin_version`): of the folders under
+/// `plugins/cache/<marketplace>/astrolabe` with a valid version name, `local` if there is
+/// one, else the highest version.
 fn installed(codex_home: &Path, marketplace: &str) -> Result<PathBuf, String> {
     let parent = codex_home
         .join("plugins")
         .join("cache")
         .join(marketplace)
         .join(PLUGIN);
-    let mut copies: Vec<PathBuf> = fs::read_dir(&parent)
-        .map_err(|_| "Codex lists the plugin but keeps no installed copy of it".to_owned())?
+    let missing = || "Codex lists the plugin but keeps no installed copy of it".to_owned();
+    let mut versions: Vec<String> = fs::read_dir(&parent)
+        .map_err(|_| missing())?
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-        .map(|e| e.path())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|v| {
+            !v.is_empty()
+                && v != "."
+                && v != ".."
+                && v.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+        })
         .collect();
-    match copies.len() {
-        1 => Ok(copies.remove(0)),
-        0 => Err("Codex lists the plugin but keeps no installed copy of it".to_owned()),
-        _ => Err("more than one installed copy of the plugin is kept".to_owned()),
+    versions.sort_by(|a, b| version_order(a, b));
+    let active = if versions.iter().any(|v| v == "local") {
+        Some("local".to_owned())
+    } else {
+        versions.pop()
+    };
+    active.map(|v| parent.join(v)).ok_or_else(missing)
+}
+
+/// Codex's version order: by semantic version when both parse, else by name.
+fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
+    match (semver(a), semver(b)) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        _ => a.cmp(b),
     }
+}
+
+/// `MAJOR.MINOR.PATCH[-pre][+build]` as a sortable key; build metadata doesn't order, and a
+/// release sorts after its pre-releases. Pre-releases compare as plain text, close enough
+/// for the versions this plugin ships.
+fn semver(v: &str) -> Option<([u64; 3], bool, String)> {
+    let v = v.split_once('+').map_or(v, |(v, _)| v);
+    let (core, pre) = v.split_once('-').map_or((v, None), |(c, p)| (c, Some(p)));
+    let mut parts = core.split('.').map(|n| {
+        (!n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && (n == "0" || !n.starts_with('0')))
+        .then(|| n.parse::<u64>().ok())
+        .flatten()
+    });
+    let numbers = [parts.next()??, parts.next()??, parts.next()??];
+    if parts.next().is_some() || pre.is_some_and(str::is_empty) {
+        return None;
+    }
+    Some((numbers, pre.is_none(), pre.unwrap_or("").to_owned()))
 }
 
 /// Where Codex pins the one-time baseline for trust given before it fingerprinted plugins.

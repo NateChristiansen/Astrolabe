@@ -540,6 +540,11 @@ fn done_section(done: &[&Card], at: At) -> String {
     fold("done", "", "Done this fortnight", done.len(), false, &body)
 }
 
+/// What waits on the owner: the cards under Needs you, and a lapse in Codex's hook trust.
+fn needs_you(rows: &BoardData, columns: &Columns) -> usize {
+    columns[NEEDS].len() + usize::from(rows.codex_hooks.as_ref().is_some_and(|c| c.lost))
+}
+
 /// The chips: every count that isn't zero, then the notes' state.
 fn chips(rows: &BoardData, columns: &Columns) -> String {
     let lessons = &rows.lessons;
@@ -551,15 +556,12 @@ fn chips(rows: &BoardData, columns: &Columns) -> String {
         format!("<span class=\"chip\"><span class=\"dot {dot}\"></span><b>{n}</b> {label}</span>")
     };
     let mut chips = String::new();
-    if !columns[NEEDS].is_empty() {
+    let needs = needs_you(rows, columns);
+    if needs > 0 {
         chips += &chip(
             "needs",
-            columns[NEEDS].len(),
-            if columns[NEEDS].len() == 1 {
-                "needs you"
-            } else {
-                "need you"
-            },
+            needs,
+            if needs == 1 { "needs you" } else { "need you" },
         );
     }
     if active_n > 0 {
@@ -623,8 +625,7 @@ fn hero(rows: &BoardData, columns: &Columns, chips: &str, board: &str, now_ms: i
                 .to_string()
         })
         .unwrap_or_else(|| today_of(rows));
-    let lapsed = rows.codex_hooks.as_ref().is_some_and(|c| c.lost);
-    let attention_title = match columns[NEEDS].len() + usize::from(lapsed) {
+    let attention_title = match needs_you(rows, columns) {
         0 => "Nothing needs you.".to_owned(),
         1 => "One thing needs you.".to_owned(),
         n => format!("{n} things need you."),

@@ -1012,6 +1012,10 @@ mod tests {
         let page = draw(true);
         assert!(page.contains("One thing needs you."), "{page}");
         assert!(
+            page.contains("<b>1</b> needs you"),
+            "the chip counts it too: {page}"
+        );
+        assert!(
             page.contains("<p class=\"ask machine\">Codex &lt;hooks&gt; line</p>"),
             "{page}"
         );
@@ -1021,6 +1025,7 @@ mod tests {
         );
         let page = draw(false);
         assert!(page.contains("Nothing needs you."), "{page}");
+        assert!(!page.contains("needs you</span>"), "{page}");
         assert!(
             page.contains("<p class=\"quiet machine\">Codex &lt;hooks&gt; line</p>"),
             "{page}"
