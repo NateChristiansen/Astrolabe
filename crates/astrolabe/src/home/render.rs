@@ -1,7 +1,7 @@
 //! Board and page markup from a typed snapshot; no Git operations.
 use super::nav::tree_html;
 use super::settings::{Look, Palette, Theme};
-use crate::board::{BoardData, EffortRow, Lesson};
+use crate::board::{BoardData, CodexHooks, EffortRow, Lesson};
 use std::path::Path;
 
 /// The same vector is used in the page, browser tab and project artwork.
@@ -104,8 +104,10 @@ pub(super) fn board_html(rows: &BoardData, root: &Path, now_ms: i64, links: Link
         initiatives_section(rows, at),
         lessons_section(rows, at)
     );
-    let board =
-        view_heads() + &work_sections(&columns, at) + &below + &done_section(&columns[DONE], at);
+    let board = view_heads()
+        + &work_sections(&columns, rows.codex_hooks.as_ref(), at)
+        + &below
+        + &done_section(&columns[DONE], at);
     hero(rows, &columns, &chips(rows, &columns), &board, now_ms)
 }
 
@@ -240,8 +242,13 @@ fn cards_of(column: &[&Card], small: bool, at: At) -> String {
 /// The work: what needs the owner, then active cards, review, waiting, ready and ideas,
 /// each a folding grid that fits the window, and a line naming what's empty. A status
 /// whose only cards wait on the owner isn't empty: the line says they're under Needs you.
-fn work_sections(columns: &Columns, at: At) -> String {
+fn work_sections(columns: &Columns, codex: Option<&CodexHooks>, at: At) -> String {
     let mut sections = String::new();
+    // A lapse in Codex's hook trust asks the owner like a card would; any other answer
+    // that isn't "hooks run" is a quiet line under the work.
+    let ask = codex
+        .filter(|c| c.lost)
+        .map(|c| format!("<p class=\"ask machine\">{}</p>", esc(&c.text)));
     let mut quiet = Vec::new();
     for (key, title, slot, none, held, small) in [
         ("needsyou", "Needs you", NEEDS, "", "", false),
@@ -266,6 +273,16 @@ fn work_sections(columns: &Columns, at: At) -> String {
         ("ideas", "Ideas", IDEAS, "no ideas parked", "parked", true),
     ] {
         let column = &columns[slot];
+        if slot == NEEDS
+            && let Some(ask) = &ask
+        {
+            let body = format!(
+                "{ask}<div class=\"cards\">{}</div>",
+                cards_of(column, small, at)
+            );
+            sections += &fold(key, "", title, column.len() + 1, true, &body);
+            continue;
+        }
         if column.is_empty() {
             if none.is_empty() {
                 // The hero already says nothing needs you or moves. The section stays in
@@ -293,6 +310,9 @@ fn work_sections(columns: &Columns, at: At) -> String {
             line = first.to_uppercase() + &line[1..];
         }
         work += &format!("<p class=\"quiet\">{line}.</p>\n");
+    }
+    if let Some(quiet) = codex.filter(|c| !c.lost) {
+        work += &format!("<p class=\"quiet machine\">{}</p>\n", esc(&quiet.text));
     }
     work
 }
@@ -603,7 +623,8 @@ fn hero(rows: &BoardData, columns: &Columns, chips: &str, board: &str, now_ms: i
                 .to_string()
         })
         .unwrap_or_else(|| today_of(rows));
-    let attention_title = match columns[NEEDS].len() {
+    let lapsed = rows.codex_hooks.as_ref().is_some_and(|c| c.lost);
+    let attention_title = match columns[NEEDS].len() + usize::from(lapsed) {
         0 => "Nothing needs you.".to_owned(),
         1 => "One thing needs you.".to_owned(),
         n => format!("{n} things need you."),

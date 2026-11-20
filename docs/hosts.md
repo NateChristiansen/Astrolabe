@@ -148,7 +148,7 @@ Probed, with no model request made (2.1.316):
 
 **Claude Code** (probe, 2.1.316). A plugin given with `--plugin-dir` ran its `SessionStart` and `UserPromptSubmit` hooks in a fresh, untrusted folder under `-p`, with no install, enable or trust step. With `projects["<path>"].hasTrustDialogAccepted` and `hasCompletedOnboarding` set to `true` in the folder's `.claude.json`, the terminal interface in a fresh folder went straight to its prompt, with no first-run screen or trust dialog; only the first field is documented.
 
-**Codex** (probe, 0.166.0). A plugin installed from a local marketplace folder lands in `plugins/cache/<marketplace>/<plugin>/<version>` under `CODEX_HOME`. An unattended run there with the plugin's hooks untrusted ran none of them and said nothing.
+**Codex** (probe, 0.166.0). A plugin installed from a local marketplace folder lands in `plugins/cache/<marketplace>/<plugin>/<version>` under `CODEX_HOME`. An unattended run there with the plugin's hooks untrusted ran none of them and said nothing. Replacing the installed copy kept trust only when every file was identical: since 0.164.0 Codex stores a fingerprint of the installed folder with each trusted hook (`trusted_content_hash` in `config.toml`), and a changed skill file, with `hooks.json` untouched, dropped trust for every hook.
 
 ### Who sent a prompt
 
@@ -158,7 +158,7 @@ Probed, with no model request made (2.1.316):
 
 **Claude Code** (probe, 2.1.316, desktop app). A shell command run by an agent session inherits that session's app environment: its account and organization ids, its session id, a messaging socket and token, and switches such as the one that turns on bare mode. A CLI started from that shell with another `CLAUDE_CONFIG_DIR` wrote those account ids into the other folder's `.claude.json`. A session started for a test needs an environment built from nothing, not a copy with names removed.
 
-Not checked: a session signed in by token in a disposable Claude Code folder, under `-p` and in the interface; whether a signed-in `-p` run records folder trust; whether `codex login` with `CODEX_HOME` set signs in only that folder; whether Codex hook trust survives replacing the installed plugin copy; Codex's terminal interface under a pseudo-terminal.
+Not checked: a session signed in by token in a disposable Claude Code folder, under `-p` and in the interface; whether a signed-in `-p` run records folder trust; whether `codex login` with `CODEX_HOME` set signs in only that folder; Codex's terminal interface under a pseudo-terminal.
 
 ## A session's name from a hook
 

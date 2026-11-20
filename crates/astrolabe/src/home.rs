@@ -26,7 +26,7 @@ pub fn write(notes: &Notes) -> Result<PathBuf, String> {
             "{FILE} is tracked in the notes repo, so it isn't overwritten; run `git rm --cached {FILE}` there and the board is drawn at the next save"
         ));
     }
-    let rows = crate::record::rows_in(notes, None, true);
+    let rows = crate::record::rows_in(notes, None, true).with_codex_hooks();
     let path = notes.root.join(FILE);
     notes::write_text(
         &path,
@@ -994,6 +994,37 @@ mod tests {
                 && at("ideas") < at("today")
         );
         assert!(!page.contains("class=\"stack\"") && !page.contains("quiet-hero"));
+    }
+
+    #[test]
+    fn a_lapse_in_codex_hook_trust_asks_and_other_answers_stay_quiet() {
+        // Codex skipped every hook, guard included, while the board said nothing needed you.
+        let draw = |lost: bool| {
+            let rows = json!({"today": "2026-11-05", "efforts": [], "journal_lines": [],
+                "codex_hooks": {"lost": lost, "text": "Codex <hooks> line"}});
+            render(
+                &serde_json::from_value(rows).unwrap(),
+                Path::new("/n"),
+                NOW,
+                Look::default(),
+            )
+        };
+        let page = draw(true);
+        assert!(page.contains("One thing needs you."), "{page}");
+        assert!(
+            page.contains("<p class=\"ask machine\">Codex &lt;hooks&gt; line</p>"),
+            "{page}"
+        );
+        assert!(
+            !page.contains("<section class=\"col needsyou\" hidden>"),
+            "{page}"
+        );
+        let page = draw(false);
+        assert!(page.contains("Nothing needs you."), "{page}");
+        assert!(
+            page.contains("<p class=\"quiet machine\">Codex &lt;hooks&gt; line</p>"),
+            "{page}"
+        );
     }
 
     #[test]

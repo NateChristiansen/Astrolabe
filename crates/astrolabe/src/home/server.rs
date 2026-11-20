@@ -383,6 +383,8 @@ pub(super) fn events(notes: &Notes, mut stream: TcpStream, seen: &AtomicI64) {
         return;
     }
     let mut print = fingerprint(&notes.root);
+    // Codex's hook trust changes outside the notes, so it's looked at on each ping too.
+    let mut trust = crate::codex_hooks::here();
     let mut pinged = Instant::now();
     // A page that went away is noticed by a read, since nothing is written until a change.
     let _ = stream.set_nonblocking(true);
@@ -397,10 +399,16 @@ pub(super) fn events(notes: &Notes, mut stream: TcpStream, seen: &AtomicI64) {
         }
         seen.store(notes::now_ms(), Ordering::SeqCst);
         let now = fingerprint(&notes.root);
-        let line = if now != print {
-            print = now;
+        let due = pinged.elapsed() >= PING_EVERY;
+        let trust_now = if due {
+            crate::codex_hooks::here()
+        } else {
+            trust.clone()
+        };
+        let line = if now != print || trust_now != trust {
+            (print, trust) = (now, trust_now);
             format!("event: changed\ndata: {}\n\n", notes::now_ms())
-        } else if pinged.elapsed() >= PING_EVERY {
+        } else if due {
             ": ping\n\n".to_owned()
         } else {
             continue;
@@ -495,7 +503,7 @@ pub(super) fn answer(
     let target = target.unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
     if path == "/" {
-        let rows = crate::record::rows_in(notes, None, true);
+        let rows = crate::record::rows_in(notes, None, true).with_codex_hooks();
         let page = page(
             &rows,
             &notes.root,

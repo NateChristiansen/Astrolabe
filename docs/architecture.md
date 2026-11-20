@@ -108,6 +108,8 @@ The page receives change notifications and refreshes the board, tree or open not
 
 Each update also writes `home.html` at the notes root, excluded from Git through that checkout's local exclude file. This standalone page reloads once a minute when used without the server.
 
+The board is also where a lapse in Codex's hook trust shows, since Codex skips untrusted hooks without a word: the board reads Codex's stored trust on this machine each time it's drawn, and an open page looks again every 15 seconds. A confirmed loss sits under Needs you; never trusted, turned off or unsettled is a quiet line. Nothing is stored.
+
 Appearance settings are saved per machine; a browser's own choice takes precedence there. Iris is the default palette, with Ember, Slate, Moss and Graphite also available; see the [command reference](commands.md) for setting one. The page and browser icon share the [project artwork](../assets/branding/README.md).
 
 ## The shell guard
@@ -142,7 +144,7 @@ The crate stays small enough to build as one package. Modules separate responsib
 - `home/server.rs` handles HTTP and live event streams. `home/render.rs`, `home/markdown.rs` and `home/nav.rs` render the board, notes and navigation. `home/search.rs` answers the notes view's search, inside the notes checkout only. `home/settings.rs` holds appearance and port settings. `home.rs` exposes them and writes the standalone board file. CSS and JavaScript live beside the renderer and are embedded at build time.
 - `application.rs` connects completed note operations to presentation. `home_effects.rs` writes the ignored board file and ensures the local server is running. Storage has no dependency on either rendering or server startup.
 - `main.rs` parses the program's arguments and calls the module that owns each command; `lib.rs` lists the modules.
-- `install.rs` installs the executable it was invoked from, replacing only a program the installer's receipt recorded and keeping a backup. `update.rs` moves the program and each app's plugin to the newest release or nightly. `codex_setup.rs` is the opt-in `setup codex` command; no hook or installer calls it.
+- `install.rs` installs the executable it was invoked from, replacing only a program the installer's receipt recorded and keeping a backup. `update.rs` moves the program and each app's plugin to the newest release or nightly. `codex_setup.rs` is the opt-in `setup codex` command; no hook or installer calls it. `codex_hooks.rs` reproduces Codex's plugin fingerprint and compares it with Codex's stored hook trust, read-only, for the board, `status` and `codex-hooks`.
 - `seed.rs` creates a new notes checkout for `notes init`. `registry.rs` holds the local repo registration helpers. `worktree.rs` runs Git for the modules that read a checkout.
 
 ### Trace a save

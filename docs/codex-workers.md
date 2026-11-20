@@ -86,7 +86,7 @@ Send them with `codex queue` to the same thread, in the form of step 3, and chec
 
 Activation and the guard proof are a gate before any task work. If activation says the plugin's hook didn't take the command, stop and report an unbound worker. An installed plugin or a returned thread id doesn't prove its hooks ran.
 
-A plugin refresh can invalidate hook trust, and an unattended run gives no warning when hooks are skipped. The owner reviews the current hooks in the app, or with `/hooks` in the CLI; don't rewrite trust entries or bypass review ([hook trust reference](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)). Then queue to the same thread and require binding and the guard proof again. A failed activation isn't a reason to start a duplicate.
+Codex ties hook trust to a fingerprint of the whole installed plugin folder, so a plugin refresh that changes any file there, a skill's text included, drops it, and an unattended run skips the hooks without a warning. The board says so under Needs you, and `astrolabe codex-hooks` exits nonzero. The owner reviews the current hooks in the app, or with `/hooks` in the CLI; don't rewrite trust entries or bypass review ([hook trust reference](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)). Then queue to the same thread and require binding and the guard proof again. A failed activation isn't a reason to start a duplicate.
 
 ## Not checked
 

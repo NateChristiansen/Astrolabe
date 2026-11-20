@@ -32,7 +32,7 @@ If Git reports a missing name or email, configure your Git commit identity and r
 
 ## The agent doesn't receive Astrolabe context
 
-Run the installed program with `status` in your terminal. If it says off, complete [step 4](install.md#4-turn-it-on). Check that the plugin is installed and enabled in the app, review hook trust in Codex, and start a fresh session. Ask the agent to run `astrolabe activate --status`; machine status alone doesn't prove that the app runs the hooks.
+Run the installed program with `status` in your terminal. If it says off, complete [step 4](install.md#4-turn-it-on). Check that the plugin is installed and enabled in the app; for Codex, `status` also says whether its stored hook trust still matches the installed plugin. Review hook trust in Codex if it doesn't, and start a fresh session. Ask the agent to run `astrolabe activate --status`; machine status alone doesn't prove that the app runs the hooks.
 
 ## The app stops running the hooks partway through a session
 

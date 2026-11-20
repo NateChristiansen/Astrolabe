@@ -44,7 +44,7 @@ Replace `status` with the arguments below. The current installer and hooks use t
 | `--help` or `-h` | Print top-level syntax. Running without arguments does the same. |
 | `on` | Enable Astrolabe for the machine. Requires registered notes. |
 | `off` | Disable the machine's hooks. Instructions already delivered to a session remain in its context. |
-| `status` | Show the machine switch. For the loaded effort and guard proof, use `astrolabe activate --status`. |
+| `status` | Show the machine switch and, where Codex has Astrolabe's plugin, whether Codex still runs its hooks. For the loaded effort and guard proof, use `astrolabe activate --status`. |
 | `notes init <folder>` | Create, commit and register notes, including the first effort, **Fill in your notes**. Requires Git commit identity, an unregistered machine, and a new or empty folder (a fresh clone of an empty repo also works). |
 | `repo add agent <checkout>` | Register an existing notes Git checkout on this machine, replacing any previous registration. |
 | `repo add <name> [<checkout>]` | Register a project; omit the checkout to use the current repo. |
@@ -56,6 +56,8 @@ For a project with a remote, registration writes the remote into `knowledge/repo
 ## App permission setup
 
 `setup codex [--apply] [--check] [--reviewer user|auto_review] [--config <file>]` previews host permission settings using the registered notes checkout. `--apply` explicitly saves them; `--check` tests the saved profile in the installed CLI sandbox. The default reviewer is the existing one, or `user` when unset. Nothing launches an agent session or adds project trust.
+
+`codex-hooks [--codex-home <folder>] [--plugin <folder>]` says whether Codex still runs Astrolabe's hooks, and exits 0 only when it does. Since 0.164.0 Codex stores, with each hook you trust, a fingerprint of the whole installed plugin folder, and silently skips the hook once any file there differs. This command computes the same fingerprint and compares, reading Codex's files and never writing them. The answer is that hooks run, that trust was lost because the plugin changed, that they were never trusted, that they're turned off, or that the files can't settle it. `--codex-home` defaults to `CODEX_HOME`, then `~/.codex`; `--plugin` checks a folder in place of the installed copy, as one about to be installed would be. The board shows a lost trust under Needs you and the other answers as a quiet line.
 
 Repeated application leaves correct configuration, the ownership record and backups untouched. A changed notes registration replaces only a root setup itself added. Unrelated settings and comments stay, and changed existing configs get a backup. Malformed settings, unknown legacy sandbox options, a modified managed profile or a non-workspace sandbox are refused without replacing the config. A failed check after application reports that the setup was saved.
 

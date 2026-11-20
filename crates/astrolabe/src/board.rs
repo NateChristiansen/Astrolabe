@@ -18,6 +18,31 @@ pub struct BoardData {
     pub notes: Vec<String>,
     pub lessons: Vec<Lesson>,
     pub drafts: Vec<Lesson>,
+    /// Whether Codex runs Astrolabe's hooks on the machine drawing the board. Filled only
+    /// where this machine draws its own board, since the answer is this machine's.
+    pub codex_hooks: Option<CodexHooks>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodexHooks {
+    /// A confirmed loss, which asks the owner; anything else is a quiet line.
+    pub lost: bool,
+    pub text: String,
+}
+
+impl BoardData {
+    /// This machine's Codex answer, left out when hooks run or Codex has no Astrolabe here.
+    pub fn with_codex_hooks(mut self) -> Self {
+        use crate::codex_hooks::Trust;
+        self.codex_hooks = crate::codex_hooks::here()
+            .filter(|t| *t != Trust::Trusted)
+            .map(|t| CodexHooks {
+                lost: t == Trust::Lost,
+                text: t.sentence(),
+            });
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -341,6 +366,7 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             &answers,
         ),
         drafts: mark_uncommitted(drafts_in(&notes.root), &uncommitted),
+        codex_hooks: None,
     }
 }
 
