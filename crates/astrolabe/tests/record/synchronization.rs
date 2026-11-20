@@ -1416,3 +1416,65 @@ fn a_save_waiting_for_the_notes_goes_before_a_waiting_sync() {
     let pushed = git(&origin, &["log", "-p", "--format=%s", "main"]);
     assert!(pushed.contains("saved while a sync waited"), "{pushed}");
 }
+
+/// The git programs one run started, from git's own trace: each as its arguments.
+fn traced(trace: &Path) -> Vec<Vec<String>> {
+    (std::fs::read_to_string(trace).unwrap_or_default().lines())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["event"] == "start")
+        .map(|e| {
+            (e["argv"].as_array().unwrap().iter())
+                .skip(1)
+                .map(|a| a.as_str().unwrap().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+/// Catches: git's upkeep back inside a hook, where on Windows its repack after a commit or
+/// fetch runs in the hook's time; and a sync that no longer runs it, which would leave a
+/// checkout no fetch reaches unpacked for good.
+#[test]
+fn hooks_leave_gits_upkeep_to_the_sync_and_the_sync_runs_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    let hook = mac.dir.0.join("hook-trace.json");
+    let env = [("GIT_TRACE2_EVENT", hook.to_str().unwrap())];
+    let (out, ok) = mac.bash_env(
+        "s1",
+        "astrolabe effort save --decision \"chose a over b: c\"",
+        &env,
+    );
+    assert!(ok, "{out}");
+    let ran = traced(&hook);
+    // The save committed and pulled, which is where git would start its upkeep.
+    assert!(
+        ran.iter().any(|a| a.contains(&"commit".to_owned())),
+        "{ran:?}"
+    );
+    assert!(
+        ran.iter().any(|a| a.first().is_some_and(|v| v == "fetch")),
+        "{ran:?}"
+    );
+    assert!(
+        !ran.iter().any(|a| a.contains(&"maintenance".to_owned())),
+        "{ran:?}"
+    );
+    // With no remote too, as nothing fetches there.
+    git(&mac.notes, &["remote", "remove", "origin"]);
+    let sync = mac.dir.0.join("sync-trace.json");
+    let mut command = mac.command(&mac.notes, &["notes", "sync"]);
+    let done = command.env("GIT_TRACE2_EVENT", &sync).output().unwrap();
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stdout)
+    );
+    let ran = traced(&sync);
+    assert!(
+        ran.iter()
+            .any(|a| a == &["maintenance", "run", "--auto", "--quiet"]),
+        "{ran:?}"
+    );
+}

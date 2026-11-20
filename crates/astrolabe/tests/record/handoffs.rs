@@ -339,10 +339,7 @@ fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);
-    let env = [
-        ("ASTROLABE_HOOK_TEST_STALL", "add:60000"),
-        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
-    ];
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "add:60000")];
     let (out, ok) = mac.bash_env(
         "s1",
         "astrolabe effort save --decision \"chose all over some: complete\"",

@@ -19,6 +19,9 @@ const OWN_REBASE: &str = "own-rebase";
 /// aborting. Git removes the folder whole when the rebase ends, mark and all.
 const OWN_MARK: &str = "astrolabe-own";
 
+/// The sync record's entry for leftover hand-off files a sync couldn't commit.
+const HANDOFFS_FAILED: &str = "handoffs-left";
+
 /// Whether the rebase in `dir`, found after this call's own rebase failed, is the one this
 /// call began. Never by git's message, which is in the user's language and quotes commit
 /// subjects, but by what doesn't vary: this call's rebase exited with the status of one
@@ -28,9 +31,6 @@ const OWN_MARK: &str = "astrolabe-own";
 /// that same moment makes this call's rebase die without starting, which is another
 /// status, so theirs is never taken for this call's, even from the same commit onto the
 /// same one.
-/// The sync record's entry for leftover hand-off files a sync couldn't commit.
-const HANDOFFS_FAILED: &str = "handoffs-left";
-
 fn began_here(dir: &std::path::Path, code: Option<i32>, before: &str, onto: &str) -> bool {
     let recorded = |name: &str| {
         std::fs::read_to_string(dir.join(name))
