@@ -216,10 +216,11 @@ fn saves_left_queued_by_hooks_out_of_time_land_once_whoever_commits_them() {
         .map(|op| op["key"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(keys.len(), 3);
-    // A holder whose hook has time for one more commit: each commit here moves its clock on
-    // 9.5 s of its 16, so s4's save commits the oldest queued one, then its own, and leaves
-    // the other two queued.
-    let env = [("ASTROLABE_HOOK_TEST_STALL", "commit:+9500")];
+    // A holder whose hook has time for one more commit: its first commit starts 9 s into
+    // its 16 however long it took to get there, which leaves too little for a second
+    // queued save and enough for its own. So s4's save commits the oldest queued one, then
+    // its own, and leaves the other two queued.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "commit:=9000")];
     let (out, ok) = mac.timed_bash("s4", "s4-call", SAVE, &env, Duration::from_secs(20));
     assert!(ok && out.starts_with("Saved effort 4"), "{out}");
     let committed: Vec<_> = keys.iter().filter(|k| mac.commits_with(k) == 1).collect();

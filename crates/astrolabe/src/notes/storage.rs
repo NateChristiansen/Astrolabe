@@ -4,12 +4,19 @@ use super::{
     EOL_RULE, INTENTS, Notes, Op, RECENT_MS, RECOVERED, RETRY_MS, journal_file, now_ms,
     tidy_journal, write_text,
 };
+use crate::deadline::Step;
 use std::path::PathBuf;
 
 /// Where a write's path lists for git wait while git reads them, beside the intents.
 const PATHS: &str = "paths";
 /// Leaves out a write that died between being written aside and renamed into place.
 const NOT_TEMP: &str = ":(exclude)*.tmp";
+/// Hand-off files a save adds per git call. Each new file costs git far more on Windows
+/// than on a Mac, and a first save over a folder of hundreds ran past a hook's time on
+/// Windows; a hook checks its time between batches.
+const BATCH: usize = 100;
+/// The hand-off folders a hook short of time left files in, for the next sync to commit.
+const HANDOFFS_LEFT: &str = "handoffs-left.json";
 
 /// What a notes write commits, whoever changed it.
 const COMMITTED: [&str; 6] = [
@@ -593,19 +600,37 @@ impl Notes {
             None => (Vec::new(), Vec::new()),
         };
         let mut notes: Vec<String> = handoffs::left_line(&left).into_iter().collect();
-        let mut carried: Vec<String> = carried.iter().map(|p| literal(p)).collect();
-        if !carried.is_empty() {
-            let specs: Vec<&str> = carried.iter().map(String::as_str).collect();
+        let all: Vec<String> = carried.iter().map(|p| literal(p)).collect();
+        let mut carried: Vec<String> = Vec::new();
+        for batch in all.chunks(BATCH) {
+            // A batch after the first starts only with a write's time left in a hook; the
+            // rest wait for a sync, which no clock bounds.
+            if !carried.is_empty() && crate::deadline::short_of(Step::Write).is_some() {
+                if let Some(scope) = scope {
+                    self.leave_handoffs(scope)?;
+                }
+                notes.push(format!(
+                    "{} hand-off files wait for the next notes sync to commit them: this hook ran short of time for more.",
+                    all.len() - carried.len()
+                ));
+                break;
+            }
+            let specs: Vec<&str> = batch.iter().map(String::as_str).collect();
             if let Err(why) = self.git_paths(&op.key, &["add", "-A"], &specs) {
                 // A hand-off file is never why a save fails: the effort goes in without them,
-                // and what this add staged before it stopped is staged no more.
-                let _ = self.git_paths(&op.key, &["reset", "-q"], &specs);
+                // and what the adds staged before this one stopped is staged no more.
+                carried.extend_from_slice(batch);
+                let staged: Vec<&str> = carried.iter().map(String::as_str).collect();
+                let _ = self.git_paths(&op.key, &["reset", "-q"], &staged);
                 notes.push(format!(
                     "Hand-off files weren't committed, so they stay on this machine: {}.",
                     why.trim().trim_end_matches('.')
                 ));
                 carried.clear();
+                break;
             }
+            carried.extend_from_slice(batch);
+            crate::deadline::stall("handoffs");
         }
         if !changed.is_empty() || !carried.is_empty() {
             // With no path named, `add -A` would take everything.
@@ -663,6 +688,65 @@ impl Notes {
         let ran = self.git(&[args, &[from.as_str(), "--pathspec-file-nul"]].concat());
         let _ = std::fs::remove_file(&file);
         ran
+    }
+
+    /// Notes that `scope` has hand-off files a hook had no time to commit.
+    fn leave_handoffs(&self, scope: &Handoffs) -> Result<(), String> {
+        let mut left = self.handoffs_left();
+        if !left.contains(scope) {
+            left.push(scope.clone());
+        }
+        let text = serde_json::to_string(&left).unwrap_or_default();
+        write_text(&self.state.join(HANDOFFS_LEFT), &text)
+    }
+
+    fn handoffs_left(&self) -> Vec<Handoffs> {
+        std::fs::read(self.state.join(HANDOFFS_LEFT))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Commits the hand-off files saves left for later, by the same rules a save carries
+    /// them by. Outside a hook only: there is no clock here to check between batches.
+    pub(crate) fn commit_left_handoffs(&self) -> Result<(), String> {
+        let scopes = self.handoffs_left();
+        if scopes.is_empty() || crate::deadline::in_hook() {
+            return Ok(());
+        }
+        let folders: Vec<String> = scopes.iter().map(|h| literal(&h.folder)).collect();
+        let mut status = vec!["status", "--porcelain", "-z", "--untracked-files=all", "--"];
+        status.extend(folders.iter().map(String::as_str));
+        status.push(NOT_TEMP);
+        let prefix = self.git(&["rev-parse", "--show-prefix"])?;
+        let status = self.git(&status)?;
+        let entries = entries(&status, prefix.trim_end_matches('\n'));
+        let mut paths: Vec<String> = Vec::new();
+        for scope in &scopes {
+            for path in handoffs_changed(&self.root, &entries, scope).0 {
+                let path = literal(&path);
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        if !paths.is_empty() {
+            let specs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let key = "handoffs-left";
+            self.git_paths(key, &["add", "-A"], &specs)?;
+            let commit = [
+                "-c",
+                "user.useConfigOnly=false",
+                "commit",
+                "--quiet",
+                "--only",
+                "-m",
+                "Hand-off files a save had no time to commit",
+            ];
+            self.git_paths(key, &commit, &specs)?;
+        }
+        let _ = std::fs::remove_file(self.state.join(HANDOFFS_LEFT));
+        Ok(())
     }
 
     /// The session states, once the notes are committed.

@@ -262,7 +262,7 @@ fn powershell_is_offered_a_here_string() {
     let command =
         "cd C:\\work\\repo; astrolabe effort save --status active @'\nWhere it stands.\n'@";
     let input = json!({"session_id": "s1", "cwd": mac.demo, "tool_name": "PowerShell", "tool_use_id": "call-ps", "tool_input": {"command": command}});
-    let (out, ok) = mac.shell(input.clone(), &mac.demo, command);
+    let (out, ok) = mac.shell(input.clone(), &mac.demo, command, &[]);
     assert!(!ok, "{out}");
     let (answer, _) = mac.run(
         &mac.demo,

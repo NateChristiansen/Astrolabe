@@ -35,10 +35,13 @@ fn answer_by(event: &str) -> Duration {
 const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
 /// Tests hold a hook up at a named point: `<point>:<milliseconds>` waits that long there,
 /// and `<point>:+<milliseconds>` moves the hook's clock on by that much without waiting,
-/// so a test can put a hook late in its time with the backstop still far off. The points
-/// are `read` (input read, nothing judged), `verdict` (the guard's verdict reached, not
-/// yet printed), `ticket` (an effort command done, its result not yet left) and a git verb
-/// (before that git call starts).
+/// so a test can put a hook late in its time with the backstop still far off.
+/// `<point>:=<milliseconds>` moves it on to that much spent, whatever the hook really took
+/// to get there, so a test on a slow machine lands at the same point in the hook's time.
+/// The points are `read` (input read, nothing judged), `verdict` (the guard's verdict
+/// reached, not yet printed), `ticket` (an effort command done, its result not yet left),
+/// `handoffs` (a batch of hand-off files added) and a git verb (before that git call
+/// starts).
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
 
 /// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
@@ -352,6 +355,12 @@ pub(crate) fn stall(point: &str) {
         return;
     };
     if at != point {
+        return;
+    }
+    if let Some(ms) = time.strip_prefix('=') {
+        let at = Duration::from_millis(ms.parse().unwrap_or(0));
+        let more = at.saturating_sub(clock.spent()).as_millis() as u64;
+        clock.moved_on.fetch_add(more, Ordering::Relaxed);
         return;
     }
     match time.strip_prefix('+') {

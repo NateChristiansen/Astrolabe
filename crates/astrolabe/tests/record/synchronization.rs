@@ -92,7 +92,8 @@ fn two_machines_number_offline_and_the_newer_is_renumbered_after_sync() {
     assert_eq!(state["effort"], "4");
     assert_eq!(state["file"], shelf("0004-pc-three.md"));
     // And the Mac sees it after its own pull, with the journal's day file merged by union.
-    assert!(mac.sync().1);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
     assert!(mac.notes.join(shelf("0004-pc-three.md")).exists());
     let journal = mac.journal_today();
     assert!(

@@ -111,7 +111,7 @@ fn reply_clears_the_board_once_without_counting_as_a_progress_save() {
             let mut reask = input.clone();
             reask["tool_use_id"] = "new-question".into();
             reask["tool_input"]["command"] = command.into();
-            let (out, ok) = m.shell(reask, &m.demo, command);
+            let (out, ok) = m.shell(reask, &m.demo, command, &[]);
             assert!(ok, "{out}");
             assert!(m.hook_json(hook, input).is_none());
             assert!(m.effort_text(1).contains("owner: land it?"));

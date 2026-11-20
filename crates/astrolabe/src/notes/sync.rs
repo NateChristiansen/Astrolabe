@@ -518,6 +518,12 @@ impl Notes {
                 leftovers.join("; ")
             ));
         }
+        if let Err(why) = self.commit_left_handoffs() {
+            return Err(format!(
+                "hand-off files a save left for later weren't committed, so nothing was pulled or pushed: {}",
+                why.trim()
+            ));
+        }
         if !self.has_remote() {
             return Ok("no remote: nothing to push".to_owned());
         }

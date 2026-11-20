@@ -161,8 +161,20 @@ impl Machine {
     }
 
     fn run(&self, cwd: &Path, args: &[&str], stdin: &str) -> (String, bool) {
-        let mut child = self
-            .command(cwd, args)
+        self.run_env(cwd, args, stdin, &[])
+    }
+
+    /// `run` with extra environment, such as a hook's test stall.
+    fn run_env(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        stdin: &str,
+        env: &[(&str, &str)],
+    ) -> (String, bool) {
+        let mut command = self.command(cwd, args);
+        command.envs(env.iter().copied());
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -204,20 +216,33 @@ impl Machine {
         if let Some(agent) = agent {
             input["agent_id"] = agent.into();
         }
-        self.shell(input, cwd, command)
+        self.shell(input, cwd, command, &[])
+    }
+
+    /// `bash` with extra environment for the hook.
+    fn bash_env(&self, session: &str, command: &str, env: &[(&str, &str)]) -> (String, bool) {
+        let input = json!({"session_id": session, "cwd": self.demo, "tool_name": "Bash", "tool_use_id": "call-1", "tool_input": {"command": command}});
+        self.shell(input, &self.demo, command, env)
     }
 
     /// The same as Codex sends it, which adds a turn id.
     fn bash_codex(&self, session: &str, command: &str) -> (String, bool) {
         let input = json!({"session_id": session, "turn_id": "t1", "cwd": self.demo, "tool_name": "shell_command", "tool_use_id": "call-1", "tool_input": {"command": command}});
-        self.shell(input, &self.demo, command)
+        self.shell(input, &self.demo, command, &[])
     }
 
-    fn shell(&self, input: Value, cwd: &Path, command: &str) -> (String, bool) {
-        let (out, ok) = self.run(
+    fn shell(
+        &self,
+        input: Value,
+        cwd: &Path,
+        command: &str,
+        env: &[(&str, &str)],
+    ) -> (String, bool) {
+        let (out, ok) = self.run_env(
             cwd,
             &["hook", "pre-command", "--if-active"],
             &input.to_string(),
+            env,
         );
         assert!(ok, "a hook always exits 0");
         if out.trim().is_empty() {

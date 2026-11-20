@@ -165,6 +165,24 @@ mod remembered {
     }
 }
 
+/// Keeps git's own upkeep out of a hook. After a commit, fetch or rebase git runs
+/// `maintenance run --auto --detach`, and on Windows, where git can't detach, that repack
+/// runs inside the call and inside the hook's time. Outside a hook (the sync each save
+/// starts, a terminal command) git keeps it, so the notes are still packed. Added to any
+/// config the caller's environment already passes the same way.
+fn no_upkeep(command: &mut Command) {
+    let count: usize = (std::env::var("GIT_CONFIG_COUNT").ok())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    let off = [("maintenance.auto", "false"), ("gc.auto", "0")];
+    for (i, (key, value)) in off.iter().enumerate() {
+        command
+            .env(format!("GIT_CONFIG_KEY_{}", count + i), key)
+            .env(format!("GIT_CONFIG_VALUE_{}", count + i), value);
+    }
+    command.env("GIT_CONFIG_COUNT", (count + off.len()).to_string());
+}
+
 fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Failed> {
     let unrun = |why: String| Failed { why, code: None };
     let verb = verb(command);
@@ -182,6 +200,9 @@ fn run_git(kind: Git, command: &mut Command, cwd: &Path) -> Result<Vec<u8>, Fail
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C");
+    if crate::deadline::in_hook() {
+        no_upkeep(command);
+    }
     let ran = match kind {
         Git::Notes => {
             // After the hook's answer, the backstop waits for a call in the notes checkout.

@@ -304,14 +304,10 @@ fn an_identical_untracked_copy_on_the_other_machine_gives_way_and_a_different_on
     assert!(pc.notes.join(".handoffs/quill/2-draft.md").exists());
 }
 
-/// Catches: a first save over a big hand-off folder passing Windows' 32,767-character
-/// command line, which would fail that save on every replay.
-#[test]
-fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    member(&mac);
-    let dir = mac
+/// 700 hand-off files for effort 1's evidence folder, the paths of which pass Windows'
+/// 32,767-character command line.
+fn evidence(m: &Machine) -> PathBuf {
+    let dir = m
         .notes
         .join(".handoffs/quill/1-evidence-from-a-long-running-measurement");
     std::fs::create_dir_all(&dir).unwrap();
@@ -322,11 +318,71 @@ fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
         )
         .unwrap();
     }
+    dir
+}
+
+/// How many of the evidence files git tracks.
+fn tracked(m: &Machine) -> usize {
+    git(&m.notes, &["ls-files", "--", ".handoffs/quill"])
+        .lines()
+        .filter(|l| l.contains("sample-number"))
+        .count()
+}
+
+/// Catches: a first save over a big hand-off folder passing Windows' 32,767-character
+/// command line, which would fail that save on every replay.
+#[test]
+fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    member(&mac);
+    evidence(&mac);
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort save --decision \"chose all over some: complete\"",
     );
     assert!(ok, "{out}");
-    assert_eq!(committed(&mac).len(), 701, "{out}");
+    // A machine too slow to add them all in the hook's time leaves the rest to the sync,
+    // which names them all at once again.
+    match out.contains("wait for the next notes sync") {
+        true => assert!(mac.sync().1),
+        false => assert_eq!(committed(&mac).len(), 701, "{out}"),
+    }
+    assert_eq!(tracked(&mac), 700);
     assert!(!status(&mac).contains("sample-number"));
+}
+
+/// Catches: a hook adding hand-off files past its time, which on a Windows PC ran a first
+/// save over hundreds of them into the out-of-time denial; and files it had no time for
+/// left on this machine for good, or the save failing over them.
+#[test]
+fn a_hook_short_of_time_commits_the_save_and_leaves_the_rest_to_the_sync() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    member(&mac);
+    evidence(&mac);
+    // After the first batch, the hook's clock is past where another may start.
+    let env = [("ASTROLABE_HOOK_TEST_STALL", "handoffs:=11000")];
+    let (out, ok) = mac.bash_env(
+        "s1",
+        "astrolabe effort save --decision \"chose all over some: complete\"",
+        &env,
+    );
+    assert!(
+        ok && out.starts_with("Saved effort 1")
+            && out.contains("600 hand-off files wait for the next notes sync to commit them"),
+        "{out}"
+    );
+    assert!(mac.effort_text(1).contains("chose all over some: complete"));
+    assert_eq!(committed(&mac).len(), 101, "{out}");
+    assert_eq!(tracked(&mac), 100);
+    let (out, ok) = mac.sync();
+    assert!(ok, "{out}");
+    assert_eq!(tracked(&mac), 700);
+    assert!(!status(&mac).contains("sample-number"));
+    assert!(!mac.state().join("handoffs-left.json").exists());
+    // Nothing is left for the next sync.
+    let log = mac.log();
+    assert!(mac.sync().1);
+    assert_eq!(mac.log(), log);
 }
