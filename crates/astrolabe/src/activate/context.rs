@@ -21,7 +21,7 @@ pub(super) const HOOK_LIMIT: usize = 9800;
 /// What each of `INVOLVEMENTS` asks of an agent, in that list's order.
 const INVOLVEMENT_MEANINGS: [&str; 4] = [
     "run to the end within authority, then report, because the owner chose to stay out of the loop for this effort",
-    "show a plan of several steps or repos, wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead",
+    "show a plan of several steps or repos (each thing asked for is one), wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead",
     "show the plan and wait for the owner's go before changing files, because a plan is cheap to redirect and changed files aren't",
     "report after each step and wait before the next, because the owner wants to steer each one",
 ];

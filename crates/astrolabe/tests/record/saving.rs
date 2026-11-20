@@ -10,7 +10,7 @@ fn the_default_asks_only_on_bigger_plans_and_a_set_check_in_keeps_its_meaning() 
     let (out, ok) = mac.bash("s1", NEW);
     assert!(ok, "{out}");
     assert!(
-        out.contains("- involvement: check in on bigger plans: show a plan of several steps or repos, wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead."),
+        out.contains("- involvement: check in on bigger plans: show a plan of several steps or repos (each thing asked for is one), wait for the owner's go, then run it without stops; a one-step change in one repo goes ahead."),
         "{out}"
     );
     let (out, ok) = mac.bash(
