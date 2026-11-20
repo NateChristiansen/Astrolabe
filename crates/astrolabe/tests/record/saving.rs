@@ -1120,6 +1120,28 @@ fn status_transitions_need_text_but_repeated_statuses_do_not() {
 }
 
 #[test]
+fn a_save_short_of_done_counts_its_unticked_pieces() {
+    // Pieces were ticked at the close, so the list showed no progress while work ran.
+    let world = World::new();
+    let m = world.machine("mac");
+    assert!(m.bash("s1", NEW).1);
+    write(
+        &m.demo.join("pieces.md"),
+        "- [ ] One\n- [ ] Two\n- [ ] Three",
+    );
+    let (out, ok) = m.bash("s1", "astrolabe effort save --pieces-file pieces.md");
+    let line = "Tick each in the first save after it lands, with --tick \"<piece>\".";
+    assert!(
+        ok && out.contains(&format!("Unticked pieces: 3 of 3. {line}")),
+        "{out}"
+    );
+    let (out, ok) = m.bash("s1", "astrolabe effort save --tick One");
+    assert!(ok && out.contains("Unticked pieces: 2 of 3."), "{out}");
+    let (out, ok) = m.bash("s1", "astrolabe effort save --tick Two --tick Three");
+    assert!(ok && !out.contains("Unticked pieces"), "{out}");
+}
+
+#[test]
 fn done_lists_unfinished_pieces_without_refusing() {
     let world = World::new();
     let m = world.machine("mac");

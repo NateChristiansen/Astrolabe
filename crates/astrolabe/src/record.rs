@@ -1469,7 +1469,16 @@ fn newly_unnamed_review(file: &EffortFile, before: &str, waited: &str) -> bool {
 
 fn unfinished_pieces(file: &EffortFile) -> String {
     if file.prop("status") != Some("done") {
-        return String::new();
+        // Pieces were ticked at the close, so each save short of it counts what's still open.
+        return match file.pieces_count() {
+            Some((done, total)) if done < total && file.prop("status") != Some("abandoned") => {
+                format!(
+                    "\nUnticked pieces: {} of {total}. Tick each in the first save after it lands, with --tick \"<piece>\".",
+                    total - done
+                )
+            }
+            _ => String::new(),
+        };
     }
     let lines: Vec<_> = file.unticked_pieces().collect();
     if lines.is_empty() {
