@@ -119,8 +119,9 @@ fn a_resumed_effort_with_a_head_too_long_for_the_hook_is_cut_and_names_its_file(
     )
     .unwrap();
     let text = f.session_start("s1", &f.demo, &[]).unwrap();
+    // Claude Code's limit, counted as it counts it.
     let size = text.encode_utf16().count();
-    assert!(size <= 9800, "{size}");
+    assert!(size <= 10_000, "{size}");
     assert!(
         text.contains("Astrolabe is on in this session for effort 70, \"題名 ")
             && text.contains("- authority: edit: ")

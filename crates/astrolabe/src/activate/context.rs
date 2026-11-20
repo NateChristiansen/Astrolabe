@@ -15,8 +15,19 @@ use serde_json::Value;
 use std::path::Path;
 
 /// A hook's text is cut at 10,000 characters by Claude Code and near 2,500 tokens by Codex
-/// (docs/hosts.md). This is under both, in the unit `counted` gives each.
+/// (docs/hosts.md). This is under both, in the unit `counted` gives each. Which notes go
+/// inline is still chosen against it, so a session that fit before gets the same text.
 pub(super) const HOOK_LIMIT: usize = 9800;
+
+/// What the text as sent may come to, in the unit `counted` gives the app. Claude Code took
+/// exactly 10,000 UTF-16 units whole at session start (effort 404's probe, 2026-11-19).
+/// Codex's cut isn't probed, so it keeps `HOOK_LIMIT`.
+fn limit(provider: &str) -> usize {
+    match provider {
+        "claude" => 10_000,
+        _ => HOOK_LIMIT,
+    }
+}
 
 /// What each of `INVOLVEMENTS` asks of an agent, in that list's order.
 const INVOLVEMENT_MEANINGS: [&str; 4] = [
@@ -474,6 +485,7 @@ impl Activation {
     pub fn fitted_after(&self, notice: Option<&str>) -> String {
         let provider = self.state.provider.as_deref().unwrap_or_default();
         let size = |text: &str| counted(provider, text);
+        let room = limit(provider);
         let inline = |parts: &[Part]| -> String {
             let piece = |p: &Part| format!("\n\n--- {}\n\n{}", p.title, p.body);
             parts.iter().map(piece).collect()
@@ -512,7 +524,7 @@ impl Activation {
                 true => format!("{lead}{}{NOT_INLINE}{}", inline(now), files(later).concat()),
                 false => format!("{lead}{}", inline(now)),
             };
-            if size(&text) <= HOOK_LIMIT {
+            if size(&text) <= room {
                 return text;
             }
             if kept == 0 {
@@ -530,7 +542,7 @@ impl Activation {
         let mut list = 0;
         let listed = files.iter().take_while(|file| {
             list += size(file);
-            list <= HOOK_LIMIT / 3
+            list <= room / 3
         });
         let close = match listed.count() {
             0 => format!("\n\n{CUT}."),
@@ -543,12 +555,12 @@ impl Activation {
             Some(at) => at,
             None => lead.len() - self.closing.len(),
         };
-        let ending = match size(&lead[ending..]) > HOOK_LIMIT / 2 {
+        let ending = match size(&lead[ending..]) > room / 2 {
             true => lead.len(),
             false => ending,
         };
         let (front, ending) = (lead[..ending].trim_end(), &lead[ending..]);
-        let over = (size(front) + size(&close) + size(ending) + 4).saturating_sub(HOOK_LIMIT);
+        let over = (size(front) + size(&close) + size(ending) + 4).saturating_sub(room);
         // The room comes out of the line that grew, a title or a stamp or a list of efforts,
         // where one did: the lines after it are the settings, the guard and the rules. With
         // no such line, the rules at the head's end go, whole lines at a time.
@@ -1928,7 +1940,7 @@ mod tests {
 
     fn within(provider: &str, text: &str, what: &str) {
         let size = counted(provider, text);
-        assert!(size <= HOOK_LIMIT, "{what}: {size} for {provider}");
+        assert!(size <= limit(provider), "{what}: {size} for {provider}");
     }
 
     /// Every note reaches the session: inline, or as a file it's told to read. Only a list
@@ -1938,7 +1950,7 @@ mod tests {
         let list: usize = a.parts.iter().map(|p| counted(provider, &entry(p))).sum();
         let cut = text.contains("Astrolabe cut this text here");
         for (n, part) in a.parts.iter().enumerate() {
-            if cut && list > HOOK_LIMIT / 3 && n > 0 {
+            if cut && list > limit(provider) / 3 && n > 0 {
                 continue;
             }
             let inline = format!("\n\n--- {}\n\n{}", part.title, part.body);
@@ -2168,13 +2180,17 @@ mod tests {
 
     #[test]
     fn a_notice_after_the_opening_is_fitted_with_the_rest() {
-        let note = "Notes not refreshed from origin (offline): this is the local copy.";
+        // Longer than the 200 Claude Code's limit leaves past the 9,800 notes are chosen by,
+        // as a notice about the session's folder can be.
+        let note =
+            ["Notes not refreshed from origin (offline): this is the local copy."; 4].join(" ");
+        let note = note.as_str();
         let f = facts("check in at plan", "edit");
         for provider in APPS {
             for role in ROLES {
                 let file = "/home/sam/notes/knowledge/owner.md";
                 let owner = |body: &str| vec![part("knowledge/owner.md", body, file)];
-                // Exactly at the limit without the note, so adding it afterwards went over.
+                // At the limit notes are chosen by without the note, so adding it went over.
                 let small = session(provider, role, &f, owner(""));
                 let room = HOOK_LIMIT - small.text().len();
                 let full = session(provider, role, &f, owner(&"x".repeat(room)));
@@ -2341,7 +2357,8 @@ mod tests {
         text
     }
 
-    /// The sizes the report on this cap quotes; run with `--nocapture` to print them.
+    /// The sizes the report on this cap quotes, for each app against its own limit; run with
+    /// `--nocapture` to print them.
     ///
     /// Catches a head that leaves too little room for the files a real binding names. The
     /// paths are as long as the owner's, not the owner's own: the notes folder on the Mac
@@ -2358,7 +2375,8 @@ mod tests {
             sized("0197-sample", '-', 40)
         );
         let initiative = sized("initiatives/sample", '-', 12 + 34) + ".md";
-        // Claude Code on the Mac is given the POSIX shell's steps, and on Windows both shells'.
+        // Claude Code on the Mac is given the POSIX shell's steps, and on Windows both shells';
+        // Codex is given the same here, which is never fewer than it gets.
         let shapes = [
             (
                 "Mac",
@@ -2393,7 +2411,7 @@ mod tests {
             );
             let at = |name: &str| format!("{root}/{name}");
             let owner = |name: &str| part(name, "", &at(name));
-            for role in ROLES {
+            for (provider, role) in APPS.into_iter().flat_map(|p| ROLES.map(|r| (p, r))) {
                 let mut f = real(&proof);
                 (f.title, f.file, f.handoffs) = (&title, &file, &handoffs);
                 let initiative_role = role == Some(Role::Initiative);
@@ -2416,8 +2434,8 @@ mod tests {
                 if role.is_none() {
                     parts.truncate(3);
                 }
-                let a = session("claude", role, &f, parts);
-                let head = counted("claude", &a.lead());
+                let a = session(provider, role, &f, parts);
+                let head = counted(provider, &a.lead());
                 let files: usize = listed(&a.parts).iter().map(|f| f.len() + 3).sum();
                 // The same with the longest notice about where the session is: an owner's
                 // effort on Windows, resumed in a shared main checkout, is the tight one.
@@ -2425,17 +2443,17 @@ mod tests {
                 let told = [Seat::Notes, Seat::Shared]
                     .iter()
                     .filter_map(|seat| placed(role?, seat, &f, &repos, &[AGENT.to_owned()]))
-                    .map(|notice| counted("claude", &notice) + 2)
+                    .map(|notice| counted(provider, &notice) + 2)
                     .max()
                     .unwrap_or(0);
-                let spare = HOOK_LIMIT as isize - (head + told + list + files) as isize;
+                let spare = limit(provider) as isize - (head + told + list + files) as isize;
                 eprintln!(
-                    "{role:?} on the {shape}: head {head}, notice {told}, its {} files take {}, spare {spare}",
+                    "{role:?} on the {shape}, {provider}: head {head}, notice {told}, its {} files take {}, spare {spare}",
                     listed(&a.parts).len(),
                     list + files,
                 );
                 if spare < 0 {
-                    over.push(format!("{role:?} on the {shape}, {spare}"));
+                    over.push(format!("{role:?} on the {shape}, {provider}, {spare}"));
                 }
             }
         }
