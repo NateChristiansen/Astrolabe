@@ -16,9 +16,10 @@ use save::{
     Reply, SaveRequest, Saver, commit_message, edit_bound, saved_reply, stamp_initiative,
     stamp_saver,
 };
+pub(crate) use validation::linear_id;
 use validation::{
     AUTHORITIES, DEFAULT_INVOLVEMENT, INVOLVEMENTS, STATUSES, as_current, check_journal, closes,
-    issues, one_of,
+    issues, names, one_of,
 };
 
 /// What the hook does for one effort command: what to show, whether it worked, and the
@@ -1755,22 +1756,42 @@ fn save_target(
 /// Whether main here already holds a commit that closes each issue the effort answers, read
 /// from the last fetch: an effort can be done while the issue it answers stays open, because
 /// the issue number never reached the landed commit (2026-11-07: five fixed issues sat open).
+/// A Linear issue (an ID such as `ROU-12`) counts as reaching main when a commit there names
+/// it, since the merge request that closes it carries the ID in its title.
 fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
     // Split on any comma: a hand-edited `5,6` is two issues, as the session context reads it.
-    let issues: Vec<&str> = (issue.split(','))
+    let all: Vec<String> = (issue.split(','))
         .map(|n| n.trim().trim_start_matches('#'))
         .filter(|n| !n.is_empty())
+        .map(|n| linear_id(n).unwrap_or_else(|| n.to_owned()))
         .collect();
+    let (linear, issues): (Vec<&str>, Vec<&str>) =
+        (all.iter().map(String::as_str)).partition(|n| linear_id(n).is_some());
+    // GitHub numbers as `#5`, Linear IDs as they are.
     let tag = |ns: &[&str]| {
         ns.iter()
-            .map(|n| format!("#{n}"))
+            .map(|n| match linear_id(n) {
+                Some(_) => (*n).to_owned(),
+                None => format!("#{n}"),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let every: Vec<&str> = all.iter().map(String::as_str).collect();
+    let tracker = match (issues.is_empty(), linear.is_empty()) {
+        (true, false) => "Linear",
+        (false, false) => "GitHub and Linear",
+        _ => "GitHub",
+    };
     let Some(cwd) = checkout else {
         return format!(
-            "This effort answers issue {}, but this folder isn't a checkout of its repo, so nothing checked whether main closes it; make sure GitHub does.",
-            tag(&issues)
+            "This effort answers issue {}, but this folder isn't a checkout of its repo, so nothing checked whether main closes it; make sure {tracker} {}.",
+            tag(&every),
+            if linear.is_empty() || issues.is_empty() {
+                "does"
+            } else {
+                "do"
+            }
         );
     };
     let os = |s: &str| std::ffi::OsString::from(s);
@@ -1787,13 +1808,15 @@ fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
         main.map(|r| crate::worktree::git(cwd, &[&os("log"), &os("--format=%B%x00"), &os(r)]));
     let Some(Ok(log)) = log else {
         return format!(
-            "This effort answers issue {}, but there's no origin main here to check it against; make sure GitHub closes it.",
-            tag(&issues)
+            "This effort answers issue {}, but there's no origin main here to check it against; make sure {tracker} closes it.",
+            tag(&every)
         );
     };
     let messages: Vec<&str> = log.split('\0').collect();
     let (closed, open): (Vec<&str>, Vec<&str>) =
         (issues.iter().copied()).partition(|n| messages.iter().any(|m| closes(m, n)));
+    let (named, unnamed): (Vec<&str>, Vec<&str>) =
+        (linear.iter().copied()).partition(|n| messages.iter().any(|m| names(m, n)));
     let mut said = Vec::new();
     if !closed.is_empty() {
         said.push(format!(
@@ -1807,6 +1830,18 @@ fn issue_report(checkout: Option<&Path>, issue: &str) -> String {
             "No commit on main here, as of the last fetch, closes {}, so GitHub won't close it on its own. Land a commit that says {}, or ask the owner before closing it by hand.",
             tag(&open),
             fixes.join(" and ")
+        ));
+    }
+    if !named.is_empty() {
+        said.push(format!(
+            "Main here has a commit that names {}.",
+            tag(&named)
+        ));
+    }
+    if !unnamed.is_empty() {
+        said.push(format!(
+            "No commit on main here, as of the last fetch, names {}, so Linear won't close it on its own. Land it through a merge request with the ID in its title, or ask the owner before closing it by hand.",
+            tag(&unnamed)
         ));
     }
     said.join(" ")
