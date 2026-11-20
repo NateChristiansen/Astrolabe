@@ -303,8 +303,8 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         ),
         (
             "a worker in a lone checkout",
-            6259,
-            "94532b31ce5e1e2bb22c48b91b8c81cb5245934a39b07e8698f4d35987b0725c",
+            6287,
+            "8180f21e655a93d24f0f952628ec6ab3a71df15d38e7db6aec759bf1436646e6",
         ),
         (
             "an owner's effort in the notes",
