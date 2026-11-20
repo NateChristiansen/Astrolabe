@@ -10,6 +10,7 @@ The launch turn only binds. The guard proof is made in the first queued turn, so
 
 ## Before you start
 
+- Run `astrolabe codex-hooks`. Launch only when it exits 0; otherwise Codex would skip the hooks unseen ([when hooks need review](#when-hooks-need-review)).
 - Write the brief under the notes' `.handoffs/<initiative>/` folder. Its path must have no spaces and no quote characters, because the queued sentence carries it unquoted inside single quotes. If it can't, copy the brief to such a path in the hand-off folder.
 - Begin the brief with the app-side steps, then the work:
 

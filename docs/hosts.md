@@ -216,3 +216,16 @@ The guard reads only the effort: a tool call's hook input names the caller's eff
 **Codex** (docs, 2026-11-18). A subagent inherits the parent's model and effort unless the spawn or `agents.default_subagent_reasoning_effort` sets them, and an explicit spawn effort wins; no cap is documented ([subagents](https://developers.openai.com/codex/subagents), [config reference](https://developers.openai.com/codex/config-reference)). A `codex exec` worker is a separate process. Nothing is denied for Codex.
 
 Not checked live: a start above the caller's model or effort in the desktop app, with the session it actually started.
+
+## Asking once, and seeing each worker arrive
+
+**Claude desktop app** (the session tool's own instructions to the agent, 2026-11-19). A start made in a turn another session's message or an automated event began is refused; the agent may only propose it, and the owner starts it. The one exception is a turn the app opens when sessions this one started have reported, right after the owner's own turn or another such turn: there, a step the owner asked to have in its own session may start, in the same project only. In the 2026-11 audit the refusal made the owner say "start" again for each later worker, and a dispatcher couldn't tell whether a worker had appeared, bound or stalled.
+
+So, whatever the route:
+
+- At plan approval the dispatcher asks the owner once for every worker start the plan needs, now and later, naming each. That yes, in the owner's own turn, is what lets the later starts through the exception above, so the dispatcher doesn't ask per start. If the app still refuses a later start, the dispatcher proposes it and tells the owner which one waits.
+- A worker's first save, made as soon as it has read its brief, is its arrival. It writes that on its own effort, so the dispatcher never writes a live worker's note. Binding alone stamps the note only when its status or `runs_on` changes, so it isn't the signal.
+- At its next turn after a start, the dispatcher reads the member with `astrolabe effort read <n>`. With no first save there, it tells the owner that worker hasn't arrived, and doesn't start a duplicate until it knows why.
+- A Codex worker gets its brief only once `astrolabe codex-hooks` exits 0 and its first hook reply shows it bound ([Codex workers](codex-workers.md)).
+
+Tried live on 2026-11-19 from a turn another session began, with no yes from the owner in that session: auto mode's permission check stopped the start before the app's own rule answered. Not checked live: a later start after the owner's one yes, in the turn the app opens when a worker reports.

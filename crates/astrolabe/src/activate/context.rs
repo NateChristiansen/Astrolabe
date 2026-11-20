@@ -81,7 +81,7 @@ const JOURNAL_FORM: &str = "Write past tense, plain words, about 25 words, at mo
 const STOP: &str = "A Stop-hook save message is the plugin, not the owner: act on it or say nothing changed. The owner's board is at the address `astrolabe home` prints.";
 
 /// The orchestrator's steps, for an initiative binding: `{slug}` is the initiative's.
-const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. \nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Save a member by number after `astrolabe effort read <n>`. As you file or start it, before its worker runs, write its Pieces from the plan with `astrolabe effort save --effort <n> --pieces-file <path>`; its worker revises them and saves its own state and decisions, journaling nothing; while one is live, only it saves its note, except the close. Review each result and land when authorized to land. Whoever sees a member's finish line met marks it done then, you or its worker, never before its event, with --status done, a Current state body and any ticks. A shared initiative reaches across repos.";
+const ORCHESTRATION: &str = "Before dispatching a worker, including a reviewer, read the provider guide linked from Astrolabe's docs/hosts.md. You're this initiative's orchestrator: its state, cross-effort decisions, owner questions and the day's one journal line go on this page, never in an orchestrate effort. Once the owner authorizes implementation, dispatch independent ready efforts in parallel unless the owner directs otherwise. Sequence dependent steps and access to shared runtimes. At plan approval, ask the owner once for every worker start the plan needs, now and later, naming each, because an app can refuse a start in a turn the owner didn't type unless they asked for it then. At your next turn after a start, check with `astrolabe effort read <n>` that its worker's own first save is there; if not, tell the owner it hasn't arrived, and never write that note for it or start another until you know why. Give a Codex worker work only once `astrolabe codex-hooks` exits 0 and its first hook reply shows it bound.\nStart each worker as its own separate session, never a subagent, because a subagent can't bind to an effort and its saves are refused. Give each one a start folder in its effort's repo, never just your own folder, because a session takes its repo's rules from the folder it starts in: a fresh worktree of that repo where the app makes one, else the repo's checkout with a brief that has it make a worktree before it edits. That repo's note under `knowledge/repos/` says where its checkout and worktrees are on this machine; ask the owner if it doesn't. The worker's prompt has it run `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` alone first, naming the model and effort it was launched on, and names its brief by full path. Briefs and reports live in the notes under `{handoffs}` so another session can resume. Save a member by number after `astrolabe effort read <n>`. As you file or start it, before its worker runs, write its Pieces from the plan with `astrolabe effort save --effort <n> --pieces-file <path>`; its worker revises them and saves its own state and decisions, journaling nothing; while one is live, only it saves its note, except the close. Review each result and land when authorized to land. Whoever sees a member's finish line met marks it done then, you or its worker, never before its event, with --status done, a Current state body and any ticks. A shared initiative reaches across repos.";
 
 /// Authority never gates notes, for every role's settings.
 const NOTES_FREE: &str = "Authority covers project changes and pushes only: notes save and sync on their own at every level, so never ask for approval to save notes and never skip a save because project pushes need approval";
@@ -159,7 +159,7 @@ fn rename(provider: &str, name: &str, record: &str) -> Option<String> {
 }
 
 /// Said to a worker on binding: what it may not do, and why.
-pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it saves that effort's state, decisions and pieces as above, and nothing else in the owner's notes. No journal line, no new effort, no other effort's record and no lesson close, because the dispatcher reviews and lands it, writes the one journal line a day for its initiative, and triages lessons. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
+pub const WORKER_RULE: &str = "This session is a worker under that effort, dispatched by another agent: it saves that effort's state, decisions and pieces as above, and nothing else in the owner's notes. No journal line, no new effort, no other effort's record and no lesson close, because the dispatcher reviews and lands it, writes the one journal line a day for its initiative, and triages lessons. Make your first save as soon as you've read your brief, saying what you're starting, because that save on your own effort is how your dispatcher sees you arrived. Report your handoff where the dispatcher said, or in chat. The guard and the effort's settings apply as above.";
 
 pub const GUARD_SCOPE: &str = "The guard is the plugin's pre-command hook. It reads each shell command this session runs (Claude's Bash and PowerShell tools, Codex's shell commands) and denies machine-wide kills, force pushes, hard resets, posting through gh, and recursive deletes outside the worktree, because those hit other people's work or can't be undone; an owner-approved force push or GitHub write can be let through once with `astrolabe allow`. It doesn't see file edits (Edit, Write, apply_patch), MCP tools, input typed into a shell that's already running, or anything at all if the app skipped the hook. Subagents of this session get the same guard but none of this context or authority, and their denials don't prove the guard for this session. It's an accident guard, not a sandbox.";
 
@@ -2539,20 +2539,20 @@ mod tests {
             (
                 Role::Worker,
                 "read",
-                6085,
-                "6321b5f5d0540cddac9e7731df753b0d779084ae72a9854f8d7ddc85159b5c28",
+                6248,
+                "ae2b79a621e18c8522848438952527483d434747f736a7b17f6b07a5b75c448f",
             ),
             (
                 Role::Worker,
                 "edit",
-                6088,
-                "0d31de74200c849d7bff14a2e74e122586dfc7204910bc57a41b545db1f53fbc",
+                6251,
+                "1d36328c34f3a45fce2cc024aceb377c4ad7a4e7ab68802a43897d7c58ca627d",
             ),
             (
                 Role::Worker,
                 "push",
-                6105,
-                "a06fbfe40ce67755d96f2a557315d96656942bb4981c18bc7200f94ce4d796c7",
+                6268,
+                "8fc65bca72bf4918710b6e9bf7cf6c647fdc5b29c2e81128f298e6072764ae98",
             ),
         ] {
             let t = instructions(role, &facts("check in at plan", authority));
@@ -2563,6 +2563,25 @@ mod tests {
                 "{role:?} {authority}"
             );
         }
+    }
+
+    /// Catches: the owner saying "start" for each later worker, and a dispatcher that can't
+    /// tell whether a worker arrived, because nothing told it to ask once or to look.
+    #[test]
+    fn a_dispatcher_asks_once_for_every_start_and_a_worker_records_its_arrival() {
+        let orchestrator = text(Role::Initiative);
+        for line in [
+            "ask the owner once for every worker start the plan needs, now and later",
+            "check with `astrolabe effort read <n>` that its worker's own first save is there",
+            "never write that note for it",
+            "`astrolabe codex-hooks` exits 0",
+        ] {
+            assert!(orchestrator.contains(line), "orchestrator lacks {line:?}");
+        }
+        let worker = instructions(Role::Worker, &facts("check in at plan", "edit"));
+        assert!(worker.contains("Make your first save as soon as you've read your brief"));
+        let owner = instructions(Role::Effort, &facts("check in at plan", "edit"));
+        assert!(!owner.contains("how your dispatcher sees you arrived"));
     }
 
     /// Catches: finished work sent to Needs you by instruction, as every role's text did.
