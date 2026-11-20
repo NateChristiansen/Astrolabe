@@ -241,8 +241,9 @@ fn masked(f: &Fixture, text: &str) -> String {
 }
 
 /// What a real binding sends where no notice fires, by length and SHA-256, as it stands since
-/// an effort's initiative paragraph became a pointer (as main sent it at 4351bcf, 502 bytes
-/// longer for an effort, the same for a worker): the whole reply and the whole
+/// Needs you came to mean something the owner can act on now (before that, as main sent it
+/// at 8766a3e, 94 bytes shorter for an effort and 287 for a worker; before the finish line
+/// under Current state, 32 shorter for each): the whole reply and the whole
 /// resumed text, through the hook, not only the rules. Not on Windows, where the text has
 /// both shells' proof steps and its own path separators.
 #[cfg(unix)]
@@ -292,13 +293,13 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
     let want = [
         (
             "an owner's effort in a lone checkout",
-            6956,
-            "4b759880f95555520792c7035ad21d4dbe7c759e7dbec77828df6c7b93cb8219",
+            7458,
+            "6162af3d2338a1e3ad6de4a2775a29213d526f00fbd70bdc88fc52655b9f0152",
         ),
         (
             "that effort resumed",
-            7488,
-            "8a1d9cd6e15cb1b17f5f2f1aaf8318d316676be22d0aa1a449cad79d7d3131ab",
+            7990,
+            "b11aafeaead2bf1dd068a1c61c4fed1ac404fb4632677f793e0224beed901e20",
         ),
         (
             "a worker in a lone checkout",
@@ -307,13 +308,13 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         ),
         (
             "an owner's effort in the notes",
-            6956,
-            "7daea06e6f5044394adef657759a10c67cab7e2075c69a84fdaff1ebd3741b30",
+            7458,
+            "b9c130c78a69afdf3fd6c5862046168c8f9d06e1eeb31b0e230980f4a319ed6c",
         ),
         (
             "an owner's effort in a worktree",
-            6956,
-            "8cbddd0e4c2a92e15a4c7f833bdf414c8f6d8f7f601c47a77ea133b0550a8f03",
+            7458,
+            "28135258f129438dc06b6ad73e93891f8e562b35002693cb8bdba8e3a9950d05",
         ),
     ];
     let got: Vec<(&str, usize, &str)> = (got.iter())

@@ -71,11 +71,9 @@ const FILING: &str = "File a multi-effort plan with `astrolabe initiative new --
 
 const STALE: &str = "A stale save is refused with the current text.";
 
-/// An owner's effort points at the orchestrator's binding, which gives the steps in full. It
-/// keeps the one-writer rule: without it an owner's session saved over a live worker's note
-/// (effort 404, 2026-11-19). Effort 127 kept the whole paragraph after a shorter selection
-/// skipped a decision; effort 404 checked this pointer on that scenario.
-const ORCHESTRATE_POINTER: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>`; its binding says how to dispatch, review and land. A member's worker revises its pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. A stale save is refused with the current text.";
+/// An owner's effort keeps today's orchestration, states and journal text: the eval found the
+/// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
+const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Save a member's Pieces as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan. Its worker revises those pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
 
 const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for is \"<who>: review\", \"<who>: land\" or \"owner:\", the last only when the yes is theirs.";
 
@@ -108,7 +106,7 @@ fn rules(role: Role, handoffs: &str) -> String {
             format!("{LESSON} {DECISIONS} {PLAN}"),
             PIECES.into(),
             FILING.into(),
-            ORCHESTRATE_POINTER.into(),
+            ORCHESTRATE_FULL.into(),
             STATES_FULL.into(),
             format!("{JOURNAL_EFFORT} {JOURNAL_FORM}"),
             STOP.into(),
@@ -1680,11 +1678,13 @@ mod tests {
                 "A planning-only spike closes without --initiative",
                 "Progress comes from member statuses",
                 "Filing alone grants no authority to start",
-                "astrolabe activate --initiative <slug>`; its binding says how to dispatch",
-                // An owner's session saved over a live worker's note without it.
-                "while one is live, only it saves its note, except the close",
+                "dispatch independent ready efforts in parallel",
+                "astrolabe activate --initiative <slug>",
                 "`astrolabe effort read <n>`",
+                // A dispatcher that filed members without lists left them empty until review.
+                "as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan",
                 "a list you're handed is yours to keep and revise, not replace",
+                "`.handoffs/<initiative slug>/`",
                 "Stop-hook",
                 "PROOF\n\nReport the effort",
                 "FRESH",
@@ -1692,10 +1692,6 @@ mod tests {
             &[
                 "This session is a worker",
                 "You're this initiative's orchestrator",
-                // The orchestrator's binding gives these in full.
-                "dispatch independent ready efforts in parallel",
-                "as you file it, `astrolabe effort save --effort <n> --pieces-file <path>`",
-                "`.handoffs/<initiative slug>/`",
             ],
         );
     }
@@ -2531,8 +2527,9 @@ mod tests {
         assert!(placed(Role::Effort, &Seat::Shared, &push, &demo, &home).is_some());
     }
 
-    /// An effort's and a worker's rules as they stand since an effort's initiative paragraph
-    /// became a pointer (effort 404, 502 bytes shorter for an effort), by length and SHA-256. Only the rules: that a real binding adds
+    /// An effort's and a worker's rules as they stand since Needs you came to mean something
+    /// the owner can act on now (before that, as main had them at fbc24b4, 94 and 287 bytes
+    /// shorter), by length and SHA-256. Only the rules: that a real binding adds
     /// nothing to them where no notice fires is pinned through the hook, in the
     /// activation tests.
     #[test]
@@ -2542,20 +2539,20 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                6945,
-                "2c35333163b31c937856570ab7ac26aa7ad2f6840e852c9289fea6bb3d0d4bf8",
+                7447,
+                "d868bc9d1a7f6bf88df156dfc5e91c8ddddf3ace5b4ff6f3069bd543f0a29b65",
             ),
             (
                 Role::Effort,
                 "edit",
-                6948,
-                "1e9d4645ea2ca68a9625086fb55c73fd7e5f8a3be71ac7c8f5f357d0b4810b32",
+                7450,
+                "146eda3a701860db744d1cab5e02fc1452d814b4b6a551102e4b241638740366",
             ),
             (
                 Role::Effort,
                 "push",
-                6965,
-                "0e13b30d0fd79a11e98171a276e918f0e388e194212d590d511f1261698a3e2e",
+                7467,
+                "a8d6371a32a14d12f142129c5d65a38500d58487f65475f186bbbcd19ccf9f23",
             ),
             (
                 Role::Worker,
