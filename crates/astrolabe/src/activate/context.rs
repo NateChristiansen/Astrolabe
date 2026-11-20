@@ -20,8 +20,8 @@ use std::path::Path;
 pub(super) const HOOK_LIMIT: usize = 9800;
 
 /// What the text as sent may come to, in the unit `counted` gives the app. Claude Code took
-/// exactly 10,000 UTF-16 units whole at session start (effort 404's probe, 2026-11-19).
-/// Codex's cut isn't probed, so it keeps `HOOK_LIMIT`.
+/// exactly 10,000 UTF-16 units whole at a launch, a compaction and a resume (effort 404's
+/// probes, 2026-11-19 and 20). Codex's cut isn't probed, so it keeps `HOOK_LIMIT`.
 fn limit(provider: &str) -> usize {
     match provider {
         "claude" => 10_000,
