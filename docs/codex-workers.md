@@ -1,6 +1,6 @@
 # Codex workers in the app
 
-An agent outside the Codex app, such as a Claude orchestrator, starts a Codex worker in four steps: a short CLI launch turn that only binds the effort, opening that thread in the app, queueing one sentence that points at the brief, and collecting the result. The app then runs the work where the owner can watch it and files the chat under its project. This is the one launch form; it passed first try twice on macOS and once on Windows on 2026-11-17, with CLI 0.166.0.
+An agent outside the Codex app, such as a Claude orchestrator, starts a Codex worker in four steps: a short CLI launch turn that only binds the effort, opening that thread in the app, queueing one sentence that points at the brief, and collecting the result. The app then runs the work where the owner can watch it and files the chat under its project. This is the one launch form; it passed first try twice on macOS and once on Windows on 2026-11-17, with CLI 0.166.0, and every time in six live launches on 2026-11-19 and 20, two each from zsh, Windows PowerShell 5.1 and Git Bash.
 
 ## Why it's split
 
@@ -91,4 +91,4 @@ Codex ties hook trust to a fingerprint of the whole installed plugin folder, so 
 
 ## Not checked
 
-App restarts mid-task, several workers launched at once, a missing or signed-out app, and opening the link from Git Bash. Workers filed under one project are independent sessions, not nested ones; don't edit app state to force grouping.
+App restarts mid-task, several workers launched at once, and a missing or signed-out app. Workers filed under one project are independent sessions, not nested ones; don't edit app state to force grouping.
