@@ -530,7 +530,7 @@ fn review_group<'a>(page: &'a str, key: &str) -> &'a str {
 /// showed the owner as needed when they weren't, or hid what an item waited for. The audit's
 /// cases: built and checked with no reviewer yet; reviewed and not landed, naming who lands;
 /// merged with the owner's look still to come; and a review that names no wait, which is
-/// accepted and shown apart.
+/// accepted, shown apart, and told which wait to name.
 #[test]
 fn in_review_groups_by_what_it_waits_for_and_only_the_owners_look_needs_them() {
     let world = World::new();
@@ -546,19 +546,20 @@ fn in_review_groups_by_what_it_waits_for_and_only_the_owners_look_needs_them() {
             &format!("astrolabe effort save --status review{wait} <<'ASTROLABE'\nIn review: built and checked.\nASTROLABE\n"),
         );
         assert!(ok, "{title}: {out}");
+        out
     };
-    save("s1", "Unreviewed ink", Some("dispatcher: review and land"));
-    save(
+    let unreviewed = save("s1", "Unreviewed ink", Some("dispatcher: review and land"));
+    let landing = save(
         "s2",
         "Reviewed ink",
         Some("orchestrator: land branch ink-fix once both checks pass"),
     );
-    save(
+    let look = save(
         "s3",
         "Merged ink",
         Some("owner: play the ink level on main and say whether the strokes read right"),
     );
-    save("s4", "Unnamed ink", None);
+    let unnamed = save("s4", "Unnamed ink", None);
     let page = std::fs::read_to_string(mac.notes.join("home.html")).unwrap();
 
     let reviewer = review_group(&page, "reviewer");
@@ -593,4 +594,51 @@ fn in_review_groups_by_what_it_waits_for_and_only_the_owners_look_needs_them() {
     for other in ["Unreviewed ink", "Reviewed ink", "Unnamed ink"] {
         assert!(!needs.contains(other), "{other} under Needs you: {needs}");
     }
+    // The save that named nothing went through and was told which wait to name; the others
+    // weren't.
+    assert!(
+        unnamed.contains("is in review without naming what it waits for")
+            && unnamed.contains("\"<who>: land\" for a landing")
+            && unnamed.contains("\"owner: <what to decide>\""),
+        "{unnamed}"
+    );
+    for out in [&unreviewed, &landing, &look] {
+        assert!(!out.contains("without naming what it waits for"), "{out}");
+    }
+}
+
+/// Catches: a worker told to name an owner wait its saves refuse.
+#[test]
+fn a_worker_in_review_with_no_named_wait_is_not_offered_the_owner() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("lead", NEW).1);
+    assert!(
+        mac.bash(
+            "w1",
+            "astrolabe activate --effort 1 --worker --model opus --reasoning medium"
+        )
+        .1
+    );
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe effort save --status review <<'ASTROLABE'\nIn review: built and checked.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Effort 1 is in review without naming what it waits for")
+            && !out.contains("owner: <what to decide>"),
+        "{out}"
+    );
+    // Naming it afterwards moves the card and says nothing more.
+    let (out, ok) = mac.bash(
+        "w1",
+        "astrolabe effort save --waits-for \"dispatcher: review and land\"",
+    );
+    assert!(ok && !out.contains("without naming"), "{out}");
+    let page = std::fs::read_to_string(mac.notes.join("home.html")).unwrap();
+    assert!(
+        review_group(&page, "reviewer").contains("Smooth ink"),
+        "{page}"
+    );
+    assert_eq!(review_group(&page, "unnamed"), "");
 }

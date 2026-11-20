@@ -64,7 +64,7 @@ const STALE: &str = "A stale save is refused with the current text.";
 /// role's shorter selection cost a recorded decision (effort 127, 2026-11-08).
 const ORCHESTRATE_FULL: &str = "Assigned an initiative to implement, bind with `astrolabe activate --initiative <slug>` and dispatch independent ready efforts in parallel worker sessions unless the owner directs otherwise. Sequence dependent steps and exclusive runtime use. Keep state, cross-effort decisions, owner questions and one daily journal line on the page, never in an orchestrate effort. Save a member's Pieces as you file it, `astrolabe effort save --effort <n> --pieces-file <path>` from the plan. Its worker revises those pieces and saves its own state and decisions; while one is live, only it saves its note, except the close. Review and land only when authorized to land. A stale save is refused with the current text. A shared initiative reaches across repos. Keep briefs and reports in `.handoffs/<initiative slug>/` for the next session.";
 
-const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.";
+const STATES_FULL: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Use \"owner: <the decision or action, and where to see it>\" for Needs you. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for is \"<who>: review\", \"<who>: land\" or \"owner:\", the last only when the yes is theirs.";
 
 /// Where an owner's effort journals, a member of an initiative included: today's "per
 /// standalone effort" left Codex writing none on a member it picked up (effort 127's eval).
@@ -72,7 +72,7 @@ const JOURNAL_EFFORT: &str = "The journal is the owner's history: one line a day
 
 const STATES_WORKER: &str = "States: proposed, ready, active, review, blocked, done, abandoned. Review means built and checked, waiting for review, acceptance or landing; blocked means an impediment and needs --waits-for. Needs you isn't a dispatched worker's to set: in a session bound with --worker, a save with an \"owner:\" wait is refused. A question goes to your dispatcher, with --waits-for \"dispatcher: <question>\" only if it blocks the work; a follow-up goes in Current state's last paragraph. Abandoned needs --reason. A status change to active, review, blocked, done or abandoned requires Current state, including by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked or in review. An owner reply can clear an active or blocked wait, never a review's; a reply isn't approval. Save in review with --waits-for \"dispatcher: review and land\" when built and checked. Whoever sees its finish line met marks it done then, you included, never before its event.";
 
-const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Needs you is --waits-for \"owner: <what to decide or do, and where to see it>\" on this page, only for something they can act on now; a worker's question for the owner comes to you and goes here. A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.";
+const STATES_INITIATIVE: &str = "States: proposed, ready, active, blocked, done, abandoned; an initiative has no review. Blocked means an impediment and needs --waits-for. Needs you is --waits-for \"owner: <what to decide or do, and where to see it>\" on this page, only for something they can act on now; a worker's question for the owner comes to you and goes here. A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state. A status change to active, blocked, done or abandoned requires Current state, including a member's by number; its first sentence says the state. Omitting --waits-for clears the wait unless it stays blocked. An owner reply can clear an active or blocked wait; a reply isn't approval. A member saved by number keeps the effort states, where review means built and checked, waiting for review, acceptance or landing. Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for \"<who>: review\", then \"<who>: land\" once reviewed, or \"owner: <what to look at>\" when the look is theirs.";
 
 const JOURNAL_INITIATIVE: &str = "The journal is the owner's history: one line a day for this initiative, on its page; its workers write none.";
 
@@ -2522,19 +2522,19 @@ mod tests {
                 Role::Effort,
                 "read",
                 7447,
-                "5e8acaf5c356d890d806e2c12aaf3cdd1bec729a6137a62f6598e1ed46bf12ac",
+                "d868bc9d1a7f6bf88df156dfc5e91c8ddddf3ace5b4ff6f3069bd543f0a29b65",
             ),
             (
                 Role::Effort,
                 "edit",
                 7450,
-                "5cc979723ad21a35ac05b9516d0ff86e3506999b2b4d0eb8c34bbf80984febc1",
+                "146eda3a701860db744d1cab5e02fc1452d814b4b6a551102e4b241638740366",
             ),
             (
                 Role::Effort,
                 "push",
                 7467,
-                "03da696d627a672a2acd6aeaeb1317c29ace512d0ace6c613e2d4a79af439f45",
+                "a8d6371a32a14d12f142129c5d65a38500d58487f65475f186bbbcd19ccf9f23",
             ),
             (
                 Role::Worker,
@@ -2578,7 +2578,7 @@ mod tests {
             Role::Effort,
             &[
                 "Use \"owner: <the decision or action, and where to see it>\" for Needs you.",
-                "Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for names whose landing or acceptance it waits on, \"owner:\" only when the yes is theirs.",
+                "Whoever sees an effort's finish line met marks it done then, never before, at any involvement; by number after `astrolabe effort read <n>`, with any ticks; in review, --waits-for is \"<who>: review\", \"<who>: land\" or \"owner:\", the last only when the yes is theirs.",
             ],
             &[],
         );
@@ -2596,7 +2596,7 @@ mod tests {
             &[
                 "a worker's question for the owner comes to you and goes here.",
                 "A hold the owner asked for, their later work and a wait on an event aren't waits on them: they go in Current state.",
-                "Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for naming who.",
+                "Mark a member done once its finish line's event has happened, never before, at any involvement; keep it in review only while landing or acceptance is someone else's to give, with --waits-for \"<who>: review\", then \"<who>: land\" once reviewed, or \"owner: <what to look at>\" when the look is theirs.",
             ],
             &[],
         );

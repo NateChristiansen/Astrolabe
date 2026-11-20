@@ -294,12 +294,12 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         (
             "an owner's effort in a lone checkout",
             7458,
-            "2d69bdddec8620e5f1385f5907a70ade48fb5765b2d059681acec5123c6cecc7",
+            "6162af3d2338a1e3ad6de4a2775a29213d526f00fbd70bdc88fc52655b9f0152",
         ),
         (
             "that effort resumed",
             7990,
-            "ebf4b16a263159943438025ebcf001ca3f4550fcde79eee976871efad06cae98",
+            "b11aafeaead2bf1dd068a1c61c4fed1ac404fb4632677f793e0224beed901e20",
         ),
         (
             "a worker in a lone checkout",
@@ -309,12 +309,12 @@ fn a_binding_no_notice_fires_for_gets_the_bytes_main_gave_it() {
         (
             "an owner's effort in the notes",
             7458,
-            "179dc11e0b8427344c9312a7045409b26f04ed4dce7de0f3dd6ded2727120a47",
+            "b9c130c78a69afdf3fd6c5862046168c8f9d06e1eeb31b0e230980f4a319ed6c",
         ),
         (
             "an owner's effort in a worktree",
             7458,
-            "133a9178f4e424a2d5ab400623841aa1acabe9228af4973f3d5e89773b36bf19",
+            "28135258f129438dc06b6ad73e93891f8e562b35002693cb8bdba8e3a9950d05",
         ),
     ];
     let got: Vec<(&str, usize, &str)> = (got.iter())

@@ -1245,6 +1245,12 @@ fn plan(
     if let Some(wait) = newly_needs_owner(&file, &before, &waited) {
         notes_lines.push(validation::needs_you_note(record, wait));
     }
+    if newly_unnamed_review(&file, &before, &waited) {
+        notes_lines.push(validation::unnamed_review_note(
+            record,
+            state.worker.is_true(),
+        ));
+    }
     let lesson_closes = match !req.page_binding && marks_done(status, &before) {
         true => {
             let number = req.number.parse().unwrap_or(0);
@@ -1451,6 +1457,16 @@ fn newly_needs_owner<'a>(file: &'a EffortFile, before: &str, waited: &str) -> Op
     (now && !(shows(before, waited) && wait == waited)).then_some(wait)
 }
 
+/// Whether a save just left the record in review waiting on nothing the board can name:
+/// it went into review, or its wait changed. No refusal: the audit counted refusals as a
+/// cost, so the save goes through and the board shows it apart.
+fn newly_unnamed_review(file: &EffortFile, before: &str, waited: &str) -> bool {
+    let wait = file.prop("waits_for").unwrap_or_default();
+    file.prop("status") == Some("review")
+        && crate::board::review_wait(wait) == crate::board::ReviewWait::Unnamed
+        && (before != "review" || wait != waited)
+}
+
 fn unfinished_pieces(file: &EffortFile) -> String {
     if file.prop("status") != Some("done") {
         return String::new();
@@ -1651,6 +1667,12 @@ fn save_target(
         .map(|wait| validation::needs_you_note(&format!("effort {target}"), wait))
         .into_iter()
         .collect();
+    if newly_unnamed_review(&file, &before, &waited) {
+        needs_you.push(validation::unnamed_review_note(
+            &format!("effort {target}"),
+            false,
+        ));
+    }
     let lesson_closes = match marks_done(status, &before) {
         true => {
             let (closes, lines) = lesson::closes(notes, &file, target, &day);
