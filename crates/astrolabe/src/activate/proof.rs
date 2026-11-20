@@ -103,11 +103,12 @@ pub(super) fn probe(token: &str, powershell: bool) -> String {
 }
 
 /// A session with no effort still has a probe: named for the session, proven from the
-/// machine switch's time.
+/// machine switch's time. Sixteen hex characters, 64 bits, tell sessions apart; the token is
+/// in four paths of a binding's proof steps, so a longer one costs room the rules need.
 pub(crate) fn session_token(session: &str) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(format!("astrolabe probe {session}"));
-    hash.iter().take(16).map(|b| format!("{b:02x}")).collect()
+    hash.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// The proof steps at bind, unless this session's guard is already proven by the rule

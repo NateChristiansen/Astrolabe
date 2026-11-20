@@ -479,8 +479,7 @@ impl Activation {
             parts.iter().map(piece).collect()
         };
         let files = |parts: &[Part]| -> Vec<String> {
-            let files = parts.iter().flat_map(|p| &p.files);
-            files.map(|f| format!("\n- {f}")).collect()
+            listed(parts).iter().map(|f| format!("\n- {f}")).collect()
         };
         // Which notes go inline is chosen as it always was: in bytes, before any notice, and
         // with a guess of 200 for each file to read. So a session gets the notes it got
@@ -489,7 +488,8 @@ impl Activation {
         let spills = lead.len() + inline(&self.parts).len() > HOOK_LIMIT;
         let mut kept = self.parts.len();
         if spills {
-            let reserve = NOT_INLINE.len() + 200 * files(&self.parts).len();
+            let count: usize = self.parts.iter().map(|p| p.files.len()).sum();
+            let reserve = NOT_INLINE.len() + 200 * count;
             let mut used = lead.len();
             kept = 0;
             for part in &self.parts {
@@ -728,6 +728,64 @@ pub fn switch_initiative(
     )
 }
 
+/// What a session is told to read for an effort's Current state that isn't inline. Never
+/// the whole file: the rest holds history and plans that no longer apply. The finish line
+/// rides under Current state inline; sent as a pointer, it's named here or a cut session
+/// never learns it. An initiative's page has none.
+fn state_pointer(path: &str, initiative: bool) -> String {
+    let finish = if initiative {
+        ""
+    } else {
+        "its `finish` property and "
+    };
+    format!(
+        "{path}: {finish}only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans."
+    )
+}
+
+/// What a session is told to read for an effort's Current state and Pieces when neither is
+/// inline: one line, as both are in one file, which on the PC's paths saved 150 characters.
+fn state_and_pieces_pointer(path: &str) -> String {
+    format!(
+        "{path}: its `finish` property and only its `## Current state` and `## Pieces` sections, each up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans."
+    )
+}
+
+/// The files to read for notes that aren't inline, in order. An effort's Current state and
+/// its Pieces, listed together, are named as their one file.
+fn listed(parts: &[Part]) -> Vec<String> {
+    let mut list = Vec::new();
+    let mut at = 0;
+    while at < parts.len() {
+        let (part, next) = (&parts[at], parts.get(at + 1));
+        let file = part.title.strip_suffix(", Current state");
+        let both = next.is_some_and(|n| file.is_some_and(|f| n.title == format!("{f}, Pieces")));
+        let path = part
+            .files
+            .first()
+            .and_then(|f| f.split_once(": "))
+            .map(|(p, _)| p);
+        if let (true, Some(path)) = (both, path) {
+            list.push(state_and_pieces_pointer(path));
+            at += 2;
+            continue;
+        }
+        list.extend(part.files.iter().cloned());
+        at += 1;
+    }
+    list
+}
+
+/// What a session is told to read for an effort's Pieces that aren't inline.
+fn pieces_pointer(path: &str) -> String {
+    format!("{path}: only its `## Pieces` section, up to the next `## ` heading.")
+}
+
+/// What a session is told to read for its effort's initiative that isn't inline.
+fn initiative_pointer(path: &str) -> String {
+    format!("{path}: the initiative's title and path only.")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn switch_record(
     effort: Effort,
@@ -752,17 +810,9 @@ fn switch_record(
     let current = Part {
         title: format!("{}, Current state", effort.file),
         body: effort.current.clone(),
-        // Never the whole file: the rest holds history and plans that no longer apply.
-        files: vec![format!(
-            "{}: {}only its `## Current state` section, up to the next `## ` heading. Not the rest of that file, which holds history and superseded plans.",
-            notes.join(&effort.file).display(),
-            // The finish line rides under Current state inline; sent as a pointer, it's
-            // named here or a cut session never learns it.
-            if initiative {
-                ""
-            } else {
-                "its `finish` property and "
-            }
+        files: vec![state_pointer(
+            &notes.join(&effort.file).display().to_string(),
+            initiative,
         )],
     };
     let mut parts = vec![current];
@@ -778,9 +828,8 @@ fn switch_record(
             parts.push(Part {
                 title: format!("{}, Pieces", effort.file),
                 body: pieces.to_owned(),
-                files: vec![format!(
-                    "{}: only its `## Pieces` section, up to the next `## ` heading.",
-                    notes.join(&effort.file).display()
+                files: vec![pieces_pointer(
+                    &notes.join(&effort.file).display().to_string(),
                 )],
             });
         }
@@ -807,9 +856,8 @@ fn switch_record(
             parts.push(Part {
                 title: "Initiative".to_owned(),
                 body: format!("[{}]({})", page.file.title, page.path),
-                files: vec![format!(
-                    "{}: the initiative's title and path only.",
-                    notes.join(&page.path).display()
+                files: vec![initiative_pointer(
+                    &notes.join(&page.path).display().to_string(),
                 )],
             });
         }
@@ -1231,9 +1279,11 @@ fn lead(role: Role, f: &Facts) -> String {
             auth_m = auth_m,
             proof = f.proof,
             issue = f.issues,
+            // The owner's effort is never a worker, and its orchestration rule already says
+            // a worker saves its own note, so only a worker is told it here.
             notes_free = match role {
-                Role::Initiative => NOTES_FREE.to_owned(),
-                _ => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
+                Role::Worker => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
+                _ => NOTES_FREE.to_owned(),
             },
             rules = rules(role, f.handoffs),
         ),
@@ -1740,7 +1790,7 @@ mod tests {
         let mut f = facts("autonomous", "edit");
         f.issues = "- issue line\n";
         let t = instructions(Role::Effort, &f);
-        assert!(t.contains("the same way.\n- issue line\n- A narrower"));
+        assert!(t.contains("need approval.\n- issue line\n- A narrower"));
     }
 
     /// A hook's text as the app that called it counts it (docs/hosts.md), written out here
@@ -1894,8 +1944,10 @@ mod tests {
                 continue;
             }
             let inline = format!("\n\n--- {}\n\n{}", part.title, part.body);
+            let path = part.files[0].split_once(": ").map_or("", |(p, _)| p);
+            let together = format!("\n- {}", state_and_pieces_pointer(path));
             assert!(
-                text.contains(&entry(part)) || text.contains(&inline),
+                text.contains(&entry(part)) || text.contains(&inline) || text.contains(&together),
                 "{what}: {} is neither inline nor named",
                 part.files[0]
             );
@@ -1932,10 +1984,9 @@ mod tests {
                 within(provider, &t, &what);
                 assert!(t.contains("Astrolabe cut this text here"), "{what}: {t}");
                 // All seven, in the order the uncut text gives them, straight after the cut.
-                let list: String = a
-                    .parts
+                let list: String = listed(&a.parts)
                     .iter()
-                    .map(|p| format!("\n- {}", p.files[0]))
+                    .map(|f| format!("\n- {f}"))
                     .collect();
                 assert!(
                     t.contains(&format!("tell the owner, and read now:{list}\n\n")),
@@ -2281,48 +2332,95 @@ mod tests {
         }
     }
 
+    /// `start`, lengthened with words to exactly `len` bytes, joined by `sep`.
+    fn sized(start: &str, sep: char, len: usize) -> String {
+        let mut text = start.to_owned();
+        while text.len() < len {
+            text.push(sep);
+            text.push_str("word");
+        }
+        text.truncate(len);
+        text
+    }
+
     /// The sizes the report on this cap quotes; run with `--nocapture` to print them.
+    ///
+    /// Catches a head that leaves too little room for the files a real binding names. The
+    /// paths are as long as the owner's, not the owner's own: the notes folder on the Mac
+    /// (37) and the PC (40), the temp folder the probe goes in (73 on the Mac, under the
+    /// home folder on the PC at 58), and the initiative member with the longest title (79)
+    /// with its file's name (43), its initiative's (37) and its repo's (9). Short fixture
+    /// paths once hid an owner's binding on the PC running about 146 over (2026-11-19).
     #[test]
     fn every_roles_head_leaves_room_to_name_its_notes() {
-        let folder = "/var/folders/9h/45zln1jx7bs6wkl9b2l21m7w0000gn/T/astrolabe-probe-2691581b";
-        let token = "ddf10eeca5ad75677778f464f0e891ba";
-        let posix = format!(
-            "First an allowed control, which must run: touch '{folder}/{token}-control-posix'\nThen the probe, which the hook must deny: touch '{folder}/{token}'; pkill -0 astrolabe-guard-probe\n"
+        let token = session_token("0b6f1c7e-58a1-4c9e-9d55-3f2a7e1c4b90");
+        let title = sized("0197 Sample", ' ', 79);
+        let file = format!(
+            "efforts/2026/11-November/{}.md",
+            sized("0197-sample", '-', 40)
         );
-        let one = format!(
-            "Prove the guard for this session, each command alone and exactly as written. {posix}Then run `astrolabe activate --status`."
-        );
-        // Claude Code on Windows is given both shells' steps.
-        let both = format!(
-            "Prove the guard for this session, each command alone and exactly as written. In the shell you use. For the POSIX shell (Bash, zsh):\n{posix}For PowerShell:\nFirst an allowed control, which must run: New-Item -ItemType File -Force '{folder}/{token}-control-powershell'\nThen the probe, which the hook must deny: New-Item -ItemType File -Force '{folder}/{token}'; Stop-Process -Name astrolabe-guard-probe\nThen run `astrolabe activate --status`."
-        );
-        let list = "\n\nNot inline, as a hook's text is cut near 10,000 characters. Read these now, before anything else:".len();
-        for (shells, proof) in [("one shell", &one), ("two shells", &both)] {
+        let initiative = sized("initiatives/sample", '-', 12 + 34) + ".md";
+        // Claude Code on the Mac is given the POSIX shell's steps, and on Windows both shells'.
+        let shapes = [
+            (
+                "Mac",
+                "/Users/name/workspace/Astrolabe-notes",
+                "/var/folders/9h/45zln1jx7bs6wkl9b2l21m7w0000gn/T/astrolabe-probe-2691581b",
+                false,
+            ),
+            (
+                "PC",
+                "C:\\Users\\name1\\workspace\\Astrolabe-notes",
+                "C:\\Users\\name1\\AppData\\Local\\Temp\\astrolabe-probe-2691581b",
+                true,
+            ),
+        ];
+        let list = NOT_INLINE.len();
+        let mut over = Vec::new();
+        for (shape, root, folder, both) in shapes {
+            let posix = format!(
+                "First an allowed control, which must run: touch '{folder}/{token}-control-posix'\nThen the probe, which the hook must deny: touch '{folder}/{token}'; pkill -0 astrolabe-guard-probe\n"
+            );
+            let proof = match both {
+                false => format!(
+                    "Prove the guard for this session, each command alone and exactly as written. {posix}Then run `astrolabe activate --status`."
+                ),
+                true => format!(
+                    "Prove the guard for this session, each command alone and exactly as written. In the shell you use. For the POSIX shell (Bash, zsh):\n{posix}For PowerShell:\nFirst an allowed control, which must run: New-Item -ItemType File -Force '{folder}/{token}-control-powershell'\nThen the probe, which the hook must deny: New-Item -ItemType File -Force '{folder}/{token}'; Stop-Process -Name astrolabe-guard-probe\nThen run `astrolabe activate --status`."
+                ),
+            };
+            let handoffs = format!(
+                "{root}/.handoffs/{}/",
+                &initiative[12..initiative.len() - 3]
+            );
+            let at = |name: &str| format!("{root}/{name}");
+            let owner = |name: &str| part(name, "", &at(name));
             for role in ROLES {
-                let f = real(proof);
-                let mut parts = notes("/home/sam/workspace/notes", 0);
+                let mut f = real(&proof);
+                (f.title, f.file, f.handoffs) = (&title, &file, &handoffs);
+                let initiative_role = role == Some(Role::Initiative);
+                let mut parts = vec![
+                    part(
+                        &format!("{file}, Current state"),
+                        "",
+                        &state_pointer(&at(&file), initiative_role),
+                    ),
+                    owner("knowledge/voice.md"),
+                    owner("knowledge/owner.md"),
+                    owner("knowledge/repos/astrolabe.md"),
+                    owner("knowledge/machines.md"),
+                ];
                 if role.is_some_and(|r| r != Role::Initiative) {
-                    parts.insert(1, part("efforts/2026/11-November/0197-hold-the-context-cap.md, Pieces", "", "/home/sam/workspace/notes/efforts/2026/11-November/0197-hold-the-context-cap.md: only its `## Pieces` section, up to the next `## ` heading."));
-                    parts.insert(2, part("Initiative", "", "/home/sam/workspace/notes/initiatives/audit-fixes.md: the initiative's title and path only."));
+                    let pieces = part(&format!("{file}, Pieces"), "", &pieces_pointer(&at(&file)));
+                    let page = part("Initiative", "", &initiative_pointer(&at(&initiative)));
+                    parts.splice(1..1, [pieces, page]);
                 }
                 if role.is_none() {
                     parts.truncate(3);
                 }
                 let a = session("claude", role, &f, parts);
                 let head = counted("claude", &a.lead());
-                let files: usize = a.parts.iter().map(|p| p.files[0].len() + 3).sum();
-                let guessed = list + 200 * a.parts.len();
-                eprintln!(
-                    "{role:?}, {shells}: head {head}, left {}, the list of {} files takes {} (guessed {guessed}), left for notes inline {}",
-                    HOOK_LIMIT - head,
-                    a.parts.len(),
-                    list + files,
-                    (HOOK_LIMIT - head).saturating_sub(guessed),
-                );
-                assert!(
-                    head + list + files <= HOOK_LIMIT,
-                    "{role:?}, {shells}: the head leaves no room to name its notes"
-                );
+                let files: usize = listed(&a.parts).iter().map(|f| f.len() + 3).sum();
                 // The same with the longest notice about where the session is: an owner's
                 // effort on Windows, resumed in a shared main checkout, is the tight one.
                 let repos = ["astrolabe".to_owned()];
@@ -2332,18 +2430,21 @@ mod tests {
                     .map(|notice| counted("claude", &notice) + 2)
                     .max()
                     .unwrap_or(0);
+                let spare = HOOK_LIMIT as isize - (head + told + list + files) as isize;
                 eprintln!(
-                    "{role:?}, {shells}: told where it is, head {}, left {} once its {} files are named",
-                    head + told,
-                    HOOK_LIMIT.saturating_sub(head + told + list + files),
-                    a.parts.len(),
+                    "{role:?} on the {shape}: head {head}, notice {told}, its {} files take {}, spare {spare}",
+                    listed(&a.parts).len(),
+                    list + files,
                 );
-                assert!(
-                    head + told + list + files <= HOOK_LIMIT,
-                    "{role:?}, {shells}: a notice about its folder leaves no room to name its notes"
-                );
+                if spare < 0 {
+                    over.push(format!("{role:?} on the {shape}, {spare}"));
+                }
             }
         }
+        assert!(
+            over.is_empty(),
+            "a notice about its folder leaves no room to name its notes: {over:?}"
+        );
     }
 
     #[test]
@@ -2412,7 +2513,8 @@ mod tests {
 
     /// An effort's and a worker's rules as they stand since Needs you came to mean something
     /// the owner can act on now (before that, as main had them at fbc24b4, 94 and 287 bytes
-    /// shorter), by length and SHA-256. Only the rules: that a real binding adds
+    /// shorter) and since the owner's effort stopped being told how a worker saves (44
+    /// bytes longer before), by length and SHA-256. Only the rules: that a real binding adds
     /// nothing to them where no notice fires is pinned through the hook, in the
     /// activation tests.
     #[test]
@@ -2422,20 +2524,20 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7447,
-                "5e8acaf5c356d890d806e2c12aaf3cdd1bec729a6137a62f6598e1ed46bf12ac",
+                7403,
+                "1112def6d715e4fa92e092da07e169f1a51781fefeac1ba59b91569f25e7bfbe",
             ),
             (
                 Role::Effort,
                 "edit",
-                7450,
-                "5cc979723ad21a35ac05b9516d0ff86e3506999b2b4d0eb8c34bbf80984febc1",
+                7406,
+                "ec31d087186343028260ce0b1296287288fbc0bdca31c66260f812440ec139a0",
             ),
             (
                 Role::Effort,
                 "push",
-                7467,
-                "03da696d627a672a2acd6aeaeb1317c29ace512d0ace6c613e2d4a79af439f45",
+                7423,
+                "008efc54d4e53296d00f1b1e131ad2edbcc2aa2d7f5a7d66d990b3c9cdb0cb3a",
             ),
             (
                 Role::Worker,
