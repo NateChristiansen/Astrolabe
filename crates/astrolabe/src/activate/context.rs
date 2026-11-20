@@ -1279,11 +1279,9 @@ fn lead(role: Role, f: &Facts) -> String {
             auth_m = auth_m,
             proof = f.proof,
             issue = f.issues,
-            // The owner's effort is never a worker, and its orchestration rule already says
-            // a worker saves its own note, so only a worker is told it here.
             notes_free = match role {
-                Role::Worker => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
-                _ => NOTES_FREE.to_owned(),
+                Role::Initiative => NOTES_FREE.to_owned(),
+                _ => format!("{NOTES_FREE}; a worker saves its own effort the same way"),
             },
             rules = rules(role, f.handoffs),
         ),
@@ -1790,7 +1788,7 @@ mod tests {
         let mut f = facts("autonomous", "edit");
         f.issues = "- issue line\n";
         let t = instructions(Role::Effort, &f);
-        assert!(t.contains("need approval.\n- issue line\n- A narrower"));
+        assert!(t.contains("the same way.\n- issue line\n- A narrower"));
     }
 
     /// A hook's text as the app that called it counts it (docs/hosts.md), written out here
@@ -2513,8 +2511,7 @@ mod tests {
 
     /// An effort's and a worker's rules as they stand since Needs you came to mean something
     /// the owner can act on now (before that, as main had them at fbc24b4, 94 and 287 bytes
-    /// shorter) and since the owner's effort stopped being told how a worker saves (44
-    /// bytes longer before), by length and SHA-256. Only the rules: that a real binding adds
+    /// shorter), by length and SHA-256. Only the rules: that a real binding adds
     /// nothing to them where no notice fires is pinned through the hook, in the
     /// activation tests.
     #[test]
@@ -2524,20 +2521,20 @@ mod tests {
             (
                 Role::Effort,
                 "read",
-                7403,
-                "1112def6d715e4fa92e092da07e169f1a51781fefeac1ba59b91569f25e7bfbe",
+                7447,
+                "5e8acaf5c356d890d806e2c12aaf3cdd1bec729a6137a62f6598e1ed46bf12ac",
             ),
             (
                 Role::Effort,
                 "edit",
-                7406,
-                "ec31d087186343028260ce0b1296287288fbc0bdca31c66260f812440ec139a0",
+                7450,
+                "5cc979723ad21a35ac05b9516d0ff86e3506999b2b4d0eb8c34bbf80984febc1",
             ),
             (
                 Role::Effort,
                 "push",
-                7423,
-                "008efc54d4e53296d00f1b1e131ad2edbcc2aa2d7f5a7d66d990b3c9cdb0cb3a",
+                7467,
+                "03da696d627a672a2acd6aeaeb1317c29ace512d0ace6c613e2d4a79af439f45",
             ),
             (
                 Role::Worker,
