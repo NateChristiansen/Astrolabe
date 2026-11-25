@@ -184,9 +184,9 @@ A worker has to be a session the owner can see and steer in their desktop app, n
 
 - **Codex.** A short CLI launch turn, then that thread opened in the Codex app, with the brief and follow-ups by queue ([Codex workers](codex-workers.md)).
 - **Claude, from a dispatcher in the Claude desktop app.** The app's own session tool, with the worker's folder, model and effort. The worker is in the sidebar from its first turn. Observed on Windows on 2026-11-24 ([Claude workers](claude-workers.md#from-the-desktop-app)).
-- **Claude, from any other dispatcher.** A persisted CLI launch, handed to the desktop app with `claude --desktop --resume <id>` as soon as its first run ends, before any follow-up ([Claude workers](claude-workers.md#from-anywhere-else)).
+- **Claude, from any other dispatcher.** A persisted CLI launch whose first turn only activates and proves the guard, handed to the desktop app with `claude --desktop --resume <id>` as soon as that turn ends, with the brief as the first follow-up ([Claude workers](claude-workers.md#from-anywhere-else)).
 
-When a worker can't be put in the app, the dispatcher tells the owner which one and why, then keeps it in the CLI.
+When a Claude worker can't be put in the app, the dispatcher tells the owner which one and why, then keeps it in the CLI. When a Codex thread can't be opened in the app, the dispatcher reports the failed handoff and waits, and doesn't run the brief in the CLI: that would skip the app-side guard proof, and if the app did take the thread, a CLI resume would be a second writer on it.
 
 ## Worker model and effort
 

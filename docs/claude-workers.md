@@ -7,7 +7,7 @@ The route depends on where the dispatcher runs:
 - **A dispatcher in the Claude desktop app** starts the worker with the app's own session tool ([from the desktop app](#from-the-desktop-app)). The worker is in the sidebar from its first turn, with no CLI run and no handoff.
 - **Any other dispatcher**, such as a Codex dispatcher or Claude Code in a terminal, launches a persisted CLI session and hands it to the desktop app as soon as its first run ends ([from anywhere else](#from-anywhere-else)).
 
-Either way the worker's brief starts with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` as its own first command, naming the model and effort it was started with, then has the worker prove its own guard with the probe that activation prints. The proof is per session: the dispatcher's proof doesn't cover the worker, and the worker's doesn't cover a subagent. The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews and journals, as in [usage](usage.md). Whoever sees the effort's finish line met closes it, the worker included, never before that event.
+Either way the worker's first turn starts with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` as its own first command, naming the model and effort it was started with, then has the worker prove its own guard with the probe that activation prints. The proof is per session: the dispatcher's proof doesn't cover the worker, and the worker's doesn't cover a subagent. The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews and journals, as in [usage](usage.md). Whoever sees the effort's finish line met closes it, the worker included, never before that event.
 
 ## From the desktop app
 
@@ -16,7 +16,7 @@ Either way the worker's brief starts with `astrolabe activate --effort <n> --wor
 3. Wait for its arrival: its first save on its effort, or its first report for a worker told not to save ([asking once](hosts.md#asking-once-and-seeing-each-worker-arrive)). The app relays each turn's report to the dispatcher on its own.
 4. Send follow-ups through the app's messaging to that session's id. Never resume it with `claude --print --resume`: the app holds the session, and a second writer on one session wasn't tested.
 
-The app starts a session only on the owner's own words. A start from a turn that a task notification or another session's message began is refused, so ask the owner once at plan approval for every start the plan needs ([asking once](hosts.md#asking-once-and-seeing-each-worker-arrive)). When the app still refuses one, tell the owner which worker waits, and start it in their next turn. A proposal card, which the owner starts with a click, can't carry a folder and starts in the dispatcher's own, so propose one only when that folder is in the worker's repo and the brief has the worker make its worktree before it edits.
+The app starts a session only on the owner's own words. Its one documented exception is a turn it opens when sessions this one started have reported, right after the owner's own turn or another such turn: there, a step the owner already asked to have in its own session may start, in the same project ([asking once](hosts.md#asking-once-and-seeing-each-worker-arrive)). That exception didn't hold on Windows on 2026-11-24: a start from a turn a task notification had opened was refused. So ask the owner once at plan approval for every start the plan needs, try a start in a worker-report turn only for a step the owner already asked for, and when the app refuses one, tell the owner which worker waits and start it in their next turn. A proposal card, which the owner starts with a click, can't carry a folder and starts in the dispatcher's own, so propose one only when that folder is in the worker's repo and the brief has the worker make its worktree before it edits.
 
 The worker renames its own session after its effort with the app's rename tool when it binds.
 
@@ -25,17 +25,17 @@ The worker renames its own session after its effort with the app's rename tool w
 This route was checked with a Codex dispatcher. A Claude Code dispatcher's shell passes its own session environment, including its session id, to a CLI it starts ([host behavior](hosts.md#what-a-session-passes-to-a-session-it-starts)), and a worker launched that way hasn't been tested. A dispatcher in the desktop app uses the app's tool instead.
 
 1. Create the worker's branch worktree.
-2. Launch from that worktree, as below. Record its session id and remember the folder.
+2. Launch from that worktree, as below, with a short first turn and not the brief: activate, prove the guard, report that, and stop. A launch that carried the whole brief could finish the work before the owner ever saw it. Record its session id and remember the folder.
 3. Wait until its process has exited.
 4. [Hand it to the desktop app](#hand-it-to-the-desktop-app) before anything else, and confirm the app has it. The handoff moves only an idle session, so this is the first moment it can, and every follow-up sent before it is another run the owner can't see. If it fails, tell the owner with the reason, and keep the worker in the CLI ([when the handoff isn't available](#when-the-handoff-isnt-available)).
-5. Send [follow-ups](#follow-ups) one at a time.
+5. Send the brief as the first [follow-up](#follow-ups), once the app has the worker or the owner has been told the handoff failed. Send later follow-ups one at a time.
 
 ### Launch
 
 Launch from the worker's worktree, with the notes checkout added for briefs, reports and handoffs:
 
 ```sh
-claude --print --model opus --effort medium --permission-mode auto --add-dir /path/to/notes --output-format json "<brief>" < /dev/null
+claude --print --model opus --effort medium --permission-mode auto --add-dir /path/to/notes --output-format json "<first turn>" < /dev/null
 ```
 
 Replace the paths with yours. Every launch names its model and effort: Opus at medium unless the work needs more, and then the reason goes in the brief. A launch that names neither inherits the dispatcher's settings, and Astrolabe's guard refuses it ([worker model and effort](hosts.md#worker-model-and-effort)). `--model default` doesn't count, as it restores the inherited model. In PowerShell, pipe an empty string in (`'' | claude --print ...`) to close stdin. Keep the app's normal permission checks; don't use the bypass mode for a worker.
