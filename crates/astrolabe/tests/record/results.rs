@@ -481,3 +481,64 @@ fn a_result_shown_by_the_bare_command_counts_as_the_sessions_answer() {
         "{journal}"
     );
 }
+
+/// Catches: a retry of a filing that kept the binding, with its reply lost, deciding again
+/// from what the session is on by then and binding it to the new effort.
+#[test]
+fn a_retry_replays_the_first_filings_choice_to_keep_the_binding() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(
+        mac.bash(
+            "s1",
+            "astrolabe initiative new --title \"Smooth ink\" <<'ASTROLABE'
+Smooth ink.
+
+## Efforts
+Tether cap
+Cap the tether.
+
+Goo at speed
+Keep goo stable.
+ASTROLABE
+"
+        )
+        .1
+    );
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    let file = "astrolabe effort new --title \"Ink tests\" --status proposed --initiative smooth-ink <<'ASTROLABE'\nTest the ink.\nASTROLABE\n";
+    let unanswered = [
+        ("ASTROLABE_HOOK_TEST_STALL", "ticket:60000"),
+        ("ASTROLABE_HOOK_BUDGET_MS", "8000"),
+    ];
+    let denied = mac.call("lead", "call-1", file, &unanswered).unwrap_err();
+    assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
+    assert!(mac.log().contains("0004: started"));
+    // Its reply lost, as when a later run finished the write, and the session on another
+    // record before the retry.
+    let ops: Vec<PathBuf> = std::fs::read_dir(mac.state().join("ops"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .collect();
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    let mut op: Value = serde_json::from_slice(&std::fs::read(&ops[0]).unwrap()).unwrap();
+    op["result"] = Value::Null;
+    std::fs::write(&ops[0], op.to_string()).unwrap();
+    assert!(mac.bash("lead", "astrolabe activate --effort 1").1);
+    let state_path = mac.state().join("lead.json");
+    let before: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    let retried = mac.call("lead", "call-1", file, &[]).unwrap();
+    assert!(
+        retried.contains("already created by this same call")
+            && retried.contains("binding was left as it was"),
+        "{retried}"
+    );
+    let after: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(after["binding"], before["binding"], "{retried}");
+}

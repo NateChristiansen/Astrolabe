@@ -364,11 +364,28 @@ fn new_inner(
             Some(n) => {
                 let n = n.to_string();
                 let previous = read_state(&dir, session).ok().flatten();
-                let status = cmd.flag("status").unwrap_or("active");
-                let initiative = canonical_membership(&notes.root, cmd.flag("initiative").unwrap_or(""))
-                    .unwrap_or_default();
-                if let Some(kept) = keeps_initiative(&notes.root, previous.as_ref(), status, &initiative) {
-                    return Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written. This session stays on {kept}; its binding is unchanged."));
+                // What the first call decided, as its op recorded it: a binding it left alone
+                // stays alone, whatever the session is on now.
+                let first = notes
+                    .intents()
+                    .into_iter()
+                    .find(|op| op.key == key)
+                    .and_then(|op| op.bound);
+                let kept = match first {
+                    Some(bound) => bound != format!("effort {n}"),
+                    None => {
+                        let status = cmd.flag("status").unwrap_or("active");
+                        let initiative = canonical_membership(
+                            &notes.root,
+                            cmd.flag("initiative").unwrap_or(""),
+                        )
+                        .unwrap_or_default();
+                        keeps_initiative(&notes.root, previous.as_ref(), status, &initiative)
+                            .is_some()
+                    }
+                };
+                if kept {
+                    return Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written, and the session's binding was left as it was."));
                 }
                 let activation = activate::switch_on(&dir, &n, session, provider, cwd, previous.as_ref(), shells, false)?;
                 notes::write_text(&state_path(&dir, session), &activation.state.to_string())?;
@@ -442,45 +459,6 @@ fn new_inner(
     let token = activate::session_token(session);
     // The names the session carries from an effort it was on before, if any.
     let previous = read_state(&dir, session).ok().flatten();
-    // Filed for later into the initiative this session is bound to: the effort joins it and
-    // the session stays on the initiative, so an orchestrator adding members doesn't rebind.
-    if let Some(kept) = keeps_initiative(&notes.root, previous.as_ref(), &status, &initiative) {
-        let op = Op {
-            reply_after_ms: None,
-            lesson_close: None,
-            lesson_closes: Vec::new(),
-            key: key.to_owned(),
-            files: vec![(file_name.clone(), text)],
-            renames: Vec::new(),
-            journal: Vec::new(),
-            message: format!("{number:04}: started"),
-            base: None,
-            states: Vec::new(),
-            committed: false,
-            digest: Some(cmd.digest()),
-            result: None,
-            cwd: Some(crate::hook::comparable(cwd)),
-            session: Some(session.to_owned()),
-            bound: Some(kept.clone()),
-            at_ms: Some(notes::now_ms()),
-            handoffs: None,
-            queued: false,
-            noted: Vec::new(),
-        };
-        apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
-        notes.spawn_sync();
-        let mut text = format!(
-            "Effort {number} created as {file_name}, status {status}, joined initiative {initiative} and committed. This session stays on {kept}; its binding is unchanged."
-        );
-        if let Pull::Diverged(why) = &pulled {
-            text += &format!(
-                " Notes diverged from origin before this ({}); the number may collide with the other machine's and be renumbered later.",
-                why.lines().next().unwrap_or_default()
-            );
-        }
-        crate::application::finish(&notes, key, &text);
-        return Ok(text);
-    }
     let state = SessionState {
         session: session.to_owned().into(),
         provider: provider.to_owned().into(),
@@ -524,6 +502,57 @@ fn new_inner(
             .unwrap_or_default(),
         ..Default::default()
     };
+    // Filed for later into the initiative this session is bound to: the effort joins it and
+    // the session stays on the initiative, so an orchestrator adding members doesn't rebind.
+    if let Some(kept) = keeps_initiative(&notes.root, previous.as_ref(), &status, &initiative) {
+        // The checks a load of it makes, before the commit as on the binding path (effort
+        // 494), with the activation itself dropped: nothing is bound or sent.
+        activate::switch_on_note(
+            number,
+            &file_name,
+            &text,
+            session,
+            provider,
+            cwd,
+            Some(&state),
+            shells,
+        )?;
+        let op = Op {
+            reply_after_ms: None,
+            lesson_close: None,
+            lesson_closes: Vec::new(),
+            key: key.to_owned(),
+            files: vec![(file_name.clone(), text)],
+            renames: Vec::new(),
+            journal: Vec::new(),
+            message: format!("{number:04}: started"),
+            base: None,
+            states: Vec::new(),
+            committed: false,
+            digest: Some(cmd.digest()),
+            result: None,
+            cwd: Some(crate::hook::comparable(cwd)),
+            session: Some(session.to_owned()),
+            bound: Some(kept.clone()),
+            at_ms: Some(notes::now_ms()),
+            handoffs: None,
+            queued: false,
+            noted: Vec::new(),
+        };
+        apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
+        notes.spawn_sync();
+        let mut text = format!(
+            "Effort {number} created as {file_name}, status {status}, joined initiative {initiative} and committed. This session stays on {kept}; its binding is unchanged."
+        );
+        if let Pull::Diverged(why) = &pulled {
+            text += &format!(
+                " Notes diverged from origin before this ({}); the number may collide with the other machine's and be renumbered later.",
+                why.lines().next().unwrap_or_default()
+            );
+        }
+        crate::application::finish(&notes, key, &text);
+        return Ok(text);
+    }
     // The load this filing ends in, checked on the note before it's written: refused after
     // the commit, it left an effort filed that every later read refused (effort 494). The
     // state it's given is the one the write below leaves. Filed for another repo's folder,
@@ -644,7 +673,10 @@ fn keeps_initiative(
     status: &str,
     initiative: &str,
 ) -> Option<String> {
-    let previous = previous.filter(|_| status != "active" && !initiative.is_empty())?;
+    // Only filed for later: an effort started, or filed straight into review, is the
+    // session's own work, so it binds as before.
+    let later = matches!(status, "proposed" | "ready");
+    let previous = previous.filter(|_| later && !initiative.is_empty())?;
     // The binding may name the page as the owner did; the slug is what's compared.
     let bound = canonical_membership(root, previous.initiative_key()?).ok()?;
     (bound == initiative).then(|| previous.record_label())
