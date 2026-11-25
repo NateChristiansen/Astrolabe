@@ -1187,3 +1187,60 @@ fn filing_into_another_initiative_still_binds_the_effort() {
         "{out}"
     );
 }
+
+/// Catches: a member filed for later into the bound initiative committed without the checks
+/// a load of it makes (effort 494), so a note no load can read was filed.
+#[test]
+fn filing_for_later_into_the_bound_initiative_is_refused_where_a_load_would_be() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", INITIATIVE).1);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    // Every load reads the machines note, so with it gone a load of the new effort is refused.
+    std::fs::remove_file(mac.notes.join("knowledge/machines.md")).unwrap();
+    let before = mac.log();
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Ink tests\" --status proposed --initiative smooth-ink <<'ASTROLABE'\nTest the ink.\nASTROLABE\n",
+    );
+    assert!(!ok && out.starts_with("Effort NOT created: "), "{out}");
+    assert_eq!(mac.log(), before, "{out}");
+    assert!(
+        !mac.notes.join(shelf("0004-ink-tests.md")).exists(),
+        "{out}"
+    );
+}
+
+/// Catches: an effort filed straight into review, or active, taken for one filed for later.
+#[test]
+fn only_an_effort_filed_for_later_keeps_the_initiative_binding() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", INITIATIVE).1);
+    for (status, kept) in [("ready", true), ("review", false)] {
+        assert!(
+            mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+                .1
+        );
+        let (out, ok) = mac.bash(
+            "lead",
+            &format!("astrolabe effort new --title \"Ink {status}\" --status {status} --initiative smooth-ink <<'ASTROLABE'\nTest the ink.\nASTROLABE\n"),
+        );
+        assert!(ok, "{out}");
+        assert_eq!(
+            out.contains("stays on initiative smooth-ink"),
+            kept,
+            "{status}: {out}"
+        );
+        assert_eq!(
+            out.contains("bound to this session"),
+            !kept,
+            "{status}: {out}"
+        );
+    }
+}
