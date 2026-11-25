@@ -1,12 +1,38 @@
 # Claude Code workers
 
-A dispatcher can run a Claude Code worker as a persisted CLI session, then hand that same session to the Claude desktop app once its run ends. The handoff moves an idle session into the app. It doesn't mirror a session that's still working, so the app shows the worker after its run, not during it.
+A Claude Code worker has to be a session the owner can see and steer in the Claude desktop app's sidebar, never a run only its dispatcher sees. A run the owner can't see, they can't stop or redirect, and they learn what it did only from the dispatcher's summary. On one project a dispatcher ran a worker all day as background CLI runs and never handed it to the app, so the owner couldn't follow it.
 
-This was checked with a Codex dispatcher. A Claude Code dispatcher's shell passes its own session environment, including its session id, to a CLI it starts ([host behavior](hosts.md#what-a-session-passes-to-a-session-it-starts)), and a worker launched that way hasn't been tested.
+The route depends on where the dispatcher runs:
 
-## Launch
+- **A dispatcher in the Claude desktop app** starts the worker with the app's own session tool ([from the desktop app](#from-the-desktop-app)). The worker is in the sidebar from its first turn, with no CLI run and no handoff.
+- **Any other dispatcher**, such as a Codex dispatcher or Claude Code in a terminal, launches a persisted CLI session and hands it to the desktop app as soon as its first run ends ([from anywhere else](#from-anywhere-else)).
 
-Create the worker's branch worktree first. Launch from that worktree, with the notes checkout added for briefs, reports and handoffs:
+Either way the worker's brief starts with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` as its own first command, naming the model and effort it was started with, then has the worker prove its own guard with the probe that activation prints. The proof is per session: the dispatcher's proof doesn't cover the worker, and the worker's doesn't cover a subagent. The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews and journals, as in [usage](usage.md). Whoever sees the effort's finish line met closes it, the worker included, never before that event.
+
+## From the desktop app
+
+1. Create the worker's branch worktree.
+2. Start the worker with the app's session tool (`start_session`), with that worktree as its folder (`cwd`), a fresh context, and its model and effort: Opus at medium unless the work needs more, and then the reason goes in the brief. The guard refuses a start that names no model or effort, and a fork, which keeps the dispatcher's ([worker model and effort](hosts.md#worker-model-and-effort)). The app starts a session at or below the dispatcher's own model and effort; for more, use the [CLI route](#from-anywhere-else), which isn't capped.
+3. Wait for its arrival: its first save on its effort, or its first report for a worker told not to save ([asking once](hosts.md#asking-once-and-seeing-each-worker-arrive)). The app relays each turn's report to the dispatcher on its own.
+4. Send follow-ups through the app's messaging to that session's id. Never resume it with `claude --print --resume`: the app holds the session, and a second writer on one session wasn't tested.
+
+The app starts a session only on the owner's own words. A start from a turn that a task notification or another session's message began is refused, so ask the owner once at plan approval for every start the plan needs ([asking once](hosts.md#asking-once-and-seeing-each-worker-arrive)). When the app still refuses one, tell the owner which worker waits, and start it in their next turn. A proposal card, which the owner starts with a click, can't carry a folder and starts in the dispatcher's own, so propose one only when that folder is in the worker's repo and the brief has the worker make its worktree before it edits.
+
+The worker renames its own session after its effort with the app's rename tool when it binds.
+
+## From anywhere else
+
+This route was checked with a Codex dispatcher. A Claude Code dispatcher's shell passes its own session environment, including its session id, to a CLI it starts ([host behavior](hosts.md#what-a-session-passes-to-a-session-it-starts)), and a worker launched that way hasn't been tested. A dispatcher in the desktop app uses the app's tool instead.
+
+1. Create the worker's branch worktree.
+2. Launch from that worktree, as below. Record its session id and remember the folder.
+3. Wait until its process has exited.
+4. [Hand it to the desktop app](#hand-it-to-the-desktop-app) before anything else, and confirm the app has it. The handoff moves only an idle session, so this is the first moment it can, and every follow-up sent before it is another run the owner can't see. If it fails, tell the owner with the reason, and keep the worker in the CLI ([when the handoff isn't available](#when-the-handoff-isnt-available)).
+5. Send [follow-ups](#follow-ups) one at a time.
+
+### Launch
+
+Launch from the worker's worktree, with the notes checkout added for briefs, reports and handoffs:
 
 ```sh
 claude --print --model opus --effort medium --permission-mode auto --add-dir /path/to/notes --output-format json "<brief>" < /dev/null
@@ -17,10 +43,7 @@ Replace the paths with yours. Every launch names its model and effort: Opus at m
 - The session persists by default. Don't pass `--no-session-persistence`, or the session can't be resumed or handed off.
 - Record the session id. The JSON result carries it as `session_id`, and `claude agents --json` lists running sessions with their id, folder, name and status. To know it before launch, pass your own UUID with `--session-id <uuid>`.
 - The plugin's hook names the session after its effort when the worker binds. That doesn't control the title the desktop app shows: on macOS the app kept the launch name after a handoff. Pass a clear name with `--name <name>` at launch, or rename the session in the app where that's allowed. The name doesn't affect the effort binding, which stays correct either way.
-- Start the brief with `astrolabe activate --effort <n> --worker --model <model> --reasoning <effort>` as its own first command, naming the model and effort it was launched with, then have the worker prove its own guard with the probe that activation prints. The proof is per session: the dispatcher's proof doesn't cover the worker, and the worker's doesn't cover a subagent.
 - Remember the folder you launched from. Sessions are stored per project folder, and every later resume or handoff runs from that same folder.
-
-The worker saves only its own effort and writes its report where the brief says. The dispatcher reviews and journals, as in [usage](usage.md). Whoever sees the effort's finish line met closes it, the worker included, never before that event.
 
 ### When the launch says it isn't logged in
 
@@ -32,17 +55,7 @@ A dispatcher whose shell runs in a sandbox can start a worker that exits at once
 - Don't log in or out, copy credentials, change settings or the environment, bypass trust, or turn the sandbox off to get past it.
 - Before authorizing a fresh launch, check that the failed one left no running worker and no transcript under its id. In the macOS test it left neither. Nothing starts a replacement automatically. If you start one, record its new id.
 
-## Follow-ups
-
-To send a worker a follow-up, wait until its process has exited, then resume it from its launch folder with the same permission mode and added folders:
-
-```sh
-claude --print --model opus --effort medium --permission-mode auto --resume <session-id> --add-dir /path/to/notes --output-format json "<follow-up>" < /dev/null
-```
-
-Add `--add-dir` for any other folder the follow-up needs, such as a worktree the worker is told to edit. Check that the result's `session_id` is the same id and that it reports success. One process writes a session at a time. A session marked idle in `claude agents --json` isn't proof that no other process holds it, so don't start a second writer because of that label alone. Don't rerun the task under a new id because a resume or handoff failed.
-
-## Hand it to the desktop app
+### Hand it to the desktop app
 
 After the worker's process has exited, run this from the worker's launch folder, in a real terminal:
 
@@ -56,7 +69,21 @@ claude --desktop --resume <session-id>
 - On success it prints that it's opening the session in the desktop app. The docs say the app continues the same session, not a copy. The printed line alone doesn't prove the app shows it. Before calling the worker visible, get evidence the app owns it, such as its own session list showing that id, or the owner's confirmation. The row can take a few minutes to appear.
 - It needs a Claude subscription sign-in and a supported desktop platform. It isn't available over SSH, in WSL or for cloud sessions. See the [desktop guide](https://code.claude.com/docs/en/desktop#coming-from-the-cli) and the [CLI reference](https://code.claude.com/docs/en/cli-reference).
 
+### Follow-ups
+
+To send a worker a follow-up, wait until its process has exited, then resume it from its launch folder with the same permission mode and added folders:
+
+```sh
+claude --print --model opus --effort medium --permission-mode auto --resume <session-id> --add-dir /path/to/notes --output-format json "<follow-up>" < /dev/null
+```
+
+Add `--add-dir` for any other folder the follow-up needs, such as a worktree the worker is told to edit. Check that the result's `session_id` is the same id and that it reports success. One process writes a session at a time. A session marked idle in `claude agents --json` isn't proof that no other process holds it, so don't start a second writer because of that label alone. Don't rerun the task under a new id because a resume or handoff failed.
+
 After the handoff, the dispatcher's follow-ups use the same resume command, one at a time. Sequential follow-ups to a handed-off session completed under the same id. Don't send one while the owner is sending a turn from the app: two writers on one session weren't tested. Whether the app shows those CLI turns without a refresh wasn't checked either.
+
+### When the handoff isn't available
+
+Keep the worker in the CLI. These work without the app: dispatching it, its effort binding, its report, and sequential resumed follow-ups under the same id. Tell the owner the worker wasn't handed to the app, and why, as soon as the handoff fails, not only in the result.
 
 ## Messaging across machines
 
@@ -67,11 +94,9 @@ Finding sessions on other machines by name, and getting replies from them, needs
 - Turning Remote Control on is the owner's call, per session. Don't change startup defaults or other settings to get it.
 - A one-shot CLI process, such as a fresh `--print` resume, didn't carry the app session's connection. Replies to it failed once it had exited. To relay between machines, use the session already connected in the app, and have it record replies in a handoff file. Don't resume that session from the CLI as a second writer.
 
-## When the handoff isn't available
-
-Keep the worker in the CLI. These work without the app: dispatching it, its effort binding, its report, and sequential resumed follow-ups under the same id. Say in the result that the worker wasn't handed to the app, and why.
-
 ## What's been checked
+
+Observed on Windows on 2026-11-24, from a Claude Code dispatcher in the desktop app: the app's session tool started a worker with a folder, a model and an effort, and the worker was in the owner's sidebar from its first turn, with no CLI run and no handoff. It bound its effort, proved its own guard and renamed its session with the app's tool. The guard had refused an earlier start that named no model. A start from a turn that a task notification began was refused by the app, and a proposal card offered no folder. Not checked on this route: a follow-up sent through the app's messaging and seen in the worker, the owner steering the worker from the sidebar, macOS, and several workers started at once.
 
 Observed on Windows with Claude Code 2.1.319: a worker launched by a Codex dispatcher persisted, bound its own effort and proved its own guard. After it exited, the handoff command failed with captured output and succeeded in a pseudo-terminal. Afterwards `claude agents --json --all` showed the same session id, folder and name, idle. Two sequential resumed follow-ups from the dispatcher then completed in that session: a short reply, and a documentation task with a worktree added. Each result reported the original session id and success.
 
@@ -86,4 +111,4 @@ Observed on macOS with Claude Code 2.1.316, from a sandboxed Codex dispatcher:
 - Later, the session's idle process had ended. The app still listed the session, not running, but it no longer appeared in `claude agents --json --all` or the agent list, so a message to it couldn't be sent. Why the process ended wasn't checked.
 - With no live process holding it, one sequential `--print --resume` follow-up from the dispatcher completed under the same id, with host approval granted through normal review. The worker was still bound to its effort with its guard proven, and no fork or new id appeared.
 
-Not checked: a message sent through the app reaching a handed-off worker, whether opening a listed but stopped session in the app makes it reachable again, the app's sidebar as drawn on screen, the app showing CLI turns without a refresh, the effort binding in turns sent from the app, a CLI follow-up while the app is sending a turn, a Claude Code dispatcher, the app showing a CLI follow-up's turn on macOS, restarting the app, several workers handed off at once, and a missing or signed-out app.
+Not checked on the CLI route: a message sent through the app reaching a handed-off worker, whether opening a listed but stopped session in the app makes it reachable again, the app's sidebar as drawn on screen, the app showing CLI turns without a refresh, the effort binding in turns sent from the app, a CLI follow-up while the app is sending a turn, a Claude Code dispatcher, the app showing a CLI follow-up's turn on macOS, restarting the app, several workers handed off at once, and a missing or signed-out app.

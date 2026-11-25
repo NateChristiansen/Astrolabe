@@ -180,6 +180,14 @@ Not checked: `powershell.exe` on Windows.
 
 ## Independent workers in desktop apps
 
+A worker has to be a session the owner can see and steer in their desktop app, never a run only its dispatcher sees, because a run the owner can't see they can't stop or redirect. On one project a Claude dispatcher ran a worker all day as background CLI runs and the owner never saw it. Each provider guide gives the route that puts its workers in the app:
+
+- **Codex.** A short CLI launch turn, then that thread opened in the Codex app, with the brief and follow-ups by queue ([Codex workers](codex-workers.md)).
+- **Claude, from a dispatcher in the Claude desktop app.** The app's own session tool, with the worker's folder, model and effort. The worker is in the sidebar from its first turn. Observed on Windows on 2026-11-24 ([Claude workers](claude-workers.md#from-the-desktop-app)).
+- **Claude, from any other dispatcher.** A persisted CLI launch, handed to the desktop app with `claude --desktop --resume <id>` as soon as its first run ends, before any follow-up ([Claude workers](claude-workers.md#from-anywhere-else)).
+
+When a worker can't be put in the app, the dispatcher tells the owner which one and why, then keeps it in the CLI.
+
 ## Worker model and effort
 
 A worker launch that names no model and reasoning effort inherits the host's: Codex's `config.toml`, or the Claude dispatcher's own session. On 2026-11-12 two Codex workers launched that way ran on the costliest model at high effort and used up the owner's Codex quota in an afternoon. So every launch names both. The default is the newest standard model at medium effort, Opus for Claude and Sol for Codex; anything higher is a choice with the reason in the brief.
@@ -205,7 +213,7 @@ Not enforced, only documented:
 - a child started with `--bare` or `--safe-mode`, whose hooks are off, so activation can't check it
 - anything when the hook didn't run (see [a hook that times out or fails](#a-hook-that-times-out-or-fails))
 
-The [Codex worker workflow](codex-workers.md) is the one way to start a Codex worker from another agent: a short CLI launch turn, opening that thread in the app, then the brief and follow-ups by queue. The [Claude worker workflow](claude-workers.md) covers persisted CLI dispatch and an after-run Desktop handoff, with the CLI kept as its fallback. Each guide records what was checked and what wasn't, including app restarts and concurrent writers. Neither establishes native nesting for independently bound workers.
+The [Codex worker workflow](codex-workers.md) is the one way to start a Codex worker from another agent: a short CLI launch turn, opening that thread in the app, then the brief and follow-ups by queue. The [Claude worker workflow](claude-workers.md) covers the desktop app's session tool for a dispatcher in that app, and otherwise persisted CLI dispatch with a Desktop handoff after the first run, with the CLI kept as its fallback. Each guide records what was checked and what wasn't, including app restarts and concurrent writers. A worker started with the Claude app's tool is linked to its dispatcher, which gets its reports; neither guide establishes native nesting for a worker started any other way.
 
 ### The desktop app caps a session start at its caller's level
 
