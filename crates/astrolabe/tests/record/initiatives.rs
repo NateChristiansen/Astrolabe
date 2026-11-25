@@ -1114,3 +1114,76 @@ fn existing_effort_membership_moves_and_detaches_without_new_commands() {
         assert_eq!(effort.prop("initiative").unwrap_or_default(), expected);
     }
 }
+
+/// Catches: an orchestrator bound to an initiative rebound to each member it files for later,
+/// and sent the whole session context again each time (lesson, 2026-11-11).
+#[test]
+fn filing_for_later_into_the_bound_initiative_keeps_the_binding() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", INITIATIVE).1);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    let state_path = mac.state().join("lead.json");
+    let before = std::fs::read_to_string(&state_path).unwrap();
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Ink tests\" --status proposed --initiative \"Smooth ink\" <<'ASTROLABE'\nTest the ink.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("Effort 4 created as")
+            && out.contains("joined initiative smooth-ink")
+            && out
+                .contains("This session stays on initiative smooth-ink; its binding is unchanged."),
+        "{out}"
+    );
+    // One line, no rebind: no context reprinted and no rename asked.
+    assert_eq!(out.trim().lines().count(), 1, "{out}");
+    assert!(!out.contains("Rename this session"), "{out}");
+    assert_eq!(std::fs::read_to_string(&state_path).unwrap(), before);
+    let effort = mac.effort_text(4);
+    assert!(
+        effort.contains("status: proposed") && effort.contains("initiative: smooth-ink"),
+        "{effort}"
+    );
+    assert_eq!(mac.log().lines().next(), Some("0004: started"));
+    // Taken up now, or filed into no initiative, binds as before.
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Plain later\" --status proposed <<'ASTROLABE'\nfor later\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("bound to this session"), "{out}");
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Ink now\" --initiative smooth-ink <<'ASTROLABE'\nstart now\nASTROLABE\n",
+    );
+    assert!(ok && out.contains("bound to this session"), "{out}");
+}
+
+/// Catches: a session on another initiative kept on it when it files into this one.
+#[test]
+fn filing_into_another_initiative_still_binds_the_effort() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    assert!(mac.bash("s1", NEW).1);
+    assert!(mac.bash("s1", INITIATIVE).1);
+    let other =
+        "astrolabe initiative new --title \"Paper\" <<'ASTROLABE'\nBetter paper.\nASTROLABE\n";
+    assert!(mac.bash("s1", other).1);
+    assert!(mac.bash("lead", "astrolabe activate --initiative paper").1);
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Ink tests\" --status proposed --initiative smooth-ink <<'ASTROLABE'\nTest the ink.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("bound to this session") && !out.contains("stays on initiative"),
+        "{out}"
+    );
+}
