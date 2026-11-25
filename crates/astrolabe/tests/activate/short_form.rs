@@ -232,7 +232,8 @@ fn an_orchestrator_rebinding_its_initiative_gets_the_short_form_and_an_effort_bi
     };
     let first = bind_page();
     assert!(
-        first.contains("Start each worker as its own separate session") && !first.contains(SHORT)
+        first.contains("Start each worker as its own session the owner sees")
+            && !first.contains(SHORT)
     );
     let again = bind_page();
     assert!(
@@ -240,7 +241,7 @@ fn an_orchestrator_rebinding_its_initiative_gets_the_short_form_and_an_effort_bi
         "{again}"
     );
     assert!(
-        !again.contains("Start each worker as its own separate session"),
+        !again.contains("Start each worker as its own session the owner sees"),
         "{again}"
     );
     assert!(again.contains("an orchestrator's rules"), "{again}");
