@@ -1913,3 +1913,24 @@ fn a_plans_pieces_section_keeps_its_prose_when_its_checklist_is_lifted() {
     assert!(text.contains("1. Do it.\n\n### Risks\nNone."), "{text}");
     assert!(!text.contains("### Pieces"), "{text}");
 }
+
+/// Catches the review of effort 494: the creation reply's stamp line was read from the note
+/// before it was written, so it said the effort was written by hand with no stamp.
+#[test]
+fn a_new_efforts_reply_names_the_stamp_it_was_filed_with() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash("s1", NEW);
+    assert!(ok, "{out}");
+    assert!(!out.contains("has no stamp yet"), "{out}");
+    let text = mac.effort_text(1);
+    let saved_by = text
+        .lines()
+        .find_map(|l| l.strip_prefix("saved_by: "))
+        .unwrap_or_else(|| panic!("{text}"))
+        .trim_matches('"');
+    assert!(
+        out.contains(&format!("Last saved by {saved_by} at ")),
+        "{out}"
+    );
+}
