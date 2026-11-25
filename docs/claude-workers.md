@@ -35,14 +35,14 @@ This route was checked with a Codex dispatcher. A Claude Code dispatcher's shell
 Launch from the worker's worktree, with the notes checkout added for briefs, reports and handoffs:
 
 ```sh
-claude --print --model opus --effort medium --permission-mode auto --add-dir /path/to/notes --output-format json "<first turn>" < /dev/null
+claude --print --model opus --effort medium --permission-mode auto --add-dir /path/to/notes --name '<number> <effort title>' --output-format json "<first turn>" < /dev/null
 ```
 
 Replace the paths with yours. Every launch names its model and effort: Opus at medium unless the work needs more, and then the reason goes in the brief. A launch that names neither inherits the dispatcher's settings, and Astrolabe's guard refuses it ([worker model and effort](hosts.md#worker-model-and-effort)). `--model default` doesn't count, as it restores the inherited model. In PowerShell, pipe an empty string in (`'' | claude --print ...`) to close stdin. Keep the app's normal permission checks; don't use the bypass mode for a worker.
 
 - The session persists by default. Don't pass `--no-session-persistence`, or the session can't be resumed or handed off.
 - Record the session id. The JSON result carries it as `session_id`, and `claude agents --json` lists running sessions with their id, folder, name and status. To know it before launch, pass your own UUID with `--session-id <uuid>`.
-- The plugin's hook names the session after its effort when the worker binds. That doesn't control the title the desktop app shows: on macOS the app kept the launch name after a handoff. Pass a clear name with `--name <name>` at launch, or rename the session in the app where that's allowed. The name doesn't affect the effort binding, which stays correct either way.
+- The plugin's hook names the session after its effort when the worker binds. That doesn't control the title the desktop app shows: on macOS the app kept the launch name after a handoff. So pass the name activation will give it with `--name` at launch, as above: the effort's number without its leading zeros (`0083 Demo` becomes `83 Demo`), then its title. Or rename the session in the app where that's allowed. The name doesn't affect the effort binding, which stays correct either way.
 - Remember the folder you launched from. Sessions are stored per project folder, and every later resume or handoff runs from that same folder.
 
 ### When the launch says it isn't logged in
@@ -90,9 +90,9 @@ Keep the worker in the CLI. These work without the app: dispatching it, its effo
 These hold on every route ([asking once and seeing each worker arrive](hosts.md#asking-once-and-seeing-each-worker-arrive)).
 
 - **Approvals.** Quote the owner's approval, in their words, for each step the repo's rules list as ask-first that the work needs, such as a branch, commits or a headed run. Otherwise give a fallback that needs none, such as leaving the work uncommitted in the worktree for you to commit. The worker's own permission checks see its session, not yours, so an approval the owner gave only in your chat may not reach them. If you later drop a step, say so in the follow-up, so the worker doesn't ask the owner again.
-- **Title.** The worker's first turn sets its title to the numbered name activation prints, the effort's number then its title, before it stops: activation tells it to, with the app's rename tool where it has one. A CLI launch also passes that same name with `--name`. If a launch prompt tells the worker to stop after activation, have it rename first, and never give the chat a name of your own in a later brief.
-- **Watching.** Watch for each turn end from the start, rather than checking at your own next turn: a blocked worker looks the same as a busy one until you look. In the app, the turn's report comes to you when it ends. From the CLI, the turn ends when the `--print` process exits, so run it as a background command your host tracks and wakes you for, never a foreground sleep.
-- **Reading.** At each turn end, run `astrolabe effort read <n>` right away, and tell the owner only what it and the worker's report say. If the worker saved itself blocked or asks a question, bring that to the owner in your next message, unless their approval already answers it; then send the answer as a follow-up.
+- **Title.** The worker's first turn sets its title to the numbered name activation prints, the effort's number then its title, before it stops: activation tells it to, with the app's rename tool where it has one. A CLI launch also passes that same name with `--name` ([launch](#launch)). If a launch prompt tells the worker to stop after activation, have it rename first, and never give the chat a name of your own in a later brief.
+- **Watching.** Watch for each turn end from the start, rather than checking at your own next turn: a blocked worker looks the same as a busy one until you look. In the app, the turn's report comes to you when it ends. From the CLI, the turn ends when the `--print` process exits, so run it as a background command your host tracks and wakes you for, never a foreground sleep. Where a process's exit doesn't wake you, keep your turn going and check the process every few minutes until it exits.
+- **Reading.** At each turn end, run `astrolabe effort read <n>` right away. Never tell the owner how far along the worker is from a guess, the brief or another session's relay: its progress comes from its effort and report. Check the work yourself before you report success, and keep what you checked apart from what the worker claims. If the worker saved itself blocked or asks a question, bring that to the owner in your next message, unless their approval already answers it; then send the answer as a follow-up.
 
 ## Messaging across machines
 

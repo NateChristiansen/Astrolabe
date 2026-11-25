@@ -16,7 +16,7 @@ The launch turn only binds. The guard proof is made in the first queued turn, so
 
   > Run the allowed control and the denied probe that activation printed, each alone, then `astrolabe activate --status`. If it doesn't name your effort and say the guard is proven, stop and report that; do no other work. If this chat isn't titled "<number> <effort title>" yet, the numbered name activation printed, set it to that. Use `list_projects` to find "<project>" on this host and `move_thread_to_project` to file this chat there; report the exact error if the move fails. Then carry out the scope below, save your effort and write the requested report.
 
-  The brief is a file the worker reads, so its quotes and newlines arrive as written in every shell. Copy the title from activation's rename line or the effort's heading, number first; never write one of your own.
+  The brief is a file the worker reads, so its quotes and newlines arrive as written in every shell. Copy the title from the rename line in the launch turn's activation output. Taken from the effort's heading instead, drop the number's leading zeros, as activation does (`0083 Demo` becomes `83 Demo`). Never write one of your own.
 - Quote the owner's approval, in their words, for each step the repo's rules list as ask-first that the work needs, such as a branch, commits or a headed run. Otherwise give a fallback that needs none, such as leaving the work uncommitted in the worktree for you to commit. Automatic approval review judges each step from the thread it runs in, so an approval the owner gave only in your chat doesn't reach it: on 2026-11-20 it refused a worker's branch for that reason, and the worker saved itself blocked. If you later drop a step, say so in the follow-up, so the worker doesn't put the question to the owner again.
 - Use the [sandbox and notes setup](codex.md) for permissions.
 
@@ -82,7 +82,7 @@ Check: the thread's session log gains a turn start after the launch turn's end. 
 
 Watch for it from the moment step 3's turn starts, rather than checking at your own next turn: no message reaches you when a worker stops, and a blocked worker looks the same as a busy one until you look. Recheck the session log every few minutes with a short run of your own, such as a background wait the host tracks, never a foreground sleep. The worker's turn has ended when the log records a turn end after the queued turn's start.
 
-Then, right away, run `astrolabe effort read <n>`. Report to the owner only what it and the worker's report say. If the worker saved itself blocked, or asks a question, bring that to the owner in your next message, unless their approval already answers it; then queue the answer to the worker. Otherwise read its report and check the work itself; a finished turn proves the turn ran, not that the work is right.
+Then, right away, run `astrolabe effort read <n>`. Never tell the owner how far along the worker is from a guess, the brief or another session's relay: its progress comes from its effort and report. If the worker saved itself blocked, or asks a question, bring that to the owner in your next message, unless their approval already answers it; then queue the answer to the worker. Otherwise read its report and check the work itself before you report success, since a finished turn proves the turn ran, not that the work is right. Keep what you checked apart from what the worker claims.
 
 ## Follow-ups
 
