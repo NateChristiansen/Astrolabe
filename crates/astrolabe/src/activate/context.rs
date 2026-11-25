@@ -739,6 +739,28 @@ pub(crate) fn switch_on_note(
     )
 }
 
+/// For a new effort's note filed from another repo's folder, the checks a load of it makes in
+/// a folder of its repo that don't depend on the folder: the note as rendered, and the notes a
+/// load reads. The folder and binding checks are left out, as no session here binds it.
+pub(crate) fn note_loads_elsewhere(number: u32, file: &str, text: &str) -> Result<(), String> {
+    let effort = effort_of(number, file.to_owned(), text)?;
+    crate::effort::EffortFile::parse(text)?;
+    let (_, notes) = notes_and_repos()?;
+    owner_note(&notes, "voice")?;
+    owner_note(&notes, "owner")?;
+    for repo in effort.repos.iter().filter(|r| !r.is_empty()) {
+        let note = format!("knowledge/repos/{repo}.md");
+        if !notes.join(&note).is_file() {
+            return Err(format!(
+                "{note} doesn't exist, and a session loading this effort in a folder of {repo} reads it, so the load would be refused; the owner adds that note first"
+            ));
+        }
+    }
+    let machines = "knowledge/machines.md";
+    std::fs::read_to_string(notes.join(machines)).map_err(|e| format!("{machines}: {e}"))?;
+    Ok(())
+}
+
 /// Initiative activation shares the same eligibility, delivery and guard lifecycle.
 pub fn switch_initiative(
     name: &str,

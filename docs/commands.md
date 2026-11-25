@@ -174,7 +174,7 @@ The goal is the note's first Current state, and it's also kept under the title, 
 | Option | Values and default |
 | --- | --- |
 | `--title "<title>"` | Required, nonempty title. |
-| `--repo <name>` | Required from the notes checkout. In a project checkout, omit it to file under that project, or name another repo, registered on this machine or with a repo note that lists a remote. An unknown name is refused with the names it takes. Filed for a repo other than the folder's, the effort is committed but not bound to this session, which keeps what it had, and its branch and head stamps are left blank; a session in that repo loads it. |
+| `--repo <name>` | Required from the notes checkout. In a project checkout, omit it to file under that project, or name another repo, registered on this machine or with a repo note that lists a remote. An unknown name is refused with the names it takes, and so is `agent`, the notes checkout's own. Filed for a repo other than the folder's, the effort is checked as a load in that repo would check it, apart from the folder (so a repo without its repo note is refused), then committed but not bound to this session, which keeps what it had, and its branch and head stamps are left blank; a session in that repo loads it. |
 | `--status <state>` | `proposed`, `ready` or `active`; default `active`, or `proposed` when filed for a repo other than the folder's. |
 | `--involvement "<value>"` | `each step`, `check in at plan`, `check in on bigger plans` or `autonomous`; default `check in on bigger plans`. |
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |

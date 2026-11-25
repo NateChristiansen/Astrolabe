@@ -63,6 +63,12 @@ fn repo_of(
     let seat = activate::in_notes(cwd);
     if let Some(name) = wanted {
         activate::check_repo_name(name)?;
+        // The notes checkout's own name: no work is for it, and the folder's repo never is.
+        if name == crate::registry::AGENT {
+            return Err(format!(
+                "--repo {name:?} is the notes checkout's own name, which no effort is for; --repo names the repo the work is for, as its note in knowledge/repos names it"
+            ));
+        }
         if registry.checkout(name).is_none()
             && activate::note_remotes(&notes.root, name)?.is_empty()
         {
@@ -78,8 +84,9 @@ fn repo_of(
         if seat {
             return Ok((name.to_owned(), Place::Notes));
         }
-        // A folder that can't be matched to any note is still not the named repo.
-        let mine = activate::repo_names(&notes.root, registry, cwd, &here).unwrap_or_default();
+        // A folder that matches no note isn't the named repo; one whose match can't be read
+        // is refused, as it might be.
+        let mine = activate::repo_names(&notes.root, registry, cwd, &here)?;
         let place = match mine.iter().any(|n| n == name) {
             true => Place::Folder,
             false => Place::Away,
@@ -475,9 +482,13 @@ fn new_inner(
     // The load this filing ends in, checked on the note before it's written: refused after
     // the commit, it left an effort filed that every later read refused (effort 494). The
     // state it's given is the one the write below leaves. Filed for another repo's folder,
-    // there's no load to check: the session isn't bound to it.
+    // the session isn't bound to it, so only the checks a load in that repo's folder makes
+    // that don't depend on the folder.
     let activation = match place {
-        Place::Away => None,
+        Place::Away => {
+            activate::note_loads_elsewhere(number, &file_name, &text)?;
+            None
+        }
         _ => Some(
             activate::switch_on_note(
                 number,
@@ -535,6 +546,13 @@ fn new_inner(
             text += &format!(
                 " Notes diverged from origin before this ({}); the number may collide with the other machine's and be renumbered later.",
                 why.lines().next().unwrap_or_default()
+            );
+        }
+        // Not bound here, so not the bound session's save and bind the notice gives.
+        for o in &open {
+            text += &format!(
+                "\n\nInitiative \"{}\" is open in {repo}. If this work is one of its members, effort {number} duplicates it: a session in a folder of {repo}, or in the notes checkout, drops it with `astrolabe effort save --effort {number} --status abandoned --reason \"…\"`.",
+                o.page.file.title
             );
         }
         crate::application::finish(&notes, key, &text);

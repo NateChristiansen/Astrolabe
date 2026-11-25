@@ -475,6 +475,51 @@ fn a_repos_folder_files_an_effort_for_another_repo_without_binding_it() {
 }
 
 #[test]
+fn a_filing_for_another_repo_is_refused_where_that_repo_couldnt_load_it_or_isnt_one() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let other = other_repo(&mac);
+    let new = |session: &str, cwd: &Path, repo: &str| {
+        mac.bash_from(
+            session,
+            cwd,
+            &format!("astrolabe effort new --title \"Elsewhere\" --repo {repo} <<'ASTROLABE'\ngoal\nASTROLABE\n"),
+            None,
+        )
+    };
+    let filed = || mac.notes.join(shelf("0001-elsewhere.md")).exists();
+    // `other` is registered but has no repo note, which a session loading it there reads.
+    let (out, ok) = new("d1", &mac.demo, "other");
+    assert!(!ok && out.contains("knowledge/repos/other.md"), "{out}");
+    assert!(!filed(), "nothing written");
+    // The notes checkout's own name isn't a repo any work is for, from anywhere.
+    for cwd in [&other, &mac.demo, &mac.notes] {
+        let (out, ok) = new("a1", cwd, "agent");
+        assert!(!ok && out.contains("notes checkout's own name"), "{out}");
+    }
+    assert!(!filed(), "nothing written");
+    // A folder whose repo can't be told, as a note it might be can't be read, is refused,
+    // not taken for another repo's.
+    let third = mac.dir.0.join("third");
+    std::fs::create_dir_all(&third).unwrap();
+    git(&third, &["init", "-q", "-b", "main"]);
+    git(&third, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    git(
+        &third,
+        &["remote", "add", "origin", "git@example.com:team/third.git"],
+    );
+    write(
+        &mac.notes.join("knowledge/repos/third.md"),
+        "---\nremote: not a remote\n---\nTHIRD\n",
+    );
+    git(&mac.notes, &["add", "-A"]);
+    git(&mac.notes, &["commit", "-q", "-m", "a broken note"]);
+    let (out, ok) = new("t1", &third, "demo");
+    assert!(!ok && out.contains("knowledge/repos/third.md"), "{out}");
+    assert!(!filed(), "nothing written");
+}
+
+#[test]
 fn a_shell_edit_to_an_untracked_file_moves_the_print_with_spaces_and_from_a_subfolder() {
     let world = World::new();
     let mac = world.machine("mac");
