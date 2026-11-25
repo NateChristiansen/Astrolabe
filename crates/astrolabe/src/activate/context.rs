@@ -749,12 +749,14 @@ pub(crate) fn note_loads_elsewhere(number: u32, file: &str, text: &str) -> Resul
     owner_note(&notes, "voice")?;
     owner_note(&notes, "owner")?;
     for repo in effort.repos.iter().filter(|r| !r.is_empty()) {
+        // Read as a load reads it, so a note that's missing, unreadable or not UTF-8 is
+        // refused here rather than after the commit.
         let note = format!("knowledge/repos/{repo}.md");
-        if !notes.join(&note).is_file() {
-            return Err(format!(
-                "{note} doesn't exist, and a session loading this effort in a folder of {repo} reads it, so the load would be refused; the owner adds that note first"
-            ));
-        }
+        std::fs::read_to_string(notes.join(&note)).map_err(|e| {
+            format!(
+                "{note}: {e}; a session loading this effort in a folder of {repo} reads it, so the load would be refused"
+            )
+        })?;
     }
     let machines = "knowledge/machines.md";
     std::fs::read_to_string(notes.join(machines)).map_err(|e| format!("{machines}: {e}"))?;

@@ -551,7 +551,7 @@ fn new_inner(
         // Not bound here, so not the bound session's save and bind the notice gives.
         for o in &open {
             text += &format!(
-                "\n\nInitiative \"{}\" is open in {repo}. If this work is one of its members, effort {number} duplicates it: a session in a folder of {repo}, or in the notes checkout, drops it with `astrolabe effort save --effort {number} --status abandoned --reason \"…\"`.",
+                "\n\nInitiative \"{}\" is open in {repo}. If this work is one of its members, effort {number} duplicates it: a session in a folder of {repo}, or in the notes checkout, drops it with `astrolabe activate --effort {number}`, then `astrolabe effort save --status abandoned --reason \"…\"` with a Current state body.",
                 o.page.file.title
             );
         }

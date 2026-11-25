@@ -492,6 +492,20 @@ fn a_filing_for_another_repo_is_refused_where_that_repo_couldnt_load_it_or_isnt_
     let (out, ok) = new("d1", &mac.demo, "other");
     assert!(!ok && out.contains("knowledge/repos/other.md"), "{out}");
     assert!(!filed(), "nothing written");
+    // So is a note there that a load couldn't read as text.
+    std::fs::write(
+        mac.notes.join("knowledge/repos/other.md"),
+        [0xff, 0xfe, b'\n'],
+    )
+    .unwrap();
+    git(&mac.notes, &["add", "-A"]);
+    git(
+        &mac.notes,
+        &["commit", "-q", "-m", "a note that isn't text"],
+    );
+    let (out, ok) = new("d1", &mac.demo, "other");
+    assert!(!ok && out.contains("knowledge/repos/other.md"), "{out}");
+    assert!(!filed(), "nothing written");
     // The notes checkout's own name isn't a repo any work is for, from anywhere.
     for cwd in [&other, &mac.demo, &mac.notes] {
         let (out, ok) = new("a1", cwd, "agent");
