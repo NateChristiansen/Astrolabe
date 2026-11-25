@@ -1033,7 +1033,14 @@ fn switch_record(
         authority: &effort.authority,
         issues: &issue_line(&effort.issues),
         proof: &steps_unless_proven(session, &token, shells),
-        freshness: &freshness(&notes, &effort, cwd),
+        // From the note as given: a new effort's isn't written yet when this is built.
+        freshness: &freshness(
+            &notes,
+            &note.map(str::to_owned).unwrap_or_else(|| {
+                std::fs::read_to_string(notes.join(&effort.file)).unwrap_or_default()
+            }),
+            cwd,
+        ),
         status: page
             .as_ref()
             .and_then(|f| f.prop("status"))
@@ -1394,9 +1401,8 @@ fn issue_line(issues: &[String]) -> String {
 
 /// What the stamp says against the repo here: who saved last and when, and what moved since.
 /// Reported at the last published checkpoint; work after it on another machine isn't visible.
-pub(super) fn freshness(notes: &Path, effort: &Effort, cwd: &Path) -> String {
-    let text = std::fs::read_to_string(notes.join(&effort.file)).unwrap_or_default();
-    let file = crate::effort::EffortFile::parse(&text).unwrap_or_default();
+pub(super) fn freshness(notes: &Path, note: &str, cwd: &Path) -> String {
+    let file = crate::effort::EffortFile::parse(note).unwrap_or_default();
     let (Some(saved_by), Some(updated)) = (file.prop("saved_by"), file.prop("updated")) else {
         return "This effort has no stamp yet: it was written by hand, not saved by a session."
             .to_owned();
