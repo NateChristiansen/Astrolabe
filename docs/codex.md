@@ -49,7 +49,7 @@ Write briefs and reports at the requested location under the notes' `.handoffs/<
 
 Git metadata stays protected even in a writable checkout. For an authorized branch, commit or local integration, request host approval for that command when needed. Making the notes folder writable doesn't grant project Git access. Adding `.git` as a writable root isn't the workflow.
 
-If approvals are unavailable or denied, finish the allowed edits and checks. Report the worktree, branch, changed files, checks and the exact Git step left for the dispatcher. Save built and checked work in review waiting for that step; use blocked when the restriction prevents the build or checks themselves. Don't mark a worker done or claim a commit or integration that didn't happen. An ordinary autonomous effort can finish only when its required work is actually complete.
+The brief quotes the owner's approval for each ask-first step it needs, or gives a fallback that needs none ([briefs](codex-workers.md#before-you-start)). If approvals are unavailable or denied, finish the allowed edits and checks. Report the worktree, branch, changed files, checks and the exact Git step left for the dispatcher. Save built and checked work in review waiting for that step; use blocked when the restriction prevents the build or checks themselves. Don't mark a worker done or claim a commit or integration that didn't happen. An ordinary autonomous effort can finish only when its required work is actually complete.
 
 If the handoff folder isn't writable, return the report in chat with its intended destination for the dispatcher to file. Don't silently move it to the notes root. The dispatcher must have permission to perform any remaining step; dispatch itself doesn't authorize a push or landing.
 

@@ -85,6 +85,15 @@ After the handoff, the dispatcher's follow-ups use the same resume command, one 
 
 Keep the worker in the CLI. These work without the app: dispatching it, its effort binding, its report, and sequential resumed follow-ups under the same id. Tell the owner the worker wasn't handed to the app, and why, as soon as the handoff fails, not only in the result.
 
+## Briefing, naming and watching a worker
+
+These hold on every route ([asking once and seeing each worker arrive](hosts.md#asking-once-and-seeing-each-worker-arrive)).
+
+- **Approvals.** Quote the owner's approval, in their words, for each step the repo's rules list as ask-first that the work needs, such as a branch, commits or a headed run. Otherwise give a fallback that needs none, such as leaving the work uncommitted in the worktree for you to commit. The worker's own permission checks see its session, not yours, so an approval the owner gave only in your chat may not reach them. If you later drop a step, say so in the follow-up, so the worker doesn't ask the owner again.
+- **Title.** The worker's first turn sets its title to the numbered name activation prints, the effort's number then its title, before it stops: activation tells it to, with the app's rename tool where it has one. A CLI launch also passes that same name with `--name`. If a launch prompt tells the worker to stop after activation, have it rename first, and never give the chat a name of your own in a later brief.
+- **Watching.** Watch for each turn end from the start, rather than checking at your own next turn: a blocked worker looks the same as a busy one until you look. In the app, the turn's report comes to you when it ends. From the CLI, the turn ends when the `--print` process exits, so run it as a background command your host tracks and wakes you for, never a foreground sleep.
+- **Reading.** At each turn end, run `astrolabe effort read <n>` right away, and tell the owner only what it and the worker's report say. If the worker saved itself blocked or asks a question, bring that to the owner in your next message, unless their approval already answers it; then send the answer as a follow-up.
+
 ## Messaging across machines
 
 Finding sessions on other machines by name, and getting replies from them, needs the sending session connected to Remote Control. The [cross-session messaging docs](https://code.claude.com/docs/en/cross-session-messaging) cover the routes, including a one-way send to a known remote address without a usable reply address.
