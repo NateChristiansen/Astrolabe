@@ -483,9 +483,16 @@ fn a_result_shown_by_the_bare_command_counts_as_the_sessions_answer() {
 }
 
 /// Catches: a retry of a filing that kept the binding, with its reply lost, deciding again
-/// from what the session is on by then and binding it to the new effort.
+/// from what the session is on by then and binding it to the new effort. Its intent may still
+/// be there, or already forgotten.
 #[test]
 fn a_retry_replays_the_first_filings_choice_to_keep_the_binding() {
+    for forgotten in [false, true] {
+        retry_after_a_kept_filing(forgotten);
+    }
+}
+
+fn retry_after_a_kept_filing(forgotten: bool) {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
@@ -527,9 +534,18 @@ ASTROLABE
         .filter(|path| path.extension().is_some_and(|e| e == "json"))
         .collect();
     assert_eq!(ops.len(), 1, "{ops:?}");
-    let mut op: Value = serde_json::from_slice(&std::fs::read(&ops[0]).unwrap()).unwrap();
-    op["result"] = Value::Null;
-    std::fs::write(&ops[0], op.to_string()).unwrap();
+    if forgotten {
+        for entry in std::fs::read_dir(mac.state().join("ops"))
+            .unwrap()
+            .flatten()
+        {
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+    } else {
+        let mut op: Value = serde_json::from_slice(&std::fs::read(&ops[0]).unwrap()).unwrap();
+        op["result"] = Value::Null;
+        std::fs::write(&ops[0], op.to_string()).unwrap();
+    }
     assert!(mac.bash("lead", "astrolabe activate --effort 1").1);
     let state_path = mac.state().join("lead.json");
     let before: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
@@ -540,5 +556,8 @@ ASTROLABE
         "{retried}"
     );
     let after: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
-    assert_eq!(after["binding"], before["binding"], "{retried}");
+    assert_eq!(
+        after["binding"], before["binding"],
+        "forgotten {forgotten}: {retried}"
+    );
 }
