@@ -27,9 +27,42 @@ pub(super) fn one_of(key: &str, value: &str, allowed: &[&str]) -> Result<String,
 
 /// The body as a Current state: plain paragraphs, trimmed. A `**Label:**` line is refused,
 /// because the labelled form read as a form and pushed the text into fragments; a long one
-/// is refused because the owner reads it.
+/// is refused because the owner reads it. A body that opens with its own `## Current state`
+/// heading is taken as that section. A section after the first paragraph stays a section of
+/// the note, but one the note would then hold twice is refused: a second Current state, Plan
+/// or Decisions made every read of the note fail (effort 494).
 pub(super) fn as_current(body: &str) -> Result<String, String> {
-    let current = body.trim().to_owned();
+    // The heading as the note's reader takes it: `## ` and the name, trimmed.
+    fn heading(l: &str) -> Option<&str> {
+        l.strip_prefix("## ").map(str::trim)
+    }
+    let body = body.trim();
+    let current = match body.split_once('\n') {
+        Some((first, rest)) if heading(first) == Some("Current state") => rest.trim(),
+        None if heading(body) == Some("Current state") => "",
+        _ => body,
+    };
+    if current.is_empty() {
+        return Err("the body has a Current state heading and nothing under it; the heading is added for you, so give just the text. Nothing was written".to_owned());
+    }
+    let lines: Vec<&str> = current.lines().collect();
+    let fenced = crate::effort::fence_mask(lines.iter().copied());
+    let mut seen = Vec::new();
+    for (line, in_fence) in lines.iter().zip(fenced) {
+        let Some(name) = heading(line).filter(|_| !in_fence) else {
+            continue;
+        };
+        if name == "Current state" {
+            return Err("the body holds a `## Current state` heading after its first line, so the note would have that section twice. Open the body with it or leave it out: the heading is added for you. Nothing was written".to_owned());
+        }
+        if matches!(name, "Plan" | "Decisions") && seen.contains(&name) {
+            return Err(format!(
+                "the body holds `## {name}` twice, and a note has one. Give it once. Nothing was written"
+            ));
+        }
+        seen.push(name);
+    }
+    let current = current.to_owned();
     let probe = EffortFile {
         current: current.clone(),
         ..Default::default()
@@ -447,6 +480,32 @@ mod tests {
         let why = refusal(as_current("**Status:** active"));
         assert!(why.contains("no **Label:** lines"), "{why}");
         assert!(why.contains("Nothing was written"), "{why}");
+    }
+
+    /// Effort 494: the body's own Current state heading is the section, written once.
+    #[test]
+    fn a_current_state_heading_opening_the_body_is_the_section() {
+        assert_eq!(
+            as_current("## Current state\r\nWhere it stands.\n").unwrap(),
+            "Where it stands."
+        );
+        for body in ["## Current state", "## Current state\n\n"] {
+            let why = refusal(as_current(body));
+            assert!(why.contains("nothing under it"), "{why}");
+        }
+        let why = refusal(as_current("Where it stands.\n\n## Current state \nAgain."));
+        assert!(why.contains("that section twice"), "{why}");
+        let why = refusal(as_current(
+            "Where it stands.\n## Decisions\n- chose X\n## Decisions\n- chose Y",
+        ));
+        assert!(why.contains("`## Decisions` twice"), "{why}");
+        // One section after the first paragraph stays the note's, and a fenced heading is text.
+        for body in [
+            "Where it stands.\n\n## Plan\n1. Cap it.",
+            "Where it stands.\n~~~\n## Current state\n~~~",
+        ] {
+            assert_eq!(as_current(body).unwrap(), body);
+        }
     }
 
     #[test]
