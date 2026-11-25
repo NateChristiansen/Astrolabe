@@ -366,6 +366,8 @@ fn new_inner(
                 let previous = read_state(&dir, session).ok().flatten();
                 // What the first call decided, as its op recorded it: a binding it left alone
                 // stays alone, whatever the session is on now.
+                // The intent says while it's kept; after it's forgotten, the commit's own
+                // message does, as a filing that kept the binding marks it.
                 let first = notes
                     .intents()
                     .into_iter()
@@ -373,16 +375,10 @@ fn new_inner(
                     .and_then(|op| op.bound);
                 let kept = match first {
                     Some(bound) => bound != format!("effort {n}"),
-                    None => {
-                        let status = cmd.flag("status").unwrap_or("active");
-                        let initiative = canonical_membership(
-                            &notes.root,
-                            cmd.flag("initiative").unwrap_or(""),
-                        )
-                        .unwrap_or_default();
-                        keeps_initiative(&notes.root, previous.as_ref(), status, &initiative)
-                            .is_some()
-                    }
+                    None => notes
+                        .applied_commit(key)
+                        .and_then(|sha| notes.git(&["log", "-1", "--format=%B", &sha]).ok())
+                        .is_some_and(|message| message.lines().any(|l| l.starts_with(KEPT_LINE))),
                 };
                 if kept {
                     return Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written, and the session's binding was left as it was."));
@@ -504,7 +500,12 @@ fn new_inner(
     };
     // Filed for later into the initiative this session is bound to: the effort joins it and
     // the session stays on the initiative, so an orchestrator adding members doesn't rebind.
-    if let Some(kept) = keeps_initiative(&notes.root, previous.as_ref(), &status, &initiative) {
+    // Filed for another repo's folder, it takes that path below, which leaves the binding too.
+    let kept = match place {
+        Place::Away => None,
+        _ => keeps_initiative(&notes.root, previous.as_ref(), &status, &initiative),
+    };
+    if let Some(kept) = kept {
         // The checks a load of it makes, before the commit as on the binding path (effort
         // 494), with the activation itself dropped: nothing is bound or sent.
         activate::switch_on_note(
@@ -525,7 +526,12 @@ fn new_inner(
             files: vec![(file_name.clone(), text)],
             renames: Vec::new(),
             journal: Vec::new(),
-            message: format!("{number:04}: started"),
+            // Marked in the commit, so a retry after the intent is gone still knows.
+            message: format!(
+                "{number:04}: started
+
+{KEPT_LINE} {kept}"
+            ),
             base: None,
             states: Vec::new(),
             committed: false,
@@ -664,6 +670,9 @@ fn new_inner(
     crate::application::finish(&notes, key, &text);
     Ok(text)
 }
+
+/// Opens the line in a filing's commit message that says it left the session's binding alone.
+const KEPT_LINE: &str = "Binding-Kept:";
 
 /// The session's initiative label when a new effort, filed for later, joins the initiative the
 /// session is bound to; None when filing it should bind the session to the effort.

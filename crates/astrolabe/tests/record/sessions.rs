@@ -968,3 +968,37 @@ fn a_backgrounded_command_is_nudged_and_an_interrupted_turn_leaves_no_print() {
     assert!(mac.bash("s1", "cat two.txt").1);
     assert!(mac.stop("s1", false, false).is_none(), "after a rebind");
 }
+
+/// Catches: an orchestrator on an initiative filing a member for another repo checked as a load
+/// in this folder would be, which refuses it, instead of as a load in that repo's folder.
+#[test]
+fn a_member_filed_for_another_repo_from_the_bound_initiative_keeps_the_binding() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    other_repo(&mac);
+    write(&mac.notes.join("knowledge/repos/other.md"), "OTHER-TEXT");
+    git(&mac.notes, &["add", "-A"]);
+    git(&mac.notes, &["commit", "-q", "-m", "other's note"]);
+    assert!(mac.bash("s1", NEW).1);
+    let initiative = "astrolabe initiative new --title \"Smooth ink\" <<'ASTROLABE'\nSmooth ink.\n\n## Efforts\nTether cap\nCap the tether.\nASTROLABE\n";
+    assert!(mac.bash("s1", initiative).1);
+    assert!(
+        mac.bash("lead", "astrolabe activate --initiative smooth-ink")
+            .1
+    );
+    let state = mac.state().join("lead.json");
+    let before = std::fs::read_to_string(&state).unwrap();
+    let (out, ok) = mac.bash(
+        "lead",
+        "astrolabe effort new --title \"Other ink\" --initiative smooth-ink --repo other <<'ASTROLABE'\nInk in the other repo.\nASTROLABE\n",
+    );
+    assert!(
+        ok && out.contains("for repo other") && out.contains("isn't bound"),
+        "{out}"
+    );
+    assert_eq!(std::fs::read_to_string(&state).unwrap(), before, "{out}");
+    let text = mac.effort_text(3);
+    for line in ["repo: other", "initiative: smooth-ink", "status: proposed"] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+}
