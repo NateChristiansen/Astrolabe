@@ -174,8 +174,8 @@ The goal is the note's first Current state, and it's also kept under the title, 
 | Option | Values and default |
 | --- | --- |
 | `--title "<title>"` | Required, nonempty title. |
-| `--repo <name>` | Required from the notes checkout. In a project checkout, omit it: the project is inferred and an override is refused. |
-| `--status <state>` | `proposed`, `ready` or `active`; default `active`. |
+| `--repo <name>` | Required from the notes checkout. In a project checkout, omit it to file under that project, or name another repo, registered on this machine or with a repo note that lists a remote. An unknown name is refused with the names it takes. Filed for a repo other than the folder's, the effort is committed but not bound to this session, which keeps what it had, and its branch and head stamps are left blank; a session in that repo loads it. |
+| `--status <state>` | `proposed`, `ready` or `active`; default `active`, or `proposed` when filed for a repo other than the folder's. |
 | `--involvement "<value>"` | `each step`, `check in at plan`, `check in on bigger plans` or `autonomous`; default `check in on bigger plans`. |
 | `--authority <value>` | `read`, `edit` or `push`; default `edit`. |
 | `--finish "<form>"` | The event that finishes the effort, stored as its `finish` property: `merged` (the default, `done when merged`), `look: <what>` (done when merged and the owner has looked at what's named), or, with nothing to land, `findings` (done when the findings are written) or `accepted` (done when the owner accepts them). A session gets it beside Current state, and a board card shows it when it isn't the default. A note without the property reads as the default. |
@@ -211,7 +211,7 @@ ASTROLABE
 | Option | Values and default |
 | --- | --- |
 | `--title "<name>"` | Required. The initiative's title; its filename slug under `initiatives/` becomes canonical membership. |
-| `--repo <name>` | As for `effort new`: required from the notes checkout, refused elsewhere. |
+| `--repo <name>` | As for `effort new`: required from the notes checkout, and names another repo from a project checkout. |
 | `--involvement "<value>"` | Applied to the page and every new effort; default `check in on bigger plans`. |
 | `--authority <value>` | Applied to the page and every new effort; default `edit`. |
 
@@ -347,7 +347,7 @@ With an effort loaded, use `astrolabe effort save --journal "<entry>"`. With no 
 astrolabe journal "Found that upload retries already keep the original file selection."
 ```
 
-From the notes checkout, include `--repo <name>`; from a project checkout, omit it. A standalone entry is appended to today's journal and committed. `journal` is refused while an effort is loaded, so the entry can be attached to that effort instead.
+From the notes checkout, include `--repo <name>`; from a project checkout, omit it for that project or name another repo with it. A standalone entry is appended to today's journal and committed. `journal` is refused while an effort is loaded, so the entry can be attached to that effort instead.
 
 Entries describe what changed or was learned, in past tense, usually about 25 words. The program rejects multiline entries, more than 40 words or two sentences, filenames and paths, references to “the owner”, and a closing status-only sentence such as “Merged.” Use “my” when writing in the owner's voice. The board already shows status.
 

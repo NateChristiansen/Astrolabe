@@ -50,6 +50,17 @@ impl Repos {
     pub(crate) fn checkout(&self, name: &str) -> Option<PathBuf> {
         self.0.get(name)?.as_str().map(PathBuf::from)
     }
+
+    /// The names a record can take as its repo: registered here, or a repo note with a
+    /// remote. Not the notes checkout's own `agent`, which no work is for.
+    pub(crate) fn known(&self, notes: &Path) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = self.0.keys().cloned().collect();
+        names.extend(remote_notes(notes)?.0.into_iter().map(|(name, _)| name));
+        names.retain(|n| n != crate::registry::AGENT);
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
 }
 
 /// `astrolabe repo add` for local bindings. This record is the plugin's authority.

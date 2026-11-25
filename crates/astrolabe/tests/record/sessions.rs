@@ -394,12 +394,84 @@ fn the_notes_checkout_names_the_repo_a_new_effort_is_for() {
         !text.contains("head: ") || text.contains("head: \"\"") || text.contains("head: ''"),
         "{text}"
     );
-    // In the repo's own folder the folder says which, so --repo is refused there.
+    // In the repo's own folder, naming that repo is the same as leaving it out.
     let (out, ok) = mac.bash(
         "s1",
         "astrolabe effort new --title \"Two\" --repo demo <<'ASTROLABE'\ngoal\nASTROLABE\n",
     );
-    assert!(!ok && out.contains("drop --repo"), "{out}");
+    assert!(ok && out.contains("Effort 2 created"), "{out}");
+    assert!(out.contains("bound to this session"), "{out}");
+    assert!(mac.effort_text(2).contains("status: active"));
+}
+
+/// A second product repo on this machine, `other`, registered by its folder.
+fn other_repo(mac: &Machine) -> PathBuf {
+    let other = mac.dir.0.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    git(&other, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let (out, ok) = mac.run(
+        &mac.notes,
+        &["repo", "add", "other", other.to_str().unwrap()],
+        "",
+    );
+    assert!(ok, "{out}");
+    other
+}
+
+#[test]
+fn a_repos_folder_files_an_effort_for_another_repo_without_binding_it() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let other = other_repo(&mac);
+    // A name the notes don't know is refused, naming the ones they do; nothing is written.
+    let (out, ok) = mac.bash_from(
+        "o1",
+        &other,
+        "astrolabe effort new --title \"Elsewhere\" --repo nope <<'ASTROLABE'\ngoal\nASTROLABE\n",
+        None,
+    );
+    assert!(!ok && out.contains("demo, other"), "{out}");
+    assert!(!mac.notes.join(shelf("0001-elsewhere.md")).exists());
+    // The shell sits in `other` and can't leave it, but the work is for demo.
+    let (out, ok) = mac.bash_from(
+        "o1",
+        &other,
+        "astrolabe effort new --title \"Elsewhere\" --repo demo <<'ASTROLABE'\ngoal\nASTROLABE\n",
+        None,
+    );
+    assert!(ok && out.contains("Effort 1 created"), "{out}");
+    assert!(out.contains("isn't bound"), "{out}");
+    let text = mac.effort_text(1);
+    assert!(text.contains("repo: demo"), "{text}");
+    // Nobody is on it yet, and `other`'s branch and head say nothing about demo's work.
+    assert!(text.contains("status: proposed"), "{text}");
+    assert!(
+        text.contains("branch: \"\"") || text.contains("branch: ''"),
+        "{text}"
+    );
+    let state = mac.state().join("o1.json");
+    let bound = std::fs::read(&state)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .is_some_and(|s| s["effort"] == "1");
+    assert!(!bound, "the session isn't bound to an effort it can't work");
+    // A session in demo's folder loads it as any other.
+    let (out, ok) = mac.bash("s1", "astrolabe activate --effort 1");
+    assert!(ok, "{out}");
+    // A finding with no effort names its repo the same way.
+    let (out, ok) = mac.bash_from(
+        "o2",
+        &other,
+        "astrolabe journal --repo demo \"Found a thing.\"",
+        None,
+    );
+    assert!(ok, "{out}");
+    assert!(
+        mac.journal_today().contains("Found a thing. <!-- demo "),
+        "{}",
+        mac.journal_today()
+    );
 }
 
 #[test]

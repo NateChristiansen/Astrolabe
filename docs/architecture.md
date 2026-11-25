@@ -98,7 +98,7 @@ The effort format is fixed by the program; there is no user-editable effort temp
 
 Local state defaults to `~/.local/state/astrolabe-layer/`, or `%USERPROFILE%\.local\state\astrolabe-layer\` on Windows. It holds machine settings, repo bindings, session state, write intents, result files and guard denials. A result file is kept seven days, so a read held up behind a prompt still finds it, and is removed by age when a later result is written. `ASTROLABE_LAYER_STATE` overrides the location for isolated tests.
 
-The notes checkout is registered locally as `agent`. Target repos with remotes are matched against their shared repo notes; repos without remotes need local bindings. Loading an effort also requires its repo note, including for a repo without a remote. The notes checkout and its worktrees can load any effort. Creating an effort or journal entry there requires `--repo` because the folder doesn't identify the target project.
+The notes checkout is registered locally as `agent`. Target repos with remotes are matched against their shared repo notes; repos without remotes need local bindings. Loading an effort also requires its repo note, including for a repo without a remote. The notes checkout and its worktrees can load any effort. Creating an effort or journal entry there requires `--repo` because the folder doesn't identify the target project. From a project checkout, `--repo` may name another known repo, since an agent's shell can't always leave its folder; such an effort is filed without binding the session, which can't load an effort whose repo isn't its folder's.
 
 ## Serving the board
 

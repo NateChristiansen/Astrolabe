@@ -36,41 +36,65 @@ pub(crate) fn notes_here() -> Result<(Repos, Notes), String> {
     Ok((registry, Notes::new(root, dir)))
 }
 
-/// The one repo note this folder belongs to, for a new effort.
+/// Where a new record's repo stands to this session's folder, which says what the session
+/// can do with it.
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// The folder is a checkout or worktree of the repo: the session works it from here.
+    Folder,
+    /// The notes checkout, the owner's seat, where every repo's effort loads.
+    Notes,
+    /// Another repo's folder, named with --repo: filed for that repo, worked from its own.
+    Away,
+}
+
+/// The repo a new record is for, and where it stands to this folder. --repo names it from
+/// any folder, as an agent's shell can't always leave the one it's in; without it, the
+/// folder's one repo note.
 fn repo_of(
     notes: &Notes,
     registry: &Repos,
     cwd: &Path,
     wanted: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, Place), String> {
     let here = activate::common_dir(cwd).ok_or_else(|| {
         format!("this session's folder {} isn't in a git repo, so the effort can't say which repo to work out of", cwd.display())
     })?;
-    // The notes checkout is the owner's seat, about every repo: the lead says which one the
-    // work is for, since the folder can't.
-    if activate::in_notes(cwd) {
-        let Some(name) = wanted else {
-            return Err("this session runs in the notes checkout, the owner's seat, so the effort can't take its repo from the folder: --repo <name> names the repo the work is for, as its note in knowledge/repos names it".to_owned());
-        };
+    let seat = activate::in_notes(cwd);
+    if let Some(name) = wanted {
         activate::check_repo_name(name)?;
         if registry.checkout(name).is_none()
             && activate::note_remotes(&notes.root, name)?.is_empty()
         {
+            let known = registry.known(&notes.root)?;
+            let known = match known.is_empty() {
+                true => "none yet".to_owned(),
+                false => known.join(", "),
+            };
             return Err(format!(
-                "--repo {name:?} is neither a repo note with a remote (knowledge/repos/{name}.md) nor registered on this machine; `astrolabe repo add {name}`, run from a folder of that repo, adds it"
+                "--repo {name:?} is neither a repo note with a remote (knowledge/repos/{name}.md) nor registered on this machine, so it isn't a repo the notes know; the names it takes are {known}. `astrolabe repo add {name}`, run from a folder of that repo, adds it"
             ));
         }
-        return Ok(name.to_owned());
+        if seat {
+            return Ok((name.to_owned(), Place::Notes));
+        }
+        // A folder that can't be matched to any note is still not the named repo.
+        let mine = activate::repo_names(&notes.root, registry, cwd, &here).unwrap_or_default();
+        let place = match mine.iter().any(|n| n == name) {
+            true => Place::Folder,
+            false => Place::Away,
+        };
+        return Ok((name.to_owned(), place));
     }
-    if let Some(name) = wanted {
-        return Err(format!(
-            "--repo is for the notes checkout, where the folder says nothing; here the repo is this folder's, so drop --repo {name:?}"
-        ));
+    // The notes checkout is the owner's seat, about every repo: the lead says which one the
+    // work is for, since the folder can't.
+    if seat {
+        return Err("this session runs in the notes checkout, the owner's seat, so the effort can't take its repo from the folder: --repo <name> names the repo the work is for, as its note in knowledge/repos names it".to_owned());
     }
     let mut names = activate::repo_names(&notes.root, registry, cwd, &here)?;
     names.retain(|n| n != crate::registry::AGENT);
     match names.as_slice() {
-        [one] => Ok(one.clone()),
+        [one] => Ok((one.clone(), Place::Folder)),
         [] => Err(activate::no_note(cwd)),
         many => Err(format!(
             "this folder matches more than one repo note ({}); the owner settles which",
@@ -271,7 +295,14 @@ fn new_inner(
         })?;
     // Refused before the lock, reconcile and pull: a refused goal changes nothing.
     let current = as_current(goal)?;
-    let status = one_of("status", cmd.flag("status").unwrap_or("active"), &STATUSES)?;
+    let (registry, notes) = notes_here()?;
+    let (repo, place) = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
+    // Filed for another repo's folder, nobody is on it yet, so it waits proposed.
+    let start = match place {
+        Place::Away => "proposed",
+        _ => "active",
+    };
+    let status = one_of("status", cmd.flag("status").unwrap_or(start), &STATUSES)?;
     if status == "blocked" || status == "done" || status == "abandoned" {
         return Err(format!("a new effort can't start {status}"));
     }
@@ -290,8 +321,6 @@ fn new_inner(
     let finish = crate::effort::finish_line(cmd.flag("finish").unwrap_or("merged"))?;
     let issue = cmd.flag("issue").map(issues).transpose()?;
     let lessons = lesson::named(&cmd.flags_all("lesson"))?;
-    let (registry, notes) = notes_here()?;
-    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let dir = notes.state.clone();
     let _held = notes.lock()?;
     // Leftovers first: one of them may be this very call, interrupted.
@@ -324,6 +353,7 @@ fn new_inner(
             .applied_commit(key)
             .and_then(|sha| notes.effort_in_commit(&sha));
         return match created {
+            Some(n) if place == Place::Away => Ok(format!("Effort {n} was already created by this same call (a retry), for repo {repo}; nothing new was written, and this session isn't bound to it, as this folder isn't that repo's.")),
             Some(n) => {
                 let n = n.to_string();
                 let previous = read_state(&dir, session).ok().flatten();
@@ -365,7 +395,10 @@ fn new_inner(
     let number = notes.next_number();
     let (day, _) = notes::local_day_time();
     let file_name = format!("{}/{number:04}-{}.md", notes::effort_dir(&day), slug(title));
-    let facts = RepoFacts::read(cwd);
+    // Another repo's folder says nothing about the work's branch or head.
+    let facts = (place != Place::Away)
+        .then(|| RepoFacts::read(cwd))
+        .flatten();
     let mut file = effort_note(
         number,
         title,
@@ -441,19 +474,25 @@ fn new_inner(
     };
     // The load this filing ends in, checked on the note before it's written: refused after
     // the commit, it left an effort filed that every later read refused (effort 494). The
-    // state it's given is the one the write below leaves.
-    let activation = activate::switch_on_note(
-        number,
-        &file_name,
-        &text,
-        session,
-        provider,
-        cwd,
-        Some(&state),
-        shells,
-    )?
-    .mid_session()
-    .short();
+    // state it's given is the one the write below leaves. Filed for another repo's folder,
+    // there's no load to check: the session isn't bound to it.
+    let activation = match place {
+        Place::Away => None,
+        _ => Some(
+            activate::switch_on_note(
+                number,
+                &file_name,
+                &text,
+                session,
+                provider,
+                cwd,
+                Some(&state),
+                shells,
+            )?
+            .mid_session()
+            .short(),
+        ),
+    };
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
@@ -466,13 +505,21 @@ fn new_inner(
         journal: Vec::new(),
         message: format!("{number:04}: started"),
         base: None,
-        states: vec![(state_path(&dir, session), state.to_value())],
+        // Filed from another repo's folder, the session keeps what it was on: loading the
+        // effort here would be refused, as this folder can't work it.
+        states: match place {
+            Place::Away => Vec::new(),
+            _ => vec![(state_path(&dir, session), state.to_value())],
+        },
         committed: false,
         digest: Some(cmd.digest()),
         result: None,
         cwd: Some(crate::hook::comparable(cwd)),
         session: Some(session.to_owned()),
-        bound: Some(format!("effort {number}")),
+        bound: match place {
+            Place::Away => bound_label(&dir, session),
+            _ => Some(format!("effort {number}")),
+        },
         at_ms: Some(notes::now_ms()),
         handoffs: None,
         queued: false,
@@ -480,6 +527,19 @@ fn new_inner(
     };
     apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
     notes.spawn_sync();
+    let Some(activation) = activation else {
+        let mut text = format!(
+            "Effort {number} created as {file_name}, status {status}, for repo {repo}, and committed. This session isn't bound to it and keeps what it had, because this folder isn't {repo}'s: a session in a folder of {repo} loads it with `astrolabe activate --effort {number}`."
+        );
+        if let Pull::Diverged(why) = &pulled {
+            text += &format!(
+                " Notes diverged from origin before this ({}); the number may collide with the other machine's and be renumbered later.",
+                why.lines().next().unwrap_or_default()
+            );
+        }
+        crate::application::finish(&notes, key, &text);
+        return Ok(text);
+    };
     // The agent was just told to rename its session: recorded, so loading this effort again
     // doesn't ask it to undo a rename the owner makes after. What it was sent, so the next
     // binding leaves out what this one gave.
@@ -762,7 +822,7 @@ fn initiative_inner(
         &AUTHORITIES,
     )?;
     let (registry, notes) = notes_here()?;
-    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
+    let (repo, place) = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let page_rel = format!("initiatives/{}.md", slug(title));
     let _held = notes.lock()?;
     let leftovers = crate::application::reconcile(&notes);
@@ -815,7 +875,10 @@ fn initiative_inner(
     }
     let start = notes.next_number();
     let (day, _) = notes::local_day_time();
-    let facts = RepoFacts::read(cwd);
+    // Another repo's folder says nothing about the work's branch or head.
+    let facts = (place != Place::Away)
+        .then(|| RepoFacts::read(cwd))
+        .flatten();
     let settings = Settings {
         status: "proposed",
         repo: &repo,
@@ -1092,7 +1155,7 @@ fn save_inner(
         } else {
             repo_of(&notes, &registry, cwd, None)
                 .ok()
-                .filter(|r| repos.contains(&r.as_str()))
+                .filter(|(r, _)| repos.contains(&r.as_str()))
                 .map(|_| cwd.to_path_buf())
         };
         Some(issue_report(checkout.as_deref(), issue))
@@ -1896,7 +1959,7 @@ fn journal_inner(
             state.record_kind()
         ));
     }
-    let repo = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
+    let (repo, _) = repo_of(&notes, &registry, cwd, cmd.flag("repo"))?;
     let _held = notes.lock()?;
     let leftovers = crate::application::reconcile(&notes);
     if !leftovers.is_empty() {
