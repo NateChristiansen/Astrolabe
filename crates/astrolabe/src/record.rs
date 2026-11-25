@@ -358,16 +358,18 @@ fn new_inner(
         // The effort that commit created, not whatever this session is bound to now.
         let created = notes
             .applied_commit(key)
-            .and_then(|sha| notes.effort_in_commit(&sha));
+            .and_then(|sha| Some((notes.effort_in_commit(&sha)?, sha)));
         return match created {
-            Some(n) if place == Place::Away => Ok(format!("Effort {n} was already created by this same call (a retry), for repo {repo}; nothing new was written, and this session isn't bound to it, as this folder isn't that repo's.")),
-            Some(n) => {
+            Some((n, _)) if place == Place::Away => Ok(format!("Effort {n} was already created by this same call (a retry), for repo {repo}; nothing new was written, and this session isn't bound to it, as this folder isn't that repo's.")),
+            Some((n, sha)) => {
                 let n = n.to_string();
                 let previous = read_state(&dir, session).ok().flatten();
                 // What the first call decided, as its op recorded it: a binding it left alone
                 // stays alone, whatever the session is on now.
                 // The intent says while it's kept; after it's forgotten, the commit's own
-                // message does, as a filing that kept the binding marks it.
+                // message does, as a filing that kept the binding marks it. An unmarked commit
+                // is one that bound the session, as every filing before the mark did. A message
+                // that can't be read says neither, so the binding isn't touched.
                 let first = notes
                     .intents()
                     .into_iter()
@@ -376,9 +378,10 @@ fn new_inner(
                 let kept = match first {
                     Some(bound) => bound != format!("effort {n}"),
                     None => notes
-                        .applied_commit(key)
-                        .and_then(|sha| notes.git(&["log", "-1", "--format=%B", &sha]).ok())
-                        .is_some_and(|message| message.lines().any(|l| l.starts_with(KEPT_LINE))),
+                        .git(&["log", "-1", "--format=%B", &sha])
+                        .map_err(|why| format!("effort {n} was already created by this same call (a retry), but its commit couldn't be read to tell whether that call bound this session, so the session's binding was left as it was: {why}"))?
+                        .lines()
+                        .any(|l| l.starts_with(KEPT_LINE)),
                 };
                 if kept {
                     return Ok(format!("Effort {n} was already created by this same call (a retry); nothing new was written, and the session's binding was left as it was."));
