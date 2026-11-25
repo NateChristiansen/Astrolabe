@@ -750,9 +750,16 @@ pub(crate) fn note_loads_elsewhere(number: u32, file: &str, text: &str) -> Resul
     owner_note(&notes, "owner")?;
     for repo in effort.repos.iter().filter(|r| !r.is_empty()) {
         // Read as a load reads it, so a note that's missing, unreadable or not UTF-8 is
-        // refused here rather than after the commit.
+        // refused here rather than after the commit. Only a regular file is read: one that
+        // leads to a pipe would hold the read, and the hook, forever.
         let note = format!("knowledge/repos/{repo}.md");
-        std::fs::read_to_string(notes.join(&note)).map_err(|e| {
+        let path = notes.join(&note);
+        if !path.is_file() {
+            return Err(format!(
+                "{note} isn't a file, and a session loading this effort in a folder of {repo} reads it, so the load would be refused; the owner adds that note first"
+            ));
+        }
+        std::fs::read_to_string(&path).map_err(|e| {
             format!(
                 "{note}: {e}; a session loading this effort in a folder of {repo} reads it, so the load would be refused"
             )
