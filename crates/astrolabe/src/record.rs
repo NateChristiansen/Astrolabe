@@ -439,6 +439,21 @@ fn new_inner(
             .unwrap_or_default(),
         ..Default::default()
     };
+    // The load this filing ends in, checked on the note before it's written: refused after
+    // the commit, it left an effort filed that every later read refused (effort 494). The
+    // state it's given is the one the write below leaves.
+    let activation = activate::switch_on_note(
+        number,
+        &file_name,
+        &text,
+        session,
+        provider,
+        cwd,
+        Some(&state),
+        shells,
+    )?
+    .mid_session()
+    .short();
     let op = Op {
         reply_after_ms: None,
         lesson_close: None,
@@ -465,18 +480,6 @@ fn new_inner(
     };
     apply_kept(&notes, &op, &format!("effort {number}"), "created")?;
     notes.spawn_sync();
-    let activation = activate::switch_on(
-        &dir,
-        &number.to_string(),
-        session,
-        provider,
-        cwd,
-        read_state(&dir, session).ok().flatten().as_ref(),
-        shells,
-        false,
-    )?
-    .mid_session()
-    .short();
     // The agent was just told to rename its session: recorded, so loading this effort again
     // doesn't ask it to undo a rename the owner makes after. What it was sent, so the next
     // binding leaves out what this one gave.

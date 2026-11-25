@@ -417,6 +417,95 @@ fn a_kept_new_effort_initiative_or_journal_line_says_not_done_yet() {
     );
 }
 
+/// A new effort refused for what its load would refuse: nothing filed, nothing committed.
+fn refused_filing(mac: &Machine, command: &str) -> String {
+    let before = mac.log();
+    let (out, ok) = mac.bash("s1", command);
+    assert!(!ok, "{out}");
+    assert!(out.starts_with("Effort NOT created: "), "{out}");
+    assert_eq!(mac.log(), before, "a refused filing commits nothing: {out}");
+    assert!(
+        astrolabe::notes::effort_files(&mac.notes).is_empty(),
+        "a refused filing writes no note: {out}"
+    );
+    assert_eq!(git(&mac.notes, &["status", "--porcelain"]), "", "{out}");
+    out
+}
+
+/// Catches effort 494: a body with its own Current state heading printed "Effort NOT created"
+/// yet committed a note with the section twice, which every later read refused. The heading
+/// opening the body is taken as the section, once.
+#[test]
+fn a_body_opening_with_its_current_state_heading_is_that_section() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" <<'ASTROLABE'\n## Current state\nSmooth the ink across frames.\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let text = mac.effort_text(1);
+    assert_eq!(text.matches("## Current state").count(), 1, "{text}");
+    assert!(
+        text.contains("## Current state\nSmooth the ink across frames."),
+        "{text}"
+    );
+    let (out, ok) = mac.bash("s1", "astrolabe effort read 1");
+    assert!(ok, "{out}");
+    assert!(out.contains("Smooth the ink across frames."), "{out}");
+}
+
+/// The same fault from a heading further in: a body that would give the note a section twice
+/// is refused, and the refusal writes and commits nothing.
+#[test]
+fn a_body_that_would_hold_a_section_twice_is_refused_and_writes_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    for (body, said) in [
+        (
+            "## Current state\nSmooth the ink.\n\n## Current state\nAgain.",
+            "that section twice",
+        ),
+        (
+            "Smooth the ink.\n\n## Current state\nAgain.",
+            "that section twice",
+        ),
+        (
+            "Smooth the ink.\n\n## Plan\n1. Cap it.\n\n## Plan\n1. Cap it again.",
+            "`## Plan` twice",
+        ),
+    ] {
+        let out = refused_filing(
+            &mac,
+            &format!(
+                "astrolabe effort new --title \"Smooth ink\" <<'ASTROLABE'\n{body}\nASTROLABE\n"
+            ),
+        );
+        assert!(out.contains(said), "{out}");
+    }
+    // A heading inside a code fence is text, as the note's reader takes it.
+    let (out, ok) = mac.bash(
+        "s1",
+        "astrolabe effort new --title \"Smooth ink\" <<'ASTROLABE'\nSmooth the ink.\n\n```\n## Current state\n```\nASTROLABE\n",
+    );
+    assert!(ok, "{out}");
+    let (out, ok) = mac.bash("s1", "astrolabe effort read 1");
+    assert!(ok, "{out}");
+}
+
+/// Catches effort 494's other fault: the checks of the load a filing ends in ran on the note
+/// after its commit, so a refusal there left the effort filed. A notes checkout missing a note
+/// every load reads is refused before anything is written.
+#[test]
+fn a_filing_its_load_would_refuse_writes_nothing() {
+    let world = World::new();
+    let mac = world.machine("mac");
+    git(&mac.notes, &["rm", "-q", "knowledge/machines.md"]);
+    git(&mac.notes, &["commit", "-q", "-m", "drop machines"]);
+    let out = refused_filing(&mac, NEW);
+    assert!(out.contains("knowledge/machines.md"), "{out}");
+}
+
 /// Catches a push claimed with no remote: every write's reply says what happened locally
 /// and never that a sync or push started.
 #[test]

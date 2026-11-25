@@ -196,6 +196,13 @@ pub struct Effort {
 /// `efforts/<nnnn>-*.md`, its properties (YAML frontmatter, as Obsidian keeps them) and its
 /// `## Current state` section. Every failure names what's missing.
 pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
+    let (n, file) = effort_path(notes, number)?;
+    let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+    effort_of(n, file, &text)
+}
+
+/// The one `efforts/<nnnn>-*.md` for a number, relative to the notes.
+fn effort_path(notes: &Path, number: &str) -> Result<(u32, String), String> {
     let n: u32 =
         (number.trim().parse()).map_err(|_| format!("effort {number:?} isn't a number"))?;
     let prefix = format!("{n:04}-");
@@ -220,9 +227,12 @@ pub fn read_effort(notes: &Path, number: &str) -> Result<Effort, String> {
             ),
         });
     };
-    let file = file.clone();
-    let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
-    let hash = crate::notes::content_hash(&text);
+    Ok((n, file.clone()))
+}
+
+/// An effort as its note `text` at `file` reads, whether or not that note is written yet.
+fn effort_of(n: u32, file: String, text: &str) -> Result<Effort, String> {
+    let hash = crate::notes::content_hash(text);
     let text = text.replace("\r\n", "\n");
     let props = frontmatter(&text);
     let title = (props
@@ -688,9 +698,44 @@ pub fn switch_on(
     worker: bool,
 ) -> Result<Activation, String> {
     let (_, notes) = notes_and_repos()?;
-    let effort = read_effort(&notes, effort)?;
+    let (n, file) = effort_path(&notes, effort)?;
+    let text = std::fs::read_to_string(notes.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+    let effort = effort_of(n, file, &text)?;
     switch_record(
-        effort, false, worker, session, provider, cwd, previous, shells,
+        effort,
+        Some(&text),
+        worker,
+        session,
+        provider,
+        cwd,
+        previous,
+        shells,
+    )
+}
+
+/// `switch_on` for a new effort's note before it's written: every check a load of it makes,
+/// so a filing that would be refused is refused before its commit, not after it (effort 494).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn switch_on_note(
+    number: u32,
+    file: &str,
+    text: &str,
+    session: &str,
+    provider: &str,
+    cwd: &Path,
+    previous: Option<&SessionState>,
+    shells: &[bool],
+) -> Result<Activation, String> {
+    let effort = effort_of(number, file.to_owned(), text)?;
+    switch_record(
+        effort,
+        Some(text),
+        false,
+        session,
+        provider,
+        cwd,
+        previous,
+        shells,
     )
 }
 
@@ -736,7 +781,7 @@ pub fn switch_initiative(
         hash: crate::notes::content_hash(&page.text),
     };
     switch_record(
-        effort, true, false, session, provider, cwd, previous, shells,
+        effort, None, false, session, provider, cwd, previous, shells,
     )
 }
 
@@ -798,10 +843,11 @@ fn initiative_pointer(path: &str) -> String {
     format!("{path}: the initiative's title and path only.")
 }
 
+/// `note` is an effort's text, as read or about to be written; an initiative has none.
 #[allow(clippy::too_many_arguments)]
 fn switch_record(
     effort: Effort,
-    initiative: bool,
+    note: Option<&str>,
     worker: bool,
     session: &str,
     provider: &str,
@@ -809,6 +855,7 @@ fn switch_record(
     previous: Option<&SessionState>,
     shells: &[bool],
 ) -> Result<Activation, String> {
+    let initiative = note.is_none();
     let (registry, notes) = notes_and_repos()?;
     let repo = session_repo(&notes, &registry, &effort.repos, cwd)?;
     let read = |file: String| {
@@ -828,10 +875,8 @@ fn switch_record(
         )],
     };
     let mut parts = vec![current];
-    if !initiative {
-        let text = std::fs::read_to_string(notes.join(&effort.file))
-            .map_err(|e| format!("{}: {e}", effort.file))?;
-        let file = crate::effort::EffortFile::parse(&text)?;
+    if let Some(text) = note {
+        let file = crate::effort::EffortFile::parse(text)?;
         // Under the state, so the event that finishes the effort is read with it, without
         // a part of its own to name. A note filed before the property reads as the default.
         let finish = file.prop("finish").unwrap_or(crate::effort::FINISH_DEFAULT);
