@@ -55,7 +55,7 @@ fn notes_init_refuses_a_folder_with_work_in_it_and_takes_an_empty_clone() {
     let dir = TempDir::new();
     let state = dir.0.join("state");
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        program()
             .args(args)
             .current_dir(&dir.0)
             .env(STATE_VAR, &state)
@@ -174,7 +174,7 @@ fn simultaneous_repo_adds_both_land() {
     std::fs::remove_dir_all(f.state().join("repos")).unwrap();
     let notes = f.dir.0.join("notes");
     let start = |name: &str, checkout: &Path| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        let mut command = program();
         command
             .args(["repo", "add", name, checkout.to_str().unwrap()])
             .env(STATE_VAR, f.state())
@@ -211,7 +211,7 @@ fn a_repo_add_the_plugin_cant_record_says_so_and_rerunning_fixes_it() {
     let f = Fixture::new();
     let repos = f.state().join("repos");
     std::fs::set_permissions(&repos, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+    let mut command = program();
     let out = command
         .args(["repo", "add", "late", f.other.to_str().unwrap()])
         .env(STATE_VAR, f.state())

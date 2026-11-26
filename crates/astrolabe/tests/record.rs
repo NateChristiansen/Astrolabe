@@ -135,11 +135,14 @@ impl Template {
 
     fn build() -> Template {
         let temp = std::env::temp_dir();
-        // A static is never dropped, so each run clears what earlier runs left.
+        // A static is never dropped, so each run clears what earlier runs left. A run still
+        // going rewrites its template's `in-use` with each world it copies, so it never
+        // looks old.
         let stale = std::time::Duration::from_secs(3600);
         for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
-            let old = entry
-                .metadata()
+            let marker = entry.path().join("in-use");
+            let used = std::fs::metadata(&marker).or_else(|_| entry.metadata());
+            let old = used
                 .and_then(|m| m.modified())
                 .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > stale));
             if old
@@ -262,6 +265,7 @@ impl World {
 
     fn taking(places: usize, real_clock: bool) -> Self {
         let slot = Slot::take(places);
+        let _ = std::fs::write(Template::get().root.join("in-use"), "");
         let origin = TempDir::new();
         copy_tree(
             &Template::get().origin.join("notes.git"),

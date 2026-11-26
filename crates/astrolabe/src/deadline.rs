@@ -88,13 +88,14 @@ impl Clock {
             std::thread::sleep(time);
             return;
         }
+        // Counted from the whole wait so far, so no part of a millisecond is lost per step.
         let started = Instant::now();
-        let mut counted = Duration::ZERO;
-        while counted < time {
-            std::thread::sleep((time - counted).min(Duration::from_millis(10)));
-            let now = started.elapsed().min(time);
-            self.moved_on
-                .fetch_add((now - counted).as_millis() as u64, Ordering::Relaxed);
+        let mut counted = 0;
+        while counted < time.as_millis() as u64 {
+            let left = time.saturating_sub(Duration::from_millis(counted));
+            std::thread::sleep(left.min(Duration::from_millis(10)));
+            let now = started.elapsed().min(time).as_millis() as u64;
+            self.moved_on.fetch_add(now - counted, Ordering::Relaxed);
             counted = now;
         }
     }

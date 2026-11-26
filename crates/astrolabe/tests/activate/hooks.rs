@@ -459,7 +459,7 @@ fn the_cap_counts_what_follows_a_byte_order_mark() {
 #[test]
 fn input_trickling_past_the_deadline_is_blocked_as_unreadable() {
     let f = Fixture::new();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+    let mut child = program()
         .args(["hook", "pre-command", "--if-active"])
         .current_dir(&f.demo)
         .env(STATE_VAR, f.state())
@@ -501,7 +501,7 @@ fn only_gated_plugin_hooks_are_available() {
     let state = dir.0.join("state");
     std::fs::create_dir_all(&state).unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        program()
             .args(args)
             .current_dir(&dir.0)
             .env(STATE_VAR, &state)

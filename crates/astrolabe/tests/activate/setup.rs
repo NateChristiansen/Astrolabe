@@ -70,7 +70,7 @@ fn notes_init_with_no_git_identity_leaves_nothing_and_a_rerun_works() {
     let dir = TempDir::new();
     let state = dir.0.join("state");
     let run = |args: &[&str], env: &[(&str, &str)]| {
-        Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        program()
             .args(args)
             .current_dir(&dir.0)
             .env(STATE_VAR, &state)

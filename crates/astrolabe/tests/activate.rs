@@ -21,6 +21,14 @@ const IDENT: &[(&str, &str)] = &[
     ("GIT_COMMITTER_EMAIL", "t@example.com"),
 ];
 
+/// The program, on the steady hook clock, which counts only what a test puts on it, so a
+/// busy machine doesn't change what a test sees. A test of real time passing removes it.
+fn program() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+    command.env("ASTROLABE_HOOK_TEST_CLOCK", "steady");
+    command
+}
+
 struct Fixture {
     dir: TempDir,
     demo: PathBuf,
@@ -165,7 +173,7 @@ impl Fixture {
     }
 
     fn run(&self, cwd: &Path, args: &[&str], stdin: &str, env: &[(&str, &str)]) -> (String, bool) {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        let mut command = program();
         command
             .args(args)
             .current_dir(cwd)
@@ -331,7 +339,7 @@ impl Fixture {
     /// The pre-command hook's answer to raw input, written aside so a hook that stops
     /// reading early doesn't fail the write.
     fn hook_raw(&self, stdin: Vec<u8>) -> Option<Value> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+        let mut child = program()
             .args(["hook", "pre-command", "--if-active"])
             .current_dir(&self.demo)
             .env(STATE_VAR, self.state())

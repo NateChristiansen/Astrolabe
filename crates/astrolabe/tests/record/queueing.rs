@@ -92,14 +92,14 @@ fn saves_waiting_for_the_lock_are_committed_by_its_holder_each_in_its_own_commit
             .map(|s| scope.spawn(move || mac.bash(s, SAVE)))
             .into_iter()
             .collect();
-        until("three saves queued", || mac.queued().len() == 3);
-        let keys: Vec<String> = mac
-            .queued()
-            .iter()
-            .map(|op| op["key"].as_str().unwrap().to_owned())
-            .collect();
-        // The holder, still holding the lock, commits them.
-        assert!(notes.reconcile().is_empty());
+        // The holder, still holding the lock, commits each as it's queued: waiting for all
+        // three first let the first save's wait for the lock run out on a busy machine.
+        let mut keys = std::collections::BTreeSet::new();
+        until("three saves committed by the holder", || {
+            keys.extend((mac.queued().iter()).map(|op| op["key"].as_str().unwrap().to_owned()));
+            assert!(notes.reconcile().is_empty());
+            keys.len() == 3 && keys.iter().all(|key| mac.commits_with(key) == 1)
+        });
         let replies: Vec<_> = saves.into_iter().map(|s| s.join().unwrap()).collect();
         for key in &keys {
             assert_eq!(mac.commits_with(key), 1, "{key}");
@@ -258,8 +258,9 @@ fn the_same_save_again_while_its_first_is_queued_lands_once() {
     let key = mac.queued()[0]["key"].as_str().unwrap().to_owned();
     let (out, ok) = std::thread::scope(|scope| {
         let retry = scope.spawn(|| mac.bash("s1", SAVE));
-        // The retry waits on the first attempt and queues nothing of its own.
-        std::thread::sleep(Duration::from_millis(600));
+        // The retry waits on the first attempt and queues nothing of its own. It has 9 s
+        // for the lock; 3 s leaves a busy machine time to start it and reach that wait.
+        std::thread::sleep(Duration::from_millis(3000));
         assert_eq!(mac.queued().len(), 1);
         drop(held);
         retry.join().unwrap()

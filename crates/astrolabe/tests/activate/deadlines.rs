@@ -14,7 +14,7 @@ impl Fixture {
         env: &[(&str, &str)],
         limit: Duration,
     ) -> (Option<Value>, Duration) {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_astrolabe"));
+        let mut command = program();
         command
             .args(["hook", event, "--if-active"])
             .current_dir(&self.demo)
@@ -90,7 +90,7 @@ fn time_running_out_after_a_verdict_keeps_the_verdict() {
 #[test]
 fn input_trickling_past_the_events_read_time_is_blocked_as_unreadable() {
     let f = Fixture::new();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+    let mut child = program()
         .args(["hook", "pre-command", "--if-active"])
         .current_dir(&f.demo)
         .env(STATE_VAR, f.state())
@@ -222,7 +222,7 @@ fn a_slow_session_start_says_it_ran_out_of_time() {
 fn a_machine_thats_off_reads_inside_its_time_and_says_nothing() {
     let f = Fixture::new();
     f.machine("off");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+    let mut child = program()
         .args(["hook", "pre-command", "--if-active"])
         .current_dir(&f.demo)
         .env(STATE_VAR, f.state())

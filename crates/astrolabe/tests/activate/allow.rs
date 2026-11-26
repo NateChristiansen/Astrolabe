@@ -136,7 +136,7 @@ fn a_post_tool_hook_can_write_while_an_approval_hook_is_waiting() {
     FileExt::lock_exclusive(&lock).unwrap();
     let command = "git push --force";
     let mint = input(&f, "astrolabe allow --once 'git push --force' --said yes");
-    let mut pending = Command::new(env!("CARGO_BIN_EXE_astrolabe"))
+    let mut pending = program()
         .args(["hook", "pre-command", "--if-active"])
         .current_dir(&f.demo)
         .env(STATE_VAR, f.state())
