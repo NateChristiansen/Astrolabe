@@ -235,6 +235,13 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// `path` as the system names it in full, without the `\\?\` prefix Windows adds.
+fn full_name(path: &Path) -> PathBuf {
+    let full = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = full.to_string_lossy();
+    PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+}
+
 /// Rewrites each spelling of `from` in `file` to `to`: as given, with backslashes doubled as
 /// JSON and git config write them, and with forward slashes as git writes a Windows path.
 fn swap_path(file: &Path, from: &Path, to: &Path) {
@@ -286,6 +293,13 @@ impl World {
         swap_path(&config, &template.origin, &self.origin.0);
         let registered = dir.0.join("state/repos/agent.json");
         swap_path(&registered, &template.machine, &dir.0);
+        // The program records a checkout by its full name, which a short temp folder name
+        // (`RUNNER~1` on a Windows runner) doesn't match.
+        swap_path(
+            &registered,
+            &full_name(&template.machine),
+            &full_name(&dir.0),
+        );
         for file in [config, registered] {
             let text = std::fs::read_to_string(&file).unwrap();
             let marker = template.root.file_name().unwrap().to_str().unwrap();
