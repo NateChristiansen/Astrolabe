@@ -316,7 +316,7 @@ impl Notes {
                 }
                 return Ok(held);
             }
-            std::thread::sleep(pause.min(wait - waited));
+            crate::deadline::waiting_on_another(pause.min(wait - waited));
             pause = (pause * 2).min(std::time::Duration::from_millis(50));
         }
         // Nothing is held now: the next git a hook leaves is waited for in full.

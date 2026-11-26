@@ -52,29 +52,31 @@ struct Machine {
     demo: PathBuf,
     /// The read the hook last handed back in place of a command, as the app would run it.
     last_read: std::sync::Mutex<String>,
+    /// Whether its hooks run on the real clock rather than the steady test clock.
+    real_clock: bool,
 }
 
 struct World {
     origin: TempDir,
+    real_clock: bool,
     _slot: Slot,
 }
 
-/// A test's share of the few places tests may hold at once. Each test runs the hook on its real
-/// clock, so too many at once starve it and it runs out of time before checking anything:
-/// sixteen at once failed most tests on a quiet PC, and eight left none out of time
-/// (2026-11-25). A test that times real waits takes every place, as even four tests beside it
-/// made two of them fail.
-/// A second world on the same thread shares its first's places, so a test can't wait on itself.
+/// A test's share of the places tests may hold at once. On the steady test clock a busy
+/// machine changes nothing a test sees, so this only keeps the machine from thrashing: as many
+/// as the cores. A test on the real clock takes every place, as load changes what it sees:
+/// with eight others beside them, real-clock tests failed on a quiet PC (2026-11-25). A
+/// second world on the same thread shares its first's places, so a test can't wait on itself.
 struct Slot {
     places: usize,
 }
 
-/// How many places there are: `ASTROLABE_RECORD_AT_ONCE`, else half the cores.
+/// How many places there are: `ASTROLABE_RECORD_AT_ONCE`, else the cores.
 fn at_once() -> usize {
     std::env::var("ASTROLABE_RECORD_AT_ONCE")
         .ok()
         .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| n.get() / 2))
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| n.get()))
         .max(1)
 }
 
@@ -246,16 +248,19 @@ fn swap_path(file: &Path, from: &Path, to: &Path) {
 }
 
 impl World {
+    /// A world whose hooks keep the steady test clock, which counts only what a test puts
+    /// on it, so a busy machine doesn't change what they do.
     fn new() -> Self {
-        Self::taking(1)
+        Self::taking(1, false)
     }
 
-    /// A world for a test that times real waits, which runs with no other test beside it.
+    /// A world whose hooks run on the real clock, for a test of how the hook copes with real
+    /// time passing. It runs with no other test beside it, as load changes what it sees.
     fn timed() -> Self {
-        Self::taking(usize::MAX)
+        Self::taking(usize::MAX, true)
     }
 
-    fn taking(places: usize) -> Self {
+    fn taking(places: usize, real_clock: bool) -> Self {
         let slot = Slot::take(places);
         let origin = TempDir::new();
         copy_tree(
@@ -264,6 +269,7 @@ impl World {
         );
         Self {
             origin,
+            real_clock,
             _slot: slot,
         }
     }
@@ -285,7 +291,9 @@ impl World {
         if git(&self.origin.0.join("notes.git"), &["rev-parse", "main"]) != template.head {
             git(&dir.0.join("notes"), &["pull", "-q", "--ff-only"]);
         }
-        Machine::at(dir, name)
+        let mut machine = Machine::at(dir, name);
+        machine.real_clock = self.real_clock;
+        machine
     }
 }
 
@@ -297,6 +305,7 @@ impl Machine {
             dir,
             name,
             last_read: Default::default(),
+            real_clock: false,
         }
     }
 }
@@ -326,6 +335,9 @@ impl Machine {
             .env("GIT_AUTHOR_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_NAME", "T")
             .env("GIT_COMMITTER_EMAIL", "t@example.com");
+        if !self.real_clock {
+            cmd.env("ASTROLABE_HOOK_TEST_CLOCK", "steady");
+        }
         cmd
     }
 

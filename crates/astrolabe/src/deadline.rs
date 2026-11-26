@@ -41,8 +41,16 @@ const BUDGET_VAR: &str = "ASTROLABE_HOOK_BUDGET_MS";
 /// The points are `read` (input read, nothing judged), `verdict` (the guard's verdict
 /// reached, not yet printed), `ticket` (an effort command done, its result not yet left),
 /// `handoffs` (a batch of hand-off files added) and a git verb (before that git call
-/// starts).
+/// starts). Several, separated by commas, apply in turn.
 const STALL_VAR: &str = "ASTROLABE_HOOK_TEST_STALL";
+/// Tests set this to `steady` for a clock that counts only what a test puts on it: the
+/// stalls and moves above, and time spent waiting for a lock another process holds. The
+/// hook's own work takes no time on it, so how busy the machine is doesn't change what a
+/// test sees. A test of how the hook copes with a slow machine leaves it unset.
+const CLOCK_VAR: &str = "ASTROLABE_HOOK_TEST_CLOCK";
+/// The most a steady clock's hook waits in real time for its answer or its exit, so that
+/// something that never ends can't hold a test forever.
+const STEADY_CEILING: Duration = Duration::from_secs(120);
 
 /// The most a fetch or push may take inside a hook: a pull is the one step a hook can do
 /// without, so it gets the early part of the hook's time and no more. Cut off here it
@@ -59,6 +67,8 @@ struct Clock {
     answer: Duration,
     /// Time a test has moved the clock on by, in milliseconds.
     moved_on: AtomicU64,
+    /// Counts only what a test puts on it (`CLOCK_VAR`).
+    steady: bool,
 }
 
 impl Clock {
@@ -67,6 +77,38 @@ impl Clock {
             start: Instant::now(),
             answer,
             moved_on: AtomicU64::new(0),
+            steady: false,
+        }
+    }
+
+    /// A real wait of `time`, counted on a steady clock as it goes, so that a backstop
+    /// watching the clock answers partway through it as it would on the real one.
+    fn wait(&self, time: Duration) {
+        if !self.steady {
+            std::thread::sleep(time);
+            return;
+        }
+        let started = Instant::now();
+        let mut counted = Duration::ZERO;
+        while counted < time {
+            std::thread::sleep((time - counted).min(Duration::from_millis(10)));
+            let now = started.elapsed().min(time);
+            self.moved_on
+                .fetch_add((now - counted).as_millis() as u64, Ordering::Relaxed);
+            counted = now;
+        }
+    }
+
+    /// Until this much is spent: real time on the real clock; on a steady one, whatever
+    /// the test puts on it, within `STEADY_CEILING`.
+    fn until(&self, spent: Duration) {
+        if !self.steady {
+            std::thread::sleep(spent.saturating_sub(self.spent()));
+            return;
+        }
+        let started = Instant::now();
+        while self.spent() < spent && started.elapsed() < STEADY_CEILING {
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -111,7 +153,11 @@ impl Clock {
     }
 
     fn spent(&self) -> Duration {
-        self.start.elapsed() + Duration::from_millis(self.moved_on.load(Ordering::Relaxed))
+        let moved_on = Duration::from_millis(self.moved_on.load(Ordering::Relaxed));
+        match self.steady {
+            true => moved_on,
+            false => self.start.elapsed() + moved_on,
+        }
     }
 
     fn left(&self, until: Duration) -> Duration {
@@ -178,11 +224,13 @@ fn budget(event: &str) -> Duration {
 /// Starts the event's clock and its backstop. Called once, before the hook reads anything.
 pub(crate) fn start(event: &str) {
     let answer_at = budget(event);
-    let clock = Clock::new(answer_at);
+    let mut clock = Clock::new(answer_at);
+    clock.steady = std::env::var(CLOCK_VAR).is_ok_and(|v| v == "steady");
     let exit_after = clock.exit() - answer_at;
     if CLOCK.set(clock).is_err() {
         return;
     }
+    let clock = CLOCK.get().expect("set just now");
     {
         let mut state = answer();
         match event {
@@ -203,7 +251,7 @@ pub(crate) fn start(event: &str) {
         }
     }
     std::thread::spawn(move || {
-        std::thread::sleep(answer_at);
+        clock.until(answer_at);
         {
             // The answer is on time whatever git is doing. From here the hook's own thread
             // prints nothing: `said` is set, so there is one answer.
@@ -222,8 +270,14 @@ pub(crate) fn start(event: &str) {
         // needing repair. Past that the hook exits anyway and git is left running, with
         // the write's intent for the next writer: the same as when the app ends a hook.
         let exit_at = Instant::now() + exit_after;
+        let exit_spent = clock.spent() + exit_after;
+        let ceiling = Instant::now() + STEADY_CEILING;
+        let time_left = || match clock.steady {
+            true => clock.spent() < exit_spent && Instant::now() < ceiling,
+            false => Instant::now() < exit_at,
+        };
         while !DONE.load(Ordering::SeqCst)
-            && Instant::now() < exit_at
+            && time_left()
             && (WRITING.load(Ordering::SeqCst) || UNDER_WAY.load(Ordering::SeqCst) > 0)
         {
             std::thread::sleep(Duration::from_millis(10));
@@ -348,28 +402,39 @@ pub(crate) fn stall(point: &str) {
     let Some(clock) = CLOCK.get() else {
         return;
     };
-    let Ok(stall) = std::env::var(STALL_VAR) else {
+    let Ok(stalls) = std::env::var(STALL_VAR) else {
         return;
     };
-    let Some((at, time)) = stall.split_once(':') else {
-        return;
-    };
-    if at != point {
-        return;
-    }
-    if let Some(ms) = time.strip_prefix('=') {
-        let at = Duration::from_millis(ms.parse().unwrap_or(0));
-        let more = at.saturating_sub(clock.spent()).as_millis() as u64;
-        clock.moved_on.fetch_add(more, Ordering::Relaxed);
-        return;
-    }
-    match time.strip_prefix('+') {
-        Some(ms) => {
-            clock
-                .moved_on
-                .fetch_add(ms.parse().unwrap_or(0), Ordering::Relaxed);
+    for stall in stalls.split(',') {
+        let Some((at, time)) = stall.split_once(':') else {
+            continue;
+        };
+        if at != point {
+            continue;
         }
-        None => std::thread::sleep(Duration::from_millis(time.parse().unwrap_or(0))),
+        if let Some(ms) = time.strip_prefix('=') {
+            let at = Duration::from_millis(ms.parse().unwrap_or(0));
+            let more = at.saturating_sub(clock.spent()).as_millis() as u64;
+            clock.moved_on.fetch_add(more, Ordering::Relaxed);
+            continue;
+        }
+        match time.strip_prefix('+') {
+            Some(ms) => {
+                clock
+                    .moved_on
+                    .fetch_add(ms.parse().unwrap_or(0), Ordering::Relaxed);
+            }
+            None => clock.wait(Duration::from_millis(time.parse().unwrap_or(0))),
+        }
+    }
+}
+
+/// A pause while another process holds something this one waits for: time a steady clock
+/// counts, as it is none of this hook's own work.
+pub(crate) fn waiting_on_another(time: Duration) {
+    match CLOCK.get() {
+        Some(clock) => clock.wait(time),
+        None => std::thread::sleep(time),
     }
 }
 
@@ -426,7 +491,7 @@ pub(crate) fn lock_within(file: &File, wait: Duration) -> std::io::Result<Wait> 
         if waited >= wait {
             return Ok(Wait::Busy(waited));
         }
-        std::thread::sleep(pause.min(wait - waited));
+        waiting_on_another(pause.min(wait - waited));
         pause = (pause * 2).min(Duration::from_millis(50));
     }
 }

@@ -191,7 +191,7 @@ fn wait_turn(notes: &Notes, key: &str) -> Turn {
         if let Some(_held) = notes.try_lock() {
             crate::application::reconcile_first(notes, Some(key));
         }
-        std::thread::sleep(Duration::from_millis(25));
+        crate::deadline::waiting_on_another(Duration::from_millis(25));
     }
 }
 

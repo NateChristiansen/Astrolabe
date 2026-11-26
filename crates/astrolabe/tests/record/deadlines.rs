@@ -447,7 +447,7 @@ fn a_marker_nothing_frees_delays_a_write_and_never_stops_one() {
 /// is planned or written beside it.
 #[test]
 fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let (before, log) = (mac.effort_text(1), mac.log());
@@ -481,7 +481,7 @@ fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
 /// The save isn't told to finish or abort a rebase that is finishing by itself.
 #[test]
 fn a_rebase_left_running_past_the_wait_is_busy_notes_not_a_rebase_to_end() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let (before, log) = (mac.effort_text(1), mac.log());
@@ -815,7 +815,7 @@ fn git_shim(mac: &Machine, script: &str) -> String {
 #[cfg(unix)]
 #[test]
 fn a_flooding_fetch_is_not_a_timeout() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // More than a pipe holds, on the stream git reports progress on, before the real fetch.
@@ -848,7 +848,7 @@ fn a_flooding_fetch_is_not_a_timeout() {
 #[cfg(unix)]
 #[test]
 fn a_fetch_a_hook_cut_short_starts_no_backoff() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let path = git_shim(
@@ -941,7 +941,7 @@ fn a_rebase_the_owner_starts_during_the_fetch_is_left_alone() {
 /// in it, and the session would be told so at every turn end.
 #[test]
 fn a_repo_read_that_ran_out_of_time_brings_no_reminder() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     // Something in the session's repo that a whole read sees and an empty one doesn't.
     write(&mac.demo.join("untracked.txt"), "work in progress");
@@ -1061,7 +1061,7 @@ const MOVED: &str = "the repo changed since the last save";
 /// The next turn's command reads it again, and from there a real change is seen.
 #[test]
 fn a_command_that_couldnt_read_its_repo_makes_no_claim_about_it() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The hook's clock moves past its time for reads as it comes to read the repo's status.
@@ -1218,7 +1218,7 @@ fn a_rebase_the_pull_couldnt_abort_is_finished_by_the_next_pull() {
 /// its first `git add`.
 #[test]
 fn a_save_waits_out_another_programs_index_lock() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let index = mac.notes.join(".git/index.lock");
@@ -1244,7 +1244,7 @@ fn a_save_waits_out_another_programs_index_lock() {
 /// goes an ordinary save lands and its sync pushes it over the other machine's work.
 #[test]
 fn an_index_lock_held_past_the_wait_refuses_the_save_with_nothing_written() {
-    let world = World::timed();
+    let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     assert!(mac.sync().1);

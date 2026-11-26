@@ -263,7 +263,7 @@ fn a_reload_or_stale_save_starts_a_new_reply_window() {
 #[test]
 fn parallel_session_edits_survive_the_reply_commit() {
     for switch in [false, true] {
-        let world = World::timed();
+        let world = World::new();
         let m = world.machine("pc");
         let before = waiting(&m, false);
         let input = input(&m, false);
@@ -399,7 +399,7 @@ fn a_reply_clears_an_owner_wait_on_an_initiative_page() {
 #[test]
 fn an_unknown_notes_identity_does_not_manufacture_a_save_nudge() {
     for dirty in [false, true] {
-        let world = World::timed();
+        let world = World::new();
         let m = world.machine("pc");
         waiting(&m, false);
         assert!(
