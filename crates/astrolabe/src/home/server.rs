@@ -420,36 +420,65 @@ pub(super) fn events(notes: &Notes, mut stream: TcpStream, seen: &AtomicI64) {
     }
 }
 
-/// What a change to the notes moves: the newest change time and the count of effort and
-/// journal files, and the board file's own, which every save rewrites.
+/// What a change to the notes moves: the newest change time and the count of note files,
+/// the same ones `notes::md_files` lists, and the board file's own, which every save
+/// rewrites. Every open page runs this each second, so change times come from the folder
+/// listings: on Windows a listing carries them, where reading a file's own opens the file,
+/// and with a page left open that kept a fifth of a core busy.
 pub(super) fn fingerprint(root: &Path) -> (i64, usize, i64) {
-    let mut newest = 0;
-    let mut count = 0;
-    let mut note = |path: &Path| {
-        count += 1;
-        if let Some(ms) = modified_ms(path) {
-            newest = newest.max(ms);
-        }
-    };
+    let mut seen = (0, 0);
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path().is_dir() {
-            if name == ".git" || name == ".obsidian" {
-                continue;
-            }
-            for rel in notes::md_files(root, &name) {
-                note(&root.join(rel));
+        if listed_dir(&entry) {
+            if name != ".git" && name != ".obsidian" {
+                walk_notes(&entry.path(), 0, &mut seen);
             }
         } else if name.ends_with(".md") {
-            note(&entry.path());
+            note_seen(&entry, &mut seen);
         }
     }
-    (newest, count, modified_ms(&root.join(FILE)).unwrap_or(0))
+    (seen.0, seen.1, modified_ms(&root.join(FILE)).unwrap_or(0))
+}
+
+/// The walk `notes::md_files` makes under one top folder.
+fn walk_notes(dir: &Path, depth: u8, seen: &mut (i64, usize)) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if listed_dir(&entry) {
+            if depth < 4 && !name.starts_with('.') {
+                walk_notes(&entry.path(), depth + 1, seen);
+            }
+        } else if name.ends_with(".md") {
+            note_seen(&entry, seen);
+        }
+    }
+}
+
+/// A link is followed, as `Path::is_dir` would.
+fn listed_dir(entry: &std::fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(kind) if !kind.is_symlink() => kind.is_dir(),
+        _ => entry.path().is_dir(),
+    }
+}
+
+fn note_seen(entry: &std::fs::DirEntry, seen: &mut (i64, usize)) {
+    seen.1 += 1;
+    let meta = match entry.file_type() {
+        Ok(kind) if !kind.is_symlink() => entry.metadata().ok(),
+        _ => std::fs::metadata(entry.path()).ok(),
+    };
+    if let Some(ms) = meta.and_then(|m| since_epoch_ms(m.modified().ok()?)) {
+        seen.0 = seen.0.max(ms);
+    }
 }
 
 pub(super) fn modified_ms(path: &Path) -> Option<i64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    since_epoch_ms(std::fs::metadata(path).ok()?.modified().ok()?)
+}
+
+fn since_epoch_ms(at: std::time::SystemTime) -> Option<i64> {
+    let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;
     i64::try_from(since.as_millis()).ok()
 }
 
