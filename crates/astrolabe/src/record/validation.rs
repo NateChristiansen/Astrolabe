@@ -508,6 +508,65 @@ mod tests {
         }
     }
 
+    /// Catches: a wait on the owner that only asks them to look, the form the session text
+    /// used to teach, including behind another word or with nothing in it; while a decision
+    /// that starts like one, and a look someone else is asked for, go through.
+    #[test]
+    fn an_owner_wait_must_name_a_decision_not_a_look() {
+        for wait in [
+            "owner: look at the plan",
+            "owner: Look at the branch and land it",
+            "owner: take a look at the result",
+            "owner: have a look",
+            "owner: look",
+            "owner: please look at the PR",
+            "owner: Please take a look at the PR",
+            "owner: have a quick look",
+            "owner: take another look at the branch",
+            "owner:",
+            "owner: ",
+        ] {
+            let why = refusal(check_wait(wait, None));
+            assert!(
+                why.contains(&format!(
+                    "--waits-for \"{wait}\" doesn't say what the owner should decide or do"
+                )) && why.contains("Lead with the decision or action and say where to see it")
+                    && why.contains("Nothing was written"),
+                "{wait:?}: {why}"
+            );
+        }
+        for wait in [
+            "owner: land it on main? 4 seconds instead of 30, on branch export-batch",
+            "owner: lookup table or a match, both measured",
+            "owner: looks good to land on main?",
+            "owner: lookup table A or B?",
+            "owner: have the export take a path, or look it up from the config?",
+            "dispatcher: look at the branch",
+            "the nightly build",
+        ] {
+            assert_eq!(check_wait(wait, None), Ok(()), "{wait}");
+        }
+    }
+
+    /// Catches: a dispatched worker putting its effort under Needs you, where no reply clears
+    /// it, while its wait on the dispatcher goes through.
+    #[test]
+    fn a_worker_waits_on_its_dispatcher_not_the_owner() {
+        let ask = "owner: batch the rows or stream them? both pass, batching is 4 seconds faster";
+        let why = refusal(check_wait(ask, Some("effort 1")));
+        assert!(
+            why.contains("bound with --worker")
+                && why.contains("--waits-for \"dispatcher: <question>\"")
+                && why.contains("Nothing was written"),
+            "{why}"
+        );
+        assert_eq!(
+            check_wait("dispatcher: review and land", Some("effort 1")),
+            Ok(())
+        );
+        assert_eq!(check_wait(ask, None), Ok(()));
+    }
+
     #[test]
     fn journal_lines_refuse_the_shapes_sessions_wrote() {
         let why = refusal(check_journal(&words(41)));

@@ -79,7 +79,7 @@ impl Machine {
 /// a commit. Here the lock's holder commits three waiting saves without letting go of it.
 #[test]
 fn saves_waiting_for_the_lock_are_committed_by_its_holder_each_in_its_own_commit() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     for s in ["s1", "s2", "s3"] {
         assert!(mac.bash(s, NEW).1);
@@ -132,7 +132,7 @@ fn saves_waiting_for_the_lock_are_committed_by_its_holder_each_in_its_own_commit
 /// turn comes, left out, and its session is shown the effort as it is now.
 #[test]
 fn a_queued_save_whose_effort_changed_is_left_out_and_its_session_told() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let notes = mac.notes_lib();
@@ -181,7 +181,7 @@ fn a_queued_save_whose_effort_changed_is_left_out_and_its_session_told() {
 /// the rest commits each once; and the same command again says it landed.
 #[test]
 fn saves_left_queued_by_hooks_out_of_time_land_once_whoever_commits_them() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     for s in ["s1", "s2", "s3", "s4"] {
         assert!(mac.bash(s, NEW).1);
@@ -247,7 +247,7 @@ fn saves_left_queued_by_hooks_out_of_time_land_once_whoever_commits_them() {
 /// own first attempt.
 #[test]
 fn the_same_save_again_while_its_first_is_queued_lands_once() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let notes = mac.notes_lib();
@@ -273,7 +273,7 @@ fn the_same_save_again_while_its_first_is_queued_lands_once() {
 /// merged in by the sync, and both reach origin.
 #[test]
 fn another_machines_push_between_a_queued_save_and_its_sync_still_merges() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let pc = world.machine("pc");
     assert!(mac.bash("s1", NEW).1);
@@ -313,7 +313,7 @@ fn another_machines_push_between_a_queued_save_and_its_sync_still_merges() {
 /// note that reads as changed sends the save to wait for the lock and plan again under it.
 #[test]
 fn a_save_queued_during_a_rebase_waits_for_the_lock_instead_of_reading_it_as_changed() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     assert!(mac.run(&mac.notes, &["notes", "sync"], "").1);

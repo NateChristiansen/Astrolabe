@@ -22,48 +22,33 @@ fn wait(mac: &Machine, n: u32) -> String {
         .to_owned()
 }
 
-/// Catches: the wait the session text used to teach, which names nothing to decide.
+/// Catches: a save that writes a wait its check refuses, or drops one it accepts. Which waits
+/// are refused is the unit test on `check_wait`; this is that the save runs it.
 #[test]
 fn a_wait_on_the_owner_that_only_says_look_is_refused() {
     let world = World::new();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let before = mac.effort_text(1);
-    for ask in [
-        "look at the plan",
-        "Look at the branch and land it",
-        "take a look at the result",
-        "have a look",
-        "look",
-    ] {
-        let (out, ok) = mac.bash(
-            "s1",
-            &format!("astrolabe effort save --status review --waits-for \"owner: {ask}\" {BODY}"),
-        );
-        assert!(
-            !ok && out.contains("Effort NOT saved")
-                && out.contains(&format!(
-                    "--waits-for \"owner: {ask}\" doesn't say what the owner should decide or do"
-                ))
-                && out.contains("Lead with the decision or action and say where to see it")
-                && out.contains("Nothing was written"),
-            "{ask}: {out}"
-        );
-        assert_eq!(mac.effort_text(1), before, "{ask}");
-    }
-    // A decision, a word that only starts like "look", and a wait on anyone else go through.
-    for wait_for in [
-        "owner: land it on main? 4 seconds instead of 30, on branch export-batch",
-        "owner: lookup table or a match, both measured",
-        "dispatcher: look at the branch",
-    ] {
-        let (out, ok) = mac.bash(
-            "s1",
-            &format!("astrolabe effort save --status review --waits-for \"{wait_for}\" {BODY}"),
-        );
-        assert!(ok, "{wait_for}: {out}");
-        assert_eq!(wait(&mac, 1), wait_for);
-    }
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!(
+            "astrolabe effort save --status review --waits-for \"owner: please take a look\" {BODY}"
+        ),
+    );
+    assert!(
+        !ok && out.contains("Effort NOT saved")
+            && out.contains("doesn't say what the owner should decide or do"),
+        "{out}"
+    );
+    assert_eq!(mac.effort_text(1), before);
+    let wait_for = "owner: looks good to land on main?";
+    let (out, ok) = mac.bash(
+        "s1",
+        &format!("astrolabe effort save --status review --waits-for \"{wait_for}\" {BODY}"),
+    );
+    assert!(ok, "{out}");
+    assert_eq!(wait(&mac, 1), wait_for);
 }
 
 /// Catches: a dispatched worker putting its effort under Needs you, where no reply clears it;
@@ -440,44 +425,6 @@ fn a_session_leaving_for_a_worker_binding_is_told_what_a_worker_can_do() {
     );
     for refused in ["effort save --effort 1", "effort read 1"] {
         assert!(!out.contains(refused), "{refused}: {out}");
-    }
-}
-
-/// Catches: the look that hides behind a word ("please look", "have a quick look") and an
-/// ask with nothing in it, while a decision that starts like one still goes through.
-#[test]
-fn a_look_behind_another_word_and_an_empty_ask_are_refused() {
-    let world = World::new();
-    let mac = world.machine("mac");
-    assert!(mac.bash("s1", NEW).1);
-    for ask in [
-        "owner: please look at the PR",
-        "owner: Please take a look at the PR",
-        "owner: have a quick look",
-        "owner: take another look at the branch",
-        "owner:",
-        "owner: ",
-    ] {
-        let (out, ok) = mac.bash(
-            "s1",
-            &format!("astrolabe effort save --status review --waits-for \"{ask}\" {BODY}"),
-        );
-        assert!(
-            !ok && out.contains("doesn't say what the owner should decide or do"),
-            "{ask:?}: {out}"
-        );
-    }
-    for ask in [
-        "owner: looks good to land on main?",
-        "owner: lookup table A or B?",
-        "owner: have the export take a path, or look it up from the config?",
-    ] {
-        let (out, ok) = mac.bash(
-            "s1",
-            &format!("astrolabe effort save --status review --waits-for \"{ask}\" {BODY}"),
-        );
-        assert!(ok, "{ask}: {out}");
-        assert_eq!(wait(&mac, 1), ask);
     }
 }
 

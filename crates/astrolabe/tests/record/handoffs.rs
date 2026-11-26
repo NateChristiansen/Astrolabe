@@ -335,7 +335,7 @@ fn tracked(m: &Machine) -> usize {
 /// all 700 paths on every machine, however slow.
 #[test]
 fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);
@@ -359,7 +359,7 @@ fn a_save_over_more_paths_than_a_windows_command_line_holds_commits_them_all() {
 /// left on this machine for good, or the save failing over them.
 #[test]
 fn a_hook_short_of_time_commits_the_save_and_leaves_the_rest_to_the_sync() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);
@@ -393,7 +393,7 @@ fn a_hook_short_of_time_commits_the_save_and_leaves_the_rest_to_the_sync() {
 /// the reason only in a log; and the files staying staged, or never tried again.
 #[test]
 fn leftover_hand_off_files_that_wont_commit_hold_back_no_push_and_are_said() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);
@@ -438,7 +438,7 @@ fn leftover_hand_off_files_that_wont_commit_hold_back_no_push_and_are_said() {
 /// commit left for the sync.
 #[test]
 fn a_queued_saves_reply_counts_the_hand_off_files_it_left() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     member(&mac);
     evidence(&mac);

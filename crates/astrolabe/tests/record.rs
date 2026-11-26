@@ -56,15 +56,106 @@ struct Machine {
 
 struct World {
     origin: TempDir,
+    _slot: Slot,
 }
 
-impl World {
-    fn new() -> Self {
-        let origin = TempDir::new();
-        let bare = origin.0.join("notes.git");
+/// A test's share of the few places tests may hold at once. Each test runs the hook on its real
+/// clock, so too many at once starve it and it runs out of time before checking anything:
+/// sixteen at once failed most tests on a quiet PC, and eight left none out of time
+/// (2026-11-25). A test that times real waits takes every place, as even four tests beside it
+/// made two of them fail.
+/// A second world on the same thread shares its first's places, so a test can't wait on itself.
+struct Slot {
+    places: usize,
+}
+
+/// How many places there are: `ASTROLABE_RECORD_AT_ONCE`, else half the cores.
+fn at_once() -> usize {
+    std::env::var("ASTROLABE_RECORD_AT_ONCE")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(2, |n| n.get() / 2))
+        .max(1)
+}
+
+static TAKEN: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+thread_local! {
+    static HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Slot {
+    fn take(wanted: usize) -> Slot {
+        let mut places = 0;
+        if HELD.get() == 0 {
+            let (taken, freed) = &TAKEN;
+            let limit = at_once();
+            places = wanted.min(limit);
+            let mut n = taken.lock().unwrap_or_else(|e| e.into_inner());
+            while *n + places > limit {
+                n = freed.wait(n).unwrap_or_else(|e| e.into_inner());
+            }
+            *n += places;
+        }
+        HELD.set(HELD.get() + 1);
+        Slot { places }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        HELD.set(HELD.get() - 1);
+        if self.places > 0 {
+            let (taken, freed) = &TAKEN;
+            *taken.lock().unwrap_or_else(|e| e.into_inner()) -= self.places;
+            freed.notify_all();
+        }
+    }
+}
+
+/// The world and one machine built once per run with real git and the real program, which each
+/// test copies instead of building its own: setup was most of a record test's time.
+struct Template {
+    /// Unique to this run, so a path left unswapped in a copy is easy to find.
+    root: PathBuf,
+    origin: PathBuf,
+    machine: PathBuf,
+    /// The origin's main when the machine was copied from it.
+    head: String,
+}
+
+impl Template {
+    fn get() -> &'static Template {
+        static TEMPLATE: std::sync::OnceLock<Template> = std::sync::OnceLock::new();
+        TEMPLATE.get_or_init(Template::build)
+    }
+
+    fn build() -> Template {
+        let temp = std::env::temp_dir();
+        // A static is never dropped, so each run clears what earlier runs left.
+        let stale = std::time::Duration::from_secs(3600);
+        for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > stale));
+            if old
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("astrolabe-template-")
+            {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+        let root = temp.join(format!("astrolabe-template-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let origin = root.join("origin");
+        let bare = origin.join("notes.git");
         std::fs::create_dir_all(&bare).unwrap();
         git(&bare, &["init", "-q", "--bare", "-b", "main"]);
-        let seed = origin.0.join("seed");
+        let seed = root.join("seed");
         std::fs::create_dir_all(&seed).unwrap();
         git(&seed, &["init", "-q", "-b", "main"]);
         for (file, text) in [
@@ -83,24 +174,14 @@ impl World {
         git(&seed, &["commit", "-q", "-m", "seed"]);
         git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
         git(&seed, &["push", "-q", "origin", "main"]);
-        Self { origin }
-    }
 
-    fn machine(&self, name: &'static str) -> Machine {
-        let dir = TempDir::new();
-        let notes = dir.0.join("notes");
-        git(
-            &dir.0,
-            &[
-                "clone",
-                "-q",
-                self.origin.0.join("notes.git").to_str().unwrap(),
-                "notes",
-            ],
-        );
+        let machine = root.join("machine");
+        std::fs::create_dir_all(&machine).unwrap();
+        let notes = machine.join("notes");
+        git(&machine, &["clone", "-q", bare.to_str().unwrap(), "notes"]);
         git(&notes, &["config", "user.email", "t@example.com"]);
         git(&notes, &["config", "user.name", "T"]);
-        let demo = dir.0.join("demo");
+        let demo = machine.join("demo");
         std::fs::create_dir_all(&demo).unwrap();
         git(&demo, &["init", "-q", "-b", "main"]);
         git(&demo, &["commit", "-q", "--allow-empty", "-m", "first"]);
@@ -108,18 +189,13 @@ impl World {
             &demo,
             &["remote", "add", "origin", "git@example.com:team/demo.git"],
         );
-        write(&dir.0.join("plugin/hooks/hooks.json"), "hooks v1");
+        write(&machine.join("plugin/hooks/hooks.json"), "hooks v1");
         write(
-            &dir.0.join("plugin/.claude-plugin/plugin.json"),
+            &machine.join("plugin/.claude-plugin/plugin.json"),
             "manifest v1",
         );
-        let m = Machine {
-            dir,
-            name,
-            notes,
-            demo,
-            last_read: Default::default(),
-        };
+        // Registered and switched on through the program itself, once.
+        let m = Machine::at(TempDir(machine.clone()), "template");
         let notes_str = m.notes.to_str().unwrap().to_owned();
         let (out, ok) = m.run(&m.notes, &["repo", "add", "agent", &notes_str], "");
         assert!(ok, "{out}");
@@ -128,7 +204,100 @@ impl World {
                 .0
                 .contains("on for this machine")
         );
-        m
+        // The template outlives every test, so its folder is never dropped here.
+        std::mem::forget(m);
+        let head = git(&bare, &["rev-parse", "main"]);
+        Template {
+            root,
+            origin,
+            machine,
+            head,
+        }
+    }
+}
+
+/// A copy of `from` at `to`, files and folders alike.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// Rewrites each spelling of `from` in `file` to `to`: as given, with backslashes doubled as
+/// JSON and git config write them, and with forward slashes as git writes a Windows path.
+fn swap_path(file: &Path, from: &Path, to: &Path) {
+    let mut text = std::fs::read_to_string(file).unwrap();
+    let (from, to) = (from.to_str().unwrap(), to.to_str().unwrap());
+    for (f, t) in [
+        (from.replace('\\', "\\\\"), to.replace('\\', "\\\\")),
+        (from.replace('\\', "/"), to.replace('\\', "/")),
+        (from.to_owned(), to.to_owned()),
+    ] {
+        text = text.replace(&f, &t);
+    }
+    std::fs::write(file, text).unwrap();
+}
+
+impl World {
+    fn new() -> Self {
+        Self::taking(1)
+    }
+
+    /// A world for a test that times real waits, which runs with no other test beside it.
+    fn timed() -> Self {
+        Self::taking(usize::MAX)
+    }
+
+    fn taking(places: usize) -> Self {
+        let slot = Slot::take(places);
+        let origin = TempDir::new();
+        copy_tree(
+            &Template::get().origin.join("notes.git"),
+            &origin.0.join("notes.git"),
+        );
+        Self {
+            origin,
+            _slot: slot,
+        }
+    }
+
+    fn machine(&self, name: &'static str) -> Machine {
+        let template = Template::get();
+        let dir = TempDir::new();
+        copy_tree(&template.machine, &dir.0);
+        let config = dir.0.join("notes/.git/config");
+        swap_path(&config, &template.origin, &self.origin.0);
+        let registered = dir.0.join("state/repos/agent.json");
+        swap_path(&registered, &template.machine, &dir.0);
+        for file in [config, registered] {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let marker = template.root.file_name().unwrap().to_str().unwrap();
+            assert!(!text.contains(marker), "{}: {text}", file.display());
+        }
+        // A clone made now would hold what other machines in this world have pushed.
+        if git(&self.origin.0.join("notes.git"), &["rev-parse", "main"]) != template.head {
+            git(&dir.0.join("notes"), &["pull", "-q", "--ff-only"]);
+        }
+        Machine::at(dir, name)
+    }
+}
+
+impl Machine {
+    fn at(dir: TempDir, name: &'static str) -> Machine {
+        Machine {
+            notes: dir.0.join("notes"),
+            demo: dir.0.join("demo"),
+            dir,
+            name,
+            last_read: Default::default(),
+        }
     }
 }
 

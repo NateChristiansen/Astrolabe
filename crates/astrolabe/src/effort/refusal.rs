@@ -267,3 +267,250 @@ fn render(words: &[String], body: bool, powershell: bool) -> String {
     }
     line
 }
+
+/// The refusal families from the audit's ledger (2026-11-18), with neutral paths and text.
+/// The record tests keep one of them through the hook, to check it reaches this reply.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reply's two lines for a command the grammar refuses, after checking it isn't
+    /// answered as help and doesn't print the full list of forms.
+    fn refused(command: &str) -> (String, String) {
+        let why = EffortCommand::parse_in(command, false).expect_err(command);
+        let (out, ok) = refusal(command, false, &why);
+        assert!(!ok, "{out}");
+        assert!(!out.contains("Accepted forms"), "{out}");
+        let mut lines = out.lines();
+        let first = lines.next().unwrap_or_default().to_owned();
+        let second = lines.next().unwrap_or_default().to_owned();
+        assert!(lines.all(|l| l.trim().is_empty()), "two lines: {out}");
+        (first, second)
+    }
+
+    /// Catches: a save chained after `cd` was refused as "\"cd\" isn't the astrolabe program"
+    /// with the forms, which read as a typo in the program's name.
+    #[test]
+    fn a_save_chained_after_cd_names_the_chaining() {
+        let (first, second) = refused(
+            "cd /work/repo && astrolabe effort save --status active <<'ASTROLABE'\nWhere it stands.\nASTROLABE\n",
+        );
+        assert_eq!(
+            first,
+            "Effort command refused: it runs after `cd` in the same call, and the hook takes an effort command only when it runs alone: run the other commands in their own call first."
+        );
+        assert_eq!(
+            second,
+            "Run instead, with the same body and its closing ASTROLABE line: astrolabe effort save --status active <<'ASTROLABE'"
+        );
+    }
+
+    /// Catches the friction log's 22:06 case and the ledger's largest family: a pieces file
+    /// written by a heredoc, then the save, in one call, refused as "a heredoc here must be
+    /// <<'ASTROLABE'" when the cause was the chaining.
+    #[test]
+    fn a_save_after_writing_its_pieces_file_names_the_chaining_not_the_heredoc() {
+        let (first, second) = refused(
+            "cat > /scratch/pieces.md <<'EOF'\n- [ ] One outcome\nEOF\nastrolabe effort save --pieces-file /scratch/pieces.md <<'ASTROLABE'\nWhere it stands.\nASTROLABE\n",
+        );
+        assert!(
+            first.starts_with("Effort command refused: it runs after `cat` in the same call"),
+            "{first}"
+        );
+        assert!(!first.contains("heredoc"), "{first}");
+        assert_eq!(
+            second,
+            "Run instead, with the same body and its closing ASTROLABE line: astrolabe effort save --pieces-file /scratch/pieces.md <<'ASTROLABE'"
+        );
+    }
+
+    /// Catches: a path held in a shell variable set earlier in the call was refused for its
+    /// `;` or `$`; the line offered has the path filled in, since the hook never sees it.
+    #[test]
+    fn a_variable_set_earlier_in_the_call_is_filled_in_on_the_line_offered() {
+        let (first, second) = refused(
+            "S=/scratch/run; cat > $S/pieces.md <<'EOF'\n- [ ] One outcome\nEOF\nastrolabe effort save --pieces-file $S/pieces.md",
+        );
+        assert!(
+            first.starts_with("Effort command refused: it runs after setting `S` in the same call"),
+            "{first}"
+        );
+        assert_eq!(
+            second,
+            "Run instead: astrolabe effort save --pieces-file /scratch/run/pieces.md"
+        );
+    }
+
+    /// Catches: `| head` after a read was refused as "'|' in a bare word", as if a value
+    /// needed quoting.
+    #[test]
+    fn a_read_piped_into_another_program_names_the_pipe() {
+        let (first, second) = refused("astrolabe effort read 1 | head -30");
+        assert_eq!(
+            first,
+            "Effort command refused: its output is piped into `head`, and the hook takes an effort command only when it runs alone, with nothing after it."
+        );
+        assert_eq!(second, "Run instead: astrolabe effort read 1");
+    }
+
+    /// Catches: `2>&1` and `> /dev/null` refused as "'>' in a bare word".
+    #[test]
+    fn a_redirect_is_named_as_a_redirect() {
+        for (command, named) in [
+            ("astrolabe effort read 1 2>&1", "`2>&1`"),
+            ("astrolabe effort read 1 > /dev/null", "`> /dev/null`"),
+            (
+                "astrolabe journal \"Fixed the dead link in the guide.\" 2>&1",
+                "`2>&1`",
+            ),
+        ] {
+            let (first, _) = refused(command);
+            assert_eq!(
+                first,
+                format!(
+                    "Effort command refused: it redirects its output ({named}), and the hook takes an effort command only when it runs alone, with no redirect."
+                ),
+                "{command}"
+            );
+        }
+        let (_, second) = refused("astrolabe journal \"Fixed the dead link in the guide.\" 2>&1");
+        assert_eq!(
+            second,
+            "Run instead: astrolabe journal \"Fixed the dead link in the guide.\""
+        );
+    }
+
+    /// Catches: a redirect and pipe on the heredoc's own line were refused as "nothing may
+    /// follow <<'ASTROLABE' on its line".
+    #[test]
+    fn a_pipe_after_the_heredoc_marker_names_the_pipe() {
+        let (first, second) = refused(
+            "astrolabe effort save --status review <<'ASTROLABE' 2>&1 | tail -3\nWhere it stands.\nASTROLABE\n",
+        );
+        assert!(
+            first.starts_with("Effort command refused: its output is piped into `tail`"),
+            "{first}"
+        );
+        assert_eq!(
+            second,
+            "Run instead, with the same body and its closing ASTROLABE line: astrolabe effort save --status review <<'ASTROLABE'"
+        );
+    }
+
+    /// Catches: a command after the closing line was refused as "nothing may follow the
+    /// closing ASTROLABE line", which hid that it was a second command.
+    #[test]
+    fn a_command_after_the_body_names_that_command() {
+        let (first, _) = refused(
+            "astrolabe effort save --status active <<'ASTROLABE'\nWhere it stands.\nASTROLABE\ngit -C /work/repo branch --show-current",
+        );
+        assert_eq!(
+            first,
+            "Effort command refused: `git` runs after it in the same call, and the hook takes an effort command only when it runs alone."
+        );
+    }
+
+    /// The heredoc message stays for the one case it is true: the save's own body opened
+    /// with another delimiter.
+    #[test]
+    fn a_body_with_another_delimiter_is_told_the_one_delimiter() {
+        let (first, second) =
+            refused("astrolabe effort save --status active <<EOF\nWhere it stands.\nEOF\n");
+        assert_eq!(
+            first,
+            "Effort command refused: its body must open with <<'ASTROLABE', quoted, and end at a line holding only ASTROLABE."
+        );
+        assert_eq!(
+            second,
+            "Run instead, with the same body and its closing ASTROLABE line: astrolabe effort save --status active <<'ASTROLABE'"
+        );
+    }
+
+    /// Catches: `$`, a backtick or a backslash in a quoted value; the line offered leaves it
+    /// out.
+    #[test]
+    fn a_value_the_shell_would_read_is_offered_without_it() {
+        let (first, second) = refused(
+            "astrolabe effort save --decision \"chose a \\$95 stop line over none: it bounds the run\"",
+        );
+        assert!(
+            first.starts_with("Effort command refused: '\\\\' inside a quoted value"),
+            "{first}"
+        );
+        assert_eq!(
+            second,
+            "Run instead: astrolabe effort save --decision \"chose a 95 stop line over none: it bounds the run\""
+        );
+    }
+
+    /// Catches: a flag the verb lacks; the line offered drops it, and a new effort's goal
+    /// goes in its body.
+    #[test]
+    fn a_flag_the_verb_lacks_is_dropped_from_the_line_offered() {
+        let (first, second) =
+            refused("astrolabe effort new --title \"Faster ink\" --goal \"strokes keep up\"");
+        assert!(
+            first.starts_with("Effort command refused: --goal isn't a flag of `effort new`"),
+            "{first}"
+        );
+        assert_eq!(
+            second,
+            "Run instead, with the body on the lines after it and a closing ASTROLABE line: astrolabe effort new --title \"Faster ink\" <<'ASTROLABE'"
+        );
+    }
+
+    /// Where no line can be offered, the one form for the verb is, not the list.
+    #[test]
+    fn with_no_line_to_offer_the_verbs_one_form_is_shown() {
+        let (first, second) = refused("astrolabe effort save --tick \"--once flag added\"");
+        assert_eq!(
+            first,
+            "Effort command refused: --tick needs a value, not another flag."
+        );
+        assert!(
+            second.starts_with("The form: astrolabe effort save [--status <state>]"),
+            "{second}"
+        );
+    }
+
+    /// Catches: `--help` was refused as a malformed command (F-2). It's answered with the
+    /// forms, as an answer.
+    #[test]
+    fn help_is_answered_with_the_forms() {
+        for command in [
+            "astrolabe effort new --help 2>&1 | head -30",
+            "astrolabe effort --help",
+            "astrolabe effort save --help",
+        ] {
+            let why = EffortCommand::parse_in(command, false).expect_err(command);
+            let (out, ok) = refusal(command, false, &why);
+            assert!(ok, "{command}: {out}");
+            assert!(
+                out.starts_with("Effort commands have no --help; this is it.\nAccepted forms"),
+                "{out}"
+            );
+        }
+    }
+
+    /// PowerShell is offered its own body marker and closing line.
+    #[test]
+    fn powershell_is_offered_a_here_string() {
+        let command =
+            "cd C:\\work\\repo; astrolabe effort save --status active @'\nWhere it stands.\n'@";
+        let why = EffortCommand::parse_in(command, true).expect_err(command);
+        let (out, ok) = refusal(command, true, &why);
+        assert!(!ok, "{out}");
+        let mut lines = out.lines();
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .starts_with("Effort command refused: it runs after `cd` in the same call"),
+            "{out}"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "Run instead, with the same body and its closing '@ line: astrolabe effort save --status active @'"
+        );
+    }
+}

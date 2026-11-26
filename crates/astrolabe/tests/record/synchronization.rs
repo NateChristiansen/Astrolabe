@@ -245,7 +245,7 @@ fn the_same_note_saved_on_both_machines_keeps_both_sides() {
     // Defects: the later save won a whole block, so the earlier save's decision and tick
     // went with its state text; within a minute "later" was the larger machine name, so the
     // PC's earlier save beat the Mac's; and the losing state text was only in git.
-    let world = World::new();
+    let world = World::timed();
     let (mac, pc) = both_on_one_effort(&world);
     let text = same_note_from_both(&world, &pc, &mac);
     let file = astrolabe::effort::EffortFile::parse(&text).unwrap();
@@ -309,7 +309,7 @@ fn the_same_note_saved_on_both_machines_keeps_both_sides() {
 #[test]
 fn the_same_note_merges_alike_whichever_machine_merges() {
     // Defect: what both sides added came out in the merging machine's order.
-    let world = World::new();
+    let world = World::timed();
     let (mac, pc) = both_on_one_effort(&world);
     let text = same_note_from_both(&world, &mac, &pc);
     let file = astrolabe::effort::EffortFile::parse(&text).unwrap();
@@ -491,7 +491,7 @@ fn a_save_from_a_crlf_checkout_is_not_reported_stale_after_sync() {
 
 #[test]
 fn two_machines_replacing_their_lines_the_same_day_leave_one_line_each_after_merge() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let pc = world.machine("pc");
     assert!(mac.bash("s1", NEW).1);
@@ -1312,7 +1312,7 @@ fn output_of(child: std::process::Child) -> (String, bool) {
 /// sync now stands for the rest, since it pushes whatever was committed before it gets in.
 #[test]
 fn a_sync_with_another_already_waiting_leaves_the_push_to_that_one() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let held = mac.hold_notes();
@@ -1333,7 +1333,7 @@ fn a_sync_with_another_already_waiting_leaves_the_push_to_that_one() {
 /// commits waited for a later save. A failed sync now lets the next turn end ask.
 #[test]
 fn a_waiting_sync_that_fails_leaves_the_next_turn_end_to_push() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let _ = mac.sync_requested();
@@ -1374,7 +1374,7 @@ fn a_waiting_sync_that_fails_leaves_the_next_turn_end_to_push() {
 /// waiting for them: the sync then pushes the save too.
 #[test]
 fn a_save_waiting_for_the_notes_goes_before_a_waiting_sync() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let held = mac.hold_notes();

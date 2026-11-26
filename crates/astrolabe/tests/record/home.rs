@@ -189,7 +189,7 @@ fn a_reset_mid_status_line_still_counts_as_busy() {
 fn the_board_is_served_fresh_on_localhost() {
     use std::io::{BufRead, BufReader, Read};
     use std::time::Duration;
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let mut child = Kill(
@@ -481,7 +481,7 @@ fn the_board_is_served_fresh_on_localhost() {
 fn a_replaced_program_takes_over_on_the_same_port() {
     use std::io::{BufRead, BufReader, Read};
     use std::time::{Duration, Instant, SystemTime};
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The server runs from a copy, so the test can replace it the way an install does.
@@ -570,7 +570,7 @@ fn a_replaced_program_takes_over_on_the_same_port() {
 fn a_board_left_open_pulls_the_other_machines_saves() {
     use std::io::{BufRead, BufReader, Read};
     use std::time::{Duration, Instant};
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let pc = world.machine("pc");
     let mut child = Kill(
@@ -701,7 +701,7 @@ fn server_failed(child: &mut std::process::Child, why: &str) -> ! {
 fn a_preview_serves_beside_the_machine_and_saves_nothing() {
     use std::io::{BufRead, BufReader, Read};
     use std::time::Duration;
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let before = std::fs::read_to_string(mac.state().join("home.json")).ok();

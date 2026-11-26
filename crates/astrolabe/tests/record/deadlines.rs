@@ -148,7 +148,7 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
 /// one that doesn't queue, such as a done save, is refused with nothing planned or written.
 #[test]
 fn a_held_notes_lock_refuses_a_save_that_doesnt_queue_with_a_reply() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let (before, log) = (mac.effort_text(1), mac.log());
@@ -195,7 +195,7 @@ fn a_held_notes_lock_refuses_a_save_that_doesnt_queue_with_a_reply() {
 
 #[test]
 fn a_held_notes_lock_at_session_start_still_delivers_context() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
@@ -269,7 +269,7 @@ fn watch(mut command: Command, input: &Value) -> Watched {
 /// nothing tells the session the write didn't happen.
 #[test]
 fn a_write_still_under_way_at_the_answer_is_never_ended_or_called_not_written() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The real git, holding its index lock while a commit hook of the checkout's runs until
@@ -336,7 +336,7 @@ fn a_write_still_under_way_at_the_answer_is_never_ended_or_called_not_written() 
 
 #[test]
 fn a_hook_that_dies_mid_write_leaves_a_write_the_next_hook_finishes() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // Held up between writing the files and committing them, past the hook's whole time.
@@ -407,7 +407,7 @@ impl Machine {
 /// ahead when its wait is up, and a command that isn't a hook doesn't wait for good.
 #[test]
 fn a_marker_nothing_frees_delays_a_write_and_never_stops_one() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let stray = mac.held_marker();
@@ -447,7 +447,7 @@ fn a_marker_nothing_frees_delays_a_write_and_never_stops_one() {
 /// is planned or written beside it.
 #[test]
 fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let (before, log) = (mac.effort_text(1), mac.log());
@@ -481,7 +481,7 @@ fn git_left_running_past_the_wait_refuses_a_save_as_busy_notes() {
 /// The save isn't told to finish or abort a rebase that is finishing by itself.
 #[test]
 fn a_rebase_left_running_past_the_wait_is_busy_notes_not_a_rebase_to_end() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let (before, log) = (mac.effort_text(1), mac.log());
@@ -519,7 +519,7 @@ fn a_rebase_left_running_past_the_wait_is_busy_notes_not_a_rebase_to_end() {
 /// went.
 #[test]
 fn a_pull_that_takes_the_hooks_time_finishes_and_its_save_is_refused_naming_it() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // Another machine's commit on origin, so the pull has a local commit to replay, and a
@@ -815,7 +815,7 @@ fn git_shim(mac: &Machine, script: &str) -> String {
 #[cfg(unix)]
 #[test]
 fn a_flooding_fetch_is_not_a_timeout() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // More than a pipe holds, on the stream git reports progress on, before the real fetch.
@@ -848,7 +848,7 @@ fn a_flooding_fetch_is_not_a_timeout() {
 #[cfg(unix)]
 #[test]
 fn a_fetch_a_hook_cut_short_starts_no_backoff() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let path = git_shim(
@@ -941,7 +941,7 @@ fn a_rebase_the_owner_starts_during_the_fetch_is_left_alone() {
 /// in it, and the session would be told so at every turn end.
 #[test]
 fn a_repo_read_that_ran_out_of_time_brings_no_reminder() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     // Something in the session's repo that a whole read sees and an empty one doesn't.
     write(&mac.demo.join("untracked.txt"), "work in progress");
@@ -981,7 +981,7 @@ fn a_repo_git_cant_read_has_no_facts() {
 /// the branch and before it cleared its own state, leaving the checkout mid-rebase.
 #[test]
 fn a_rebase_that_outlives_the_hook_finishes_though_it_prints() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let pc = world.machine("pc");
@@ -1061,7 +1061,7 @@ const MOVED: &str = "the repo changed since the last save";
 /// The next turn's command reads it again, and from there a real change is seen.
 #[test]
 fn a_command_that_couldnt_read_its_repo_makes_no_claim_about_it() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     // The hook's clock moves past its time for reads as it comes to read the repo's status.
@@ -1218,7 +1218,7 @@ fn a_rebase_the_pull_couldnt_abort_is_finished_by_the_next_pull() {
 /// its first `git add`.
 #[test]
 fn a_save_waits_out_another_programs_index_lock() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let index = mac.notes.join(".git/index.lock");
@@ -1244,7 +1244,7 @@ fn a_save_waits_out_another_programs_index_lock() {
 /// goes an ordinary save lands and its sync pushes it over the other machine's work.
 #[test]
 fn an_index_lock_held_past_the_wait_refuses_the_save_with_nothing_written() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     assert!(mac.sync().1);

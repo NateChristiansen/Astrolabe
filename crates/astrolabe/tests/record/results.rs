@@ -113,7 +113,7 @@ const FOUND: &str = "astrolabe journal \"Found the Deck preset in the video sett
 /// request, not a second line.
 #[test]
 fn a_journal_line_retried_after_the_out_of_time_denial_is_written_once() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let denied = mac.call("s1", "call-1", FOUND, &HELD_UP).unwrap_err();
     assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
@@ -138,7 +138,7 @@ fn a_journal_line_retried_after_the_out_of_time_denial_is_written_once() {
 
 #[test]
 fn a_new_effort_retried_after_the_out_of_time_denial_is_created_once() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let twice = "astrolabe effort new --title \"Twice\" <<'ASTROLABE'\none goal\nASTROLABE\n";
     let denied = mac.call("s1", "call-1", twice, &HELD_UP).unwrap_err();
@@ -191,7 +191,7 @@ fn a_command_run_again_after_its_answer_is_a_new_request() {
 /// reply was left for the session, so the session was denied. Its retry gets that reply.
 #[test]
 fn a_retry_of_a_write_that_committed_but_was_never_answered_gets_its_reply() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let unanswered = [
         ("ASTROLABE_HOOK_TEST_STALL", "ticket:60000"),
@@ -214,7 +214,7 @@ fn a_retry_of_a_write_that_committed_but_was_never_answered_gets_its_reply() {
 /// command's first attempt.
 #[test]
 fn a_write_recovered_long_after_its_attempt_isnt_taken_for_a_new_commands_first_try() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let denied = mac.call("s1", "call-1", FOUND, &HELD_UP).unwrap_err();
     assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
@@ -239,7 +239,7 @@ fn a_write_recovered_long_after_its_attempt_isnt_taken_for_a_new_commands_first_
 /// before saying the same words is saving that other effort.
 #[test]
 fn the_same_save_after_the_session_moved_to_another_effort_is_written_there() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     assert!(mac.bash("s1", NEW).1);
     let other = "astrolabe effort new --title \"Other\" <<'ASTROLABE'\nanother goal\nASTROLABE\n";
@@ -292,7 +292,7 @@ const ANSWERS_LATE: [(&str, &str); 1] = [("ASTROLABE_HOOK_TEST_STALL", "ticket:4
 /// stay on record as never answered and swallow the session's next identical command.
 #[test]
 fn an_answer_given_while_another_process_holds_the_notes_still_counts() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let notes = astrolabe::notes::Notes::new(mac.notes.clone(), mac.state());
     let held = std::thread::scope(|scope| {
@@ -332,7 +332,7 @@ fn an_answer_given_while_another_process_holds_the_notes_still_counts() {
 /// too, whoever holds the notes at that moment.
 #[test]
 fn a_retry_answered_while_another_process_holds_the_notes_settles_its_first_attempt() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let denied = mac.call("s1", "call-1", FOUND, &HELD_UP).unwrap_err();
     assert!(denied.starts_with(OUT_OF_TIME), "{denied}");
@@ -364,7 +364,7 @@ fn a_retry_answered_while_another_process_holds_the_notes_settles_its_first_atte
 /// moment, as a second tool call sent alongside the first, is its own request and writes.
 #[test]
 fn the_same_command_arriving_before_the_first_is_answered_writes_too() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     std::thread::scope(|scope| {
         let first = scope.spawn(|| mac.call("s1", "call-1", FOUND, &ANSWERS_LATE));
@@ -390,7 +390,7 @@ fn the_same_command_arriving_before_the_first_is_answered_writes_too() {
 /// that moment or is left for recovery depends on the machine; either way it's one line.
 #[test]
 fn a_write_that_finishes_just_after_the_backstop_answered_is_still_unanswered() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let just_late = [
         ("ASTROLABE_HOOK_TEST_STALL", "commit:8200"),
@@ -421,7 +421,7 @@ fn a_write_that_finishes_just_after_the_backstop_answered_is_still_unanswered() 
 /// from the write it finished. It isn't refused because git still holds the index.
 #[test]
 fn a_retry_sent_while_the_first_hooks_commit_is_still_running_waits_for_it() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     mac.notes_hook("pre-commit", "sleep 12\nexit 0");
     // Answered at 8 s and gone by 9.25, with the commit running until about 12.
@@ -454,7 +454,7 @@ fn a_retry_sent_while_the_first_hooks_commit_is_still_running_waits_for_it() {
 /// request and writes.
 #[test]
 fn a_result_shown_by_the_bare_command_counts_as_the_sessions_answer() {
-    let world = World::new();
+    let world = World::timed();
     let mac = world.machine("mac");
     let unanswered = [
         ("ASTROLABE_HOOK_TEST_STALL", "ticket:60000"),
