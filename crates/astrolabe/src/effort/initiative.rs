@@ -16,14 +16,24 @@ pub struct InitiativePage {
     pub finishes: Vec<Option<String>>,
     pub joins: Vec<u32>,
     pub after: String,
+    /// The playtest branch this initiative's members merge into, from `--integration`; a
+    /// member's merge means a merge into it.
+    pub integration: Option<String>,
 }
 
 impl InitiativePage {
+    /// Reads the body for an initiative with no integration branch.
+    pub fn parse(body: &str) -> Result<Self, String> {
+        Self::parse_with(body, None)
+    }
+
     /// Reads the body. The efforts section is the first unfenced `## ` heading that starts
     /// with "Efforts" and runs to the next `## ` heading; in it, each paragraph is one
     /// effort, the title on its first line and the goal below. A leading `# ` title line is
-    /// dropped, because the page gets the command's title.
-    pub fn parse(body: &str) -> Result<Self, String> {
+    /// dropped, because the page gets the command's title. With an integration branch,
+    /// each new member's finish line names it.
+    pub fn parse_with(body: &str, integration: Option<&str>) -> Result<Self, String> {
+        let integration = integration.map(super::integration_branch).transpose()?;
         let body = body.replace("\r\n", "\n");
         let lines: Vec<&str> = body.lines().collect();
         let fenced = fence_mask(lines.iter().copied());
@@ -42,6 +52,7 @@ impl InitiativePage {
             }
             return Ok(Self {
                 before: before.join("\n").trim().to_owned(),
+                integration,
                 ..Default::default()
             });
         };
@@ -108,9 +119,12 @@ impl InitiativePage {
             let (finish, goal): (Vec<&str>, Vec<&str>) =
                 parts.partition(|line| line.starts_with("finish:"));
             let finish = match finish.as_slice() {
-                [] => None,
+                [] => integration
+                    .as_deref()
+                    .map(|branch| super::finish_line("merged", Some(branch)))
+                    .transpose()?,
                 [line] => Some(
-                    super::finish_line(line.trim_start_matches("finish:"))
+                    super::finish_line(line.trim_start_matches("finish:"), integration.as_deref())
                         .map_err(|why| format!("effort {title:?}: {why}"))?,
                 ),
                 _ => return Err(format!("effort {title:?} has more than one finish: line")),
@@ -137,6 +151,7 @@ impl InitiativePage {
             finishes,
             joins,
             after: lines[end..].join("\n").trim().to_owned(),
+            integration,
         })
     }
 
@@ -145,7 +160,14 @@ impl InitiativePage {
     /// of the body as given. `filed` pairs each effort's note path (from the notes root) with
     /// its number, in the order of `efforts`.
     pub fn render(&self, title: &str, repo: &str, day: &str, filed: &[(u32, String)]) -> String {
-        let mut out = format!("---\nstatus: ready\nrepo: {repo}\ncreated: {day}\n---\n# {title}\n");
+        let integration = self
+            .integration
+            .as_deref()
+            .map(|branch| format!("integration: {branch}\n"))
+            .unwrap_or_default();
+        let mut out = format!(
+            "---\nstatus: ready\nrepo: {repo}\n{integration}created: {day}\n---\n# {title}\n"
+        );
         if !self.before.is_empty() {
             out += &format!("\n{}\n", self.before);
         }

@@ -801,6 +801,14 @@ pub(super) fn card_html(
         }
         _ => String::new(),
     };
+    // A close its orchestrator missed shows on every card, small ones too: it's the one
+    // line that says the card shouldn't be here.
+    let missed = card
+        .row
+        .missed
+        .as_deref()
+        .map(|why| format!("<p class=\"missed\">{}</p>\n", esc(why)))
+        .unwrap_or_default();
     let href = match card.row.file.as_deref() {
         Some(file) => links.href(root, file),
         None => "#".to_owned(),
@@ -855,7 +863,7 @@ pub(super) fn card_html(
         number.clone()
     };
     format!(
-        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span> {}</a></h3>\n{waits}<p class=\"meta\">{}</p>\n{context}{next}{finish}{pieces}{review}</article>\n",
+        "<article class=\"card s-{}{}\" data-n=\"{}\"><h3><a href=\"{}\"><span class=\"num\">{}</span> {}</a></h3>\n{waits}{missed}<p class=\"meta\">{}</p>\n{context}{next}{finish}{pieces}{review}</article>\n",
         esc(state),
         if small { " small" } else { "" },
         esc(&key),

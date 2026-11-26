@@ -688,6 +688,8 @@ mod handoffs;
 mod home;
 #[path = "record/initiatives.rs"]
 mod initiatives;
+#[path = "record/integrating.rs"]
+mod integrating;
 #[path = "record/lessons.rs"]
 mod lessons;
 #[path = "record/queueing.rs"]

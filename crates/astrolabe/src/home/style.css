@@ -776,7 +776,7 @@ h1, h2, h3, p {
   color: var(--bad);
 }
 
-.context, .next, .finish, .waits, .ask {
+.context, .next, .finish, .waits, .ask, .missed {
   font-size: 14.5px;
   line-height: 1.65;
   margin: 0;
@@ -787,7 +787,7 @@ h1, h2, h3, p {
   color: var(--mute);
 }
 
-.waits {
+.waits, .missed {
   color: var(--warn);
 }
 

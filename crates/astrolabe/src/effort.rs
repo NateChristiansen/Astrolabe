@@ -32,26 +32,60 @@ pub const FINISH_DEFAULT: &str = "done when merged";
 
 /// The forms `--finish` (and an initiative member's `finish:` line) take, as a refusal
 /// lists them.
-pub(crate) const FINISH_FORMS: &str = "merged (the default), look: <what the owner looks at after the merge>, findings (nothing to land; done when the findings are written) or accepted (nothing to land; done when the owner accepts the findings)";
+pub(crate) const FINISH_FORMS: &str = "merged (the default; under an initiative with an integration branch, merged into that branch), main (merged into main even under an integration branch), look: <what the owner looks at after the merge>, findings (nothing to land; done when the findings are written) or accepted (nothing to land; done when the owner accepts the findings)";
 
 /// The finish line a filing form names, as the note keeps it: one line naming the event,
-/// so whoever reads the note can tell when it has happened.
-pub(crate) fn finish_line(form: &str) -> Result<String, String> {
+/// so whoever reads the note can tell when it has happened. Under an initiative with an
+/// integration branch, a merge means a merge into that branch, because its members wait
+/// in review with their worktrees until main otherwise (effort 502); `main` keeps the
+/// merge into main for a member that has to reach it on its own.
+pub(crate) fn finish_line(form: &str, integration: Option<&str>) -> Result<String, String> {
     let form = form.trim();
+    let merged = match integration {
+        Some(branch) => format!("done when merged into {branch}"),
+        None => FINISH_DEFAULT.to_owned(),
+    };
     match form {
-        "merged" => Ok(FINISH_DEFAULT.to_owned()),
+        "merged" => Ok(merged),
+        "main" => Ok(FINISH_DEFAULT.to_owned()),
         "findings" => Ok("nothing to land; done when the findings are written".to_owned()),
         "accepted" => Ok("nothing to land; done when the owner accepts the findings".to_owned()),
         _ => match form.strip_prefix("look:").map(str::trim) {
-            Some(what) if !what.is_empty() && !what.contains(['\n', '\r']) => Ok(format!(
-                "{FINISH_DEFAULT} and the owner has looked at {what}"
-            )),
+            Some(what) if !what.is_empty() && !what.contains(['\n', '\r']) => {
+                Ok(match integration {
+                    Some(_) => format!("{merged} and the owner has looked at {what} there"),
+                    None => format!("{merged} and the owner has looked at {what}"),
+                })
+            }
             _ => Err(format!(
                 "finish {form:?} isn't a finish line; use {FINISH_FORMS}"
             )),
         },
     }
 }
+
+/// Whether a name can be an integration branch as a note keeps it: one git ref name on one
+/// line, so a finish line that names it reads back the same.
+pub(crate) fn integration_branch(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    let bad = name.is_empty()
+        || name.starts_with(['-', '/', '.'])
+        || name.ends_with(['/', '.'])
+        || name.ends_with(".lock")
+        || name.contains("..")
+        || name.contains("@{")
+        || name.contains("//")
+        || name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "~^:?*[\\\"'`".contains(c));
+    if bad {
+        return Err(format!(
+            "integration {name:?} isn't a branch name: give the playtest branch's name as git knows it, such as playtest/levels"
+        ));
+    }
+    Ok(name.to_owned())
+}
+
 pub use initiative::{
     Initiative, InitiativePage, initiative_catalog, initiative_members, initiative_name,
     resolve_initiative, set_initiative_property,

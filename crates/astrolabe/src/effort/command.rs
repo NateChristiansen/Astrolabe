@@ -13,7 +13,7 @@ pub const NEW_FLAGS: [&str; 10] = [
     "issue",
     "lesson",
 ];
-pub const SAVE_FLAGS: [&str; 12] = [
+pub const SAVE_FLAGS: [&str; 14] = [
     "status",
     "decision",
     "waits-for",
@@ -26,10 +26,13 @@ pub const SAVE_FLAGS: [&str; 12] = [
     "initiative",
     "effort",
     "lesson",
+    "integration",
+    "playtested",
 ];
 /// `initiative new` files a page, optionally creating proposed efforts or joining existing
 /// ones; involvement and authority set defaults for the page and new efforts.
-pub const INITIATIVE_FLAGS: [&str; 4] = ["title", "repo", "involvement", "authority"];
+pub const INITIATIVE_FLAGS: [&str; 5] =
+    ["title", "repo", "involvement", "authority", "integration"];
 
 /// The one delimiter, quoted so the shell expands nothing in the body.
 pub const DELIMITER: &str = "ASTROLABE";

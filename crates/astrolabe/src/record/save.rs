@@ -42,6 +42,10 @@ pub(super) struct SaveRequest<'a> {
     /// Lessons this save adds to the effort's list, checked for shape; whether each exists is
     /// read after the pull.
     pub lessons: Vec<String>,
+    /// An initiative page's integration branch, set or changed; empty clears it.
+    pub integration: Option<String>,
+    /// The commit of the integration branch the owner playtested, as given.
+    pub playtested: Option<String>,
 }
 
 impl<'a> SaveRequest<'a> {
@@ -87,6 +91,25 @@ impl<'a> SaveRequest<'a> {
             })
             .transpose()?;
         let page_binding = state.initiative_key().is_some() && target.is_none();
+        // Both are the page's own: the branch its members merge into, and the commit of it
+        // the owner played, so a member still waiting on that look can be flagged.
+        let integration = cmd
+            .flag("integration")
+            .map(|b| match b.trim() {
+                "" => Ok(String::new()),
+                b => crate::effort::integration_branch(b),
+            })
+            .transpose()?;
+        let playtested = cmd.flag("playtested").map(str::trim).map(|c| {
+            if (7..=64).contains(&c.len()) && c.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                Ok(c.to_ascii_lowercase())
+            } else {
+                Err(format!("--playtested takes the commit of the integration branch the owner played, as a hex sha, not {c:?}. Nothing was written"))
+            }
+        }).transpose()?;
+        if !page_binding && (integration.is_some() || playtested.is_some()) {
+            return Err("--integration and --playtested belong to an initiative's page: bind with `astrolabe activate --initiative <slug>` and save there. Nothing was written".into());
+        }
         let record = if page_binding {
             format!("initiative {number}")
         } else {
@@ -134,6 +157,8 @@ impl<'a> SaveRequest<'a> {
             && pieces_file.is_none()
             && initiative.is_none()
             && lessons.is_empty()
+            && integration.is_none()
+            && playtested.is_none()
         {
             return Err(format!(
                 "nothing to save: give a Current state body, or a flag. The form: {}",
@@ -243,6 +268,8 @@ impl<'a> SaveRequest<'a> {
             plan_pieces,
             current,
             lessons,
+            integration,
+            playtested,
         })
     }
 }
@@ -326,6 +353,12 @@ pub(super) fn edit_bound(
     }
     apply_ticks(file, &req.ticks, &req.unticks, day)?;
     super::lesson::add_to(file, &req.lessons);
+    if let Some(branch) = &req.integration {
+        file.set("integration", branch);
+    }
+    if let Some(commit) = &req.playtested {
+        file.set("playtested", &format!("{day} at {commit}"));
+    }
     req.change(initiative).apply(file, day)
 }
 

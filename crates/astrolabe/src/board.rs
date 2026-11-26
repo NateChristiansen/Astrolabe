@@ -75,6 +75,10 @@ pub struct EffortRow {
     /// The event that finishes it, as filed. Left out when the note names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish: Option<String>,
+    /// A close its initiative's orchestrator missed: merged into the integration branch but
+    /// still in review, or still waiting on a look the owner's playtest has since given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +214,12 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
         Default::default();
     // Every effort that names a lesson, whatever filter the rows have: lessons aren't filtered.
     let mut answers: Vec<(Vec<String>, Answer)> = Vec::new();
+    // This machine's checkouts, for the members whose merges git has to answer: registered
+    // ones, and the folder the board is drawn from when it's a checkout of the member's repo.
+    let repos = crate::activate::notes_and_repos()
+        .ok()
+        .map(|(repos, _)| repos);
+    let folder = std::env::current_dir().ok();
     for (_, rel) in notes.numbers() {
         let path = notes.root.join(&rel);
         let text = match std::fs::read_to_string(&path) {
@@ -294,6 +304,9 @@ pub fn rows_in(notes: &Notes, repo: Option<&str>, all: bool) -> BoardData {
             dirty: file.prop("dirty").map(str::to_owned),
             lessons,
             finish: file.prop("finish").map(str::to_owned),
+            missed: repos.as_ref().and_then(|repos| {
+                crate::merged::missed_in_notes(&file, &pages, repos, &notes.root, folder.as_deref())
+            }),
         });
     }
     let mut initiative_attention = Vec::new();

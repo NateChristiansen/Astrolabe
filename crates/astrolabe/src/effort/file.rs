@@ -223,11 +223,13 @@ pub(super) const PROP_ORDER: [&str; 18] = [
 ];
 
 /// Initiative managed properties have a separate, single ordering definition.
-const INITIATIVE_PROP_ORDER: [&str; 9] = [
+const INITIATIVE_PROP_ORDER: [&str; 11] = [
     "status",
     "repo",
     "involvement",
     "authority",
+    "integration",
+    "playtested",
     "waits_for",
     "created",
     "updated",

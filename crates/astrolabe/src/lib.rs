@@ -11,6 +11,7 @@ pub mod home;
 mod home_effects;
 pub mod hook;
 pub mod install;
+mod merged;
 pub mod notes;
 pub mod nudge;
 pub mod record;

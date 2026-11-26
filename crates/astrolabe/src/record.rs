@@ -157,6 +157,22 @@ fn canonical_membership(root: &Path, name: &str) -> Result<String, String> {
     crate::effort::resolve_initiative(&pages, name).map(|page| page.slug.clone())
 }
 
+/// The integration branch an initiative's page names, if it names one: its members' merges
+/// are merges into it.
+fn integration_of(root: &Path, slug: &str) -> Result<Option<String>, String> {
+    if slug.is_empty() {
+        return Ok(None);
+    }
+    let pages = crate::effort::initiative_catalog(root)?;
+    let page = crate::effort::resolve_initiative(&pages, slug)?;
+    page.file
+        .prop("integration")
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(crate::effort::integration_branch)
+        .transpose()
+}
+
 /// The key a command is written under: its own, or its first attempt's when it's a retry.
 enum Attempt {
     /// A retry of a command whose first attempt left its reply: that reply.
@@ -325,7 +341,9 @@ fn new_inner(
         cmd.flag("authority").unwrap_or("edit"),
         &AUTHORITIES,
     )?;
-    let finish = crate::effort::finish_line(cmd.flag("finish").unwrap_or("merged"))?;
+    // Refused here, before any write; the initiative's integration branch, read once the
+    // notes are pulled, only changes which branch a merge names.
+    crate::effort::finish_line(cmd.flag("finish").unwrap_or("merged"), None)?;
     let issue = cmd.flag("issue").map(issues).transpose()?;
     let lessons = lesson::named(&cmd.flags_all("lesson"))?;
     let dir = notes.state.clone();
@@ -396,6 +414,10 @@ fn new_inner(
     let pulled = crate::application::pull(&notes);
     lesson::require_open(&notes, &lessons)?;
     let initiative = canonical_membership(&notes.root, cmd.flag("initiative").unwrap_or(""))?;
+    let finish = crate::effort::finish_line(
+        cmd.flag("finish").unwrap_or("merged"),
+        integration_of(&notes.root, &initiative)?.as_deref(),
+    )?;
     // Work on an initiative's member, filed as a new untagged effort, leaves the member
     // proposed and the board's count wrong. A title naming the initiative is that, nearly
     // always; any other new effort beside an open initiative only hears that it's there.
@@ -924,7 +946,7 @@ fn initiative_inner(
             )
         })?;
     // Refused before the lock, reconcile and pull: a refused body changes nothing.
-    let page = InitiativePage::parse(body)?;
+    let page = InitiativePage::parse_with(body, cmd.flag("integration"))?;
     // Managed-section ambiguity is refused before any recoverable write is planned.
     EffortFile::parse(body)?;
     let goals: Vec<String> = page
@@ -1135,6 +1157,11 @@ fn initiative_inner(
             None => "This session has no binding; it is unchanged.".to_owned(),
         }
     );
+    // Said here, where it's acted on: the session head has no room for it.
+    text += &match &page.integration {
+        Some(branch) => format!("\n{}", crate::merged::rule(branch)),
+        None => "\nIf its members merge into a playtest branch before main, name that branch with `astrolabe effort save --integration <branch>` while bound to the page, so each member finishes on its merge there.".to_owned(),
+    };
     if let Pull::Diverged(why) = &pulled {
         text += &format!(
             " Notes diverged from origin before this ({}); the numbers may collide with the other machine's and be renumbered later.",
@@ -1775,7 +1802,25 @@ fn read_inner(cmd: &EffortCommand, session: &str, cwd: &Path) -> Result<String, 
         state.delivered_ms.set(notes::now_ms());
     }
     notes::write_text(&state_path(&notes.state, session), &state.to_string())?;
-    Ok(format!("Read effort {target}: {}\n\n{text}", file.title))
+    // A member of a page with an integration branch carries the rule for closing it, and a
+    // close its orchestrator missed says so first, where the reader looks.
+    let pages = crate::effort::initiative_catalog(&notes.root).unwrap_or_default();
+    let mut lead = String::new();
+    if let Some(branch) = crate::merged::branch_of(&file, &pages) {
+        let missed = crate::activate::notes_and_repos()
+            .ok()
+            .and_then(|(repos, _)| {
+                crate::merged::missed_in_notes(&file, &pages, &repos, &notes.root, Some(cwd))
+            });
+        if let Some(why) = missed {
+            lead += &format!("Missed close: {why}\n");
+        }
+        lead += &format!("{}\n\n", crate::merged::rule(&branch));
+    }
+    Ok(format!(
+        "Read effort {target}: {}\n\n{lead}{text}",
+        file.title
+    ))
 }
 
 /// Repo access is identical for reading and saving; membership is resolved from disk,
