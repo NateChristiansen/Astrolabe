@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import {
+  chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -66,6 +69,9 @@ function fixture(t) {
   git(worktree, 'push', '-u', 'origin', branch);
   return {
     checkout, worktree, remote, env, git, tip, hook, base, checked,
+    retire({ status = 0, cwd = checkout, folder = worktree } = {}) {
+      return run(process.execPath, [script, '--retire', folder], cwd, status);
+    },
     land({ status = 0, retry = false, cwd = worktree, name = branch, sha = checked } = {}) {
       const args = retry ? ['--cleanup-only', name, sha] : [name, sha];
       return run(process.execPath, [script, ...args], cwd, status);
@@ -199,3 +205,60 @@ test "$ref" = ${ref}`);
   assert.equal(f.tip(f.remote, 'refs/heads/main'), advanced);
   assert.equal(f.tip(f.remote, ref), '');
 });
+
+test('retiring removes a worktree that will not land and deletes its local branch', (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.worktree, 'build.log'), 'build output');
+  const result = f.retire();
+  assert.match(result.stdout, /Worktree is gone/);
+  assert.match(result.stdout, new RegExp(`restore it with git branch ${branch} ${f.checked}`));
+  assert.equal(existsSync(f.worktree), false);
+  assert.equal(f.tip(f.checkout, ref), '');
+  assert.equal(f.tip(f.remote, ref), f.checked, 'the branch on GitHub stays');
+  assert.equal(f.tip(f.remote, 'refs/heads/main'), f.base, 'nothing lands');
+});
+
+test('retiring leaves a dirty, locked or current worktree alone', (t) => {
+  const f = fixture(t);
+  const dirty = join(f.worktree, 'local.txt');
+  writeFileSync(dirty, 'in progress');
+  assert.match(f.retire({ status: 1 }).stderr, /uncommitted files/);
+  rmSync(dirty);
+  f.git(f.checkout, 'worktree', 'lock', f.worktree);
+  assert.match(f.retire({ status: 1 }).stderr, /locked/);
+  f.git(f.checkout, 'worktree', 'unlock', f.worktree);
+  assert.match(f.retire({ status: 1, cwd: f.worktree }).stderr, /Run retiring from/);
+  assert.match(f.retire({ status: 1, folder: f.checkout }).stderr, /isn't a linked worktree/);
+  assert.equal(f.tip(f.checkout, ref), f.checked);
+  assert.equal(readFileSync(join(f.worktree, 'feature.txt'), 'utf8'), 'landed');
+});
+
+test('retiring a detached control checkout keeps every branch', (t) => {
+  const f = fixture(t);
+  const control = join(f.checkout, '..', 'control');
+  f.git(f.checkout, 'worktree', 'add', '--detach', control, 'main');
+  assert.match(f.retire({ folder: control }).stdout, /Worktree is gone/);
+  assert.equal(existsSync(control), false);
+  assert.equal(f.tip(f.checkout, ref), f.checked);
+});
+
+// Windows keeps a folder that any process has as its working directory, so git
+// drops the worktree and its files but not the folder.
+test('a folder a session still has open is named, and retiring clears it once closed',
+  { skip: !windows }, async (t) => {
+    const f = fixture(t);
+    assert.match(f.land({ status: 1 }).stderr, /Worktree cleanup pending/);
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
+      cwd: f.worktree, stdio: 'ignore',
+    });
+    t.after(() => holder.kill());
+    await new Promise((done) => setTimeout(done, 500));
+    const result = f.land({ status: 1, retry: true, cwd: f.checkout });
+    assert.match(result.stderr, /still on disk because something has it open/);
+    assert.doesNotMatch(result.stderr, /Retry with --cleanup-only/);
+    assert.deepEqual(readdirSync(f.worktree), []);
+    holder.kill();
+    await once(holder, 'exit');
+    assert.match(f.retire().stdout, /Empty leftover folder is gone/);
+    assert.equal(existsSync(f.worktree), false);
+  });

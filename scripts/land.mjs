@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 function git(args, allowedStatuses = [0]) {
   const result = spawnSync('git', ['--no-replace-objects', ...args], { encoding: 'utf8' });
@@ -91,8 +93,79 @@ function removeWorktree(checked) {
     target = finished[0].worktree;
   }
   process.chdir(mainCheckout.worktree);
-  git(['worktree', 'remove', target]);
+  removeFolder(target);
   return mainCheckout.worktree;
+}
+
+// On Windows, git deletes a worktree's files and its registration but fails on the
+// folder itself while any process has it open, usually a session started there.
+// A retry can't find the folder then, so finish it here or name it.
+function removeFolder(target) {
+  try {
+    git(['worktree', 'remove', target]);
+  } catch (error) {
+    const listed = worktrees().some((entry) => samePath(entry.worktree, target));
+    if (listed || !existsSync(target)) throw error;
+    try {
+      rmSync(target, { recursive: true });
+    } catch {
+      throw new LeftFolder(target);
+    }
+  }
+}
+
+class LeftFolder extends Error {
+  constructor(target) {
+    super(`Git dropped the worktree, but ${target} is still on disk because something has it open,`
+      + ' usually a session started there. Close that session, then delete the folder.');
+  }
+}
+
+function samePath(a, b) {
+  const norm = (path) => {
+    const full = resolve(path).replaceAll('\\', '/');
+    return process.platform === 'win32' ? full.toLowerCase() : full;
+  };
+  return norm(a) === norm(b);
+}
+
+// Removes a worktree whose work won't land (findings, dropped, a control checkout)
+// and deletes its local branch, printing the tip so it can be restored. Runs from
+// the main checkout. A locked or dirty worktree stays; the branch on GitHub stays.
+function retire(args) {
+  const [folder, extra] = args;
+  if (!folder || folder.startsWith('-') || extra !== undefined) {
+    throw new Error('Usage: node scripts/land.mjs --retire <worktree-folder>');
+  }
+  const [mainCheckout, ...linked] = worktrees();
+  if (git(['rev-parse', '--path-format=absolute', '--git-dir']).output
+    !== git(['rev-parse', '--path-format=absolute', '--git-common-dir']).output) {
+    throw new Error(`Run retiring from ${mainCheckout.worktree}.`);
+  }
+  const entry = linked.find((candidate) => samePath(candidate.worktree, folder));
+  if (!entry) {
+    if (!samePath(folder, mainCheckout.worktree) && existsSync(folder)
+      && readdirSync(folder).length === 0) {
+      rmdirSync(folder);
+      console.log('Empty leftover folder is gone.');
+      return;
+    }
+    throw new Error(`${folder} isn't a linked worktree of this repo.`);
+  }
+  if ('locked' in entry) throw new Error('The worktree is locked.');
+  const status = spawnSync('git', ['-C', entry.worktree, 'status', '--porcelain=v1',
+    '--untracked-files=all', '--ignore-submodules=none'], { encoding: 'utf8' });
+  if (status.status !== 0 || status.stdout.trim()) {
+    throw new Error('The worktree has uncommitted files.');
+  }
+  removeFolder(entry.worktree);
+  console.log('Worktree is gone.');
+  if (entry.branch) {
+    const branch = entry.branch.replace(/^refs\/heads\//, '');
+    git(['branch', '-D', '--', branch]);
+    console.log(`Local branch ${branch} is gone. It was at ${entry.HEAD};`
+      + ` restore it with git branch ${branch} ${entry.HEAD}.`);
+  }
 }
 
 function verifyLanded(main, checked) {
@@ -107,6 +180,7 @@ function verifyLanded(main, checked) {
 }
 
 function land(args) {
+  if (args[0] === '--retire') return retire(args.slice(1));
   const cleanupOnly = args[0] === '--cleanup-only';
   const [branch, checked, extra] = cleanupOnly ? args.slice(1) : args;
   if (!branch || branch.startsWith('-') || branch.toLowerCase() === 'main'
@@ -166,8 +240,13 @@ function land(args) {
       const mainCheckout = removeWorktree(checked);
       if (mainCheckout) console.log(`Worktree is gone. Continue from ${mainCheckout}.`);
     } catch (error) {
-      pending = true;
       console.error(`Worktree cleanup pending: ${error.message}`);
+      // A retry can't see a folder git has already dropped.
+      if (error instanceof LeftFolder) {
+        process.exitCode = 1;
+        return;
+      }
+      pending = true;
     }
   }
   if (pending) {
