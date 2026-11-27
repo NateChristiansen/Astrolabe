@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 function git(args, allowedStatuses = [0]) {
@@ -122,8 +122,15 @@ class LeftFolder extends Error {
 }
 
 function samePath(a, b) {
+  // Real paths, so a short Windows name or a symlinked temp folder still matches git's.
   const norm = (path) => {
-    const full = resolve(path).replaceAll('\\', '/');
+    let full = resolve(path);
+    try {
+      full = realpathSync.native(full);
+    } catch {
+      // A folder that's gone compares as written.
+    }
+    full = full.replaceAll('\\', '/');
     return process.platform === 'win32' ? full.toLowerCase() : full;
   };
   return norm(a) === norm(b);
